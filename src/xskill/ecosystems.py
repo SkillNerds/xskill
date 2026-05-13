@@ -26,8 +26,38 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from xskill.adapters import submit_trajectory
+from xskill.install_fallback import InstallMode, install_dir
 
 logger = logging.getLogger("xskill.ecosystems")
+
+
+# ─────────────────────────────────────────────────────────────────
+# Path helpers (per-ecosystem)
+# ─────────────────────────────────────────────────────────────────
+#
+# 把"Claude Code 在 home 下哪些子路径"集中到一处。后续 P2/P3 加 Codex /
+# OpenCode 时，沿用同样的 ``_<ecosystem>_<role>_path(home)`` 命名，避免
+# 路径拼接散落在各 install / ingester 实现里。
+#
+# 这一层故意**只**做路径运算（不碰 fs / 不 mkdir），让单测可以纯函数地
+# 断言路径正确性，跨平台行为更稳。
+
+
+def _cc_projects_path(home: Path) -> Path:
+    """Claude Code session JSONL 根目录：``<home>/.claude/projects``。
+
+    实际文件在 ``<this>/<cwd-hash>/<session-id>.jsonl``——CC 自己按 cwd
+    hash 分目录。
+    """
+    return home / ".claude" / "projects"
+
+
+def _cc_skills_path(home: Path) -> Path:
+    """Claude Code skill discovery 根目录：``<home>/.claude/skills``。
+
+    每个 skill 落到 ``<this>/<name>/SKILL.md``，CC 启动时扫这里。
+    """
+    return home / ".claude" / "skills"
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -104,21 +134,24 @@ def install_to_claude_code(
     target_root: Path | str | None = None,
     side: str = "main",
 ) -> Path:
-    """把一个 skill 以**目录级 symlink** 装到 ``<target_root>/.claude/skills/<name>``。
+    """把一个 skill 装到 ``<target_root>/.claude/skills/<name>``。
 
     ``side='main'``  → 链接到 ``<skill_path>/`` 整目录
     ``side='staging'`` → 链接到 ``<skill_path>/../.canary/<name>/`` 整目录
 
-    用 symlink 而非 copy 的两个好处：
-    1. **xskill 更新即时可见**：SkillEditAgent 写完 SKILL.md 或新增
-       scripts/foo.py，Claude Code 下次启动立刻看到，不必重启 daemon
-       触发重装。
-    2. **不冲掉用户手改**：用户若直接改 ``~/.claude/skills/<name>/SKILL.md``
-       实际改的是 xskill 源文件，下次 xskill 走 install 不会"覆盖"
-       他的修改——因为没有 copy 行为，就没有覆盖概念。
+    安装方式按平台能力**三阶 fallback**（详见 ``install_fallback.install_dir``）：
+
+    1. **symlink** — Linux / macOS / Windows Dev Mode 走这条。源仓更新即时
+       可见；用户在 dest 改 SKILL.md 实际改的是源仓，UserEditAbsorbAgent
+       能 round-trip 收编。
+    2. **directory junction** — Windows 非 Dev Mode 走这条。NTFS reparse
+       point，对读端表现等同 symlink，但只能在同卷建。
+    3. **copy** — junction 也建不出来的极端情况（跨盘 / 非 NTFS）。**这一档
+       下 xskill 更新不能 live propagate，用户手改也不会回到源仓**。模块
+       日志会显式 warning。
 
     若 dest 已是 symlink 且指向相同 source，直接返回不动；
-    若 dest 是普通文件/目录或指向其他位置的 symlink，先删后链。
+    若 dest 是普通文件/目录或指向其他位置的 symlink，先删后重装。
     """
     skill_path = Path(skill_path).resolve()
     if not skill_path.is_dir():
@@ -136,7 +169,7 @@ def install_to_claude_code(
 
     name = skill_path.name
     root = Path(target_root) if target_root else Path.home()
-    skills_root = root / ".claude" / "skills"
+    skills_root = _cc_skills_path(root)
     skills_root.mkdir(parents=True, exist_ok=True)
     dest = skills_root / name
 
@@ -153,15 +186,22 @@ def install_to_claude_code(
     elif dest.exists():
         # 旧 install 留下的真实目录或文件 → 删（保留备份避免误删用户手写）
         if dest.is_dir():
-            import shutil as _shutil
             backup = skills_root / f".{name}.replaced-by-symlink"
             if backup.exists():
-                _shutil.rmtree(backup)
+                shutil.rmtree(backup)
             dest.rename(backup)
         else:
             dest.unlink()
 
-    dest.symlink_to(src_dir, target_is_directory=True)
+    mode: InstallMode = install_dir(src_dir, dest)
+    if mode == "copy":
+        # copy 模式下 UserEditAbsorbAgent 失效 —— 用户改副本源仓看不到。
+        # 调用方关心 mode 时可看日志；这里不破坏返回值兼容（保留旧 SDK 签名）。
+        logger.warning(
+            "install_to_claude_code(%s): copy-mode install at %s — "
+            "live-update / user-edit-absorb are disabled on this destination",
+            name, dest,
+        )
     return dest / "SKILL.md"
 
 
@@ -344,7 +384,7 @@ def ingest_claude_code_sessions(
     target_traj_dir = Path(target_traj_dir)
     target_traj_dir.mkdir(parents=True, exist_ok=True)
     root = Path(home_root) if home_root else Path.home()
-    proj_root = root / ".claude" / "projects"
+    proj_root = _cc_projects_path(root)
     if not proj_root.is_dir():
         return []
 
@@ -477,7 +517,7 @@ class CCSessionIngester:
         logger.info(
             "CCSessionIngester started "
             "(source=%s, target=%s, skill_dir=%s, interval=%.1fs, %d sessions pre-seen)",
-            self.home_root / ".claude" / "projects",
+            _cc_projects_path(self.home_root),
             self.target_traj_dir,
             self.skill_dir,
             self.poll_interval,

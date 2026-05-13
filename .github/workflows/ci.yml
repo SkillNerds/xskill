@@ -1,5 +1,17 @@
-# CI: pull requests and main pushes.
-# To enable Win/Mac on every PR, remove the `if:` on the test-cross-platform job.
+# CI workflow — see docs/dev-plan/ci-workflow-draft.yml and docs/dev-plan/testing-strategy.md
+#
+# Phase status:
+#   P1 (this PR) — ut-it (3 OS × 2 py) + verify-build are live.
+#                  smoke-e2e / real-llm-e2e / live-agent-e2e are placeholders that
+#                  pass without running anything (jobs land here so later PRs can
+#                  fill the body without re-touching the workflow scaffold).
+#   P2/P3        — Codex / OpenCode adapters add tests but don't change this file.
+#   P4           — smoke-e2e gets the real `pytest tests/e2e/test_smoke.py` body.
+#
+# Trigger matrix:
+#   pull_request   → ut-it + verify-build (live), smoke-e2e (placeholder)
+#   push to main   → same + real-llm-e2e (placeholder until P4)
+#   workflow_dispatch / schedule → also live-agent-e2e (placeholder until P4)
 
 name: CI
 
@@ -9,19 +21,21 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: '0 16 * * *'  # nightly UTC 16:00
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+  ut-it:
+    name: ut+it (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
@@ -29,30 +43,47 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+      - name: Normalize line endings on Windows
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf input
       - name: Install package with dev extras
         run: pip install -e .[dev]
-      - name: Run pytest
-        run: pytest tests/ -q
+      - name: Run UT + IT
+        # Excludes tests under tests/e2e/ (covered by smoke-e2e job in P4).
+        run: pytest tests/ --ignore=tests/e2e -q
 
-  test-cross-platform:
-    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
-    if: github.event_name == 'workflow_dispatch'
+  smoke-e2e:
+    name: smoke-e2e (${{ matrix.os }}, ${{ matrix.agent }})
+    needs: ut-it
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
-        python-version: ["3.11"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        agent: [claude_code, codex, opencode]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-      - name: Install package with dev extras
-        run: pip install -e .[dev]
-      - name: Run pytest
-        run: pytest tests/ -q
+      - name: Placeholder (phase >= P4)
+        run: echo "phase >= P4 — smoke-e2e body will be filled by feat/p4-smoke-e2e"
+
+  real-llm-e2e:
+    name: real-llm-e2e (linux)
+    if: github.event_name != 'pull_request'
+    needs: smoke-e2e
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Placeholder (phase >= P4)
+        run: echo "phase >= P4 — real-llm-e2e body will be filled by feat/p4-smoke-e2e"
+
+  live-agent-e2e:
+    name: live-agent-e2e
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    needs: real-llm-e2e
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Placeholder (phase >= P4)
+        run: echo "phase >= P4 — live-agent-e2e body will be filled by feat/p4-smoke-e2e"
 
   verify-build:
     name: verify-build

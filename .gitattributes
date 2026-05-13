@@ -1,0 +1,10 @@
+# Pin text files to LF on checkout so Windows runners don't see CRLF noise.
+# Without this `git config core.autocrlf` on a Windows clone will rewrite *.py
+# to CRLF, breaking frontmatter parsers (`\r\n---\r\n` vs `\n---\n`) and adding
+# diff noise on every PR from a Windows contributor.
+*.md   text eol=lf
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.sh   text eol=lf
