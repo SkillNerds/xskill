@@ -20,10 +20,12 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import sqlite3
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Literal, Optional
 
 from xskill.adapters import submit_trajectory
 from xskill.install_fallback import InstallMode, install_dir
@@ -694,3 +696,382 @@ def install_all_to_claude_code(
             continue
         installed.append(install_to_claude_code(entry, target_root=target_root))
     return installed
+
+
+# ═════════════════════════════════════════════════════════════════
+# OpenCode adapter (P3)
+# ═════════════════════════════════════════════════════════════════
+#
+# OpenCode 与 CC / Codex 形态最大的区别：**它不是 JSONL append-only，而是
+# SQLite + WAL**。详见 docs/dev-plan/adapter-research.md §OpenCode。
+#
+# 设计要点（来自 design doc §2.2 / R2）：
+#
+# 1. **只读连接**：`sqlite3.connect("file:...?mode=ro&immutable=1", uri=True)`
+#    避免 OpenCode 跑时 ingester 触发 WAL 写锁 (`database is locked`)。
+# 2. **cursor 策略**：按 `session.time_updated` 增量取——OpenCode 写新 message
+#    会同时 bump 该 session 的 `time_updated`，比逐 message 扫便宜。
+# 3. **`message.data` 是 JSON-in-text**（drizzle `text({ mode: "json" })`）：
+#    `json.loads` 后从 `data["role"]` / `data["path"]["cwd"]` 抽字段。
+#    message 表本身**没有** role 列。
+# 4. **Skill 安装目录**：`<home>/.agents/skills/<name>/`——与 Codex 共享，
+#    OpenCode discoverSkills 扫此路径，详见 packages/opencode/src/skill/index.ts。
+#    **不是** `<repo>/.opencode/skills/`（那是项目级备选，xskill 默认走全局）。
+#
+# TODO(P2 对齐): EcosystemSpec dataclass 形状在 design doc §2.2.1 草拟，但
+# P2 抽 JsonlIngester 时可能微调。这里先按 design doc 形状自加，注明 TODO；
+# P2 merge 后 rebase 时与 P2 的 spec 形状对齐（届时 dataclass + Callable +
+# Literal 的 import 也可能由 P2 已添到顶部——本 PR 直接在顶部 import）。
+
+
+# ─────────────────────────────────────────────────────────────────
+# Path helpers (OpenCode + shared ~/.agents/skills/)
+# ─────────────────────────────────────────────────────────────────
+
+
+def _opencode_db_path(home: Path) -> Path:
+    """OpenCode 主 DB 路径：``<home>/.local/share/opencode/opencode.db``。
+
+    走 XDG_DATA_HOME 默认值（``$HOME/.local/share``）。OpenCode 自己用
+    npm `xdg-basedir` 包解析；本 helper 不读 env，只做 XDG 默认值路径运算
+    （让单测可纯函数断言）。如果用户显式设了 `XDG_DATA_HOME` / `OPENCODE_DB`，
+    daemon 层需要在调用前自己覆盖 home_root——这里不做 env 解析以保持
+    跨平台一致性（Windows 上 xdg-basedir 行为非标，见 R1）。
+    """
+    return home / ".local" / "share" / "opencode" / "opencode.db"
+
+
+def _agents_skills_path(home: Path) -> Path:
+    """跨 agent 共享的 skill 安装根目录：``<home>/.agents/skills``。
+
+    Codex / OpenCode / openclaw 三家源码都扫这个路径作为 user-scope skill
+    discovery 根（详见 adapter-research.md）。xskill 对 OpenCode（以及未来
+    Codex）**统一只写这一处**，避免重复落盘。
+
+    TODO(P2 对齐): P2 Codex adapter 也会用同一 helper；如果 P2 先 merge 已经
+    定义了 `_agents_skills_path`，rebase 时去重。
+    """
+    return home / ".agents" / "skills"
+
+
+# ─────────────────────────────────────────────────────────────────
+# Ecosystem spec (P3, OpenCode)
+# ─────────────────────────────────────────────────────────────────
+#
+# TODO(P2 对齐): design doc §2.2.1 草拟的 EcosystemSpec dataclass 真正引入要
+# 等 P2 抽 JsonlIngester 时定型。本 PR 只为 OpenCode 自加一个轻量 spec，让
+# SqliteIngester 拿到稳定的 (path_resolver, label) 输入；rebase 时与 P2 对齐。
+
+@dataclass(frozen=True)
+class EcosystemSpec:
+    """生态系统适配规格（P3 临时形态）。
+
+    TODO(P2 对齐): P2 抽完 JsonlIngester 后，本 dataclass 应与 P2 版本合并。
+    目前字段对 SqliteIngester 够用即可——不预测 P2 形状，避免反复 churn。
+    """
+
+    name: str                                       # "opencode" | "codex" | "claude_code"
+    source_kind: Literal["jsonl", "sqlite"]
+    path_resolver: Callable[[Path], Path]           # (home) -> db file / dir
+    cursor_strategy: Literal["mtime_offset", "sqlite_time_updated"]
+    label: str                                      # adapter / metadata 标签
+
+
+OPENCODE_SPEC = EcosystemSpec(
+    name="opencode",
+    source_kind="sqlite",
+    path_resolver=_opencode_db_path,
+    cursor_strategy="sqlite_time_updated",
+    label="opencode",
+)
+
+
+# ─────────────────────────────────────────────────────────────────
+# SqliteIngester (P3, 独立新类——不复用 / 不耦合 JsonlIngester)
+# ─────────────────────────────────────────────────────────────────
+
+
+class SqliteIngester:
+    """把 SQLite-back 的 agent session（当前仅 OpenCode）桥到 xskill watch dir。
+
+    与 ``CCSessionIngester`` (JSONL append-only) **设计上独立**——不共享基类、
+    不共享 cursor 文件格式、不共享 ingest 函数。原因：
+
+    * **读端模型不同**：JSONL 用"mtime + byte offset"作 cursor；SQLite 用
+      "上次见过的 session.time_updated 最大值"作 cursor。
+    * **连接生命期不同**：JSONL 是 per-file open/read/close；SQLite 是
+      per-poll open URI / cursor / close（用 `immutable=1` 避免 WAL 锁）。
+    * **schema 演化不同**：JSONL 由 RolloutLine 自描述；SQLite 由 drizzle
+      migrations 控制，xskill 端只读 (id, directory, time_updated) +
+      (session_id, data)，对 schema 演化最不敏感的两层。
+
+    强行抽公共基类会引入 stub 字段 / dead method，得不偿失。P2 抽
+    JsonlIngester 时如发现真有"扫描周期 / seen 集合管理"等公共点，**再** 抽
+    `IngesterBase`，把本类当 mixin 接进去。
+
+    用法（daemon 起 thread 用，但这里只暴露同步 ``run_once``——线程封装由
+    caller 提供，与 CCSessionIngester 的线程逻辑解耦）：
+
+        ing = SqliteIngester(
+            target_traj_dir="/path/to/traj",
+            home_root=Path.home(),
+            spec=OPENCODE_SPEC,
+        )
+        results = ing.run_once()   # 返回这一轮新桥的 record list
+    """
+
+    def __init__(
+        self,
+        target_traj_dir: Path | str,
+        *,
+        home_root: Path | str | None = None,
+        spec: EcosystemSpec = OPENCODE_SPEC,
+    ):
+        if spec.source_kind != "sqlite":
+            raise ValueError(
+                f"SqliteIngester only accepts source_kind='sqlite', "
+                f"got {spec.source_kind!r} for spec {spec.name!r}"
+            )
+        self.target_traj_dir = Path(target_traj_dir)
+        self.home_root = Path(home_root) if home_root else Path.home()
+        self.spec = spec
+        # cursor: 上次见过的 session.time_updated 最大值（毫秒，OpenCode 用 epoch ms）
+        self._cursor_ms: int = 0
+        # 已桥接过的 session id（重启后由 _scan_seen_sessions 重建——同 CC 思路）
+        self._seen: set[str] = _scan_seen_sessions(self.target_traj_dir)
+
+    # ── public API ────────────────────────────────────────────────
+
+    @property
+    def db_path(self) -> Path:
+        """spec 解析后的 DB 绝对路径。"""
+        return self.spec.path_resolver(self.home_root)
+
+    @property
+    def cursor_ms(self) -> int:
+        """当前 cursor（最近一次看到的 session.time_updated 最大值，单位 ms）。"""
+        return self._cursor_ms
+
+    def run_once(self) -> list[dict]:
+        """单次扫描：用 cursor 取 `time_updated > cursor` 的所有 session，
+        每个 session 把 message 拼成 markdown 提交一条 trajectory。
+
+        返回这一轮新桥的 record list（与 ``ingest_claude_code_sessions`` 同型）。
+        DB 不存在（用户机器上压根没装 opencode）是正常情况，返回空。
+        """
+        db_path = self.db_path
+        if not db_path.is_file():
+            return []
+
+        submitted: list[dict] = []
+        # 只读 URI 连接：immutable=1 让 SQLite 完全跳过 WAL 协议（不读 -wal /
+        # -shm），与 OpenCode 写端并发时**绝不会**触发 `database is locked`。
+        # 代价：cursor 增量需要每次 reopen——但 OpenCode session 数量 <1k 量级，
+        # poll 周期 >5s，可忽略。
+        conn = self._open_ro(db_path)
+        try:
+            cur = conn.cursor()
+            # 抓增量 session
+            cur.execute(
+                "SELECT id, directory, time_updated FROM session "
+                "WHERE time_updated > ? ORDER BY time_updated",
+                (self._cursor_ms,),
+            )
+            sessions = cur.fetchall()
+
+            for sid, directory, time_updated in sessions:
+                if sid in self._seen:
+                    # cursor 落后于 seen 集合时（重启场景），跳过已桥的
+                    if time_updated > self._cursor_ms:
+                        self._cursor_ms = time_updated
+                    continue
+
+                # 抽这条 session 的所有 message
+                cur.execute(
+                    "SELECT data FROM message WHERE session_id = ? ORDER BY time_created",
+                    (sid,),
+                )
+                messages = [self._parse_message_data(row[0]) for row in cur.fetchall()]
+
+                # 生成 traj_id：含 project basename + sid8（同 CC 命名风格）
+                traj_id = self._opencode_traj_id(sid, directory)
+                # 拼 markdown 内容
+                md_content = self._render_session_md(
+                    sid=sid, directory=directory, messages=messages,
+                )
+                result = submit_trajectory(
+                    content=md_content,
+                    format="raw",
+                    traj_id=traj_id,
+                    traj_dir=self.target_traj_dir,
+                    metadata={
+                        "ecosystem": self.spec.label,
+                        "session_id": sid,
+                        "cwd": directory,
+                    },
+                )
+                result["session_id"] = sid
+                result["session_directory"] = directory
+                result["session_time_updated"] = time_updated
+                result["messages"] = messages  # 让单测能直接断言抽取正确性
+                submitted.append(result)
+                self._seen.add(sid)
+                if time_updated > self._cursor_ms:
+                    self._cursor_ms = time_updated
+        finally:
+            conn.close()
+        return submitted
+
+    # ── internals ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _open_ro(db_path: Path) -> "sqlite3.Connection":
+        """打开只读 + immutable 连接。
+
+        ``mode=ro`` 单纯关写权；``immutable=1`` 额外让 SQLite 假设文件"不会
+        被任何其他进程改"——它会**完全跳过 WAL 协议**（不读 -wal / -shm 文件，
+        不抢任何锁）。代价：拿不到 OpenCode 写端尚未 checkpoint 进主 db 的
+        最新数据。但 OpenCode 用默认 PRAGMA `journal_mode=WAL` +
+        `wal_autocheckpoint=1000`，几秒内就 checkpoint 一次，xskill ingester
+        poll 周期 ≥5s 完全够用。
+
+        最重要的：**永远不会触发 `database is locked`**（设计 doc R2）。
+        """
+        # uri=True 必须；URI 中 mode=ro 等价于 SQLITE_OPEN_READONLY，
+        # immutable=1 是 SQLite >= 3.8 的扩展（Python 3.7+ stdlib 都带）。
+        uri = f"file:{db_path}?mode=ro&immutable=1"
+        return sqlite3.connect(uri, uri=True)
+
+    @staticmethod
+    def _parse_message_data(data_text: str) -> dict:
+        """把 `message.data` (JSON-in-text) 解出来抽 role / content / cwd 等。
+
+        OpenCode `message.data` 没有固定 schema——drizzle 端是 `text({ mode: "json" })`
+        裸 JSON。我们关心的字段：
+
+        * `role`: "user" | "assistant" | ...
+        * `path.cwd`: assistant message 上才有，是实际 cwd（与 session.directory
+          冗余但有时不同）
+        * `agent`: "build" | "plan" | ...
+        * `model`: {providerID, modelID}
+
+        其余字段透传到 metadata，给下游 task agent 看。
+        """
+        try:
+            obj = json.loads(data_text)
+        except json.JSONDecodeError:
+            # 不做容错的容错——data 列 NOT NULL 且 OpenCode 自己反序列化也会炸；
+            # 抛上去，daemon 层 logger.exception 记下来。
+            raise
+        return obj
+
+    @staticmethod
+    def _render_session_md(
+        *, sid: str, directory: str, messages: list[dict],
+    ) -> str:
+        """把一条 OpenCode session 拼成 xskill watcher 能消费的 trajectory markdown。
+
+        不走 `_adapt_opencode_*` adapter 是故意的——P3 scope 只做 ingester，
+        不动 adapters。用 ``format="raw"`` 让 submit_trajectory 直接落盘，
+        待 P4 / 未来再加专用 adapter（如果发现 raw 的语义损失太大）。
+        """
+        lines = [
+            f"# OpenCode session {sid}",
+            "",
+            f"- cwd: `{directory}`",
+            f"- messages: {len(messages)}",
+            "",
+        ]
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "?")
+            lines.append(f"## msg {i} (role={role})")
+            lines.append("")
+            lines.append("```json")
+            lines.append(json.dumps(msg, ensure_ascii=False, indent=2))
+            lines.append("```")
+            lines.append("")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _opencode_traj_id(sid: str, directory: str) -> str:
+        """traj_oc_<projectname>_<sid8> 命名，与 CC bridged 同风格。
+
+        OpenCode session id 是 `ses_xxxx` 形式（带前缀），sid8 取前 8 字符
+        即可，碰撞概率忽略。
+        """
+        project = _sanitize_for_filename(
+            Path(directory).name if directory else "", maxlen=32,
+        ) or "unknown"
+        sid_short = _sanitize_for_filename(sid, maxlen=8) or "nosid"
+        return f"traj_oc_{project}_{sid_short}"
+
+
+# ─────────────────────────────────────────────────────────────────
+# Installer: install_to_opencode (writes to ~/.agents/skills/ — shared)
+# ─────────────────────────────────────────────────────────────────
+
+
+def install_to_opencode(
+    skill_path: Path | str,
+    target_root: Path | str | None = None,
+    side: str = "main",
+) -> Path:
+    """把一个 skill 装到 ``<target_root>/.agents/skills/<name>``。
+
+    与 ``install_to_claude_code`` 的区别：
+
+    * **写到共享目录**：``~/.agents/skills/<name>/``——OpenCode（以及 Codex）
+      官方 discover 路径，不是 ``<repo>/.opencode/skills/``。
+    * **同 fallback 链**：symlink → directory junction (Win) → copy + warning
+      （复用 P1 ``install_fallback.install_dir``）。
+    * **same source switch (main / staging)**：同样支持 ``side`` 参数，
+      ``staging`` 链到 ``<skill_path>/../.canary/<name>/``。
+
+    返回 dest 下的 SKILL.md 路径（约定，与 CC 版一致）。
+    """
+    skill_path = Path(skill_path).resolve()
+    if not skill_path.is_dir():
+        raise NotADirectoryError(f"skill_path is not a directory: {skill_path}")
+
+    # 校验 source 齐备（main: SKILL.md 必须有；staging: .canary/<name>/SKILL.md 必须有）
+    _source_md_for_side(skill_path, side)
+
+    if side == "main":
+        src_dir = skill_path
+    elif side == "staging":
+        src_dir = (skill_path.parent / ".canary" / skill_path.name).resolve()
+    else:
+        raise ValueError(f"side must be 'main' or 'staging', got {side!r}")
+
+    name = skill_path.name
+    root = Path(target_root) if target_root else Path.home()
+    skills_root = _agents_skills_path(root)
+    skills_root.mkdir(parents=True, exist_ok=True)
+    dest = skills_root / name
+
+    # 已有 symlink 且指向正确：no-op（同 install_to_claude_code 的 idempotent 逻辑）
+    if dest.is_symlink():
+        try:
+            cur = dest.resolve(strict=False)
+        except OSError:
+            cur = None
+        if cur == src_dir:
+            return dest / "SKILL.md"
+        dest.unlink()
+    elif dest.exists():
+        if dest.is_dir():
+            backup = skills_root / f".{name}.replaced-by-symlink"
+            if backup.exists():
+                shutil.rmtree(backup)
+            dest.rename(backup)
+        else:
+            dest.unlink()
+
+    mode: InstallMode = install_dir(src_dir, dest)
+    if mode == "copy":
+        logger.warning(
+            "install_to_opencode(%s): copy-mode install at %s — "
+            "live-update / user-edit-absorb are disabled on this destination",
+            name, dest,
+        )
+    return dest / "SKILL.md"
