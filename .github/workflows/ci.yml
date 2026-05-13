@@ -1,17 +1,19 @@
 # CI workflow — see docs/dev-plan/ci-workflow-draft.yml and docs/dev-plan/testing-strategy.md
 #
 # Phase status:
-#   P1 (this PR) — ut-it (3 OS × 2 py) + verify-build are live.
-#                  smoke-e2e / real-llm-e2e / live-agent-e2e are placeholders that
-#                  pass without running anything (jobs land here so later PRs can
-#                  fill the body without re-touching the workflow scaffold).
-#   P2/P3        — Codex / OpenCode adapters add tests but don't change this file.
-#   P4           — smoke-e2e gets the real `pytest tests/e2e/test_smoke.py` body.
+#   P1            — ut-it (3 OS × 2 py) + verify-build live.
+#   P2/P3         — Codex / OpenCode adapters add tests but don't change this file.
+#   P4 (this PR)  — smoke-e2e body filled: install codex/opencode CLI (real npm)
+#                   + run `pytest tests/e2e/test_smoke.py -k <agent>`.
+#                   real-llm-e2e / live-agent-e2e jobs gated on
+#                   ``secrets.DEEPSEEK_API_KEY`` presence; if secret missing
+#                   they emit a warning and skip gracefully (so forks without
+#                   secrets don't break the run).
 #
 # Trigger matrix:
-#   pull_request   → ut-it + verify-build (live), smoke-e2e (placeholder)
-#   push to main   → same + real-llm-e2e (placeholder until P4)
-#   workflow_dispatch / schedule → also live-agent-e2e (placeholder until P4)
+#   pull_request                  → ut-it + verify-build + smoke-e2e
+#   push to main                  → same + real-llm-e2e (graceful skip without secret)
+#   workflow_dispatch / schedule  → also live-agent-e2e (graceful skip without secret)
 
 name: CI
 
@@ -62,8 +64,29 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         agent: [claude_code, codex, opencode]
     steps:
-      - name: Placeholder (phase >= P4)
-        run: echo "phase >= P4 — smoke-e2e body will be filled by feat/p4-smoke-e2e"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Normalize line endings on Windows
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf input
+      - name: Install xskill (with dev extras)
+        run: pip install -e .[dev]
+      - name: Install agent CLI (codex / opencode)
+        if: matrix.agent != 'claude_code'
+        shell: bash
+        run: |
+          if [ "${{ matrix.agent }}" = "codex" ]; then
+            npm i -g @openai/codex
+            codex --version
+          elif [ "${{ matrix.agent }}" = "opencode" ]; then
+            npm i -g opencode-ai@latest
+            opencode --version
+          fi
+      - name: Smoke E2E (stub LLM + fixture, no network)
+        run: pytest tests/e2e/test_smoke.py -v -k "${{ matrix.agent }}"
 
   real-llm-e2e:
     name: real-llm-e2e (linux)
@@ -72,8 +95,47 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - name: Placeholder (phase >= P4)
-        run: echo "phase >= P4 — real-llm-e2e body will be filled by feat/p4-smoke-e2e"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Check DeepSeek secret presence
+        id: secret_check
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+            echo "have_secret=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_secret=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::DEEPSEEK_API_KEY secret missing — real-llm-e2e will be skipped"
+          fi
+      - name: Install xskill (with dev extras)
+        if: steps.secret_check.outputs.have_secret == '1'
+        run: pip install -e .[dev]
+      - name: Real-LLM E2E (DeepSeek)
+        if: steps.secret_check.outputs.have_secret == '1'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_BASE_URL: https://api.deepseek.com
+          OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          XSKILL_REAL_LLM_E2E: "1"
+        run: |
+          # The real-llm-e2e suite drives task / cluster / edit agents against a
+          # real DeepSeek endpoint via OpenAI-compat base_url. Tests live under
+          # ``tests/live/`` and self-gate on ``XSKILL_REAL_LLM_E2E`` env.
+          if [ -d tests/live ]; then
+            pytest tests/live -v -m "real_llm" --timeout=300 || exit_code=$?
+            # continue-on-error at job level lets PRs surface failures without
+            # blocking merge to main on transient API errors.
+            exit ${exit_code:-0}
+          else
+            echo "::notice::tests/live/ not present yet — real-llm-e2e is a no-op stub"
+          fi
+      - name: Graceful skip notice
+        if: steps.secret_check.outputs.have_secret != '1'
+        run: echo "DEEPSEEK_API_KEY secret missing — real-llm-e2e skipped (no failure)"
 
   live-agent-e2e:
     name: live-agent-e2e
@@ -82,8 +144,53 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - name: Placeholder (phase >= P4)
-        run: echo "phase >= P4 — live-agent-e2e body will be filled by feat/p4-smoke-e2e"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Check DeepSeek secret presence
+        id: secret_check
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+            echo "have_secret=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_secret=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::DEEPSEEK_API_KEY secret missing — live-agent-e2e will be skipped"
+          fi
+      - name: Install xskill (with dev extras)
+        if: steps.secret_check.outputs.have_secret == '1'
+        run: pip install -e .[dev]
+      - name: Install codex + opencode CLIs
+        if: steps.secret_check.outputs.have_secret == '1'
+        run: |
+          npm i -g @openai/codex
+          codex --version
+          npm i -g opencode-ai@latest
+          opencode --version
+      - name: Live-agent E2E (real codex / opencode + real LLM)
+        if: steps.secret_check.outputs.have_secret == '1'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_BASE_URL: https://api.deepseek.com
+          OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          XSKILL_LIVE_CODEX: "1"
+          XSKILL_LIVE_OPENCODE: "1"
+        run: |
+          # Live-agent suite spawns real codex/opencode processes, writes a short
+          # session, and runs xskill ingester against the resulting JSONL/SQLite.
+          # Tests self-gate on XSKILL_LIVE_* envs and are skipped if absent.
+          if [ -d tests/live ]; then
+            pytest tests/live -v -m "live_agent" --timeout=600 || exit_code=$?
+            exit ${exit_code:-0}
+          else
+            echo "::notice::tests/live/ not present yet — live-agent-e2e is a no-op stub"
+          fi
+      - name: Graceful skip notice
+        if: steps.secret_check.outputs.have_secret != '1'
+        run: echo "DEEPSEEK_API_KEY secret missing — live-agent-e2e skipped (no failure)"
 
   verify-build:
     name: verify-build
