@@ -23,7 +23,7 @@ import shutil
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Literal, Optional
 
@@ -60,6 +60,78 @@ def _cc_skills_path(home: Path) -> Path:
     每个 skill 落到 ``<this>/<name>/SKILL.md``，CC 启动时扫这里。
     """
     return home / ".claude" / "skills"
+
+
+def _codex_sessions_path(home: Path) -> Path:
+    """Codex CLI rollout JSONL 根目录：``<home>/.codex/sessions``。
+
+    实际文件落在 ``<this>/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl``——codex-rs
+    `recorder.rs::precompute_log_file_info()` 按日期分桶，文件名时间戳的 `:`
+    已替换为 `-` 兼容 NTFS（Windows）。
+
+    跨平台一致：macOS / Linux / Windows 都走 ``<HOME>/.codex/...``，不走 XDG
+    （codex 是"传统 ~/.<app>/" 风格，参 docs/dev-plan/adapter-research.md
+    "Codex CLI > 轨迹采集"段）。
+    """
+    return home / ".codex" / "sessions"
+
+
+def _agents_skills_path(home: Path) -> Path:
+    """跨生态共享的 user-scope skill 安装目录：``<home>/.agents/skills``。
+
+    Codex 0.130 的 ``core-skills/src/loader.rs`` 把这条路径列为 user scope 的
+    **首选**（``$CODEX_HOME/skills/`` 已被标 deprecated）；OpenCode 的
+    ``packages/opencode/src/skill/index.ts::discoverSkills`` 同样扫这里。
+    xskill 装 Codex / OpenCode 都写这一处，不再 per-agent 各写一份。
+    """
+    return home / ".agents" / "skills"
+
+
+# ─────────────────────────────────────────────────────────────────
+# Ecosystem spec — JsonlIngester 的参数化形态
+# ─────────────────────────────────────────────────────────────────
+#
+# CC / Codex 都是 JSONL append-only 形态，差异集中在：
+#   1. 文件位置（`<home>/.claude/projects/*/*.jsonl` vs
+#      `<home>/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`）
+#   2. cwd 抽取方式（CC 在每事件上带 `cwd`；codex 只在首行 `session_meta.payload.cwd`）
+#   3. adapter format name（喂给 `adapt_trajectory` 的字符串）
+#
+# 用一个 `EcosystemSpec` dataclass 把这些差异参数化，让 ingester 主体逻辑
+# （扫盘 / 去重 / submit_trajectory / 记 metadata）跨生态共享。
+
+
+@dataclass(frozen=True)
+class EcosystemSpec:
+    """描述一个 agent 生态的轨迹来源 + 安装目标。
+
+    Attributes:
+        name: 生态标识（``claude_code`` / ``codex`` / ``opencode``）；用于 logging
+            和 `detect_known_ecosystems` 上报
+        source_kind: 轨迹存储形态。P2 只支持 ``jsonl``；P3 加 ``sqlite``
+        sessions_path: ``(home_root) -> Path``，返回该生态的 sessions/projects 根目录
+        sessions_glob: 相对 ``sessions_path`` 的 glob，用于扫所有 session 文件
+        session_id_from_path: ``(jsonl_path) -> session_id``。CC 用文件名（``stem``），
+            codex 用文件名里的 uuid 段
+        cwd_from_content: ``(jsonl_content) -> cwd``。CC 扫每条事件找首个 ``cwd``
+            字段；codex 只读首行 ``session_meta.payload.cwd``
+        adapter_format: 喂给 ``adapt_trajectory`` 的 format 字符串
+        traj_id_prefix: 桥过来的 ``traj_*.md`` 文件名 ID 前缀（``traj_cc_`` /
+            ``traj_codex_``）
+        skills_install_path: ``(home_root) -> Path``，skill 安装目标根目录
+        label: 短标签，给 logger 用
+    """
+
+    name: str
+    source_kind: Literal["jsonl"]
+    sessions_path: Callable[[Path], Path]
+    sessions_glob: str
+    session_id_from_path: Callable[[Path], str]
+    cwd_from_content: Callable[[str], str]
+    adapter_format: str
+    traj_id_prefix: str
+    skills_install_path: Callable[[Path], Path]
+    label: str
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -131,29 +203,31 @@ def _source_md_for_side(skill_path: Path, side: str) -> Path:
     raise ValueError(f"side must be 'main' or 'staging', got {side!r}")
 
 
-def install_to_claude_code(
-    skill_path: Path | str,
-    target_root: Path | str | None = None,
-    side: str = "main",
+def _install_skill_into(
+    skill_path: Path,
+    skills_root: Path,
+    side: str,
+    *,
+    ecosystem_label: str,
 ) -> Path:
-    """把一个 skill 装到 ``<target_root>/.claude/skills/<name>``。
+    """共享的 skill 安装实现：把 ``skill_path``（或其 staging 物化版）装到
+    ``skills_root/<name>``，走三阶 fallback。
 
-    ``side='main'``  → 链接到 ``<skill_path>/`` 整目录
-    ``side='staging'`` → 链接到 ``<skill_path>/../.canary/<name>/`` 整目录
+    被 ``install_to_claude_code`` / ``install_to_codex`` / 未来 ``install_to_opencode``
+    共用——三者只在 ``skills_root`` 的解析上不同，安装语义完全一致。
 
-    安装方式按平台能力**三阶 fallback**（详见 ``install_fallback.install_dir``）：
+    ``ecosystem_label`` 仅用于 warning log 时打"是哪个生态遇到 copy fallback"，
+    便于运维定位。
 
-    1. **symlink** — Linux / macOS / Windows Dev Mode 走这条。源仓更新即时
-       可见；用户在 dest 改 SKILL.md 实际改的是源仓，UserEditAbsorbAgent
-       能 round-trip 收编。
-    2. **directory junction** — Windows 非 Dev Mode 走这条。NTFS reparse
-       point，对读端表现等同 symlink，但只能在同卷建。
-    3. **copy** — junction 也建不出来的极端情况（跨盘 / 非 NTFS）。**这一档
-       下 xskill 更新不能 live propagate，用户手改也不会回到源仓**。模块
-       日志会显式 warning。
+    Args:
+        skill_path: ``main`` 时即源 skill 目录；``staging`` 时取 ``..canary/<name>``
+        skills_root: 安装目标根（``<home>/.claude/skills`` 或
+            ``<home>/.agents/skills``）
+        side: ``main`` / ``staging``
+        ecosystem_label: ``claude_code`` / ``codex`` /... 用于日志
 
-    若 dest 已是 symlink 且指向相同 source，直接返回不动；
-    若 dest 是普通文件/目录或指向其他位置的 symlink，先删后重装。
+    Returns:
+        ``<skills_root>/<name>/SKILL.md`` 路径
     """
     skill_path = Path(skill_path).resolve()
     if not skill_path.is_dir():
@@ -170,8 +244,6 @@ def install_to_claude_code(
         raise ValueError(f"side must be 'main' or 'staging', got {side!r}")
 
     name = skill_path.name
-    root = Path(target_root) if target_root else Path.home()
-    skills_root = _cc_skills_path(root)
     skills_root.mkdir(parents=True, exist_ok=True)
     dest = skills_root / name
 
@@ -198,13 +270,71 @@ def install_to_claude_code(
     mode: InstallMode = install_dir(src_dir, dest)
     if mode == "copy":
         # copy 模式下 UserEditAbsorbAgent 失效 —— 用户改副本源仓看不到。
-        # 调用方关心 mode 时可看日志；这里不破坏返回值兼容（保留旧 SDK 签名）。
         logger.warning(
-            "install_to_claude_code(%s): copy-mode install at %s — "
+            "install_to_%s(%s): copy-mode install at %s — "
             "live-update / user-edit-absorb are disabled on this destination",
-            name, dest,
+            ecosystem_label, name, dest,
         )
     return dest / "SKILL.md"
+
+
+def install_to_claude_code(
+    skill_path: Path | str,
+    target_root: Path | str | None = None,
+    side: str = "main",
+) -> Path:
+    """把一个 skill 装到 ``<target_root>/.claude/skills/<name>``。
+
+    ``side='main'``  → 链接到 ``<skill_path>/`` 整目录
+    ``side='staging'`` → 链接到 ``<skill_path>/../.canary/<name>/`` 整目录
+
+    安装方式按平台能力**三阶 fallback**（详见 ``install_fallback.install_dir``）：
+
+    1. **symlink** — Linux / macOS / Windows Dev Mode 走这条。源仓更新即时
+       可见；用户在 dest 改 SKILL.md 实际改的是源仓，UserEditAbsorbAgent
+       能 round-trip 收编。
+    2. **directory junction** — Windows 非 Dev Mode 走这条。NTFS reparse
+       point，对读端表现等同 symlink，但只能在同卷建。
+    3. **copy** — junction 也建不出来的极端情况（跨盘 / 非 NTFS）。**这一档
+       下 xskill 更新不能 live propagate，用户手改也不会回到源仓**。模块
+       日志会显式 warning。
+
+    若 dest 已是 symlink 且指向相同 source，直接返回不动；
+    若 dest 是普通文件/目录或指向其他位置的 symlink，先删后重装。
+    """
+    root = Path(target_root) if target_root else Path.home()
+    return _install_skill_into(
+        Path(skill_path),
+        _cc_skills_path(root),
+        side,
+        ecosystem_label="claude_code",
+    )
+
+
+def install_to_codex(
+    skill_path: Path | str,
+    target_root: Path | str | None = None,
+    side: str = "main",
+) -> Path:
+    """把一个 skill 装到 ``<target_root>/.agents/skills/<name>``——codex 的 user
+    scope skill 目录。
+
+    **重要**：路径是 ``.agents``（跨生态共享）而非 ``.codex``。codex 0.130 的
+    ``core-skills/src/loader.rs:294`` 已把 ``$CODEX_HOME/skills/`` 标 ``/* Deprecated */``
+    ——首选 user-scope 路径是 ``$HOME/.agents/skills/``。OpenCode 也扫这里，
+    所以 codex 与 opencode 装到同一个目录，xskill 不重复写。
+
+    其它语义（main/staging、三阶 fallback、symlink no-op、replaced-by-symlink
+    备份）与 ``install_to_claude_code`` 完全一致——共享底层 ``_install_skill_into``
+    实现。
+    """
+    root = Path(target_root) if target_root else Path.home()
+    return _install_skill_into(
+        Path(skill_path),
+        _agents_skills_path(root),
+        side,
+        ecosystem_label="codex",
+    )
 
 
 def _parse_iso_to_epoch(s: str) -> Optional[float]:
@@ -368,6 +498,200 @@ def _prepend_xskill_header(traj_md_path: Path, *, skill: str, side: str, sha: st
     traj_md_path.write_text(header + text, encoding="utf-8")
 
 
+# ─────────────────────────────────────────────────────────────────
+# Codex-specific helpers
+# ─────────────────────────────────────────────────────────────────
+
+
+def _codex_session_id_from_path(jsonl_path: Path) -> str:
+    """从 codex rollout 文件名抽 session UUID。
+
+    文件名形如 ``rollout-2026-01-15T10-00-00-11111111-2222-3333-4444-555555555555.jsonl``。
+    timestamp 字段（前 19 个字符 = ``YYYY-MM-DDTHH-MM-SS``）后 + ``-`` + UUID。
+
+    我们用从右起的最后 5 个 ``-`` 段拼出 UUID（标准 UUID 含 4 个 ``-``，加上文件名
+    里 UUID 之前的那一个 ``-``，所以从右数倒数 ``[-5:]`` 段就是 UUID 的全部）。
+    """
+    stem = jsonl_path.stem  # 去掉 .jsonl
+    parts = stem.split("-")
+    if len(parts) >= 5:
+        # 标准 UUID 5 段：xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+        return "-".join(parts[-5:])
+    # 文件名不符合预期，退化为整个 stem（避免崩，让上层去重照常）
+    return stem
+
+
+def _read_cwd_from_codex_jsonl(jsonl_content: str) -> str:
+    """从 codex rollout JSONL 字符串抽 cwd。
+
+    codex schema：首行（且仅首行）是 ``type=session_meta`` 行，``payload.cwd``
+    即用户当时的 cwd。与 CC 不同——CC 每条事件都带 ``cwd``。
+    """
+    for line in jsonl_content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("type") == "session_meta":
+            payload = ev.get("payload") or {}
+            cwd = payload.get("cwd")
+            if cwd:
+                return str(cwd)
+        # session_meta 不出现在首条则放弃（codex schema 保证首条就是它）
+        break
+    return ""
+
+
+def _codex_traj_id(jsonl_path: Path, session_id: str) -> str:
+    """codex bridged 轨迹 ID：``traj_codex_<projectname>_<sid8>``。
+
+    与 ``_cc_traj_id`` 同形，前缀换成 ``traj_codex_`` 让 trajectory 元数据能
+    一眼区分来源。cwd 从 codex JSONL 首行抽（不是 CC 的 per-event 字段）。
+    """
+    content = jsonl_path.read_text(encoding="utf-8", errors="ignore") if jsonl_path.is_file() else ""
+    cwd = _read_cwd_from_codex_jsonl(content)
+    project = _sanitize_for_filename(Path(cwd).name if cwd else "", maxlen=32) or "unknown"
+    sid_short = _sanitize_for_filename(session_id, maxlen=8) or "nosid"
+    return f"traj_codex_{project}_{sid_short}"
+
+
+# 内部 wrapper：让 spec 的 cwd_from_content 接 (path) 输入仍能复用 CC 的 per-event 扫描
+def _read_cwd_from_cc_jsonl_content(content: str) -> str:
+    """CC 版 cwd 抽取的 (content) 重载——与 ``_read_cwd_from_jsonl(path)`` 同语义。"""
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        cwd = ev.get("cwd")
+        if cwd:
+            return str(cwd)
+    return ""
+
+
+# ─────────────────────────────────────────────────────────────────
+# Concrete ecosystem specs
+# ─────────────────────────────────────────────────────────────────
+
+CC_SPEC = EcosystemSpec(
+    name="claude_code",
+    source_kind="jsonl",
+    sessions_path=_cc_projects_path,
+    sessions_glob="*/*.jsonl",  # <projects>/<cwd-hash>/<sid>.jsonl
+    session_id_from_path=lambda p: p.stem,
+    cwd_from_content=_read_cwd_from_cc_jsonl_content,
+    adapter_format="claude_code_jsonl",
+    traj_id_prefix="traj_cc_",
+    skills_install_path=_cc_skills_path,
+    label="claude_code",
+)
+
+CODEX_SPEC = EcosystemSpec(
+    name="codex",
+    source_kind="jsonl",
+    sessions_path=_codex_sessions_path,
+    sessions_glob="*/*/*/rollout-*.jsonl",  # YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
+    session_id_from_path=_codex_session_id_from_path,
+    cwd_from_content=_read_cwd_from_codex_jsonl,
+    adapter_format="codex_rollout_jsonl",
+    traj_id_prefix="traj_codex_",
+    skills_install_path=_agents_skills_path,
+    label="codex",
+)
+
+
+# ─────────────────────────────────────────────────────────────────
+# JsonlIngester — spec-driven 扫盘 + 桥接
+# ─────────────────────────────────────────────────────────────────
+
+
+class JsonlIngester:
+    """跨生态 JSONL session ingester——spec 化的扫盘 + bridge 逻辑。
+
+    职责（**只**这些，不含 staging / flip / header 注入——那是 CC 专属的
+    `CCSessionIngester` 在 wrapper 层做的事）：
+
+    1. 扫 ``spec.sessions_path(home_root)`` 下匹配 ``spec.sessions_glob`` 的文件
+    2. 用 ``spec.session_id_from_path`` 抽 session id，跟 ``seen_sessions`` 去重
+    3. 用 ``spec.adapter_format`` 喂 ``submit_trajectory`` 桥成 ``traj_*.md``
+    4. traj_id 取 ``<spec.traj_id_prefix><project>_<sid8>``——保留 ``traj_`` 前缀
+       让 watcher 的 ``traj_*.md`` glob 继续匹配
+
+    无状态——状态由调用方持有（CC 的 ``CCSessionIngester`` 管 seen_sessions
+    + history + assignments）。
+    """
+
+    def __init__(self, spec: EcosystemSpec):
+        if spec.source_kind != "jsonl":
+            # P2 不实现 sqlite ingester（P3 加）；早期 fail 避免静默走错路
+            raise ValueError(
+                f"JsonlIngester only supports source_kind='jsonl', got {spec.source_kind!r}"
+            )
+        self.spec = spec
+
+    def scan_and_bridge(
+        self,
+        target_traj_dir: Path,
+        *,
+        home_root: Path | None = None,
+        seen_sessions: Optional[set[str]] = None,
+    ) -> list[dict]:
+        """单次扫盘 + 桥接。
+
+        Args:
+            target_traj_dir: ``traj_*.md`` / ``.json`` 落盘目录（xskill 的 watch dir）
+            home_root: 用户 HOME；为 ``None`` 时用 ``Path.home()``。测试时用 tmp_path
+                做隔离
+            seen_sessions: 已处理 session id 集合；in-place 更新
+
+        Returns:
+            每条新桥接 session 的 submission 结果（含 ``session_id`` /
+            ``source_jsonl`` / ``session_start_t``）
+        """
+        target_traj_dir.mkdir(parents=True, exist_ok=True)
+        root = Path(home_root) if home_root else Path.home()
+        sessions_root = self.spec.sessions_path(root)
+        if not sessions_root.is_dir():
+            return []
+
+        seen = seen_sessions if seen_sessions is not None else set()
+        submitted: list[dict] = []
+        for jsonl_path in sorted(sessions_root.glob(self.spec.sessions_glob)):
+            sid = self.spec.session_id_from_path(jsonl_path)
+            if sid in seen:
+                continue
+            content = jsonl_path.read_text(encoding="utf-8", errors="ignore")
+            if not content.strip():
+                continue
+            traj_id = self._make_traj_id(content, sid)
+            result = submit_trajectory(
+                content=content,
+                format=self.spec.adapter_format,
+                traj_id=traj_id,
+                traj_dir=target_traj_dir,
+            )
+            result["session_id"] = sid
+            result["source_jsonl"] = str(jsonl_path)
+            result["session_start_t"] = _session_start_t(jsonl_path)
+            result["ecosystem"] = self.spec.name
+            submitted.append(result)
+            seen.add(sid)
+        return submitted
+
+    def _make_traj_id(self, content: str, sid: str) -> str:
+        """``<prefix><project>_<sid8>``——project = cwd basename，sid8 = sid 前 8 字符。"""
+        cwd = self.spec.cwd_from_content(content)
+        project = _sanitize_for_filename(Path(cwd).name if cwd else "", maxlen=32) or "unknown"
+        sid_short = _sanitize_for_filename(sid, maxlen=8) or "nosid"
+        return f"{self.spec.traj_id_prefix}{project}_{sid_short}"
+
+
 def ingest_claude_code_sessions(
     target_traj_dir: Path | str,
     *,
@@ -382,38 +706,40 @@ def ingest_claude_code_sessions(
     ``claude_code_jsonl`` adapter. ``seen_sessions`` is updated in place so
     repeat calls are idempotent. Returns the list of submission results
     (each augmented with ``session_id``, ``source_jsonl``, ``session_start_t``).
-    """
-    target_traj_dir = Path(target_traj_dir)
-    target_traj_dir.mkdir(parents=True, exist_ok=True)
-    root = Path(home_root) if home_root else Path.home()
-    proj_root = _cc_projects_path(root)
-    if not proj_root.is_dir():
-        return []
 
-    seen = seen_sessions if seen_sessions is not None else set()
-    submitted: list[dict] = []
-    for jsonl_path in sorted(proj_root.glob("*/*.jsonl")):
-        sid = jsonl_path.stem
-        if sid in seen:
-            continue
-        content = jsonl_path.read_text(encoding="utf-8")
-        if not content.strip():
-            continue
-        # 给 CC bridged 轨迹起带项目信息的名字，方便事后查阅：
-        # traj_cc_<projectname>_<sid8>.md 比 traj_0001.md 包含的语义多。
-        traj_id = _cc_traj_id(jsonl_path, sid)
-        result = submit_trajectory(
-            content=content,
-            format="claude_code_jsonl",
-            traj_id=traj_id,
-            traj_dir=target_traj_dir,
-        )
-        result["session_id"] = sid
-        result["source_jsonl"] = str(jsonl_path)
-        result["session_start_t"] = _session_start_t(jsonl_path)
-        submitted.append(result)
-        seen.add(sid)
-    return submitted
+    P2 起本函数仅是 ``JsonlIngester(CC_SPEC).scan_and_bridge`` 的 thin wrapper，
+    保留独立签名以兼容老调用方（SDK 用户 / 测试）。
+    """
+    return JsonlIngester(CC_SPEC).scan_and_bridge(
+        target_traj_dir=Path(target_traj_dir),
+        home_root=Path(home_root) if home_root else None,
+        seen_sessions=seen_sessions,
+    )
+
+
+def ingest_codex_sessions(
+    target_traj_dir: Path | str,
+    *,
+    home_root: Path | str | None = None,
+    seen_sessions: Optional[set[str]] = None,
+) -> list[dict]:
+    """Bridge Codex CLI rollout JSONLs into xskill's trajectory directory.
+
+    Scans ``<home_root>/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`` and
+    submits any session whose UUID is not in ``seen_sessions`` as a new
+    trajectory under ``target_traj_dir`` using the ``codex_rollout_jsonl``
+    adapter. ``seen_sessions`` is updated in place so repeat calls are
+    idempotent. Returns the list of submission results (each augmented with
+    ``session_id``, ``source_jsonl``, ``session_start_t``).
+
+    与 ``ingest_claude_code_sessions`` 同形——同一 ``JsonlIngester`` 基类，
+    只是 spec 不同。
+    """
+    return JsonlIngester(CODEX_SPEC).scan_and_bridge(
+        target_traj_dir=Path(target_traj_dir),
+        home_root=Path(home_root) if home_root else None,
+        seen_sessions=seen_sessions,
+    )
 
 
 def _scan_seen_sessions(target_traj_dir: Path) -> set[str]:
@@ -681,6 +1007,28 @@ def install_all_to_claude_code(
     Claude Code's discovery root. If ``names`` is given, restrict to those.
     Returns the list of destination ``SKILL.md`` paths actually written.
     """
+    return _install_all_with(install_to_claude_code, skill_dir, target_root, names)
+
+
+def install_all_to_codex(
+    skill_dir: Path | str,
+    target_root: Path | str | None = None,
+    names: Iterable[str] | None = None,
+) -> list[Path]:
+    """Install every skill under ``skill_dir`` (each subdir = one skill) to
+    Codex's discovery root (``<target_root>/.agents/skills``). If ``names`` is
+    given, restrict to those.
+    """
+    return _install_all_with(install_to_codex, skill_dir, target_root, names)
+
+
+def _install_all_with(
+    installer: Callable[..., Path],
+    skill_dir: Path | str,
+    target_root: Path | str | None,
+    names: Iterable[str] | None,
+) -> list[Path]:
+    """``install_all_to_*`` 的共享实现——只是把 per-skill installer 作为参数注入。"""
     skill_dir = Path(skill_dir)
     if not skill_dir.is_dir():
         raise NotADirectoryError(f"skill_dir is not a directory: {skill_dir}")
@@ -694,7 +1042,7 @@ def install_all_to_claude_code(
             continue
         if not (entry / "SKILL.md").exists():
             continue
-        installed.append(install_to_claude_code(entry, target_root=target_root))
+        installed.append(installer(entry, target_root=target_root))
     return installed
 
 
@@ -741,18 +1089,6 @@ def _opencode_db_path(home: Path) -> Path:
     return home / ".local" / "share" / "opencode" / "opencode.db"
 
 
-def _agents_skills_path(home: Path) -> Path:
-    """跨 agent 共享的 skill 安装根目录：``<home>/.agents/skills``。
-
-    Codex / OpenCode / openclaw 三家源码都扫这个路径作为 user-scope skill
-    discovery 根（详见 adapter-research.md）。xskill 对 OpenCode（以及未来
-    Codex）**统一只写这一处**，避免重复落盘。
-
-    TODO(P2 对齐): P2 Codex adapter 也会用同一 helper；如果 P2 先 merge 已经
-    定义了 `_agents_skills_path`，rebase 时去重。
-    """
-    return home / ".agents" / "skills"
-
 
 # ─────────────────────────────────────────────────────────────────
 # Ecosystem spec (P3, OpenCode)
@@ -763,11 +1099,13 @@ def _agents_skills_path(home: Path) -> Path:
 # SqliteIngester 拿到稳定的 (path_resolver, label) 输入；rebase 时与 P2 对齐。
 
 @dataclass(frozen=True)
-class EcosystemSpec:
-    """生态系统适配规格（P3 临时形态）。
+class SqliteEcosystemSpec:
+    """SQLite-back 生态系统 spec（独立于 JsonlIngester 的 EcosystemSpec）。
 
-    TODO(P2 对齐): P2 抽完 JsonlIngester 后，本 dataclass 应与 P2 版本合并。
-    目前字段对 SqliteIngester 够用即可——不预测 P2 形状，避免反复 churn。
+    P2 的 EcosystemSpec 是 JSONL ingester 专用 spec（含 sessions_glob 等
+    JSONL-only 字段），不适合 SQLite。SqliteIngester 用本类，字段集中在
+    SQLite 视角：path_resolver 解析到 .db 文件、cursor_strategy 用
+    time_updated。
     """
 
     name: str                                       # "opencode" | "codex" | "claude_code"
@@ -777,7 +1115,7 @@ class EcosystemSpec:
     label: str                                      # adapter / metadata 标签
 
 
-OPENCODE_SPEC = EcosystemSpec(
+OPENCODE_SPEC = SqliteEcosystemSpec(
     name="opencode",
     source_kind="sqlite",
     path_resolver=_opencode_db_path,
@@ -825,7 +1163,7 @@ class SqliteIngester:
         target_traj_dir: Path | str,
         *,
         home_root: Path | str | None = None,
-        spec: EcosystemSpec = OPENCODE_SPEC,
+        spec: SqliteEcosystemSpec = OPENCODE_SPEC,
     ):
         if spec.source_kind != "sqlite":
             raise ValueError(

@@ -62,6 +62,9 @@ def adapt_trajectory(
     if format == "claude_code_jsonl":
         return _adapt_claude_code_jsonl(content, metadata)
 
+    if format == "codex_rollout_jsonl":
+        return _adapt_codex_rollout_jsonl(content, metadata)
+
     raise ValueError(f"unsupported trajectory format: {format!r}")
 
 
@@ -313,6 +316,148 @@ def _adapt_claude_code_jsonl(content: str, metadata: dict) -> tuple[str, dict]:
     meta["tool_names"] = tool_names
     meta["total_tool_calls"] = len(tool_calls)
     meta["total_turns"] = len(timeline)
+    if first_user_query:
+        meta.setdefault("query", first_user_query)
+
+    return md, meta
+
+
+def _adapt_codex_rollout_jsonl(content: str, metadata: dict) -> tuple[str, dict]:
+    """Convert a Codex CLI rollout JSONL (``~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl``)
+    to markdown + metadata.
+
+    Codex rollout schema（来自 ``codex-rs/protocol/src/protocol.rs::RolloutItem``）：
+    每行是 ``{"timestamp", "type", "payload"}`` 三件套，``type`` 是 tagged-union 标签：
+
+    - ``session_meta`` —— 首行，``payload`` 含 ``id``/``cwd``/``originator``/
+      ``cli_version``/``model_provider`` 等
+    - ``event_msg`` —— 事件流。``payload.type=user_message`` 携带用户输入
+    - ``response_item`` —— 模型响应（message / tool call / function output）
+    - ``turn_context`` —— 每 turn 的 cwd / approval / sandbox / model
+    - ``compacted`` —— 上下文压缩事件
+
+    P2 阶段我们抽 ``session_meta``（session_id + cwd + originator + cli_version）+
+    ``event_msg::user_message``（user query），其它行**透传到 timeline 但不深度解析**
+    （codex 的 ``response_item`` 内部结构与 CC 不同，等 P4 再深化）。
+    """
+    timeline: list[dict] = []
+    session_id = ""
+    cwd = ""
+    originator = ""
+    cli_version = ""
+    model_provider = ""
+    first_user_query = ""
+    t = 0
+    response_count = 0
+
+    for raw_line in content.splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+
+        ev_type = event.get("type")
+        payload = event.get("payload") or {}
+
+        if ev_type == "session_meta":
+            session_id = session_id or str(payload.get("id") or "")
+            cwd = cwd or str(payload.get("cwd") or "")
+            originator = originator or str(payload.get("originator") or "")
+            cli_version = cli_version or str(payload.get("cli_version") or "")
+            mp = payload.get("model_provider")
+            if mp:
+                model_provider = model_provider or str(mp)
+            continue
+
+        if ev_type == "event_msg":
+            sub_type = payload.get("type")
+            if sub_type == "user_message":
+                msg = str(payload.get("message") or "")
+                if msg:
+                    if not first_user_query:
+                        first_user_query = msg[:500]
+                    timeline.append({
+                        "t": t, "role": "user",
+                        "content": msg[:2000],
+                    })
+                    t += 1
+            continue
+
+        if ev_type == "response_item":
+            # 占位：codex response_item 的内部 schema 复杂（含 message / tool_use /
+            # function_call_output 等），P2 不深化。这里只计数 + 透传一条 timeline
+            # 让下游能看到"这条 session 确实有 N 条响应"。
+            response_count += 1
+            timeline.append({
+                "t": t, "role": "assistant",
+                "content": f"[codex response_item #{payload.get('index', response_count - 1)}]",
+            })
+            t += 1
+            continue
+
+        # turn_context / compacted / 未来变体：透传，不深析
+        timeline.append({
+            "t": t, "role": "event",
+            "kind": ev_type or "unknown",
+        })
+        t += 1
+
+    # Build markdown
+    lines: list[str] = ["# Codex Rollout Trajectory", ""]
+    if session_id:
+        lines.append(f"**session_id**: {session_id}")
+    if cwd:
+        lines.append(f"**cwd**: {cwd}")
+    if originator:
+        lines.append(f"**originator**: {originator}")
+    if cli_version:
+        lines.append(f"**cli_version**: {cli_version}")
+    if model_provider:
+        lines.append(f"**model_provider**: {model_provider}")
+    lines.append("")
+    if first_user_query:
+        lines.append("## Initial Query")
+        lines.append("")
+        lines.append(first_user_query)
+        lines.append("")
+
+    for entry in timeline:
+        role = entry["role"]
+        if role == "user":
+            lines.append("## User")
+            lines.append("")
+            lines.append(entry["content"])
+            lines.append("")
+        elif role == "assistant":
+            lines.append("## Assistant")
+            lines.append("")
+            lines.append(entry["content"])
+            lines.append("")
+        elif role == "event":
+            lines.append(f"## Event: {entry['kind']}")
+            lines.append("")
+
+    md = "\n".join(lines)
+
+    meta = dict(metadata)
+    meta.setdefault("source", "codex_rollout_jsonl")
+    meta.setdefault("category", "codex_session")
+    if session_id:
+        meta.setdefault("session_id", session_id)
+    if cwd:
+        meta.setdefault("cwd", cwd)
+    if originator:
+        meta.setdefault("originator", originator)
+    if cli_version:
+        meta.setdefault("cli_version", cli_version)
+    if model_provider:
+        meta.setdefault("model_provider", model_provider)
+    meta["timeline"] = timeline
+    meta["total_turns"] = len(timeline)
+    meta["response_items"] = response_count
     if first_user_query:
         meta.setdefault("query", first_user_query)
 

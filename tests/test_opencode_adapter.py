@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 
 from xskill.ecosystems import (
-    EcosystemSpec,
+    SqliteEcosystemSpec,
     OPENCODE_SPEC,
     SqliteIngester,
     _agents_skills_path,
@@ -341,7 +341,7 @@ def test_opencode_spec_is_frozen_and_typed():
 
 def test_sqlite_ingester_rejects_non_sqlite_spec():
     """误传 source_kind='jsonl' 的 spec 应 fail-loud（CLAUDE.md throw error）。"""
-    bad_spec = EcosystemSpec(
+    bad_spec = SqliteEcosystemSpec(
         name="fake",
         source_kind="jsonl",
         path_resolver=lambda h: h,

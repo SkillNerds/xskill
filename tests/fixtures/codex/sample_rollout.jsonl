@@ -1,0 +1,5 @@
+{"timestamp": "2026-01-15T10-00-00", "type": "session_meta", "payload": {"id": "11111111-2222-3333-4444-555555555555", "timestamp": "2026-01-15T10-00-00", "cwd": "/tmp/codex-test-workspace", "originator": "codex-cli", "cli_version": "0.130.0", "base_instructions": null, "model_provider": "openai"}}
+{"timestamp": "2026-01-15T10-00-00", "type": "event_msg", "payload": {"type": "user_message", "message": "Hello from user", "kind": "plain"}}
+{"timestamp": "2026-01-15T10-00-00", "type": "response_item", "payload": {"record_type": "response", "index": 0}}
+{"timestamp": "2026-01-15T10-00-00", "type": "response_item", "payload": {"record_type": "response", "index": 1}}
+{"timestamp": "2026-01-15T10-00-00", "type": "response_item", "payload": {"record_type": "response", "index": 2}}
