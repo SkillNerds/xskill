@@ -50,14 +50,51 @@ class InstallHistory:
         sha: str = "",
         t: Optional[float] = None,
     ) -> dict:
-        """写一条 install 记录。返回写入的完整 record（含 t）。"""
+        """写一条 install 成功记录。返回写入的完整 record（含 t）。
+
+        语义：``action`` 字段默认是 ``"install"``——本方法**只**写成功
+        记录。失败请走 ``record_fail()``，那条记录形态不同（无
+        ``side``、含 ``agent`` + ``reason``）。
+        """
         if side not in ("main", "staging"):
             raise ValueError(f"side must be 'main' or 'staging', got {side!r}")
         record = {
             "t": t if t is not None else time.time(),
+            "action": "install",
             "skill": skill,
             "side": side,
             "sha": sha,
+        }
+        with self._lock:
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return record
+
+    def record_fail(
+        self,
+        *,
+        skill: str,
+        agent: str,
+        reason: str,
+        t: Optional[float] = None,
+    ) -> dict:
+        """写一条 install 失败记录。
+
+        与 ``record()`` 的成功记录共享同一份 jsonl 文件；用 ``action`` 字段
+        区分（``"install"`` vs ``"fail"``）。失败记录不带 side / sha——这两
+        个字段只对成功 install 有意义；记 ``agent`` (``claude_code`` /
+        ``codex`` / ``opencode``) + ``reason`` (异常摘要) 方便运维定位。
+
+        ``lookup()`` / ``count_by_side()`` 内部按 ``action=="install"`` 过滤
+        （成功记录默认无 action 字段或 action=="install"），失败记录不影响
+        side 反查链路。
+        """
+        record = {
+            "t": t if t is not None else time.time(),
+            "action": "fail",
+            "skill": skill,
+            "agent": agent,
+            "reason": reason,
         }
         with self._lock:
             with self.path.open("a", encoding="utf-8") as f:
@@ -81,14 +118,19 @@ class InstallHistory:
         return out
 
     def lookup(self, t: float, *, skill: Optional[str] = None) -> Optional[dict]:
-        """返回 ``t`` 时刻盘上装的是哪条记录（即 ``record.t ≤ t`` 中最晚的）。
+        """返回 ``t`` 时刻盘上装的是哪条**成功**记录（即 ``record.t ≤ t`` 中最晚的）。
 
         ``skill`` 指定时仅在该 skill 的记录里查；不指定时返回**全局**最后一
         条 ``record.t ≤ t``。在多 skill 同时灰度的场景应当传 skill。
 
+        失败记录（``action == "fail"``）被过滤掉——本方法用于反查 side，
+        失败记录无 side 字段，对反查无意义。
+
         没有合适记录（t 早于最早一条 install）返回 None。
         """
         recs = self.all_records()
+        # 仅看成功 install 记录（无 action 字段的老记录默认视为 install）。
+        recs = [r for r in recs if r.get("action", "install") == "install"]
         if skill is not None:
             recs = [r for r in recs if r.get("skill") == skill]
         candidate: Optional[dict] = None
@@ -100,12 +142,21 @@ class InstallHistory:
         return candidate
 
     def count_by_side(self, *, skill: Optional[str] = None) -> dict[str, int]:
-        """各 side 装了多少次（调试 / 测试看分布用）。"""
+        """各 side 装了多少次（调试 / 测试看分布用）。
+
+        失败记录不计入。
+        """
         counts: dict[str, int] = {"main": 0, "staging": 0}
         for r in self.all_records():
+            if r.get("action", "install") != "install":
+                continue
             if skill is not None and r.get("skill") != skill:
                 continue
             side = r.get("side")
             if side in counts:
                 counts[side] += 1
         return counts
+
+    def fail_records(self) -> list[dict]:
+        """返回所有失败记录（``action == "fail"``）。运维 / 测试用。"""
+        return [r for r in self.all_records() if r.get("action") == "fail"]

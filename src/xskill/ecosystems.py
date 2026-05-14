@@ -144,10 +144,26 @@ class EcosystemSpec:
 _KNOWN_ECOSYSTEMS: list[dict] = [
     {
         "id": "claude_code",
-        "source_subpath": ".claude/projects",  # CC writes <home>/<this>/<cwd-hash>/*.jsonl
-        "bridge_subpath": ".xskill/cc_sessions",  # we mirror them here as traj_*.md
+        # CC writes <home>/<this>/<cwd-hash>/*.jsonl
+        "source_subpath": ".claude/projects",
+        "bridge_subpath": ".xskill/cc_sessions",
+        "source_kind": "dir",  # 目录存在即视为该生态可用
     },
-    # Future: codex / opencode / etc. follow the same {id, source, bridge} shape.
+    {
+        "id": "codex",
+        # Codex CLI 写 <home>/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+        "source_subpath": ".codex/sessions",
+        "bridge_subpath": ".xskill/codex_sessions",
+        "source_kind": "dir",
+    },
+    {
+        "id": "opencode",
+        # OpenCode 走 XDG (~/.local/share/opencode/opencode.db)——SQLite
+        # 文件，不是目录。detect 用 ``source_kind="file"`` 判存在。
+        "source_subpath": ".local/share/opencode/opencode.db",
+        "bridge_subpath": ".xskill/opencode_sessions",
+        "source_kind": "file",
+    },
 ]
 
 
@@ -155,19 +171,27 @@ def detect_known_ecosystems(home_root: Path | str | None = None) -> list[dict]:
     """Probe the user's HOME for known agent tools and report which ones
     have something on disk. Returns a list of detection records:
 
-        {"ecosystem": "claude_code",
-         "source": <abs path of native session dir>,
+        {"ecosystem": "claude_code" | "codex" | "opencode",
+         "source": <abs path of native session dir or db file>,
          "bridge": <abs path of paired xskill watch dir>}
 
-    A record only appears if the source dir exists. The bridge dir is the
-    path daemon should ``register_dir(..., ecosystem=...)`` to put under
-    Registry control — it may or may not exist yet.
+    A record only appears if the source dir/file exists (按
+    ``source_kind`` 区分用 ``is_dir`` 还是 ``is_file``). The bridge dir is
+    the path daemon should ``register_dir(..., ecosystem=...)`` to put
+    under Registry control — it may or may not exist yet.
+
+    设计：每 install 前 watcher 实时调本函数判 detected list（3 次
+    ``Path.is_dir/is_file`` 开销可忽略）——避免启动时缓存导致用户中途
+    装了 codex 后 daemon 看不到。
     """
     root = Path(home_root) if home_root else Path.home()
     found: list[dict] = []
     for spec in _KNOWN_ECOSYSTEMS:
         source = root / spec["source_subpath"]
-        if not source.is_dir():
+        kind = spec.get("source_kind", "dir")
+        if kind == "dir" and not source.is_dir():
+            continue
+        if kind == "file" and not source.is_file():
             continue
         found.append({
             "ecosystem": spec["id"],
@@ -623,17 +647,113 @@ class JsonlIngester:
     4. traj_id 取 ``<spec.traj_id_prefix><project>_<sid8>``——保留 ``traj_`` 前缀
        让 watcher 的 ``traj_*.md`` glob 继续匹配
 
-    无状态——状态由调用方持有（CC 的 ``CCSessionIngester`` 管 seen_sessions
-    + history + assignments）。
+    用法两种：
+
+    - **One-shot**: ``ingester.scan_and_bridge(target_traj_dir, home_root=)``
+      返回 record list 后由调用方处理（live test / 单测 / CLI 单跑用）
+    - **Daemon thread**: ``ingester.start()`` 起后台 daemon 线程周期性
+      ``_loop`` 调 ``scan_and_bridge``；``ingester.stop()`` 干净退出。
+      用于 server.py startup hook 让生态 ingester 与 CC 一样常青运行。
+      使用 daemon 模式时 ``target_traj_dir`` / ``home_root`` 必须在
+      ``__init__`` 时传入（毕竟 thread 自己跑循环，没有调用方）。
     """
 
-    def __init__(self, spec: EcosystemSpec):
+    def __init__(
+        self,
+        spec: EcosystemSpec,
+        *,
+        target_traj_dir: Path | str | None = None,
+        home_root: Path | str | None = None,
+        poll_interval: float = 10.0,
+    ):
         if spec.source_kind != "jsonl":
-            # P2 不实现 sqlite ingester（P3 加）；早期 fail 避免静默走错路
+            # SQLite ingester 用单独的 SqliteIngester；早 fail 避免走错路。
             raise ValueError(
                 f"JsonlIngester only supports source_kind='jsonl', got {spec.source_kind!r}"
             )
         self.spec = spec
+        # daemon thread 用：one-shot 调用方不传，scan_and_bridge 参数兜底。
+        self.target_traj_dir = Path(target_traj_dir) if target_traj_dir else None
+        self.home_root = Path(home_root) if home_root else None
+        self.poll_interval = poll_interval
+        # daemon thread 内部用：seen_sessions 持久化在 instance 上避免每轮
+        # _scan_seen_sessions 重扫（thread 跑期间 traj_*.json 自己也在生成）。
+        self._seen: set[str] = set()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._stats = {
+            "polls": 0, "ingested": 0, "errors": 0, "last_poll": None,
+        }
+
+    # ── daemon thread lifecycle ──────────────────────────────────
+
+    def start(self) -> None:
+        """起 daemon 线程，周期性调 ``scan_and_bridge``。幂等：已在跑则
+        no-op。
+
+        要求 ``__init__`` 传入了 ``target_traj_dir``——daemon 线程没有调
+        用方传参数。``home_root`` 可空（fallback ``Path.home()``）。
+        """
+        if self._thread and self._thread.is_alive():
+            return
+        if self.target_traj_dir is None:
+            raise RuntimeError(
+                "JsonlIngester.start() requires target_traj_dir in __init__"
+            )
+        # 重启场景：从磁盘上已有 traj_*.json 恢复 seen 集合，避免重复桥接。
+        self._seen = _scan_seen_sessions(self.target_traj_dir)
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True,
+            name=f"xskill-{self.spec.name}-ingester",
+        )
+        self._thread.start()
+        logger.info(
+            "JsonlIngester(%s) started "
+            "(source=%s, target=%s, interval=%.1fs, %d sessions pre-seen)",
+            self.spec.name,
+            self.spec.sessions_path(self.home_root or Path.home()),
+            self.target_traj_dir,
+            self.poll_interval,
+            len(self._seen),
+        )
+
+    def stop(self) -> None:
+        """干净停止 daemon 线程（避免 zombie）。"""
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=self.poll_interval + 5)
+        logger.info("JsonlIngester(%s) stopped", self.spec.name)
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def stats(self) -> dict:
+        return {**self._stats, "seen_sessions": len(self._seen),
+                "running": self.is_running}
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                submitted = self.scan_and_bridge(
+                    target_traj_dir=self.target_traj_dir,
+                    home_root=self.home_root,
+                    seen_sessions=self._seen,
+                )
+                self._stats["polls"] += 1
+                self._stats["last_poll"] = time.time()
+                if submitted:
+                    self._stats["ingested"] += len(submitted)
+                    logger.info(
+                        "JsonlIngester(%s): bridged %d new session(s) → %s",
+                        self.spec.name, len(submitted), self.target_traj_dir,
+                    )
+            except Exception:
+                self._stats["errors"] += 1
+                logger.exception("JsonlIngester(%s) scan error", self.spec.name)
+            self._stop.wait(self.poll_interval)
 
     def scan_and_bridge(
         self,
@@ -1022,6 +1142,21 @@ def install_all_to_codex(
     return _install_all_with(install_to_codex, skill_dir, target_root, names)
 
 
+def install_all_to_opencode(
+    skill_dir: Path | str,
+    target_root: Path | str | None = None,
+    names: Iterable[str] | None = None,
+) -> list[Path]:
+    """Install every skill under ``skill_dir`` (each subdir = one skill) to
+    OpenCode's discovery root (``<target_root>/.agents/skills``——与 Codex 共享
+    user-scope skills 目录). If ``names`` is given, restrict to those.
+
+    注意：Codex 与 OpenCode 的 install 目标是**同一个目录**——重复 install
+    同一 skill 是 idempotent（install_fallback.install_dir 会先 unlink 后重链）。
+    """
+    return _install_all_with(install_to_opencode, skill_dir, target_root, names)
+
+
 def _install_all_with(
     installer: Callable[..., Path],
     skill_dir: Path | str,
@@ -1164,6 +1299,7 @@ class SqliteIngester:
         *,
         home_root: Path | str | None = None,
         spec: SqliteEcosystemSpec = OPENCODE_SPEC,
+        poll_interval: float = 10.0,
     ):
         if spec.source_kind != "sqlite":
             raise ValueError(
@@ -1173,10 +1309,73 @@ class SqliteIngester:
         self.target_traj_dir = Path(target_traj_dir)
         self.home_root = Path(home_root) if home_root else Path.home()
         self.spec = spec
+        self.poll_interval = poll_interval
         # cursor: 上次见过的 session.time_updated 最大值（毫秒，OpenCode 用 epoch ms）
         self._cursor_ms: int = 0
         # 已桥接过的 session id（重启后由 _scan_seen_sessions 重建——同 CC 思路）
         self._seen: set[str] = _scan_seen_sessions(self.target_traj_dir)
+        # daemon thread
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._stats = {
+            "polls": 0, "ingested": 0, "errors": 0, "last_poll": None,
+        }
+
+    # ── daemon thread lifecycle ──────────────────────────────────
+
+    def start(self) -> None:
+        """起 daemon 线程周期性调 ``run_once``。幂等：已在跑则 no-op。
+
+        SqliteIngester 用 ``?mode=ro&immutable=1`` 打开 DB，与 OpenCode
+        写端并发**永远不会**触发 ``database is locked``——daemon 长跑安全。
+        """
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True,
+            name=f"xskill-{self.spec.name}-ingester",
+        )
+        self._thread.start()
+        logger.info(
+            "SqliteIngester(%s) started "
+            "(db=%s, target=%s, interval=%.1fs, %d sessions pre-seen)",
+            self.spec.name, self.db_path, self.target_traj_dir,
+            self.poll_interval, len(self._seen),
+        )
+
+    def stop(self) -> None:
+        """干净停止 daemon 线程（避免 zombie）。"""
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=self.poll_interval + 5)
+        logger.info("SqliteIngester(%s) stopped", self.spec.name)
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def stats(self) -> dict:
+        return {**self._stats, "seen_sessions": len(self._seen),
+                "cursor_ms": self._cursor_ms, "running": self.is_running}
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                submitted = self.run_once()
+                self._stats["polls"] += 1
+                self._stats["last_poll"] = time.time()
+                if submitted:
+                    self._stats["ingested"] += len(submitted)
+                    logger.info(
+                        "SqliteIngester(%s): bridged %d new session(s) → %s",
+                        self.spec.name, len(submitted), self.target_traj_dir,
+                    )
+            except Exception:
+                self._stats["errors"] += 1
+                logger.exception("SqliteIngester(%s) scan error", self.spec.name)
+            self._stop.wait(self.poll_interval)
 
     # ── public API ────────────────────────────────────────────────
 

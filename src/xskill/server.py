@@ -1420,8 +1420,12 @@ def create_app(home_root: Path | str | None = None) -> FastAPI:
         # traj_*.md. After that the regular watcher takes over.
         try:
             from xskill.ecosystems import (
-                detect_known_ecosystems, CCSessionIngester,
+                detect_known_ecosystems,
+                CCSessionIngester, JsonlIngester, SqliteIngester,
+                CODEX_SPEC, OPENCODE_SPEC,
                 install_all_to_claude_code,
+                install_all_to_codex,
+                install_all_to_opencode,
             )
             from xskill.config import XSKILL_HOME
             from xskill.install_history import InstallHistory
@@ -1434,6 +1438,8 @@ def create_app(home_root: Path | str | None = None) -> FastAPI:
             install_history = InstallHistory(install_history_path)
 
             detections = detect_known_ecosystems(home_root=_home_root())
+            poll_interval = float(_config.get("watcher", {}).get("poll_interval", 10))
+
             for det in detections:
                 bridge: Path = det["bridge"]
                 bridge.mkdir(parents=True, exist_ok=True)
@@ -1442,6 +1448,7 @@ def create_app(home_root: Path | str | None = None) -> FastAPI:
                     label=f"{det['ecosystem']} sessions",
                     ecosystem=det["ecosystem"],
                 )
+
                 if det["ecosystem"] == "claude_code":
                     # 启动时先把现有 skill 全部装 main 到 ~/.claude/skills/，
                     # 同时往 install_history append 起始记录。后续 ingester
@@ -1459,13 +1466,21 @@ def create_app(home_root: Path | str | None = None) -> FastAPI:
                             "startup install_all_to_claude_code: %d skills installed (side=main)",
                             len(installed),
                         )
-                    except Exception:
-                        logger.warning("startup install_all_to_claude_code failed", exc_info=True)
+                    except Exception as e:
+                        logger.warning(
+                            "startup install_all_to_claude_code failed", exc_info=True,
+                        )
+                        install_history.record_fail(
+                            skill="<startup_all>", agent="claude_code",
+                            reason=str(e)[:200],
+                        )
 
+                    # CCSessionIngester 是 CC 专属（处理灰度翻牌 + header 注入），
+                    # 不是普通 JsonlIngester——它在 _loop 里干的事更多。
                     ingester = CCSessionIngester(
                         target_traj_dir=bridge,
                         home_root=_home_root(),
-                        poll_interval=float(_config.get("watcher", {}).get("poll_interval", 10)),
+                        poll_interval=poll_interval,
                         skill_dir=_skill_dir,
                         target_root=_home_root(),
                         history_path=install_history_path,
@@ -1473,6 +1488,65 @@ def create_app(home_root: Path | str | None = None) -> FastAPI:
                     )
                     ingester.start()
                     _watcher_ref[f"ingester_{det['ecosystem']}"] = ingester
+
+                elif det["ecosystem"] == "codex":
+                    # Codex 一次性同步 + 起 daemon 线程；后续 codex session 新写入
+                    # 会被 daemon poll 实时桥接，不必重启 daemon。
+                    try:
+                        installed = install_all_to_codex(
+                            _skill_dir, target_root=_home_root(),
+                        )
+                        logger.info(
+                            "startup install_all_to_codex: %d skills installed to ~/.agents/skills/",
+                            len(installed),
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "startup install_all_to_codex failed", exc_info=True,
+                        )
+                        install_history.record_fail(
+                            skill="<startup_all>", agent="codex",
+                            reason=str(e)[:200],
+                        )
+                    ingester = JsonlIngester(
+                        CODEX_SPEC,
+                        target_traj_dir=bridge,
+                        home_root=_home_root(),
+                        poll_interval=poll_interval,
+                    )
+                    ingester.start()
+                    _watcher_ref[f"ingester_{det['ecosystem']}"] = ingester
+
+                elif det["ecosystem"] == "opencode":
+                    # OpenCode SQLite + WAL：SqliteIngester 用 immutable=1 打开
+                    # 避免 daemon poll 撞 OpenCode 写端的 WAL 锁。
+                    # Skill install 走 ~/.agents/skills/ (Codex 共享；重复 install
+                    # 是 idempotent)。
+                    try:
+                        installed = install_all_to_opencode(
+                            _skill_dir, target_root=_home_root(),
+                        )
+                        logger.info(
+                            "startup install_all_to_opencode: %d skills installed to ~/.agents/skills/",
+                            len(installed),
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "startup install_all_to_opencode failed", exc_info=True,
+                        )
+                        install_history.record_fail(
+                            skill="<startup_all>", agent="opencode",
+                            reason=str(e)[:200],
+                        )
+                    ingester = SqliteIngester(
+                        target_traj_dir=bridge,
+                        home_root=_home_root(),
+                        spec=OPENCODE_SPEC,
+                        poll_interval=poll_interval,
+                    )
+                    ingester.start()
+                    _watcher_ref[f"ingester_{det['ecosystem']}"] = ingester
+
                 logger.info(
                     "ecosystem %s detected: source=%s bridge=%s",
                     det["ecosystem"], det["source"], bridge,

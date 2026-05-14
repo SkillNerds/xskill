@@ -251,34 +251,127 @@ class DirectoryWatcher:
                     # 即时 install 让 Claude Code 立刻看到新生成的 SKILL.md
                     # 不必等 daemon 重启。install_to_claude_code 现在走 symlink，
                     # 后续 xskill 改 SKILL.md 也会被 CC 立即感知。
-                    self._install_skill_to_cc(d)
+                    self._install_skill_to_all_detected(d)
             except Exception:
                 logger.exception("SkillEditAgent failed: %s", d.name)
 
-    def _install_skill_to_cc(self, skill_path):
-        """SkillEdit 成功后立刻把该 skill 装到 ~/.claude/skills/（symlink）。
+    def _resolve_target_root(self):
+        """target_root 优先级：
 
-        target_root 优先级：
         1) ``self.home_root``（测试注入的 tmp_path，或 daemon ``--home``）
         2) ``xskill.server._home_root()``（生产 daemon：默认 Path.home()，
            server 启动时可被 set 成 ``_home_root_override``）
 
         测试如果不传 ``home_root`` 又没启 server，会 fallback 到真
-        ``Path.home()`` → 污染用户 ``~/.claude/skills/``。本仓库 tests/conftest.py
-        加了 autouse 守卫拦截这种调用，请勿在新测试里走这条路径。
+        ``Path.home()`` → 污染用户 ``~/.claude/skills/``。本仓库
+        ``tests/conftest.py`` 加了 autouse 守卫拦截这种调用，请勿在新测试
+        里走这条路径。
+        """
+        if self.home_root is not None:
+            return self.home_root
+        from xskill import server as _srv
+        return _srv._home_root() if hasattr(_srv, "_home_root") else None
+
+    def _install_skill_to_all_detected(self, skill_path):
+        """把该 skill 装到**当前 detected 的所有 agent 生态**。
+
+        每次调用实时跑 ``detect_known_ecosystems`` 决定要装哪些 agent
+        ——3 次 ``Path.is_dir/is_file`` 开销可忽略，比启动时缓存稳定（用户
+        中途装新 agent 也能被发现）。
+
+        每个 installer 独立 ``try/except``：一个失败不影响其它 agent 继续
+        装；失败记录写到 ``~/.xskill/install_history.jsonl`` 的同一个文件
+        （加 ``action="fail"`` 字段）。至少一个成功就算整体 OK——daemon
+        不抛异常给上层 watcher loop。
+
+        Args:
+            skill_path: ``self.skill_dir / <name>`` 的 Path 对象
+
+        Returns:
+            dict[str, Path | Exception]: agent → 安装结果（成功为 dest 路径，
+            失败为异常对象）。便于调用方 / 测试断言。
+        """
+        from xskill.ecosystems import (
+            detect_known_ecosystems,
+            install_to_claude_code,
+            install_to_codex,
+            install_to_opencode,
+        )
+
+        target_root = self._resolve_target_root()
+        # 实时 detect。测试场景下 self.home_root 是 tmp_path，detect 也
+        # 走 tmp_path——只有 tmp_path 里真造了 .claude/projects 之类目录，
+        # 该生态才会被探到，不会污染用户真目录。
+        detect_root = self.home_root or target_root
+        detections = detect_known_ecosystems(home_root=detect_root) if detect_root else []
+
+        installer_by_ecosystem = {
+            "claude_code": install_to_claude_code,
+            "codex": install_to_codex,
+            "opencode": install_to_opencode,
+        }
+
+        results: dict = {}
+        any_ok = False
+        for det in detections:
+            agent = det["ecosystem"]
+            installer = installer_by_ecosystem.get(agent)
+            if installer is None:
+                continue
+            try:
+                dest = installer(skill_path, target_root=target_root, side="main")
+                results[agent] = dest
+                any_ok = True
+                logger.info("installed (symlink) to %s: %s", agent, dest)
+            except Exception as e:
+                results[agent] = e
+                logger.warning(
+                    "install_to_%s failed for %s: %s",
+                    agent, skill_path.name, e,
+                )
+                self._record_install_fail(
+                    skill=skill_path.name, agent=agent, reason=str(e)[:200],
+                )
+        if not detections:
+            logger.debug(
+                "_install_skill_to_all_detected(%s): no agent detected under %s",
+                skill_path.name, detect_root,
+            )
+        elif not any_ok:
+            logger.warning(
+                "_install_skill_to_all_detected(%s): all %d detected agent(s) failed to install",
+                skill_path.name, len(detections),
+            )
+        return results
+
+    def _record_install_fail(self, *, skill: str, agent: str, reason: str) -> None:
+        """把一条 install 失败写到 ``~/.xskill/install_history.jsonl``。
+
+        失败记录走 ``InstallHistory.record_fail``（带 ``action="fail"``
+        字段），与成功 install 记录在同一文件，不分两份避免 source 熵增。
+
+        写盘本身失败不传播——失败日志的失败只能 logger.warning。
         """
         try:
-            from xskill.ecosystems import install_to_claude_code
-            target_root = self.home_root
-            if target_root is None:
-                from xskill import server as _srv
-                target_root = _srv._home_root() if hasattr(_srv, "_home_root") else None
-            dest = install_to_claude_code(
-                skill_path, target_root=target_root, side="main",
+            from xskill.install_history import InstallHistory
+            from xskill.config import XSKILL_HOME
+            history_path = XSKILL_HOME / "install_history.jsonl"
+            InstallHistory(history_path).record_fail(
+                skill=skill, agent=agent, reason=reason,
             )
-            logger.info("installed (symlink) to CC: %s", dest)
         except Exception:
-            logger.exception("install_to_claude_code failed: %s", skill_path.name)
+            logger.exception(
+                "record_install_fail failed (skill=%s agent=%s)",
+                skill, agent,
+            )
+
+    def _install_skill_to_cc(self, skill_path):
+        """Backward-compat thin wrapper for ``_install_skill_to_all_detected``.
+
+        旧调用路径 / 旧测试可能直接调本方法，保留它走多 agent install
+        逻辑（不是只装 CC）。新代码应直接调 ``_install_skill_to_all_detected``。
+        """
+        return self._install_skill_to_all_detected(skill_path)
 
     def _check_user_edits(self):
         """检测每个 skill 是否有用户手改且静默 ≥3 分钟 → 触发 absorb agent。"""
@@ -301,7 +394,7 @@ class DirectoryWatcher:
                     llm_cfg=self.config.get("llm", {}),
                 ).run()
                 if ok:
-                    self._install_skill_to_cc(d)
+                    self._install_skill_to_all_detected(d)
             except Exception:
                 logger.exception("user edit absorb failed: %s", d.name)
 
@@ -334,7 +427,7 @@ class DirectoryWatcher:
                                 d.name, action, decision)
                     # promote 成功 → 重新 install symlink (内容已变)
                     if action == "promoted":
-                        self._install_skill_to_cc(d)
+                        self._install_skill_to_all_detected(d)
             except Exception:
                 logger.exception("check_and_decide failed: %s", d.name)
 
