@@ -145,9 +145,24 @@ _KNOWN_ECOSYSTEMS: list[dict] = [
     {
         "id": "claude_code",
         "source_subpath": ".claude/projects",  # CC writes <home>/<this>/<cwd-hash>/*.jsonl
-        "bridge_subpath": ".xskill/cc_sessions",  # we mirror them here as traj_*.md
+        "bridge_subpath": ".xskill/cc_sessions",
+        "source_kind": "dir",  # 目录存在即视为该生态可用
     },
-    # Future: codex / opencode / etc. follow the same {id, source, bridge} shape.
+    {
+        "id": "codex",
+        # Codex CLI 写 <home>/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+        "source_subpath": ".codex/sessions",
+        "bridge_subpath": ".xskill/codex_sessions",
+        "source_kind": "dir",
+    },
+    {
+        "id": "opencode",
+        # OpenCode 走 XDG (~/.local/share/opencode/opencode.db) ——
+        # SQLite 文件不是目录。detect 用 ``source_kind="file"`` 判存在。
+        "source_subpath": ".local/share/opencode/opencode.db",
+        "bridge_subpath": ".xskill/opencode_sessions",
+        "source_kind": "file",
+    },
 ]
 
 
@@ -155,19 +170,22 @@ def detect_known_ecosystems(home_root: Path | str | None = None) -> list[dict]:
     """Probe the user's HOME for known agent tools and report which ones
     have something on disk. Returns a list of detection records:
 
-        {"ecosystem": "claude_code",
-         "source": <abs path of native session dir>,
+        {"ecosystem": "claude_code" | "codex" | "opencode",
+         "source": <abs path of native session dir or db file>,
          "bridge": <abs path of paired xskill watch dir>}
 
-    A record only appears if the source dir exists. The bridge dir is the
-    path daemon should ``register_dir(..., ecosystem=...)`` to put under
+    A record only appears if the source dir/file exists. The bridge dir is
+    the path daemon should ``register_dir(..., ecosystem=...)`` to put under
     Registry control — it may or may not exist yet.
     """
     root = Path(home_root) if home_root else Path.home()
     found: list[dict] = []
     for spec in _KNOWN_ECOSYSTEMS:
         source = root / spec["source_subpath"]
-        if not source.is_dir():
+        kind = spec.get("source_kind", "dir")
+        if kind == "dir" and not source.is_dir():
+            continue
+        if kind == "file" and not source.is_file():
             continue
         found.append({
             "ecosystem": spec["id"],
@@ -1020,6 +1038,22 @@ def install_all_to_codex(
     given, restrict to those.
     """
     return _install_all_with(install_to_codex, skill_dir, target_root, names)
+
+
+def install_all_to_opencode(
+    skill_dir: Path | str,
+    target_root: Path | str | None = None,
+    names: Iterable[str] | None = None,
+) -> list[Path]:
+    """Install every skill under ``skill_dir`` (each subdir = one skill) to
+    OpenCode's discovery root (``<target_root>/.agents/skills``——与 Codex 共享
+    user-scope skills 目录). If ``names`` is given, restrict to those.
+
+    注意：Codex 与 OpenCode 的 install 目标是**同一个目录**——重复 install
+    同一 skill 是 idempotent（install_fallback.install_dir 会先 unlink 后重链）。
+    """
+    # install_to_opencode 默认 side='main'；这里走 default。
+    return _install_all_with(install_to_opencode, skill_dir, target_root, names)
 
 
 def _install_all_with(

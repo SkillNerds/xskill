@@ -1421,7 +1421,11 @@ def create_app(home_root: Path | str | None = None) -> FastAPI:
         try:
             from xskill.ecosystems import (
                 detect_known_ecosystems, CCSessionIngester,
+                JsonlIngester, SqliteIngester,
+                CODEX_SPEC, OPENCODE_SPEC,
                 install_all_to_claude_code,
+                install_all_to_codex,
+                install_all_to_opencode,
             )
             from xskill.config import XSKILL_HOME
             from xskill.install_history import InstallHistory
@@ -1434,6 +1438,8 @@ def create_app(home_root: Path | str | None = None) -> FastAPI:
             install_history = InstallHistory(install_history_path)
 
             detections = detect_known_ecosystems(home_root=_home_root())
+            poll_interval = float(_config.get("watcher", {}).get("poll_interval", 10))
+
             for det in detections:
                 bridge: Path = det["bridge"]
                 bridge.mkdir(parents=True, exist_ok=True)
@@ -1442,6 +1448,7 @@ def create_app(home_root: Path | str | None = None) -> FastAPI:
                     label=f"{det['ecosystem']} sessions",
                     ecosystem=det["ecosystem"],
                 )
+
                 if det["ecosystem"] == "claude_code":
                     # 启动时先把现有 skill 全部装 main 到 ~/.claude/skills/，
                     # 同时往 install_history append 起始记录。后续 ingester
@@ -1453,19 +1460,21 @@ def create_app(home_root: Path | str | None = None) -> FastAPI:
                         for dest in installed:
                             install_history.record(
                                 skill=dest.parent.name, side="main",
-                                sha="",  # 启动时不取 sha，避免硬依赖 git 状态
+                                sha="",
                             )
                         logger.info(
-                            "startup install_all_to_claude_code: %d skills installed (side=main)",
+                            "startup install_all_to_claude_code: %d skills installed",
                             len(installed),
                         )
                     except Exception:
-                        logger.warning("startup install_all_to_claude_code failed", exc_info=True)
-
+                        logger.warning(
+                            "startup install_all_to_claude_code failed",
+                            exc_info=True,
+                        )
                     ingester = CCSessionIngester(
                         target_traj_dir=bridge,
                         home_root=_home_root(),
-                        poll_interval=float(_config.get("watcher", {}).get("poll_interval", 10)),
+                        poll_interval=poll_interval,
                         skill_dir=_skill_dir,
                         target_root=_home_root(),
                         history_path=install_history_path,
@@ -1473,6 +1482,70 @@ def create_app(home_root: Path | str | None = None) -> FastAPI:
                     )
                     ingester.start()
                     _watcher_ref[f"ingester_{det['ecosystem']}"] = ingester
+
+                elif det["ecosystem"] == "codex":
+                    # Codex CLI 写 ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+                    # 形态与 CC JSONL 一致——复用 JsonlIngester(CODEX_SPEC)。
+                    # Skill install 走 ~/.agents/skills/ (Codex/OpenCode 共享)。
+                    try:
+                        installed = install_all_to_codex(
+                            _skill_dir, target_root=_home_root(),
+                        )
+                        logger.info(
+                            "startup install_all_to_codex: %d skills installed to ~/.agents/skills/",
+                            len(installed),
+                        )
+                    except Exception:
+                        logger.warning(
+                            "startup install_all_to_codex failed", exc_info=True,
+                        )
+                    # JsonlIngester 当前没有内置 daemon 线程；走一次性 scan_and_bridge
+                    # 由后续每轮 watcher poll 通过 register_dir + bridge_subpath 自动
+                    # 走 split → embed → cluster 链路。
+                    try:
+                        bridged = JsonlIngester(CODEX_SPEC).scan_and_bridge(
+                            target_traj_dir=bridge,
+                            home_root=_home_root(),
+                        )
+                        logger.info(
+                            "startup codex ingester: bridged %d sessions to %s",
+                            len(bridged), bridge,
+                        )
+                    except Exception:
+                        logger.warning("startup codex ingester failed", exc_info=True)
+
+                elif det["ecosystem"] == "opencode":
+                    # OpenCode 走 SQLite + WAL（~/.local/share/opencode/opencode.db）
+                    # —— SqliteIngester 用 ?mode=ro&immutable=1 避免 WAL 锁。
+                    # Skill install 走 ~/.agents/skills/ (Codex/OpenCode 共享；
+                    # 与 codex install_all 重复 install 同一目录是 idempotent)。
+                    try:
+                        installed = install_all_to_opencode(
+                            _skill_dir, target_root=_home_root(),
+                        )
+                        logger.info(
+                            "startup install_all_to_opencode: %d skills installed to ~/.agents/skills/",
+                            len(installed),
+                        )
+                    except Exception:
+                        logger.warning(
+                            "startup install_all_to_opencode failed", exc_info=True,
+                        )
+                    try:
+                        bridged = SqliteIngester(
+                            target_traj_dir=bridge,
+                            home_root=_home_root(),
+                            spec=OPENCODE_SPEC,
+                        ).run_once()
+                        logger.info(
+                            "startup opencode ingester: bridged %d sessions to %s",
+                            len(bridged), bridge,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "startup opencode ingester failed", exc_info=True,
+                        )
+
                 logger.info(
                     "ecosystem %s detected: source=%s bridge=%s",
                     det["ecosystem"], det["source"], bridge,
