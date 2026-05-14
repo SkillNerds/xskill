@@ -65,11 +65,15 @@ class DirectoryWatcher:
     def __init__(self, *, llm=None, embed_client=None, config=None,
                  skill_dir=None, poll_interval=30.0, max_concurrent=30,
                  max_retries=3, db_path=None, cold_start_threshold=3,
-                 store=None, agno_agent_factory=None):
+                 store=None, agno_agent_factory=None, home_root=None):
         self.llm = llm
         self.embed_client = embed_client
         self.config = config or {}
         self.skill_dir = Path(skill_dir) if skill_dir else None
+        # home_root：install_to_claude_code 的 target root。生产 daemon 不
+        # 传（None）→ 落到 server._home_root() (默认 Path.home())。测试
+        # 必须显式传 tmp_path 防止污染真实 ~/.claude/skills/。
+        self.home_root = Path(home_root) if home_root else None
         self.poll_interval = poll_interval
         self.max_concurrent = max_concurrent
         self.max_retries = max_retries
@@ -252,13 +256,23 @@ class DirectoryWatcher:
                 logger.exception("SkillEditAgent failed: %s", d.name)
 
     def _install_skill_to_cc(self, skill_path):
-        """SkillEdit 成功后立刻把该 skill 装到 ~/.claude/skills/（symlink）。"""
+        """SkillEdit 成功后立刻把该 skill 装到 ~/.claude/skills/（symlink）。
+
+        target_root 优先级：
+        1) ``self.home_root``（测试注入的 tmp_path，或 daemon ``--home``）
+        2) ``xskill.server._home_root()``（生产 daemon：默认 Path.home()，
+           server 启动时可被 set 成 ``_home_root_override``）
+
+        测试如果不传 ``home_root`` 又没启 server，会 fallback 到真
+        ``Path.home()`` → 污染用户 ``~/.claude/skills/``。本仓库 tests/conftest.py
+        加了 autouse 守卫拦截这种调用，请勿在新测试里走这条路径。
+        """
         try:
             from xskill.ecosystems import install_to_claude_code
-            # 从 home_root 取 install target——生产用 Path.home()，debug 用
-            # 自定义。watcher 不持有 home_root，从 server 模块全局取
-            from xskill import server as _srv
-            target_root = _srv._home_root() if hasattr(_srv, "_home_root") else None
+            target_root = self.home_root
+            if target_root is None:
+                from xskill import server as _srv
+                target_root = _srv._home_root() if hasattr(_srv, "_home_root") else None
             dest = install_to_claude_code(
                 skill_path, target_root=target_root, side="main",
             )

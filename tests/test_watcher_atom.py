@@ -100,6 +100,7 @@ class TestZombieCleanup:
             cold_start_threshold=999,
             store=store,
             agno_agent_factory=_StubAgno,
+            home_root=tmp_path,
         )
         # 新 watcher 进程 _futures 为空 → 僵尸 splitting 应回退到 discovered
         # 然后同一轮提交新 split future
@@ -132,6 +133,7 @@ class TestZombieCleanup:
             cold_start_threshold=999,
             store=store,
             agno_agent_factory=_StubAgno,
+            home_root=tmp_path,
         )
         watcher._scan_once()
         # 僵尸 clustering 应被回退到 indexed（同一轮内可能又被重新提交，OK）
@@ -180,6 +182,7 @@ class TestColdStartSerial:
             cold_start_threshold=3,
             store=store,
             agno_agent_factory=lambda **k: _BlockingStub(**k),
+            home_root=tmp_path,
         )
         watcher._scan_once()
         # cold-start 应该只让 1 个 cluster 在飞
@@ -231,6 +234,7 @@ class TestColdStartSerial:
             cold_start_threshold=10,  # 高阈值 → 2 条不触发 cold-start
             store=store,
             agno_agent_factory=lambda **k: _BlockingStub(**k),
+            home_root=tmp_path,
         )
         watcher._scan_once()
         cluster_in_flight = sum(
@@ -275,6 +279,7 @@ class TestClusterAllFailed:
             store=store,
             max_retries=0,  # 不让 watcher 自动 retry，便于断言"留在 error"
             agno_agent_factory=lambda **kw: _AlwaysFailAgno(**kw),
+            home_root=tmp_path,
         )
 
         # 跑足够多轮把 traj 推到 cluster 阶段
@@ -353,6 +358,7 @@ class TestIndependentSkillEditScan:
             cold_start_threshold=999,
             store=store,
             agno_agent_factory=lambda **kw: _MixedStub(**kw),
+            home_root=tmp_path,
         )
 
         for _ in range(10):
@@ -415,6 +421,7 @@ class TestUxScoreAtomLevel:
             cold_start_threshold=999,
             store=store,
             agno_agent_factory=_StubAgno,
+            home_root=tmp_path,
         )
         # mock score_atom 返回固定分数
         with patch("xskill.watcher.score_atom",
@@ -470,6 +477,7 @@ class TestUxScoreAtomLevel:
             cold_start_threshold=999,
             store=store,
             agno_agent_factory=_StubAgno,
+            home_root=tmp_path,
         )
         with patch("xskill.ux_score.score_atom") as mock_score:
             for _ in range(20):
@@ -506,6 +514,7 @@ class TestPipelineRun:
             cold_start_threshold=999,  # 关闭门控避免阻塞
             store=store,
             agno_agent_factory=_StubAgno,
+            home_root=tmp_path,
         )
 
         # 多轮 scan + harvest 推动状态流转

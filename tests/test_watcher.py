@@ -56,12 +56,13 @@ def skill_dir(tmp_path):
 class TestWatcherDiscovery:
     """Test that _scan_once discovers files and updates DB."""
 
-    def test_discover_new_files(self, traj_dir, skill_dir, db_path):
+    def test_discover_new_files(self, traj_dir, skill_dir, db_path, tmp_path):
         wid = register_dir(traj_dir, db_path=db_path)
 
         watcher = DirectoryWatcher(
             llm=None, embed_client=None, config={},
             skill_dir=skill_dir, poll_interval=1, db_path=db_path,
+            home_root=tmp_path,
         )
         watcher._scan_once()
         _drain(watcher)
@@ -74,12 +75,13 @@ class TestWatcherDiscovery:
         assert len(rows) == 1
         assert rows[0]["filename"] == "traj_0001.md"
 
-    def test_stats_updated(self, traj_dir, skill_dir, db_path):
+    def test_stats_updated(self, traj_dir, skill_dir, db_path, tmp_path):
         register_dir(traj_dir, db_path=db_path)
 
         watcher = DirectoryWatcher(
             llm=None, embed_client=None, config={},
             skill_dir=skill_dir, poll_interval=1, db_path=db_path,
+            home_root=tmp_path,
         )
         watcher._scan_once()
 
@@ -94,6 +96,7 @@ class TestWatcherStartStop:
         watcher = DirectoryWatcher(
             llm=None, embed_client=None, config={},
             skill_dir=tmp_path, poll_interval=0.1, db_path=db_path,
+            home_root=tmp_path,
         )
         assert not watcher.is_running
         watcher.start()
@@ -105,6 +108,7 @@ class TestWatcherStartStop:
         watcher = DirectoryWatcher(
             llm=None, embed_client=None, config={},
             skill_dir=tmp_path, poll_interval=0.1, db_path=db_path,
+            home_root=tmp_path,
         )
         watcher.start()
         watcher.start()  # should not error
