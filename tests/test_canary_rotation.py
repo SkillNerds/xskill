@@ -10,7 +10,7 @@
 
 2. ``detect_user_edits`` 行为不变回归 —— 拆 helper 后语义必须完全等价。
 
-3. ``DirectoryWatcher._rotate_canary_side`` —— staging 流量入口：
+3. ``DirectoryWatcher._reconcile_skill_sides`` —— staging 流量入口：
    - 有 staging 的 skill → 按 p 切 side + 落 install_history
    - 用户手改时 skip（不 checkout，分支不变）
    - 无 staging 的 skill → 不碰
@@ -137,11 +137,11 @@ class TestDetectUserEditsRegression:
 
 
 # ──────────────────────────────────────────────────────
-# 3. DirectoryWatcher._rotate_canary_side
+# 3. DirectoryWatcher._reconcile_skill_sides
 # ──────────────────────────────────────────────────────
 
 def _make_watcher(skill_dir: Path, tmp_path: Path, *, probability: float):
-    """造一个最小 watcher：无 llm / embed，只为跑 _rotate_canary_side。"""
+    """造一个最小 watcher：无 llm / embed，只为跑 _reconcile_skill_sides。"""
     return DirectoryWatcher(
         llm=None, embed_client=None,
         config={"canary": {"probability": probability, "rotate_interval": 300}},
@@ -164,7 +164,7 @@ class TestRotateCanarySide:
         monkeypatch.setattr(_cfg, "XSKILL_HOME", tmp_path / "xhome")
 
         w = _make_watcher(skill_dir, tmp_path, probability=1.0)
-        w._rotate_canary_side()
+        w._reconcile_skill_sides()
 
         assert _cur_branch(sd) == "staging"
         from xskill.install_history import InstallHistory
@@ -187,7 +187,7 @@ class TestRotateCanarySide:
         monkeypatch.setattr(_cfg, "XSKILL_HOME", tmp_path / "xhome")
 
         w = _make_watcher(skill_dir, tmp_path, probability=0.0)
-        w._rotate_canary_side()
+        w._reconcile_skill_sides()
 
         assert _cur_branch(sd) == "main"
         from xskill.install_history import InstallHistory
@@ -210,7 +210,7 @@ class TestRotateCanarySide:
         # mock has_pending_user_edit → True：模拟用户正在改它
         with patch("xskill.user_edit_absorb_agent.has_pending_user_edit",
                    return_value=True):
-            w._rotate_canary_side()
+            w._reconcile_skill_sides()
 
         # 没 checkout —— 分支仍在 main（p=1 本来会切 staging）
         assert _cur_branch(sd) == "main"
@@ -230,7 +230,7 @@ class TestRotateCanarySide:
         monkeypatch.setattr(_cfg, "XSKILL_HOME", tmp_path / "xhome")
 
         w = _make_watcher(skill_dir, tmp_path, probability=1.0)
-        w._rotate_canary_side()
+        w._reconcile_skill_sides()
 
         assert _cur_branch(sd) == "main"
         from xskill.install_history import InstallHistory
@@ -254,7 +254,7 @@ class TestRotateCanarySide:
         w = _make_watcher(skill_dir, tmp_path, probability=1.0)
 
         # 第一次：真跑，切到 staging
-        w._rotate_canary_side()
+        w._reconcile_skill_sides()
         assert _cur_branch(sd) == "staging"
 
         # 手动切回 main，模拟"如果第二次真跑会再切 staging"
@@ -262,7 +262,7 @@ class TestRotateCanarySide:
         assert _cur_branch(sd) == "main"
 
         # 第二次：紧接着调用，间隔 << rotate_interval=300 → 应被节流 skip
-        w._rotate_canary_side()
+        w._reconcile_skill_sides()
         assert _cur_branch(sd) == "main", "节流失效：第二次不该真跑 rotate"
 
         # install_history 只有第一次那一条

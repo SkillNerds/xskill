@@ -97,7 +97,7 @@ class DirectoryWatcher:
         self._pool = ThreadPoolExecutor(max_workers=max_concurrent)
         self._futures: dict[Future, dict] = {}
         self._last_poll: float | None = None
-        # 单机 canary 轮转节流：上次真跑 _rotate_canary_side 的时间戳。
+        # 单机 canary 轮转节流：上次真跑 _reconcile_skill_sides 的时间戳。
         # None = 从未跑过（首轮 scan 必跑一次）。
         self._last_rotate_ts: float | None = None
         self._stats = {
@@ -208,7 +208,7 @@ class DirectoryWatcher:
         # 的 skill 子仓 checkout 到 main 或 staging——这是 staging 拿到真实
         # ux_score 样本的唯一入口。否则 staging 永远没流量 → check_and_decide
         # 永远 waiting → 最终 timeout_discarded，灰度形同虚设。
-        self._rotate_canary_side()
+        self._reconcile_skill_sides()
 
     def _check_pending_skill_edits(self):
         """遍历每个 skill 目录调 SkillEditAgent.maybe_run()。
@@ -441,7 +441,7 @@ class DirectoryWatcher:
             except Exception:
                 logger.exception("check_and_decide failed: %s", d.name)
 
-    def _rotate_canary_side(self):
+    def _reconcile_skill_sides(self):
         """单机 canary 流量入口：周期性按概率把有 staging 的 skill 子仓
         checkout 到 main / staging。
 
