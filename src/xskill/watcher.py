@@ -97,6 +97,9 @@ class DirectoryWatcher:
         self._pool = ThreadPoolExecutor(max_workers=max_concurrent)
         self._futures: dict[Future, dict] = {}
         self._last_poll: float | None = None
+        # 单机 canary 轮转节流：上次真跑 _rotate_canary_side 的时间戳。
+        # None = 从未跑过（首轮 scan 必跑一次）。
+        self._last_rotate_ts: float | None = None
         self._stats = {
             "polls": 0, "new_trajs": 0,
             "atoms_extracted": 0,    # v2: 累计 atom 数（替代 meta_extracted）
@@ -199,6 +202,13 @@ class DirectoryWatcher:
         # 没新改动 → 触发 UserEditAbsorbAgent 把手改吸回 main，并删除任何
         # 在飞 staging（用户改是 ground truth，优先级压过灰度）。
         self._check_user_edits()
+
+        # ── Step 8: 单机 canary 流量入口轮转 ──
+        # 周期性（每 canary.rotate_interval 秒）按概率把每个有 staging 分支
+        # 的 skill 子仓 checkout 到 main 或 staging——这是 staging 拿到真实
+        # ux_score 样本的唯一入口。否则 staging 永远没流量 → check_and_decide
+        # 永远 waiting → 最终 timeout_discarded，灰度形同虚设。
+        self._rotate_canary_side()
 
     def _check_pending_skill_edits(self):
         """遍历每个 skill 目录调 SkillEditAgent.maybe_run()。
@@ -430,6 +440,88 @@ class DirectoryWatcher:
                         self._install_skill_to_all_detected(d)
             except Exception:
                 logger.exception("check_and_decide failed: %s", d.name)
+
+    def _rotate_canary_side(self):
+        """单机 canary 流量入口：周期性按概率把有 staging 的 skill 子仓
+        checkout 到 main / staging。
+
+        为什么需要这一步
+        ================
+        单机环境下 Claude Code 直接读磁盘上一份 SKILL.md。``route_main_history
+        _to_staging`` 把新 commit 挪到 staging 分支后，install 路径写死
+        ``side="main"`` —— staging 永远不会被真正发出去，拿不到任何真实
+        ux_score 样本 → ``check_and_decide`` 永远 ``waiting`` → 最终
+        ``timeout_discarded``。本方法给 staging 一个真实流量入口。
+
+        节流
+        ====
+        按 ``canary.rotate_interval``（默认 300s）节流——不是每个 poll 轮
+        （默认 30s）都跑。距上次真跑 < rotate_interval 直接 skip。
+
+        每次真跑时遍历每个有 staging 分支的 skill：
+
+        - **分支 A · 用户手改优先**：``has_pending_user_edit`` 为 True →
+          skip 这个 skill，不 checkout。理由：用户正在改它，git checkout
+          切分支会冲掉未吸收的改动。让路给 ``_check_user_edits`` 链路
+          （它静默满 3min 会触发 UserEditAbsorbAgent commit 到 main）。
+        - **分支 B · 正常轮转**：无 pending 手改 → 掷骰子选 side。伪随机源
+          用 ``<时间窗 id>:<skill_name>``（时间窗 id = ``int(now //
+          rotate_interval)``），保证同一窗口同一 skill 决定一致、跨窗口
+          重新掷。选中 side 后 ``git checkout <side>`` + 落一条
+          ``install_history.record``。
+        """
+        if self.skill_dir is None or not self.skill_dir.is_dir():
+            return
+        from xskill.canary import CanaryConfig, has_staging, pick_side
+        from xskill.git_lock import run_git
+        from xskill.user_edit_absorb_agent import has_pending_user_edit
+
+        canary_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
+        rotate_interval = canary_cfg.rotate_interval
+
+        now = time.time()
+        # 节流：距上次真跑不足 rotate_interval → skip 本轮。
+        if (
+            self._last_rotate_ts is not None
+            and (now - self._last_rotate_ts) < rotate_interval
+        ):
+            return
+        self._last_rotate_ts = now
+
+        # 时间窗 id：同一窗口内同一 skill 的伪随机决定一致，跨窗口重新掷。
+        window_id = int(now // rotate_interval) if rotate_interval > 0 else 0
+
+        from xskill.install_history import InstallHistory
+        from xskill.config import XSKILL_HOME
+        history = InstallHistory(XSKILL_HOME / "install_history.jsonl")
+
+        for d in sorted(self.skill_dir.iterdir()):
+            if not d.is_dir() or d.name.startswith("."):
+                continue
+            if not (d / ".git").is_dir():
+                continue
+            if not has_staging(d):
+                continue
+            # 分支 A：用户正在手改 → skip，不 checkout（切分支会冲掉未吸收改动）
+            if has_pending_user_edit(d):
+                logger.info("skip rotate: %s has pending user edit", d.name)
+                continue
+            # 分支 B：正常轮转。伪随机源 = "<window_id>:<skill_name>"。
+            side = pick_side(str(window_id), d.name, canary_cfg.probability)
+            try:
+                code, _, err = run_git(["checkout", side], cwd=str(d))
+                if code != 0:
+                    logger.warning(
+                        "rotate checkout failed: %s -> %s: %s",
+                        d.name, side, err,
+                    )
+                    continue
+                code, sha, _ = run_git(["rev-parse", "HEAD"], cwd=str(d))
+                sha = sha.strip() if code == 0 else ""
+                history.record(skill=d.name, side=side, sha=sha)
+                logger.info("rotate: %s -> %s", d.name, side)
+            except Exception:
+                logger.exception("rotate failed: %s", d.name)
 
     # ───────────────────────────────────────────────────────────
     # 收割：检查所有 in-flight futures

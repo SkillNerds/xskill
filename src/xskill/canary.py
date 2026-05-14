@@ -46,6 +46,7 @@ class CanaryConfig:
     probability: float = 0.2
     min_samples: int = 5
     max_days_hold: int = 14
+    rotate_interval: int = 300
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "CanaryConfig":
@@ -54,6 +55,7 @@ class CanaryConfig:
             probability=float(d.get("probability", 0.2)),
             min_samples=int(d.get("min_samples", 5)),
             max_days_hold=int(d.get("max_days_hold", 14)),
+            rotate_interval=int(d.get("rotate_interval", 300)),
         )
 
 

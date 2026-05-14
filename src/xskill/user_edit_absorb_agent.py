@@ -126,18 +126,46 @@ class UserEditAbsorbAgent:
         return True
 
 
-def detect_user_edits(skill_dir: Path, *, quiet_seconds: int = USER_EDIT_QUIET_SECONDS) -> bool:
-    """检测该 skill 是否有用户手改且已稳定 (>=3 分钟没新动作)。
+def _max_workspace_mtime(skill_dir: Path) -> float:
+    """扫该 skill 工作区所有相关文件 + 目录的 max(mtime)。
+
+    跳过 git 内部 / candidates buffer / canary 物化 / ux 评分——这些是
+    daemon 自己的运行时产物，不算"用户手改"。无相关文件返回 0.0。
+    """
+    max_mtime = 0.0
+    for p in skill_dir.rglob("*"):
+        try:
+            rel = p.relative_to(skill_dir)
+            parts = rel.parts
+            if not parts:
+                continue
+            if parts[0] == ".git":
+                continue
+            if parts[0] in (".candidates.yml", ".canary", ".ux_scores.jsonl"):
+                continue
+            m = p.stat().st_mtime
+            if m > max_mtime:
+                max_mtime = m
+        except (OSError, ValueError):
+            continue
+    return max_mtime
+
+
+def has_pending_user_edit(skill_dir: Path) -> bool:
+    """该 skill 工作区有未 commit 的用户手改（不管静默多久）。
+
+    = ``detect_user_edits`` 的判据 (a)，去掉静默检查 (b)。
 
     判据：
     - 取 SKILL.md / scripts/** / references/** 等所有非 .git / 非
       .candidates.yml 文件的 max(mtime)
-    - 该 mtime > 最近一次 git commit 时间 → 有未 commit 改动
-    - 且 ``now - mtime ≥ quiet_seconds`` → 用户已停止编辑 ≥3 分钟
+    - 该 mtime 比最近一次 git commit 时间严格大 ≥1 秒 → 有未 commit 改动
 
-    返回 True 表示该跑 absorb。
+    ``git log --format=%ct`` 返回**整数秒**（Unix ts truncate 掉小数部分），
+    ``os.stat().st_mtime`` 返回**浮点秒**。同一秒内"write file → git commit"
+    时，file mtime = N.XXX 而 commit_ts = N → 浮点差 0.X 秒，会被误判为
+    "用户编辑了文件"。要求 mtime 比 commit_ts 严格大 ≥1 秒才算真的编辑。
     """
-    import time
     from xskill.git_lock import run_git
 
     if not (skill_dir / ".git").is_dir():
@@ -154,31 +182,25 @@ def detect_user_edits(skill_dir: Path, *, quiet_seconds: int = USER_EDIT_QUIET_S
     except ValueError:
         return False
 
-    # 扫所有相关文件 + 目录 mtime（含子目录创建本身的 mtime）
-    max_mtime = 0.0
-    for p in skill_dir.rglob("*"):
-        try:
-            # 跳过 git 内部 / candidates buffer / canary 物化 / ux 评分
-            rel = p.relative_to(skill_dir)
-            parts = rel.parts
-            if not parts:
-                continue
-            if parts[0] == ".git":
-                continue
-            if parts[0] in (".candidates.yml", ".canary", ".ux_scores.jsonl"):
-                continue
-            m = p.stat().st_mtime
-            if m > max_mtime:
-                max_mtime = m
-        except (OSError, ValueError):
-            continue
+    max_mtime = _max_workspace_mtime(skill_dir)
+    # 见 docstring：要求 mtime 比 commit_ts 严格大 ≥1 秒才算真的编辑。
+    return max_mtime - last_commit_ts >= 1.0
 
-    # ``git log --format=%ct`` 返回**整数秒**（Unix ts truncate 掉小数部分），
-    # ``os.stat().st_mtime`` 返回**浮点秒**。同一秒内"write file → git commit"
-    # 时，file mtime = N.XXX 而 commit_ts = N → 浮点差 0.X 秒，会被误判为
-    # "用户编辑了文件"。要求 mtime 比 commit_ts 严格大 ≥1 秒才算真的编辑。
-    if max_mtime - last_commit_ts < 1.0:
-        return False  # 没新改动（或仅是 commit/mtime 浮点精度差）
+
+def detect_user_edits(skill_dir: Path, *, quiet_seconds: int = USER_EDIT_QUIET_SECONDS) -> bool:
+    """检测该 skill 是否有用户手改且已稳定 (>=3 分钟没新动作)。
+
+    判据：
+    - (a) ``has_pending_user_edit``：有未 commit 改动
+    - (b) ``now - max_mtime ≥ quiet_seconds`` → 用户已停止编辑 ≥3 分钟
+
+    两个都过才返回 True（表示该跑 absorb）。
+    """
+    import time
+
+    if not has_pending_user_edit(skill_dir):
+        return False
+    max_mtime = _max_workspace_mtime(skill_dir)
     if (time.time() - max_mtime) < quiet_seconds:
         return False  # 改动太新，可能用户还在编辑
     return True

@@ -54,6 +54,7 @@ canary:
   probability:   0.2                # 检索命中时以 p 概率走 staging
   min_samples:   5                  # 两侧各 ≥ N 条 UX 分才判定
   max_days_hold: 14                 # staging 最长存活；超时丢弃
+  rotate_interval: 300              # 单机 canary 时间窗轮转周期（秒）
 
 # ===== Watcher（serve 内置的目录轮询）=====
 watcher:
