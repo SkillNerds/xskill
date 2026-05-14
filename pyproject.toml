@@ -41,7 +41,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "pytest-timeout>=2", "pytest-asyncio>=0.21"]
 
 [project.urls]
 Homepage = "https://github.com/SkillNerds/xskill"
@@ -63,3 +63,14 @@ xskill = ["web/dist/**/*"]
 [tool.setuptools_scm]
 version_file = "src/xskill/_version.py"
 fallback_version = "0.0.0+unknown"
+
+[tool.pytest.ini_options]
+markers = [
+    # ``live_agent`` 标记的测试会真 spawn codex/opencode 子进程对接 mock LLM
+    # server，验证端到端流程通——不调真 LLM API。默认排除（``addopts`` 含
+    # ``--ignore=tests/live``）；CI live-agent-e2e job + 本地手动跑用
+    # ``pytest -m live_agent`` 触发。
+    "live_agent: real codex/opencode process + mock LLM end-to-end (slow, optional)",
+]
+addopts = "--ignore=tests/live"
+asyncio_mode = "strict"

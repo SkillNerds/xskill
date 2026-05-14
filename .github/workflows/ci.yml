@@ -138,59 +138,47 @@ jobs:
         run: echo "DEEPSEEK_API_KEY secret missing — real-llm-e2e skipped (no failure)"
 
   live-agent-e2e:
-    name: live-agent-e2e
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-    needs: real-llm-e2e
-    runs-on: ubuntu-latest
+    # **mock LLM** drives real codex/opencode processes — no secret needed.
+    # Runs on every PR across 3 OS × 2 agent matrix.
+    name: live-agent-e2e (${{ matrix.os }}, ${{ matrix.agent }})
+    needs: smoke-e2e
+    runs-on: ${{ matrix.os }}
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        agent: [codex, opencode]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-      - name: Check DeepSeek secret presence
-        id: secret_check
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: |
-          if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
-            echo "have_secret=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "have_secret=0" >> "$GITHUB_OUTPUT"
-            echo "::warning::DEEPSEEK_API_KEY secret missing — live-agent-e2e will be skipped"
-          fi
       - name: Install xskill (with dev extras)
-        if: steps.secret_check.outputs.have_secret == '1'
         run: pip install -e .[dev]
-      - name: Install codex + opencode CLIs
-        if: steps.secret_check.outputs.have_secret == '1'
+      - name: Install codex CLI
+        if: matrix.agent == 'codex'
+        shell: bash
         run: |
           npm i -g @openai/codex
           codex --version
+      - name: Install opencode CLI
+        if: matrix.agent == 'opencode'
+        shell: bash
+        run: |
           npm i -g opencode-ai@latest
           opencode --version
-      - name: Live-agent E2E (real codex / opencode + real LLM)
-        if: steps.secret_check.outputs.have_secret == '1'
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          OPENAI_BASE_URL: https://api.deepseek.com
-          OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          XSKILL_LIVE_CODEX: "1"
-          XSKILL_LIVE_OPENCODE: "1"
+      - name: Live-agent E2E (real ${{ matrix.agent }} + mock LLM)
+        shell: bash
         run: |
-          # Live-agent suite spawns real codex/opencode processes, writes a short
-          # session, and runs xskill ingester against the resulting JSONL/SQLite.
-          # Tests self-gate on XSKILL_LIVE_* envs and are skipped if absent.
-          if [ -d tests/live ]; then
-            pytest tests/live -v -m "live_agent" --timeout=600 || exit_code=$?
-            exit ${exit_code:-0}
-          else
-            echo "::notice::tests/live/ not present yet — live-agent-e2e is a no-op stub"
-          fi
-      - name: Graceful skip notice
-        if: steps.secret_check.outputs.have_secret != '1'
-        run: echo "DEEPSEEK_API_KEY secret missing — live-agent-e2e skipped (no failure)"
+          # tests/live/* spin up an in-process mock LLM server, point codex /
+          # opencode at it, spawn the real CLI for one short turn, then verify
+          # xskill ingester picks up the resulting JSONL / SQLite session.
+          # No external LLM API key required — fully offline E2E.
+          pytest tests/live/test_${{ matrix.agent }}_live.py -v \
+            --override-ini="addopts=" \
+            -m live_agent --timeout=300
 
   verify-build:
     name: verify-build
