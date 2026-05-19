@@ -18,8 +18,11 @@ LLM 和 Embedding 分别配置 base_url / model / api_key
 
 import os, json, logging, time
 from dataclasses import dataclass, field
+from typing import Literal
 
 import numpy as np
+
+EmbedApiStyle = Literal["multimodal", "openai"]
 
 logger = logging.getLogger(__name__)
 
@@ -143,12 +146,29 @@ class LLMClient:
 # Embedding Client
 # ═══════════════════════════════════════════════════════════════════
 
+def _resolve_embed_api_style(cfg: dict, model: str) -> EmbedApiStyle:
+    """ARK 有两套 embedding 路径：
+
+    - ``/embeddings`` — OpenAI 兼容，用于 ``doubao-embedding-large-text-*`` 等纯文本模型
+    - ``/embeddings/multimodal`` — 用于 ``doubao-embedding-vision-*`` 等多模态模型
+
+    可在 config 里显式写 ``embedding.api: openai | multimodal``；否则按模型名推断。
+    """
+    explicit = (cfg.get("api") or cfg.get("api_style") or "").strip().lower()
+    if explicit in ("multimodal", "openai"):
+        return explicit  # type: ignore[return-value]
+    if "vision" in model.lower():
+        return "multimodal"
+    return "openai"
+
+
 @dataclass
 class EmbedClient:
     base_url: str
     model: str
     api_key: str
     dim: int = 0  # 0 = 未探测
+    api_style: EmbedApiStyle = "openai"
     _client: object = field(default=None, repr=False)
 
     @classmethod
@@ -163,7 +183,10 @@ class EmbedClient:
         dim = cfg.get("dim", 0)
         if not base_url or not model:
             raise ValueError("embedding.base_url 和 embedding.model 必须配置")
-        inst = cls(base_url=base_url, model=model, api_key=api_key, dim=dim)
+        api_style = _resolve_embed_api_style(cfg, model)
+        inst = cls(
+            base_url=base_url, model=model, api_key=api_key, dim=dim, api_style=api_style,
+        )
         return inst
 
     def _get_session(self):
@@ -175,26 +198,50 @@ class EmbedClient:
                 logger.warning("T2S_SSL_VERIFY=false → Embedding HTTPS 证书验证已关闭")
         return self._client
 
-    def _call_api_single(self, text: str) -> list[float]:
-        """调用 ARK multimodal embedding 接口（单条）"""
+    def _post_json(self, path: str, body: dict) -> dict:
         session = self._get_session()
-        url = f"{self.base_url}/embeddings/multimodal"
+        url = f"{self.base_url}{path}"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
-        body = {"model": self.model, "input": [{"type": "text", "text": text}]}
         resp = session.post(url, json=body, headers=headers)
         resp.raise_for_status()
-        data = resp.json()
+        return resp.json()
+
+    def _call_api_multimodal(self, text: str) -> list[float]:
+        """ARK multimodal：``doubao-embedding-vision-*`` 等"""
+        data = self._post_json(
+            "/embeddings/multimodal",
+            {"model": self.model, "input": [{"type": "text", "text": text}]},
+        )
         return data["data"]["embedding"]
+
+    def _call_api_openai(self, text: str) -> list[float]:
+        """ARK / OpenAI 兼容：``POST /embeddings``，``doubao-embedding-large-text-*`` 等"""
+        data = self._post_json(
+            "/embeddings",
+            {"model": self.model, "input": text},
+        )
+        items = data.get("data") or []
+        if not items:
+            raise ValueError(f"embedding response missing data: {data!r}")
+        return items[0]["embedding"]
+
+    def _call_api_single(self, text: str) -> list[float]:
+        if self.api_style == "multimodal":
+            return self._call_api_multimodal(text)
+        return self._call_api_openai(text)
 
     def probe_dim(self) -> int:
         """发送测试文本，探测 embedding 维度"""
         if self.dim > 0:
             return self.dim
 
-        logger.info(f"探测 embedding 维度: {self.model} @ {self.base_url}")
+        logger.info(
+            "探测 embedding 维度: %s @ %s (api=%s)",
+            self.model, self.base_url, self.api_style,
+        )
         vec = self._call_api_single("hello")
         self.dim = len(vec)
         logger.info(f"探测完成: dim={self.dim}")
@@ -208,7 +255,7 @@ class EmbedClient:
         return vec
 
     def encode_batch(self, texts: list[str]) -> np.ndarray:
-        """批量文本 → (n, dim) 矩阵，逐条调用 multimodal 端点"""
+        """批量文本 → (n, dim) 矩阵，逐条调用 embedding 端点"""
         from tqdm import tqdm
         all_vecs = []
 
@@ -229,7 +276,10 @@ class EmbedClient:
         return result
 
     def __repr__(self):
-        return f"EmbedClient(base_url={self.base_url}, model={self.model}, dim={self.dim})"
+        return (
+            f"EmbedClient(base_url={self.base_url}, model={self.model}, "
+            f"dim={self.dim}, api_style={self.api_style})"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════

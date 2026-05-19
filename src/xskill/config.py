@@ -42,7 +42,7 @@ def load_config(path: Optional[Path] = None) -> dict:
             f"xskill config not found: {cfg_path}\n"
             f"Create it manually (see docs)."
         )
-    with open(cfg_path) as f:
+    with open(cfg_path, encoding="utf-8") as f:
         _config = yaml.safe_load(f) or {}
     if not _config.get("llm", {}).get("api_key"):
         raise KeyError(f"llm.api_key missing in {cfg_path}")

@@ -23,9 +23,10 @@ llm:
 # ===== Embedding（向量检索用）=====
 embedding:
   base_url: https://ark.cn-beijing.volces.com/api/v3
-  model:    doubao-embedding-vision-251215
+  model:    doubao-embedding-vision-251215   # 或 doubao-embedding-large-text-250515
   api_key:  PUT_YOUR_EMBEDDING_API_KEY_HERE
-  dim:      0                      # 0 = 自动探测
+  dim:      0                      # 0 = 自动探测；large-text 可写 2048
+  # api: openai | multimodal      # 可选；默认 vision 模型→multimodal，text 模型→/embeddings
 
 # ===== L2 沙箱评估（SWE-bench docker 跑 A/B/C；单测 / 评估精度脚本用）=====
 sandbox:

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from xskill.llm_client import LLMClient
+from xskill.llm_client import LLMClient, EmbedClient, _resolve_embed_api_style
 
 
 class TestLLMClientDefaults:
@@ -65,3 +65,21 @@ class TestLLMClientFromConfig:
     def test_missing_model_raises(self):
         with pytest.raises(ValueError):
             LLMClient.from_config({"base_url": "http://x", "api_key": "k"})
+
+
+class TestEmbedApiStyle:
+    def test_text_model_defaults_openai(self):
+        assert _resolve_embed_api_style({}, "doubao-embedding-large-text-250515") == "openai"
+
+    def test_vision_model_defaults_multimodal(self):
+        assert _resolve_embed_api_style({}, "doubao-embedding-vision-251215") == "multimodal"
+
+    def test_explicit_api_override(self):
+        cfg = {"api": "multimodal"}
+        assert _resolve_embed_api_style(cfg, "doubao-embedding-large-text-250515") == "multimodal"
+
+    def test_from_config_sets_api_style(self):
+        c = EmbedClient.from_config({
+            "base_url": "http://x", "model": "doubao-embedding-large-text-250515", "api_key": "k",
+        })
+        assert c.api_style == "openai"

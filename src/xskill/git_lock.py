@@ -44,8 +44,19 @@ SKILL_GITIGNORE = """# xskill v2 skill 仓库的 ignore 规则
 
 
 def run_git(args: list[str], cwd: str) -> tuple[int, str, str]:
-    r = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
-    return r.returncode, r.stdout.strip(), r.stderr.strip()
+    """Run git in *cwd*; always decode UTF-8 (Windows 默认 GBK 会在 git 输出含非 ASCII 时炸).
+
+    subprocess 在解码失败时可能把 stdout/stderr 置为 None；调用方统一当空串处理。
+    """
+    r = subprocess.run(
+        ["git"] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
 
 
 def init_skill_repo_on_baby(skill_dir: str, name: str, description: str) -> None:
