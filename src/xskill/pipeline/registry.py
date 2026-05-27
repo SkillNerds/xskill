@@ -423,9 +423,15 @@ def update_traj_status(
     skill_generated: str | None = None,
     ux_score: float | None = None,
     error_msg: str | None = None,
+    retry_count: int | None = None,
     db_path: Optional[Path] = None,
 ) -> None:
-    """更新轨迹状态及关联字段。"""
+    """更新轨迹状态及关联字段。
+
+    ``retry_count`` 显式传入时覆盖列上的值——cluster 阶段 partial-fail
+    会算好"重试次数 + 1"再回写，沿着 ``retry_count < max_retries``
+    继续重试，超过门槛后兜底标 done + WARNING。
+    """
     conn = get_connection(db_path)
     try:
         sets = ["updated_at=datetime('now')"]
@@ -445,6 +451,9 @@ def update_traj_status(
         if error_msg is not None:
             sets.append("error_msg=?")
             vals.append(error_msg)
+        if retry_count is not None:
+            sets.append("retry_count=?")
+            vals.append(int(retry_count))
         vals.extend([watch_dir_id, filename])
         conn.execute(
             f"UPDATE trajectories SET {', '.join(sets)}"
@@ -452,6 +461,29 @@ def update_traj_status(
             vals,
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_traj_retry_count(
+    watch_dir_id: int, filename: str, *, db_path: Optional[Path] = None,
+) -> int:
+    """返回 ``trajectories.retry_count``。行不存在 / 列为 NULL → 0。
+
+    cluster partial-fail 重试用：先读当前 retry_count，+1 后回写
+    ``update_traj_status(..., retry_count=N+1)``。和 ``increment_retry``
+    的差异是这里**只读不写**，由调用方决定何时 +1。
+    """
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT retry_count FROM trajectories"
+            " WHERE watch_dir_id=? AND filename=?",
+            (watch_dir_id, filename),
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row["retry_count"] or 0)
     finally:
         conn.close()
 

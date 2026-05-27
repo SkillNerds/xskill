@@ -11,19 +11,24 @@ xskill 的标准 ``traj_*.md`` 格式。
 ``ingest_openclaw_sessions``）与「写」（``install_to_openclaw`` /
 ``install_all_to_openclaw`` + ``make_openclaw_canary_flip_hook``）。
 
-与其它平台不同：openclaw 走 ``shutil.copytree`` 不走 symlink——openclaw skill
-discovery 对 resolved 路径做安全检查，symlink 会被 skip。
+与其它平台不同：openclaw 走 copy 不走 symlink——openclaw skill discovery 对
+resolved 路径做安全检查，symlink 会被 skip。复用 ``_fallback.install_dir``
+的 ``force_mode="copy" + auto_reset=True`` 一站式完成 reverse_sync 回流保护
++ junction-safe dest 清理 + copytree + install-meta。Windows 上额外撞
+directory junction 兼容性（issue #35）：``Path.is_symlink()`` 对 junction
+返回 False，让 ``shutil.rmtree`` 误把 junction 当真目录走而抛 OSError；
+``_fallback._reset_dest`` 用 ``_is_link_or_junction`` 判定避免这个 bug。
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import shutil
 import time
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
+from xskill.ecosystems._fallback import install_dir
 from xskill.ecosystems._shared import (
     EcosystemSpec,
     JsonlIngester,
@@ -98,10 +103,12 @@ def install_to_openclaw(
     name = skill_path.name
     dest = skills_root / name
 
-    # 回流保护：dest 可能有用户改没回流到源仓——比如 canary flip 刚刚被
-    # JsonlIngester hook 触发，dest 是 main 内容用户已经改了一些东西，现在
-    # 要换装 staging。先调 reverse_sync 把改灌回源仓再覆盖；reverse_sync
-    # 没改 / dest 不存在 → no-op。
+    # 显式 reverse_sync（dest → source）：openclaw 历史上是第一个走 copy
+    # 模式的生态，单独显式跑 ``reverse_sync_openclaw_dest`` 以便 canary flip
+    # 路径上的回流不依赖 ``_fallback._maybe_reverse_sync_before_overwrite``
+    # 的默认 quiet_seconds（180s）—— flip 节奏远比 180s 快。``install_dir``
+    # 的 auto_reset 路径里也会再尝试一次（默认 quiet 检查通常返回 False
+    # no-op），是安全网不是主路径。
     if dest.is_dir() and not dest.is_symlink():
         try:
             from xskill.agents.user_edit_absorb_agent import reverse_sync_openclaw_dest
@@ -113,31 +120,32 @@ def install_to_openclaw(
                 name, exc_info=True,
             )
 
-    # 删旧 dest（symlink / file / dir 都干掉）；ignore 之前 codex / opencode 装的
-    # 同名 symlink——它们在共用目录里同名时会被覆盖；用户应该靠 install_to_codex
-    # / install_to_opencode 各自重装来恢复（启动 hook 会跑）
-    if dest.is_symlink() or dest.is_file():
-        dest.unlink()
-    elif dest.is_dir():
-        shutil.rmtree(dest)
+    # 强制 copy + auto_reset 一站式：
+    # 1. ``_maybe_reverse_sync_before_overwrite`` —— 二次回流保护（默认
+    #    quiet=180s），上面已经显式跑过一次，这里通常 no-op。
+    # 2. ``_reset_dest`` 用 ``_is_link_or_junction`` 判 dest 是否为 link/junction，
+    #    避免 issue #35 的 ``shutil.rmtree(junction)`` 抛 OSError 死循环——
+    #    例如同一 ``~/.agents/skills/<name>`` 之前被 codex/opencode install 装了
+    #    junction（Windows non-DevMode），此时 openclaw 跑要清掉它换 copy 装。
+    # 3. ``force_mode="copy"`` 跳过 symlink/junction 直接 copytree——openclaw
+    #    discovery 对 resolved 路径做安全检查会拒收 symlink。
+    # 4. 自动写新位置 install-meta（``dest.parent`` 旁）给后续 reverse_sync 用。
+    install_dir(src_dir, dest, force_mode="copy", auto_reset=True)
 
-    # copytree —— ignore xskill 自己塞的 meta 文件（避免源仓里被 reverse_sync 灌
-    # 进去后又被 install 再拷出来）和 .git 目录（源仓是 git 仓，不应拷进 dest）
-    shutil.copytree(
-        src_dir, dest,
-        ignore=shutil.ignore_patterns(_OPENCLAW_INSTALL_META, ".git", ".git/*"),
-    )
-
-    # 落 install-meta 给 canary flip / reverse_sync 比对用
+    # 额外落 openclaw 专属老位置 meta（``dest/.xskill-install-meta.json``）：
+    # 含 ``source_sha`` / ``side`` 字段，给 ``make_openclaw_canary_flip_hook``
+    # 比对当前装的 side。``_fallback`` 写的新位置 meta 只跟踪 mode/source/ts，
+    # 不带 sha/side。两份 meta 并存：新位置（``dest.parent``）由 ``_fallback``
+    # 管理用于 reverse_sync；老位置（``dest`` 内部）保留供 canary flip 比对。
     source_sha = _read_skill_head_sha(skill_path)
-    meta = {
+    legacy_meta = {
         "source_sha": source_sha,
         "side": side,
         "installed_at": time.time(),
         "ecosystem": "openclaw",
     }
     (dest / _OPENCLAW_INSTALL_META).write_text(
-        json.dumps(meta, indent=2), encoding="utf-8",
+        json.dumps(legacy_meta, indent=2), encoding="utf-8",
     )
 
     return dest / "SKILL.md"

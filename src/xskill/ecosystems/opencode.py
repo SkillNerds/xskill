@@ -34,7 +34,9 @@ import time
 from pathlib import Path
 from typing import Iterable
 
-from xskill.ecosystems._fallback import InstallMode, install_dir
+from xskill.ecosystems._fallback import (
+    InstallMode, _is_link_or_junction, install_dir,
+)
 from xskill.ecosystems._shared import (
     SqliteEcosystemSpec,
     _agents_skills_path,
@@ -496,8 +498,10 @@ def install_to_opencode(
     skills_root.mkdir(parents=True, exist_ok=True)
     dest = skills_root / name
 
-    # 已有 symlink 且指向正确：no-op（同 install_to_claude_code 的 idempotent 逻辑）
-    if dest.is_symlink():
+    # 已有 link/junction 且指向正确：no-op。``_is_link_or_junction``
+    # 而非 ``is_symlink`` —— Windows 对 junction 返回 False（issue #35 同源
+    # bug），统一处理 link/junction 两种 reparse point。
+    if _is_link_or_junction(dest):
         try:
             cur = dest.resolve(strict=False)
         except OSError:

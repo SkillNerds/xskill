@@ -41,6 +41,7 @@ from xskill.pipeline.registry import (
     mark_skill_used,
     update_traj_status,
     increment_retry,
+    get_traj_retry_count,
 )
 from xskill.pipeline.trajectory import parse_traj_header
 from xskill.pipeline.trajectory import validate_trajectory_source
@@ -54,6 +55,12 @@ _ACTION_STATUS = {
     "skip": "indexed",
     "error": "error",
 }
+
+# cluster partial-fail（n_total 中部分 atom LLM 异常）允许重试 N 次后兜底
+# 标 done + WARNING——避免少数 atom 永远卡死整条 traj 的进度统计。
+# 这里是显式策略不是 fallback：每次重试只投入未落地的 atom（cluster 去重
+# 由 process_atom_task 上层用 find_atom_in_any_skill 完成）。
+MAX_CLUSTER_RETRIES = 3
 
 
 def _install_thread_event_loop() -> None:
@@ -795,15 +802,37 @@ class DirectoryWatcher:
         已经写进 candidates 的其他 atom 仍能在下一轮 watcher scan 中
         被检出 + 触发 SkillEdit。
 
+        重试去重：若 atom_id 已在任何 skill 的 ``.candidates.yml`` 内
+        （上一轮 cluster 成功落地），跳过 LLM 调用直接 mark 成 clustered。
+        这避免 partial-fail 重试时把已经成功的 atom 重复送 LLM 烧 token。
+
         返回 (fname, [result_dict, ...])。
         """
         from xskill.pipeline.runner import process_atom_task
+        from xskill.skill.candidates import find_atom_entry_in_any_skill
         traj_id = (dir_path / fname).stem
         store = self._store_for(dir_path)
         factory = self._factory()
         atoms = store.list_by_traj(traj_id)
         results = []
         for atom in atoms:
+            # 去重：已落地 atom 跳过 LLM
+            if self.skill_dir is not None:
+                hit = find_atom_entry_in_any_skill(self.skill_dir, atom.atom_id)
+                if hit:
+                    sk_name, ws = hit
+                    logger.debug(
+                        "skip already-clustered atom %s → %s @ ws=%s",
+                        atom.atom_id, sk_name, ws,
+                    )
+                    results.append({
+                        "action": "clustered",
+                        "atom_id": atom.atom_id,
+                        "skill_name": sk_name,
+                        "weightscore": ws,
+                        "cluster_log": "(skipped: already in candidates buffer)",
+                    })
+                    continue
             try:
                 res = process_atom_task(
                     atom_id=atom.atom_id,
@@ -851,32 +880,70 @@ class DirectoryWatcher:
         _fname, results = result
         n_total = len(results)
         n_errors = sum(1 for r in results if r.get("action") == "error")
-        n_ok = n_total - n_errors
+        clustered_results = [r for r in results if r.get("action") == "clustered"]
+        dropped = [r for r in clustered_results if not r.get("skill_name")]
+        in_skills = [r for r in clustered_results if r.get("skill_name")]
 
-        # 全部 atom cluster 失败（典型: LLM 402/网络异常）→ 标 error 让下轮 retry。
-        # 此前无条件标 done 会把 traj 假冒成"已处理"，下次永远不再走 cluster。
-        if n_total > 0 and n_ok == 0:
-            err_sample = next(
-                (r.get("error", "?") for r in results
-                 if r.get("action") == "error"),
-                "unknown",
+        # 总结行：把 n_total / in_skills / dropped / errors 拆开，让 grep 能区分
+        # silent drop 和真正的 LLM 异常。
+        logger.info(
+            "%s → clustered (%d total, %d in skills, %d dropped, %d errors)",
+            fname, n_total, len(in_skills), len(dropped), n_errors,
+        )
+        # 落到 skill 的每个 atom 一行 info（per-atom 审计链）
+        for r in in_skills:
+            logger.info(
+                "  %s → %s @ ws=%s",
+                r.get("atom_id"), r.get("skill_name"), r.get("weightscore"),
             )
-            update_traj_status(
-                wd_id, fname, "error",
-                error_msg=f"cluster all atoms failed: {err_sample}"[:200], **kw,
-            )
-            self._stats["errors"] += 1
+        # drop 的 atom 走 WARNING 让人 grep 得到。新 prompt 改完不应再出现，
+        # 但作为 defensive 保留——cluster agent 真违反"任何分数都必须 add"
+        # 这条硬约束时必须立刻被发现。
+        if dropped:
             logger.warning(
-                "%s → cluster failed (0/%d atoms ok): %s",
-                fname, n_total, err_sample,
+                "%s → %d atom(s) DROPPED (silent in cluster agent): %s",
+                fname, len(dropped),
+                [r.get("atom_id") for r in dropped],
             )
-            return
+
+        # Partial-fail 重试：只要还有 atom LLM 异常就标 error 等下轮重试，
+        # 直到 retry_count 超 MAX_CLUSTER_RETRIES 才放过去标 done。
+        # 已经成功 cluster 的 atom 不会被重投——_do_cluster 上游会用
+        # find_atom_in_any_skill 跳过已落地。
+        if n_errors > 0:
+            current_retry = get_traj_retry_count(wd_id, fname, **kw)
+            next_retry = current_retry + 1
+            if next_retry <= MAX_CLUSTER_RETRIES:
+                err_sample = next(
+                    (r.get("error", "?") for r in results
+                     if r.get("action") == "error"),
+                    "unknown",
+                )
+                update_traj_status(
+                    wd_id, fname, "error",
+                    error_msg=(
+                        f"cluster partial fail ({n_errors}/{n_total}): "
+                        f"{err_sample}"
+                    )[:200],
+                    retry_count=next_retry,
+                    **kw,
+                )
+                self._stats["errors"] += 1
+                logger.warning(
+                    "%s → cluster partial fail (%d/%d errors), retry %d/%d",
+                    fname, n_errors, n_total, next_retry, MAX_CLUSTER_RETRIES,
+                )
+                return
+            # 重试预算耗尽 → 兜底标 done + WARNING，让 traj 不再阻塞统计
+            logger.warning(
+                "%s → cluster gave up after %d retries (%d/%d still errored)",
+                fname, MAX_CLUSTER_RETRIES, n_errors, n_total,
+            )
 
         update_traj_status(
             wd_id, fname, "done", process_action="clustered", **kw,
         )
-        self._stats["atoms_clustered"] += n_ok
-        logger.info("%s → clustered (%d/%d atoms ok)", fname, n_ok, n_total)
+        self._stats["atoms_clustered"] += len(in_skills)
         # cluster 完成后该 traj 的所有 atom 都已落盘——这是 ux_score 应当
         # 跑的时机（旧 _score_new 在 traj 发现时跑会看到空 atom 列表）。
         if self.server_mode:
@@ -1084,8 +1151,18 @@ def process_atom_task(*, atom_id: str, config: dict, skill_dir: Path,
     )
     cluster_content = cluster.process(atom)
 
+    # cluster 跑完后回查 .candidates.yml 看 atom 实际落到了哪个 skill。
+    # 新 prompt 要求"任何分数都必须 add_task_to_skill"，正常情况下应该总能
+    # 找到；找不到 (skill_name=None) 即为 silent drop，被上层 logger 升 WARN。
+    from xskill.skill.candidates import find_atom_entry_in_any_skill
+    hit = find_atom_entry_in_any_skill(skill_dir, atom_id)
+    skill_name = hit[0] if hit else None
+    weightscore = hit[1] if hit else None
+
     return {
         "action": "clustered",
         "atom_id": atom_id,
+        "skill_name": skill_name,
+        "weightscore": weightscore,
         "cluster_log": (cluster_content or "")[:500],
     }

@@ -34,11 +34,10 @@ traj_id 前缀      ``traj_oc_``                                  ``traj_ng_``
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 from typing import Iterable
 
-from xskill.ecosystems._fallback import InstallMode, install_dir
+from xskill.ecosystems._fallback import install_dir
 from xskill.ecosystems._shared import (
     SqliteEcosystemSpec,
     _install_all_with,
@@ -102,8 +101,11 @@ def install_to_ngagent(
 
     * **写到 ngagent 专属目录**：``~/.config/opencode/skills/<name>/``——
       不与 opencode/codex 共享 ``~/.agents/skills/``。
-    * **同 fallback 链**：symlink → directory junction (Win) → copy + warning
-      （复用 ``_fallback.install_dir``）。
+    * **强制 copy 模式**：ngagent 在 Windows non-DevMode 下走 directory
+      junction → Node.js ``Dirent.isDirectory()`` 对 junction 返回 False
+      → ngagent skill discovery 看不到（issue #34）。所以**所有平台**
+      统一用 copy 模式，配套 ``reverse_sync_copy_dest`` 回流让用户改 dest
+      时仍能往 source 仓灌回——和 openclaw 同一套机制。
     * **same source switch (main / staging)**：同样支持 ``side`` 参数，
       ``staging`` 链到 ``<skill_path>/../.canary/<name>/``。
 
@@ -129,31 +131,14 @@ def install_to_ngagent(
     skills_root.mkdir(parents=True, exist_ok=True)
     dest = skills_root / name
 
-    # 已有 symlink 且指向正确：no-op（同 install_to_opencode 的 idempotent 逻辑）
-    if dest.is_symlink():
-        try:
-            cur = dest.resolve(strict=False)
-        except OSError:
-            cur = None
-        if cur == src_dir:
-            return dest / "SKILL.md"
-        dest.unlink()
-    elif dest.exists():
-        if dest.is_dir():
-            backup = skills_root / f".{name}.replaced-by-symlink"
-            if backup.exists():
-                shutil.rmtree(backup)
-            dest.rename(backup)
-        else:
-            dest.unlink()
-
-    mode: InstallMode = install_dir(src_dir, dest)
-    if mode == "copy":
-        logger.warning(
-            "install_to_ngagent(%s): copy-mode install at %s — "
-            "live-update / user-edit-absorb are disabled on this destination",
-            name, dest,
-        )
+    # 强制 copy + 一站式完成 reverse_sync→reset→install→meta。
+    # auto_reset=True 让 install_dir 内部处理"覆盖旧 dest"（含 reverse_sync
+    # 保护：上一轮若是 copy 且 dest 有 pending user edit，先灌回 source 再覆盖）。
+    install_dir(src_dir, dest, force_mode="copy", auto_reset=True)
+    logger.info(
+        "install_to_ngagent(%s): installed (copy + reverse_sync) at %s",
+        name, dest,
+    )
     return dest / "SKILL.md"
 
 

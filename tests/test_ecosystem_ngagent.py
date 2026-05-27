@@ -163,6 +163,79 @@ def test_install_to_ngagent_idempotent(tmp_path):
 
 
 # ──────────────────────────────────────────────────────────────────
+# T4b. issue #34 回归：dest 必须是真目录（不是 link/junction）
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_install_to_ngagent_dest_is_real_dir_not_link(tmp_path):
+    """issue #34 回归锚点：ngagent install 必须把 dest 装成真目录，
+    不能是 symlink 或 junction——否则 Node.js Dirent.isDirectory()
+    返回 false，ngagent skill discovery 看不到 skill。
+    """
+    from xskill.ecosystems._fallback import _is_link_or_junction
+
+    home = tmp_path / "home"
+    home.mkdir()
+    skill_root = tmp_path / "skills"
+    skill_path = _make_skill(skill_root, name="ng-test-skill")
+
+    install_to_ngagent(skill_path, target_root=home)
+
+    dest = home / ".config" / "opencode" / "skills" / "ng-test-skill"
+    assert dest.is_dir()
+    # 关键：不是 link/junction（issue #34 的核心约束）
+    assert not _is_link_or_junction(dest)
+
+
+def test_install_to_ngagent_user_edit_round_trips(tmp_path, monkeypatch):
+    """issue #34 完整链路验收：copy 模式装好 → 用户改 dest → 重装前
+    ``reverse_sync_copy_dest`` 把改灌回 source 仓。
+    """
+    import subprocess
+    import time as _t
+
+    home = tmp_path / "home"
+    home.mkdir()
+    skill_root = tmp_path / "skills"
+    # ngagent reverse_sync 要 source 是 git 仓（抢 skill_repo_lock）
+    sk = skill_root / "ng-test-skill"
+    sk.mkdir(parents=True)
+    (sk / "SKILL.md").write_text(
+        "---\nname: ng-test-skill\ndescription: original.\n---\n# original body\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q", str(sk)], check=True)
+    subprocess.run(["git", "-C", str(sk), "config", "user.email", "x@y.z"], check=True)
+    subprocess.run(["git", "-C", str(sk), "config", "user.name", "x"], check=True)
+    subprocess.run(["git", "-C", str(sk), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(sk), "commit", "-q", "-m", "init"], check=True)
+
+    install_to_ngagent(sk, target_root=home)
+    dest = home / ".config" / "opencode" / "skills" / "ng-test-skill"
+
+    # 让 reverse_sync 跳 quiet 检查（测试免等 3 分钟）
+    from xskill.agents import user_edit_absorb_agent as ua
+    _real = ua.reverse_sync_copy_dest
+
+    def _force_quiet_zero(d, s, **kw):
+        kw["quiet_seconds"] = 0
+        return _real(d, s, **kw)
+
+    monkeypatch.setattr(ua, "reverse_sync_copy_dest", _force_quiet_zero)
+
+    # 用户改 dest（mtime 比 installed_at 至少大 1 秒）
+    _t.sleep(1.1)
+    (dest / "SKILL.md").write_text(
+        "---\nname: ng-test-skill\ndescription: USER EDIT.\n---\n# user body\n",
+        encoding="utf-8",
+    )
+
+    # 重装：reverse_sync 应该把改灌回 source
+    install_to_ngagent(sk, target_root=home)
+    assert "USER EDIT" in (sk / "SKILL.md").read_text(encoding="utf-8")
+
+
+# ──────────────────────────────────────────────────────────────────
 # T6: SqliteIngester with NGAGENT_SPEC bridges sessions correctly
 # ──────────────────────────────────────────────────────────────────
 

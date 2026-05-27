@@ -35,7 +35,9 @@ from pathlib import Path
 from typing import Callable, Iterable, Literal, Optional
 
 from xskill.config import get_traj_dir
-from xskill.ecosystems._fallback import InstallMode, install_dir
+from xskill.ecosystems._fallback import (
+    InstallMode, _is_link_or_junction, install_dir,
+)
 
 logger = logging.getLogger("xskill.ecosystems")
 
@@ -291,18 +293,23 @@ def _install_skill_into(
     skills_root.mkdir(parents=True, exist_ok=True)
     dest = skills_root / name
 
-    # 已有 symlink 且指向正确：no-op
-    if dest.is_symlink():
+    # 已有 symlink/junction 且指向正确：no-op。``_is_link_or_junction``
+    # 而非 ``is_symlink`` —— pathlib 在 Windows 对 junction 返回 False
+    # （issue #35 同源 bug），统一处理 link/junction 两种 reparse point。
+    if _is_link_or_junction(dest):
         try:
             cur = dest.resolve(strict=False)
         except OSError:
             cur = None
         if cur == src_dir:
             return dest / "SKILL.md"
-        # 指向别处的 symlink 或断链 → 删
+        # 指向别处的 link/junction 或断链 → ``unlink`` 删 reparse 本体
+        # （不递归动 target）
         dest.unlink()
     elif dest.exists():
-        # 旧 install 留下的真实目录或文件 → 删（保留备份避免误删用户手写）
+        # 旧 install 留下的真实目录或文件 → 删（保留备份避免误删用户手写）。
+        # ``.replaced-by-symlink`` 备份保留——这是用户手写 skill 目录的保护机制，
+        # 不是 boilerplate；不能直接走 ``_reset_dest`` 删掉。
         if dest.is_dir():
             backup = skills_root / f".{name}.replaced-by-symlink"
             if backup.exists():

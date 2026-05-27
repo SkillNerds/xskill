@@ -419,6 +419,58 @@ class TestInstallToOpenClawProtectsPendingDestEdits:
         assert "DEST USER EDIT" in new_dest.read_text()
 
 
+class TestInstallToOpenClawJunctionRegression:
+    """issue #35 回归锚点：dest 是 symlink/junction 时 install_to_openclaw
+    不应抛 ``OSError: Cannot call rmtree on a symbolic link``，而是 unlink
+    旧 link 后 copytree 新内容。
+
+    Linux 上 ``Path.is_symlink()`` 对 symlink 正确返回 True，rmtree 也会
+    自己保护；问题完整复现在 Windows non-DevMode 上（``Path.is_symlink()``
+    对 junction 返回 False）。本类只测 POSIX 行为，``_is_link_or_junction``
+    的 Windows 分支由 ``test_install_fallback_revsync`` 的纯 mock 测覆盖。
+    """
+
+    def _build_real_skill_repo(self, root: Path) -> Path:
+        import subprocess
+        sk = root / "src" / "demo-skill"
+        sk.mkdir(parents=True)
+        (sk / "SKILL.md").write_text(
+            "---\nname: demo-skill\ndescription: A demo openclaw skill.\nversion: 1\n"
+            "source_trajs:\n  - traj_oc_0001\nmetadata:\n  tags:\n    - demo\n  "
+            "frozen: false\n---\n# demo-skill\n\nBody v1.\n",
+        )
+        subprocess.run(["git", "init", "-q", str(sk)], check=True)
+        subprocess.run(["git", "-C", str(sk), "config", "user.email", "x@y.z"], check=True)
+        subprocess.run(["git", "-C", str(sk), "config", "user.name", "x"], check=True)
+        subprocess.run(["git", "-C", str(sk), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(sk), "commit", "-q", "-m", "init"], check=True)
+        return sk
+
+    def test_install_to_openclaw_replaces_existing_symlink_safely(self, tmp_path):
+        """模拟 codex/opencode 先在 ``~/.agents/skills/<name>`` 装了 symlink
+        （Linux 上 ``install_dir`` 默认走 symlink），再让 openclaw 跑：
+        旧 symlink 应被 unlink，新 copy 顺利落地，不抛 OSError。
+        """
+        sk = self._build_real_skill_repo(tmp_path)
+        home = tmp_path / "home"
+        skills_root = home / ".agents" / "skills"
+        skills_root.mkdir(parents=True)
+        # 模拟 codex 先装了一个指向 sk 的 symlink
+        existing_link = skills_root / "demo-skill"
+        existing_link.symlink_to(sk, target_is_directory=True)
+        assert existing_link.is_symlink()
+
+        # openclaw 现在跑——不应抛 OSError
+        from xskill.ecosystems import install_to_openclaw
+        dest_md = install_to_openclaw(sk, target_root=home)
+
+        # 旧 link 已被替换为真目录
+        assert dest_md.is_file()
+        dest_dir = home / ".agents" / "skills" / "demo-skill"
+        assert dest_dir.is_dir()
+        assert not dest_dir.is_symlink()
+
+
 # ──────────────────────────────────────────────────────────────────
 # T4. detect
 # ──────────────────────────────────────────────────────────────────

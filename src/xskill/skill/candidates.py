@@ -214,6 +214,47 @@ def clear_candidates(skill_dir: Path) -> None:
     save_candidates(skill_dir, {"candidates": []})
 
 
+def find_atom_in_any_skill(skill_dir: Path, atom_id: str) -> str | None:
+    """在所有 skill 的 ``.candidates.yml`` 里查 ``atom_id``，返回它所在的
+    skill 名；找不到 → ``None``。
+
+    用途：
+    1) ``process_atom_task`` 返回结果时记录 ``skill_name`` 字段（per-atom 日志）。
+    2) cluster 重试前去重——已经落地的 atom 不再投给 cluster_agent，避免
+       重复花 LLM。
+
+    单条 atom 理论上只属于一个 skill（cluster agent 不会重复 add），按
+    扫描顺序返回第一个命中。
+    """
+    hit = find_atom_entry_in_any_skill(skill_dir, atom_id)
+    return hit[0] if hit else None
+
+
+def find_atom_entry_in_any_skill(
+    skill_dir: Path, atom_id: str,
+) -> tuple[str, int] | None:
+    """``find_atom_in_any_skill`` 的扩展版：同时返回 ``(skill_name, weightscore)``。
+
+    per-atom info 日志要打 ``ws=...``，需要这个 weightscore。
+    """
+    if not skill_dir or not Path(skill_dir).is_dir():
+        return None
+    for skill_path in sorted(Path(skill_dir).iterdir()):
+        if not skill_path.is_dir() or skill_path.name.startswith("."):
+            continue
+        cand_yml = skill_path / CANDIDATES_FILENAME
+        if not cand_yml.is_file():
+            continue
+        try:
+            data = yaml.safe_load(cand_yml.read_text(encoding="utf-8")) or {}
+            for c in data.get("candidates", []) or []:
+                if c.get("atom_id") == atom_id:
+                    return (skill_path.name, int(c.get("weightscore", 0)))
+        except Exception:
+            continue
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════════
 # v1 schema — 保留给旧 watcher / 旧 SkillAgent 用，下个 task 切换后再清
 # ═══════════════════════════════════════════════════════════════════

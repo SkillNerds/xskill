@@ -16,6 +16,7 @@ import argparse
 import logging
 import sys
 
+from xskill import __version__
 from xskill.config import set_overrides
 
 
@@ -177,6 +178,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="xskill",
         description="xskill — distill reusable Skills from AI Agent trajectories",
+    )
+    # -v / --version 唯一从 xskill.__version__ 读取，而 __version__ 在
+    # src/xskill/__init__.py 里只 import 自 setuptools_scm 写出的 _version.py
+    # —— 即 git tag 是单一真源，不在任何代码里硬编。
+    p.add_argument(
+        "-v", "--version",
+        action="version",
+        version=f"xskill {__version__}",
     )
     p.add_argument("--debug", action="store_true", help="verbose logging")
     p.add_argument("--quiet", action="store_true", help="quiet mode")

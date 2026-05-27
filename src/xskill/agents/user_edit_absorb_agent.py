@@ -210,36 +210,70 @@ def detect_user_edits(skill_dir: Path, *, quiet_seconds: int = USER_EDIT_QUIET_S
 
 
 # ──────────────────────────────────────────────────────────────────
-# openclaw dest → source 回流桥
+# dest → source 回流桥（通用 copy-mode install 回流）
 # ──────────────────────────────────────────────────────────────────
 #
-# openclaw 装 skill 走 copy（symlink 被 openclaw 拒收，详见 docs/ecosystem/
-# openclaw-install-fix.md）。dest 是真目录，跟源仓解耦，用户改 dest 不会
-# 被 absorb agent 看到。本函数把 dest 用户改灌回源仓，让 source mtime 看起
-# 来"刚被改过"，后续原有 absorb / push-edit 链路就能像处理普通源仓改动一样
-# 收编。
+# 凡是 ``ecosystems._fallback.install_dir`` 走到 copy 路径的生态（dest 是
+# 真目录，跟源仓解耦），用户改 dest 都不会被 absorb agent 看到——absorb
+# 走的是源仓 mtime。本模块的 ``reverse_sync_copy_dest`` 把 dest 用户改
+# 灌回源仓，让 source mtime 看起来"刚被改过"，后续原有 absorb / push-edit
+# 链路就能像处理普通源仓改动一样收编。
+#
+# 历史背景：openclaw 是第一个被迫走 copy 的生态（openclaw discovery 对
+# 非 bundled 档做 realpath 检查，symlink 跑出 root 会被拒）；ngagent 在
+# Windows non-DevMode 下也撞同样问题（Node.js Dirent 把 junction 当
+# symlink 不当目录看，详见 issue #34），所以把这套机制泛化给所有 copy
+# 模式的生态用。
+#
+# install-meta 由 ``_fallback._write_install_meta`` 统一写到
+# ``dest.parent / .xskill-install-meta-<dest.name>.json``。本模块也兼容
+# 读取 **dest 内部** 的老 ``.xskill-install-meta.json``（openclaw 旧版位置）
+# ——新装的 skill 都已是新位置，老路径只为存量 dest 提供平滑过渡，不应
+# 有新代码再往 dest 内部写 meta。
 
+# openclaw 旧位置：写在 dest 内部（保留以兼容存量装出去的 dest）
 _OPENCLAW_INSTALL_META = ".xskill-install-meta.json"
-_REVERSE_SYNC_EXCLUDE = {_OPENCLAW_INSTALL_META, ".git"}
+
+# 默认 reverse_sync exclude：``.git`` + 兼容 openclaw 老位置 meta（dest 内部）。
+# 新位置 meta 在 ``dest.parent`` 旁边，``dest.rglob("*")`` 扫不到，无需 exclude。
+# 老位置在 ``dest/.xskill-install-meta.json``——只要 dest 还可能存在老 meta
+# （存量 openclaw 装好的 dest 升级前都是老位置），就必须在所有 helper 的默认
+# exclude 里把它排掉，否则 install 时重写 meta 会触发误判 "用户改了 dest"。
+_DEFAULT_REVERSE_SYNC_EXCLUDE = frozenset({".git", _OPENCLAW_INSTALL_META})
+
+
+def _new_install_meta_path(dest_dir: Path) -> Path:
+    """新位置 meta：``dest.parent / .xskill-install-meta-<dest.name>.json``。
+
+    与 ``ecosystems._fallback._install_meta_path`` 同源；这里复刻一份
+    避免 user_edit_absorb_agent ↔ ecosystems 的循环 import。
+    """
+    return dest_dir.parent / f".xskill-install-meta-{dest_dir.name}.json"
 
 
 def _read_install_meta_ts(dest_dir: Path) -> Optional[float]:
-    """读 dest 里 .xskill-install-meta.json 的 installed_at。读不到返回 None。"""
-    meta_path = dest_dir / _OPENCLAW_INSTALL_META
-    if not meta_path.is_file():
-        return None
-    try:
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    """读 dest install-meta 的 installed_at（epoch 秒）；读不到返回 None。
+
+    优先读**新位置**（``dest.parent`` 旁边的 ``.xskill-install-meta-<name>.json``）；
+    新位置缺失才退到 openclaw 旧位置（``dest/.xskill-install-meta.json``）
+    做兼容——存量 openclaw dest 升级前还是老位置；新装的统一在新位置。
+    """
+    for meta_path in (_new_install_meta_path(dest_dir),
+                      dest_dir / _OPENCLAW_INSTALL_META):
+        if not meta_path.is_file():
+            continue
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
         ts = data.get("installed_at")
         if isinstance(ts, (int, float)):
             return float(ts)
-    except (OSError, json.JSONDecodeError, ValueError):
-        return None
     return None
 
 
-def _dest_user_edit_mtime(dest_dir: Path) -> float:
-    """扫 dest 下所有用户内容文件的 max mtime，跳过 _REVERSE_SYNC_EXCLUDE。
+def _dest_user_edit_mtime(dest_dir: Path, exclude: frozenset[str]) -> float:
+    """扫 dest 下所有用户内容文件的 max mtime，跳过 exclude 第一段。
 
     .git 跳过——dest 理论上不该有 .git，但万一有（用户自己 git init）也别
     把 git 内部状态当用户改算。
@@ -251,7 +285,7 @@ def _dest_user_edit_mtime(dest_dir: Path) -> float:
             parts = rel.parts
             if not parts:
                 continue
-            if parts[0] in _REVERSE_SYNC_EXCLUDE:
+            if parts[0] in exclude:
                 continue
             m = p.stat().st_mtime
             if m > max_mtime:
@@ -262,7 +296,9 @@ def _dest_user_edit_mtime(dest_dir: Path) -> float:
 
 
 def has_pending_dest_edit(
-    dest_dir: Path, *, quiet_seconds: int = USER_EDIT_QUIET_SECONDS,
+    dest_dir: Path, *,
+    quiet_seconds: int = USER_EDIT_QUIET_SECONDS,
+    exclude: frozenset[str] = _DEFAULT_REVERSE_SYNC_EXCLUDE,
 ) -> bool:
     """dest 里是否有用户手改、且静默时间已过 quiet_seconds？
 
@@ -277,7 +313,7 @@ def has_pending_dest_edit(
     installed_at = _read_install_meta_ts(dest_dir)
     if installed_at is None:
         return False
-    max_mtime = _dest_user_edit_mtime(dest_dir)
+    max_mtime = _dest_user_edit_mtime(dest_dir, exclude)
     if max_mtime - installed_at < 1.0:
         return False
     if (time.time() - max_mtime) < quiet_seconds:
@@ -285,36 +321,46 @@ def has_pending_dest_edit(
     return True
 
 
-def reverse_sync_openclaw_dest(
+def reverse_sync_copy_dest(
     dest_dir: Path, source_dir: Path,
-    *, quiet_seconds: int = USER_EDIT_QUIET_SECONDS,
+    *,
+    exclude: frozenset[str] = _DEFAULT_REVERSE_SYNC_EXCLUDE,
+    quiet_seconds: int = USER_EDIT_QUIET_SECONDS,
 ) -> bool:
-    """把 dest 里的用户改灌回 source，让 source mtime 看起来"刚被改过"。
+    """通用 copy-mode 回流：把 dest 用户改灌回 source。
+
+    任何 ``install_dir`` 走到 copy 路径的生态都能用（openclaw / ngagent /
+    其它落到 copy fallback 的）。``exclude`` 默认只排 ``.git``；调用方
+    可以加更多（如 openclaw 兼容路径加 ``_OPENCLAW_INSTALL_META``）。
 
     返回 True 表示真有内容被灌回去（这一轮 watcher 下一步应该看到 source
     有 pending edit）；False 表示 dest 没改 / 还在静默期 / 出错跳过。
 
     流程：
-    1. ``has_pending_dest_edit`` 检查（dest 有改且静默 ≥3 分钟）
+    1. ``has_pending_dest_edit`` 检查（dest 有改且静默 ≥quiet_seconds）
     2. 抢源仓 ``skill_repo_lock``——跟 CC absorb / canary flip 用同一把锁
-    3. 遍历 dest 文件（跳 ``.xskill-install-meta.json`` / ``.git``），
-       对每个文件 copy 到 source 对应路径（覆盖；新文件自动 mkdir）
+    3. 遍历 dest 文件（跳 exclude 第一段路径），对每个文件 copy 到 source
+       对应路径（覆盖；新文件自动 mkdir）
     4. 留意：**不删** source 里 dest 没有的文件（避免误删源仓里 ``.canary``
        等 xskill 自己产物；用户要删请在源仓直接删）
-    5. touch source 里同名文件的 mtime（让 ``_max_workspace_mtime`` 下一轮
+    5. touch source 里 SKILL.md 的 mtime（让 ``_max_workspace_mtime`` 下一轮
        看到 source 有 pending edit）
 
-    并发：copytree 期间 dest 也可能被 openclaw 装 / 用户继续改。锁只保护
-    source 的一致性。dest 在 copytree 中途变了，最坏情况是漏掉这次新改动，
+    并发：copy 期间 dest 也可能被 install 重新覆盖 / 用户继续改。锁只保护
+    source 的一致性。dest 在 copy 中途变了，最坏情况是漏掉这次新改动，
     下一轮 watcher 再扫到再回流。
     """
-    if not has_pending_dest_edit(dest_dir, quiet_seconds=quiet_seconds):
+    # 默认 exclude 已含 openclaw 老位置 meta + .git；调用方传别的就用它们。
+    full_exclude = frozenset(exclude)
+    if not has_pending_dest_edit(
+        dest_dir, quiet_seconds=quiet_seconds, exclude=full_exclude,
+    ):
         return False
 
     from xskill.skill.git import skill_repo_lock
 
     skill_name = source_dir.name
-    logger.info("openclaw reverse_sync start: %s (dest=%s → source=%s)",
+    logger.info("reverse_sync_copy_dest start: %s (dest=%s → source=%s)",
                 skill_name, dest_dir, source_dir)
 
     with skill_repo_lock(source_dir):
@@ -325,7 +371,7 @@ def reverse_sync_openclaw_dest(
             except ValueError:
                 continue
             parts = rel.parts
-            if not parts or parts[0] in _REVERSE_SYNC_EXCLUDE:
+            if not parts or parts[0] in full_exclude:
                 continue
             if src_file.is_dir():
                 continue
@@ -338,6 +384,22 @@ def reverse_sync_openclaw_dest(
             # touch source 让 watcher 下一轮看见 (max_mtime > last_commit_ts ≥ 1s)
             (source_dir / "SKILL.md").touch()
 
-    logger.info("openclaw reverse_sync done: %s (synced=%s)",
+    logger.info("reverse_sync_copy_dest done: %s (synced=%s)",
                 skill_name, touched_any)
     return touched_any
+
+
+def reverse_sync_openclaw_dest(
+    dest_dir: Path, source_dir: Path,
+    *, quiet_seconds: int = USER_EDIT_QUIET_SECONDS,
+) -> bool:
+    """已弃用别名，新代码用 ``reverse_sync_copy_dest``。
+
+    保留这个名字给外部调用方（team/client/daemon.py、pipeline/runner.py、
+    openclaw.py）平滑迁移。语义与默认参数的 ``reverse_sync_copy_dest`` 等价
+    （默认 exclude 已含 openclaw 老位置 meta）。
+    """
+    return reverse_sync_copy_dest(
+        dest_dir, source_dir,
+        quiet_seconds=quiet_seconds,
+    )

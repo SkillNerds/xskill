@@ -171,19 +171,31 @@ NewSkillFolder 再 add_task_to_skill）。
 
 {skill_catalog}
 
-# weightscore 严格分档表（永远质量驱动，不要凑条数）
+# weightscore 严格分档表
+# 永远质量驱动，不要凑条数。**每个 atom 都必须 add_task_to_skill；任何分数都不允许直接 return**。
 
-  10 这一个 atom 就足以单独或强烈支撑该 skill 的核心场景（罕见；只在 atom 包含
-     可机械执行的、跨多类相似问题都成立的修复决策时才给）。给 10 立即触发 SkillEdit。
-   8-9 高质量贡献：atom 完整覆盖某 skill 的关键阶段，包含具体命令/路径/函数名 + 可
-       核验的产出 + 用户成功反馈。两个 8 分相加即触发 SkillEdit。
-   6-7 中等贡献：atom 在该 skill 的范围内，但只覆盖了一个子阶段或某个 warning；
-       需要别的 atom 补齐才有意义。
-   4-5 弱贡献：atom 提到了相关问题，但执行细节模糊或不完整；放进 candidates 但
-       不要寄希望于它单独触发。
-   2-3 边缘相关：atom 只是和 skill 沾边，不要写进 candidates；除非确实想刷量
-       否则直接不调 add_task_to_skill。
-   1 完全不相关：不要写。
+  10  单 atom 就强支撑该 skill 核心场景。罕见——仅当 atom 含可机械执行、
+      跨多类相似问题都成立的修复决策时才给。立即触发 SkillEdit。
+
+  8-9 高质量：atom 完整覆盖该 skill 的关键阶段，含具体命令/路径/函数名
+      + 可核验产出 + 用户成功反馈。两个 8 分相加即触发 SkillEdit。
+
+  6-7 中等：atom 在该 skill 范围内但只覆盖一个子阶段或单个 warning；
+      需要别的 atom 补齐才完整。
+
+  4-5 弱：atom 提到该 skill 的相关问题，但执行细节模糊或不完整；
+      具体命令/路径不清，产出难以核验。
+
+  2-3 边缘：atom 与 skill 同领域但停留在概念/语境层面。典型形态：
+      - 用户 query 里提到术语后马上转向别的话题
+      - 任务铺背景时引用一句该 skill 的关键词
+      - "X 是什么"这类概念性问答，非操作性步骤
+      - session 中途偏题瞄一眼然后回主线
+      特征：没有具体命令/路径/可核验产出，没有跨场景成立的决策模式。
+      仍要 add_task_to_skill。
+
+  1   atom 跟路由表所有 skill 都没明显交叉。挑 desc 最不远的那个强 add，
+      weightscore=1。不要为 ws=1 atom 新开 skill（守住"≥7 才新建"门槛）。
 
 # 处理流程（v2.2 重点：复用 > 整合 > 新建）
 
@@ -209,8 +221,12 @@ NewSkillFolder 再 add_task_to_skill）。
 - **门槛**：单 atom weightscore < 7 不要新建（防污染 skill 列表）
 - description 必填，2-3 句中文写清服务于什么类型的 atom
 
-## Step 5: 不值得收录
-- weightscore 在 2-3 边缘相关：什么都不调，直接说明理由结束
+## Step 5: 边缘 atom 兜底（**绝不允许直接 return 不调工具**）
+- weightscore 2-3：仍要 add_task_to_skill 把 atom 灌进 desc 最贴近的 skill；
+  ws=2/3 不会单独触发 SkillEdit（buffer 阈值 10），但 atom→skill 归属必须留底
+- weightscore 1：跟路由表所有 skill 都没明显交叉时，挑 desc 最不远的那个 add，
+  weightscore=1；**不要**为 ws=1 atom 新开 skill（守住"≥7 才新建"门槛）
+- 任何分数都不允许"什么都不调，直接说明理由结束"——atom 不能静默蒸发
 
 # 渐进收敛策略
 

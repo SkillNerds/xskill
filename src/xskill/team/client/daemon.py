@@ -143,6 +143,7 @@ class TeamClient:
                 repo_dir=repo_dir, target_side=slot.side, target_sha=slot.sha,
                 history=self.history, on_changed=self._install_to_ecosystems,
             )
+        logger.info("reconciled %d skills", len(manifest.slots))
 
     def _install_to_ecosystems(self, repo_dir: Path) -> None:
         """把一个已 checkout 好的 skill working copy 装到本机所有生态。
@@ -173,6 +174,7 @@ class TeamClient:
                 continue
             try:
                 fn(repo_dir, target_root=self.home_root, side="main")
+                logger.info("installed %s to %s", repo_dir.name, det["ecosystem"])
             except Exception:
                 logger.warning("install %s to %s failed",
                                repo_dir.name, det["ecosystem"], exc_info=True)
