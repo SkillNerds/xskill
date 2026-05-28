@@ -59,7 +59,7 @@ embedding:
   dim:      0
 ```
 
-Run `xskill serve` again — it auto-detects every supported agent on your machine (Claude Code, Codex, OpenCode, OpenClaw, Cursor) and starts watching. To also index an archive of older trajectories:
+Run `xskill serve` again — it auto-detects every supported agent on your machine (Claude Code, Codex, OpenCode, OpenClaw, Cursor, Trae) and starts watching. To also index an archive of older trajectories:
 
 ```bash
 xskill registry add /path/to/trajectories
@@ -123,6 +123,7 @@ A few narrow LLM agents do the work. One splits a trajectory into single-intent 
 | **OpenCode** | ✅ verified | SQLite `~/.local/share/opencode/opencode.db` | symlink → `~/.agents/skills/<name>/` |
 | **OpenClaw** | 🟡 implemented, not well tested | auto-detects `~/.openclaw/agents/` | copy → `~/.agents/skills/<name>/` |
 | **Cursor** | 🟡 implemented, not well tested | auto-detects `~/.cursor/projects/*/agent-transcripts/` | symlink → `~/.cursor/skills/<name>/` |
+| **Trae** | 🟡 implemented, not well tested | IDE: `%APPDATA%/Trae*/User/workspaceStorage/*/state.vscdb`; CLI: `~/trajectories/trajectory_*.json` | symlink → `~/.trae-cn/skills/` and/or `~/.trae/skills/` |
 | **Any other agent** | manual | SDK: `xskill.adapters.submit_trajectory` | copy or symlink the `SKILL.md` directory |
 
 ## Concepts
@@ -137,7 +138,7 @@ A few narrow LLM agents do the work. One splits a trajectory into single-intent 
 
 ## Roadmap
 
-- More agent adapters — Trae, Goose, OpenHands, Aider
+- More agent adapters — Goose, OpenHands, Aider
 - More mature user profiling and recommendation
 - Native MCP server interface (Skills exposed as tools)
 - Web UI for browsing the library and viewing canary stats
@@ -149,6 +150,7 @@ A few narrow LLM agents do the work. One splits a trajectory into single-intent 
 - **2026-05-23** — Officially open-source, `v0.5.0` released: team mode (client-server), trajectory redaction, Python 3.9 support, no `git` binary needed at runtime. See the [release notes](https://github.com/SkillNerds/xskill/releases/tag/v0.5.0).
 - **2026-05-20** — MIT-licensed open source; on PyPI: `pip install xskill`.
 - **2026-05-12** — Claude Code, Codex, OpenCode supported; OpenClaw and Cursor connected.
+- **2026-05-29** — Trae IDE / Trae Agent adapter: workspaceStorage chat ingest + skill install to `~/.trae-cn/skills` / `~/.trae/skills`.
 
 ## License
 

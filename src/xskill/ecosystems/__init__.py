@@ -8,6 +8,7 @@
                   + ingest_claude_code_sessions + CCSessionIngester
   codex.py      — Codex CLI：适配 + install/ingest
   cursor.py     — Cursor：适配 + install/ingest
+  trae.py       — Trae IDE / Trae Agent：适配 + install/ingest
   openclaw.py   — OpenClaw：适配 + install/ingest + canary flip hook
   opencode.py   — OpenCode：SqliteIngester + install/ingest
   ngagent.py    — ngagent（opencode 企业分支）：复用 SqliteIngester + 独立 install 路径
@@ -66,6 +67,15 @@ from xskill.ecosystems.cursor import (
     _cursor_session_id_from_path,
     _read_cwd_from_cursor_jsonl,
 )
+from xskill.ecosystems.trae import (
+    TraeIngester,
+    install_to_trae,
+    install_all_to_trae,
+    ingest_trae_sessions,
+    detect_trae_record,
+    _trae_skills_roots,
+    _trae_workspace_storage_roots,
+)
 from xskill.ecosystems.openclaw import (
     OPENCLAW_SPEC,
     install_to_openclaw,
@@ -98,12 +108,16 @@ __all__ = [
     "JsonlIngester", "SqliteIngester", "CCSessionIngester",
     "detect_known_ecosystems",
     "install_to_claude_code", "install_to_codex", "install_to_cursor",
+    "install_to_trae",
     "install_to_openclaw", "install_to_opencode", "install_to_ngagent",
     "install_all_to_claude_code", "install_all_to_codex",
-    "install_all_to_cursor", "install_all_to_openclaw",
+    "install_all_to_cursor", "install_all_to_trae",
+    "install_all_to_openclaw",
     "install_all_to_opencode", "install_all_to_ngagent",
     "ingest_claude_code_sessions", "ingest_codex_sessions",
-    "ingest_cursor_sessions", "ingest_openclaw_sessions",
+    "ingest_cursor_sessions", "ingest_trae_sessions",
+    "ingest_openclaw_sessions",
+    "TraeIngester", "detect_trae_record",
     "make_openclaw_canary_flip_hook",
     "adapt_trajectory", "submit_trajectory", "generate_traj_id",
 ]

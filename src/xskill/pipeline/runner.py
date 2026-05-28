@@ -370,6 +370,7 @@ class DirectoryWatcher:
             install_to_ngagent,
             install_to_openclaw,
             install_to_cursor,
+            install_to_trae,
         )
 
         target_root = self._resolve_target_root()
@@ -386,6 +387,7 @@ class DirectoryWatcher:
             "ngagent": install_to_ngagent,  # opencode 企业分支，独立 skill 目录
             "openclaw": install_to_openclaw,  # copy 模式，详见 install_to_openclaw docstring
             "cursor": install_to_cursor,
+            "trae": install_to_trae,
         }
 
         results: dict = {}

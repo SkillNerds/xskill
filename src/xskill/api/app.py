@@ -872,12 +872,14 @@ def create_app(home_root: Path | str | None = None,
                     CCSessionIngester, JsonlIngester, SqliteIngester,
                     CODEX_SPEC, OPENCODE_SPEC, NGAGENT_SPEC,
                     OPENCLAW_SPEC, CURSOR_SPEC,
+                    TraeIngester,
                     install_all_to_claude_code,
                     install_all_to_codex,
                     install_all_to_opencode,
                     install_all_to_ngagent,
                     install_all_to_openclaw,
                     install_all_to_cursor,
+                    install_all_to_trae,
                     make_openclaw_canary_flip_hook,
                 )
                 from xskill.canary import CanaryConfig
@@ -1105,6 +1107,38 @@ def create_app(home_root: Path | str | None = None,
                             )
                         ingester = JsonlIngester(
                             CURSOR_SPEC,
+                            target_traj_dir=bridge,
+                            home_root=_home_root(),
+                            poll_interval=poll_interval,
+                        )
+                        ingester.start()
+                        _watcher_ref[ingester_key] = ingester
+
+                    elif eco == "trae":
+                        # Trae IDE：workspaceStorage/state.vscdb 里的 chat blob；
+                        # Trae Agent CLI：~/trajectories/trajectory_*.json。
+                        # Skill 装 ~/.trae-cn/skills 与/或 ~/.trae/skills。
+                        try:
+                            installed = install_all_to_trae(
+                                _skill_dir, target_root=_home_root(),
+                            )
+                            for dest in installed:
+                                install_history.record(
+                                    skill=dest.parent.name, side="main", sha="",
+                                )
+                            logger.info(
+                                "startup install_all_to_trae: %d skills installed",
+                                len(installed),
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "startup install_all_to_trae failed", exc_info=True,
+                            )
+                            install_history.record_fail(
+                                skill="<startup_all>", agent="trae",
+                                reason=str(e)[:200],
+                            )
+                        ingester = TraeIngester(
                             target_traj_dir=bridge,
                             home_root=_home_root(),
                             poll_interval=poll_interval,

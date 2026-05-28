@@ -158,7 +158,7 @@ class TeamClient:
         from xskill.ecosystems import (
             detect_known_ecosystems, install_to_claude_code,
             install_to_codex, install_to_opencode, install_to_ngagent,
-            install_to_openclaw, install_to_cursor,
+            install_to_openclaw, install_to_cursor, install_to_trae,
         )
         installer = {
             "claude_code": install_to_claude_code,
@@ -167,6 +167,7 @@ class TeamClient:
             "ngagent": install_to_ngagent,
             "openclaw": install_to_openclaw,
             "cursor": install_to_cursor,
+            "trae": install_to_trae,
         }
         for det in detect_known_ecosystems(home_root=self.home_root):
             fn = installer.get(det["ecosystem"])

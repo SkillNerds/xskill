@@ -23,6 +23,7 @@
 - **2026-05-23** — 正式开源，发布 `v0.5.0`：团队模式（client-server）、隐私脱敏、Python 3.9 支持、无需 `git`依赖。详见 [Release notes](https://github.com/SkillNerds/xskill/releases/tag/v0.5.0)。
 - **2026-05-20** — MIT 开源，PyPI 上架：`pip install xskill`。
 - **2026-05-12** — Claude Code、Codex、OpenCode 支持；OpenClaw、Cursor对接。
+- **2026-05-29** — Trae IDE / Trae Agent 适配：读取 workspaceStorage 会话、Skill 安装至 `~/.trae-cn/skills` / `~/.trae/skills`。
 
 ## 解决什么问题
 
@@ -59,7 +60,7 @@ embedding:
   dim:      0
 ```
 
-再跑一次 `xskill serve`，它会自动扫机器上装好的所有 agent（Claude Code、Codex、OpenCode、OpenClaw、Cursor）开始监听。如果还有一份历史轨迹归档想一起吃进来：
+再跑一次 `xskill serve`，它会自动扫机器上装好的所有 agent（Claude Code、Codex、OpenCode、OpenClaw、Cursor、Trae）开始监听。如果还有一份历史轨迹归档想一起吃进来：
 
 ```bash
 xskill registry add /path/to/trajectories
@@ -100,6 +101,7 @@ xskill connect <host:port> --token <token>
 | **OpenCode** | ✅ 已验证 | 读 SQLite `~/.local/share/opencode/opencode.db` | symlink → `~/.agents/skills/<name>/` |
 | **OpenClaw** | 🟡 已对接，not well tested | 扫 `~/.openclaw/agents/` | 拷贝 → `~/.agents/skills/<name>/` |
 | **Cursor** | 🟡 已对接，not well tested | 扫 `~/.cursor/projects/*/agent-transcripts/` | symlink → `~/.cursor/skills/<name>/` |
+| **Trae** | 🟡 已对接，not well tested | IDE：读 `%APPDATA%/Trae*/User/workspaceStorage/*/state.vscdb`；CLI：扫 `~/trajectories/trajectory_*.json` | symlink → `~/.trae-cn/skills/` 与/或 `~/.trae/skills/` |
 | **其他 agent** | 手动 | SDK：`xskill.adapters.submit_trajectory` | 自己拷贝 / symlink `SKILL.md` 目录 |
 
 ## 几个名词
@@ -114,7 +116,7 @@ xskill connect <host:port> --token <token>
 
 ## Roadmap
 
-- 更多 agent adapter：Trae、Goose、OpenHands、Aider
+- 更多 agent adapter：Goose、OpenHands、Aider
 - 更为成熟的用户画像和推荐算法
 - 原生 MCP server 接口（把 Skill 暴露成 tool）
 - Web UI：浏览 Skill 库、看灰度数据
