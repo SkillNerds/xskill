@@ -75,6 +75,7 @@ from xskill.ecosystems.trae import (
     detect_trae_record,
     _trae_skills_roots,
     _trae_workspace_storage_roots,
+    _sessions_from_chat_blob,
 )
 from xskill.ecosystems.openclaw import (
     OPENCLAW_SPEC,

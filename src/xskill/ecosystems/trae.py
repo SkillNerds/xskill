@@ -623,7 +623,11 @@ class TraeIngester:
                     meta = {
                         "workspace_id": ws_dir.name,
                         "workspace_folder": folder,
-                        "session_id": str(sid),
+                        # 落盘 dedup_key（而非裸 sid），_scan_seen_sessions
+                        # 重启重建 seen 集时才能与下一轮 poll 的 key 对齐，
+                        # 否则每次重启首轮都会重桥同一 session、虚增计数。
+                        # 与 CLI 路径（_bridge_agent_trajectories）保持一致。
+                        "session_id": dedup_key,
                         "source_vscdb": str(db_path),
                         "chat_store_key": used_key,
                     }

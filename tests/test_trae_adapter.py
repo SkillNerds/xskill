@@ -17,6 +17,7 @@ from xskill.ecosystems import (
     install_to_trae,
     ingest_trae_sessions,
     _trae_skills_roots,
+    _trae_workspace_storage_roots,
     _sessions_from_chat_blob,
 )
 from xskill.skill.frontmatter import serialize as fm_serialize
@@ -100,10 +101,9 @@ class TestTraeIngest:
     def test_ingest_from_workspace_storage(self, tmp_path, ide_session_text):
         home = tmp_path / "home"
         ws_id = "abc123"
-        ws_dir = (
-            home / "AppData" / "Roaming" / "TRAE SOLO CN"
-            / "User" / "workspaceStorage" / ws_id
-        )
+        # 用实现侧探测到的平台原生根，测试才能跨 OS（Linux CI）通过——
+        # 不再伪造 Windows %APPDATA% 布局。
+        ws_dir = _trae_workspace_storage_roots(home)[0] / ws_id
         session = json.loads(ide_session_text)
         _write_vscdb(
             ws_dir / "state.vscdb",
@@ -115,21 +115,47 @@ class TestTraeIngest:
         )
 
         traj_dir = tmp_path / "traj"
-        import os
-        old = os.environ.get("APPDATA")
-        os.environ["APPDATA"] = str(home / "AppData" / "Roaming")
-        try:
-            records = ingest_trae_sessions(traj_dir, home_root=home)
-        finally:
-            if old is None:
-                os.environ.pop("APPDATA", None)
-            else:
-                os.environ["APPDATA"] = old
+        records = ingest_trae_sessions(traj_dir, home_root=home)
 
         assert len(records) == 1
         md_files = list(traj_dir.glob("traj_trae_*.md"))
         assert len(md_files) == 1
         assert "authentication timeout" in md_files[0].read_text(encoding="utf-8")
+
+    def test_ide_dedup_survives_restart(self, tmp_path, ide_session_text):
+        """重启后从落盘 json 重建 seen 集，应认出已桥接的 IDE session，
+        不重复桥接（否则每次重启首轮都虚增 stats["ingested"] + 误报日志）。
+
+        Restart must not re-bridge an already-bridged IDE session: the dedup
+        key persisted in metadata has to match the in-memory key used on the
+        next poll, or the ingest counter inflates on every daemon restart.
+        """
+        from xskill.ecosystems._shared import _scan_seen_sessions
+
+        home = tmp_path / "home"
+        ws_id = "abc123"
+        ws_dir = _trae_workspace_storage_roots(home)[0] / ws_id
+        session = json.loads(ide_session_text)
+        _write_vscdb(
+            ws_dir / "state.vscdb",
+            "chat.ChatSessionStore.index",
+            {"version": 1, "entries": {"sess-demo-001": session}},
+        )
+        (ws_dir / "workspace.json").write_text(
+            json.dumps({"folder": "file:///c:/proj/foo"}), encoding="utf-8",
+        )
+
+        traj_dir = tmp_path / "traj"
+        first = ingest_trae_sessions(traj_dir, home_root=home)
+        assert len(first) == 1
+        # 模拟 daemon 重启：seen 集由 _scan_seen_sessions 从磁盘重建
+        seen = _scan_seen_sessions(traj_dir)
+        second = ingest_trae_sessions(
+            traj_dir, home_root=home, seen_sessions=seen,
+        )
+
+        assert second == []
+        assert len(list(traj_dir.glob("traj_trae_*.md"))) == 1
 
     def test_ingest_agent_cli_json(self, tmp_path, agent_traj_text):
         home = tmp_path / "home"
