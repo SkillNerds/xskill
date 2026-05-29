@@ -98,6 +98,14 @@ def _write_vscdb(db_path: Path, chat_key: str, chat_value: dict) -> None:
 
 
 class TestTraeIngest:
+    @pytest.fixture(autouse=True)
+    def _isolate_appdata(self, tmp_path, monkeypatch):
+        # Windows 上 _trae_workspace_storage_roots 读进程 %APPDATA%（不吃 home
+        # 参数），必须重定向到 tmp，否则测试会写进真实 AppData 并污染同类用例
+        # （表现为另一个用例多扫出一条 IDE 记录）。Linux/macOS 用 home 派生，
+        # 此变量被忽略，设置无副作用。
+        monkeypatch.setenv("APPDATA", str(tmp_path / "winappdata"))
+
     def test_ingest_from_workspace_storage(self, tmp_path, ide_session_text):
         home = tmp_path / "home"
         ws_id = "abc123"
