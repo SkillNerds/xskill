@@ -70,9 +70,20 @@ def _wrap_with_rate_limit(model, llm_cfg: dict):
     - monkey-patch 方法绑定 to instance,只影响这一个 model 实例
     - reasoning_content / tool_use 等 agno 内部逻辑完全保留
     """
+    from xskill.usage import current_step, get_ledger
+    model_name = llm_cfg.get("model", "?")
+    original_invoke = model.invoke
     rl_cfg = llm_cfg.get("rate_limit")
+
     if not rl_cfg:
+        # 无限流也要记账(Issue #43):只包一层 record-only wrapper。
+        def record_only_invoke(messages, **kwargs):
+            resp = original_invoke(messages, **kwargs)
+            get_ledger().record_llm(current_step(), model_name, resp)
+            return resp
+        model.invoke = record_only_invoke
         return model
+
     from xskill.utils.rate_limit import (
         get_or_create_bucket, estimate_tokens, _extract_total_tokens,
     )
@@ -82,7 +93,6 @@ def _wrap_with_rate_limit(model, llm_cfg: dict):
         tpm=rl_cfg.get("tpm"),
         burst=rl_cfg.get("burst"),
     )
-    original_invoke = model.invoke
 
     def rate_limited_invoke(messages, **kwargs):
         # agno 把 messages 列表传进来,估算用拼起来的总字符
@@ -100,6 +110,8 @@ def _wrap_with_rate_limit(model, llm_cfg: dict):
         actual = _extract_total_tokens(resp)
         if actual is not None:
             bucket.reconcile_tpm(estimated=estimated, actual=actual)
+        # 旁路记账;record_llm 内部 best-effort,绝不抛。
+        get_ledger().record_llm(current_step(), model_name, resp)
         return resp
 
     model.invoke = rate_limited_invoke

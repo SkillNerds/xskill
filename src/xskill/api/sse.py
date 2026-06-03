@@ -145,6 +145,7 @@ async def api_index(req: IndexRequest):
         try:
             from xskill.pipeline.atom import AtomTaskStore
             from xskill.agents.task_agent import TaskAgent
+            from xskill.agents.agno_factory import make_default_factory
             from xskill.pipeline.trajectory import validate_trajectory_source
 
             config = load_config()
@@ -180,7 +181,10 @@ async def api_index(req: IndexRequest):
                 _fail(queue, "AtomTask 拆分需要 LLM；不要传 no_llm=true")
                 return
 
-            agent = TaskAgent(llm=llm, store=store)
+            agent = TaskAgent(
+                agno_agent_factory=make_default_factory(config),
+                store=store, traj_root=dataset_dir, skill_dir=get_skill_dir(),
+            )
             for idx, md in enumerate(md_files, 1):
                 validation = validate_trajectory_source(md)
                 if not validation.valid:
@@ -273,14 +277,14 @@ async def api_process(req: ProcessRequest):
             })
 
             ensure_repo(str(skill_dir))
-            llm = create_llm_client(config, role="skill")
             embed = create_embed_client(config)
             store = AtomTaskStore(root=traj_path.parent)
 
             _push(queue, "progress", {"step": "拆分 AtomTask", "current": 0, "total": 1})
-            atoms = TaskAgent(llm=llm, store=store).run(
-                traj_id=traj_path.stem, traj_path=traj_path,
-            )
+            atoms = TaskAgent(
+                agno_agent_factory=make_default_factory(config),
+                store=store, traj_root=traj_path.parent, skill_dir=skill_dir,
+            ).run(traj_id=traj_path.stem, traj_path=traj_path)
             log_fn(f"拆出 {len(atoms)} 个 atom", "step")
             _push(queue, "progress", {"step": "拆分 AtomTask", "current": 1, "total": 1})
 
@@ -376,9 +380,12 @@ async def api_batch(req: BatchRequest):
 
             _push(queue, "progress", {"step": "batch", "current": 0, "total": total})
             ensure_repo(str(skill_dir))
-            llm = create_llm_client(config, role="skill")
             embed = create_embed_client(config)
             store = AtomTaskStore(root=dataset_dir)
+            split_agent = TaskAgent(
+                agno_agent_factory=make_default_factory(config),
+                store=store, traj_root=dataset_dir, skill_dir=skill_dir,
+            )
 
             # Phase 1: 整批拆 atom + 重建索引
             for idx, md in enumerate(md_files, 1):
@@ -390,9 +397,7 @@ async def api_batch(req: BatchRequest):
                     )
                     continue
                 try:
-                    atoms = TaskAgent(llm=llm, store=store).run(
-                        traj_id=md.stem, traj_path=md,
-                    )
+                    atoms = split_agent.run(traj_id=md.stem, traj_path=md)
                     log_fn(f"[{idx}/{total}] split: {md.name} -> {len(atoms)} atoms",
                            "step")
                 except Exception as e:

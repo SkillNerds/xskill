@@ -1,6 +1,9 @@
 # 数据文件（大量轨迹 md/json/meta/pkl）
 data/
 data_bak/
+# 例外：打包数据(vendored 价格表),必须随包发布
+!src/xskill/data/
+!src/xskill/data/model_prices.json
 
 # 生成的 skill 仓库（有自己的 git）
 skill/
@@ -37,6 +40,7 @@ src/xskill/_version.py
 .playwright-mcp/
 *-snapshot.yml
 *.png
+!docs/assets/header.png
 
 # pip editable install
 src/*.egg-info/

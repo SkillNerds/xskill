@@ -61,6 +61,8 @@ def _client(server_app, tmp_path) -> TeamClient:
         cursor_path=tmp_path / "cursor.json",
         history_path=tmp_path / "history.jsonl",
         home_root=tmp_path / "client_home",
+        # 这些用例不测上传频率拦截 → 关掉去抖,保持单轮即上传的旧契约
+        min_change_interval=0,
     )
 
 

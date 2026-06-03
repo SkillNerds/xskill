@@ -23,6 +23,8 @@ from xskill.pipeline.registry import (
     get_needs_embedding,
     all_index_paths,
     find_traj_file,
+    update_traj_status,
+    get_trajs_by_status,
 )
 
 
@@ -138,6 +140,53 @@ class TestTrajectoryTracking:
         (traj_dir / "traj_0003.md").write_text("# new")
         new = discover_trajectories(wid, traj_dir, db_path=db_path)
         assert new == ["traj_0003.md"]
+
+
+class TestContinuationDetection:
+    """续写重拆触发：已落定的 traj 文件 mtime 增大 → 翻 ``updated``，
+    不再当作新文件，等待 watcher 重新 split。"""
+
+    def _bump_mtime(self, p: Path):
+        st = p.stat()
+        os.utime(p, (st.st_atime + 100, st.st_mtime + 100))
+
+    def test_appended_done_traj_flips_to_updated(self, traj_dir, db_path):
+        wid = register_dir(traj_dir, db_path=db_path)
+        discover_trajectories(wid, traj_dir, db_path=db_path)
+        # 模拟已处理完成
+        update_traj_status(wid, "traj_0001.md", "done", db_path=db_path)
+        # 客户端续写后重传：内容变 + mtime 增大
+        f = traj_dir / "traj_0001.md"
+        f.write_text("# traj 1\nagent did X\n## User\nmore\n")
+        self._bump_mtime(f)
+        new = discover_trajectories(wid, traj_dir, db_path=db_path)
+        # 不是"新文件"
+        assert "traj_0001.md" not in new
+        # 翻成 updated 等重拆
+        assert "traj_0001.md" in get_trajs_by_status(wid, "updated", db_path=db_path)
+        assert "traj_0001.md" not in get_trajs_by_status(wid, "done", db_path=db_path)
+
+    def test_unchanged_done_traj_stays_done(self, traj_dir, db_path):
+        wid = register_dir(traj_dir, db_path=db_path)
+        discover_trajectories(wid, traj_dir, db_path=db_path)
+        update_traj_status(wid, "traj_0001.md", "done", db_path=db_path)
+        # 不动文件，再扫一遍 → 仍 done，不翻 updated
+        discover_trajectories(wid, traj_dir, db_path=db_path)
+        assert "traj_0001.md" in get_trajs_by_status(wid, "done", db_path=db_path)
+        assert get_trajs_by_status(wid, "updated", db_path=db_path) == []
+
+    def test_active_status_not_disturbed_by_mtime_change(self, traj_dir, db_path):
+        """in-flight（splitting/clustering）期间 mtime 变更不翻 updated（避免打架）。"""
+        wid = register_dir(traj_dir, db_path=db_path)
+        discover_trajectories(wid, traj_dir, db_path=db_path)
+        update_traj_status(wid, "traj_0001.md", "splitting", db_path=db_path)
+        f = traj_dir / "traj_0001.md"
+        f.write_text("# traj 1\nchanged mid-flight\n")
+        self._bump_mtime(f)
+        discover_trajectories(wid, traj_dir, db_path=db_path)
+        # 仍在 splitting，未被翻 updated
+        assert "traj_0001.md" in get_trajs_by_status(wid, "splitting", db_path=db_path)
+        assert get_trajs_by_status(wid, "updated", db_path=db_path) == []
 
     def test_mark_meta_and_indexed(self, traj_dir, db_path):
         wid = register_dir(traj_dir, db_path=db_path)

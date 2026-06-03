@@ -370,6 +370,7 @@ class DirectoryWatcher:
             install_to_ngagent,
             install_to_openclaw,
             install_to_cursor,
+            install_to_trae,
         )
 
         target_root = self._resolve_target_root()
@@ -386,6 +387,7 @@ class DirectoryWatcher:
             "ngagent": install_to_ngagent,  # opencode 企业分支，独立 skill 目录
             "openclaw": install_to_openclaw,  # copy 模式，详见 install_to_openclaw docstring
             "cursor": install_to_cursor,
+            "trae": install_to_trae,
         }
 
         results: dict = {}
@@ -498,10 +500,15 @@ class DirectoryWatcher:
         """
         if self.skill_dir is None or not self.skill_dir.is_dir():
             return
-        from xskill.canary import AtomCanary
-        from xskill.canary import CanaryConfig
+        from xskill.canary import AtomCanary, CanaryConfig, eligible_models
+        from xskill.pipeline.registry import model_share
         from xskill.skill.git import run_git
         canary_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
+        # 模型分桶权重:使用量 top-N 模型的人口占比(unknown 等已被排除)。
+        # 有合格模型 → 按模型加权裁决;一个都没有(全 unknown)→ None = 单桶均分,
+        # 不让纯 unknown 部署的灰度永远卡住。
+        weights = eligible_models(model_share(**self._db_kw()),
+                                  canary_cfg.scope_top_n) or None
         for d in sorted(self.skill_dir.iterdir()):
             if not d.is_dir() or d.name.startswith("."):
                 continue
@@ -511,7 +518,8 @@ class DirectoryWatcher:
             if code != 0:
                 continue  # 无 staging，跳过
             try:
-                decision = AtomCanary(skill_dir=d).check_and_decide(config=canary_cfg)
+                decision = AtomCanary(skill_dir=d).check_and_decide(
+                    config=canary_cfg, weights=weights)
                 action = decision.get("action", "")
                 if action in ("promoted", "rejected", "timeout_discarded"):
                     logger.info("canary decision %s: %s — %s",
@@ -648,29 +656,34 @@ class DirectoryWatcher:
             self._stats["new_trajs"] += len(new)
             logger.info("[%s] discovered %d new", dir_path.name, len(new))
 
-        # ── 提交 split 任务（discovered → splitting）──
-        # 需要 llm；缺则 traj 留在 discovered 等条件齐备
+        # ── 提交 split 任务（discovered / updated → splitting）──
+        # 需要 llm；缺则 traj 留在 discovered 等条件齐备。
+        # ``updated``（续写重传后 discover 翻的状态）与 ``discovered`` 同等处理：
+        # 同样跑 _do_split，TaskAgent 用 last_offset 续接点只拆新增内容。
         if self.llm is not None:
-            for fname in get_trajs_by_status(
-                wd_id, "discovered", limit=self.max_concurrent * 2, **kw,
-            ):
-                if self._too_many_in_flight():
-                    break
-                validation = validate_trajectory_source(dir_path / fname)
-                if not validation.valid:
-                    update_traj_status(
-                        wd_id, fname, "filtered",
-                        error_msg=validation.reason or "invalid_trajectory",
-                        **kw,
-                    )
-                    logger.info(
-                        "%s filtered before split: %s",
-                        fname, validation.reason,
-                    )
-                    continue
-                update_traj_status(wd_id, fname, "splitting", **kw)
-                fut = self._pool.submit(self._do_split, dir_path, fname)
-                self._futures[fut] = {"wd_id": wd_id, "fname": fname, "stage": "split"}
+            for status in ("discovered", "updated"):
+                for fname in get_trajs_by_status(
+                    wd_id, status, limit=self.max_concurrent * 2, **kw,
+                ):
+                    if self._too_many_in_flight():
+                        break
+                    validation = validate_trajectory_source(dir_path / fname)
+                    if not validation.valid:
+                        update_traj_status(
+                            wd_id, fname, "filtered",
+                            error_msg=validation.reason or "invalid_trajectory",
+                            **kw,
+                        )
+                        logger.info(
+                            "%s filtered before split: %s",
+                            fname, validation.reason,
+                        )
+                        continue
+                    update_traj_status(wd_id, fname, "splitting", **kw)
+                    fut = self._pool.submit(self._do_split, dir_path, fname)
+                    self._futures[fut] = {
+                        "wd_id": wd_id, "fname": fname, "stage": "split",
+                    }
 
         # ── 提交 embed 任务（split_done → indexed，整批一个任务） ──
         if self.embed_client is not None:
@@ -693,6 +706,7 @@ class DirectoryWatcher:
         if self.skill_dir:
             pending_pre_index = (
                 len(get_trajs_by_status(wd_id, "discovered", **kw))
+                + len(get_trajs_by_status(wd_id, "updated", **kw))
                 + len(get_trajs_by_status(wd_id, "splitting", **kw))
                 + len(get_trajs_by_status(wd_id, "split_done", **kw))
             )
@@ -770,7 +784,13 @@ class DirectoryWatcher:
     # v2 流水线任务：split / atom_index / cluster
 
     def _do_split(self, dir_path, fname):
-        """跑 TaskAgent 拆 AtomTask。返回 (fname, num_atoms_added, last_offset, last_atom_id, err)。"""
+        """跑 TaskAgent 拆 AtomTask。返回 (fname, num_atoms_added, last_offset, last_atom_id, err)。
+
+        v2.3: TaskAgent 走 agentic 工具调用（submit_atom/readfile/grep），用
+        和 cluster/edit 同一个 agno 工厂。``updated`` 状态的续写轨迹和首次
+        ``discovered`` 走同一条路径——TaskAgent 内部用 last_offset 续接点只拆
+        新增内容。
+        """
         from xskill.agents.task_agent import TaskAgent
         md_path = dir_path / fname
         validation = validate_trajectory_source(md_path)
@@ -781,9 +801,12 @@ class DirectoryWatcher:
             )
         traj_id = md_path.stem
         store = self._store_for(dir_path)
-        atoms = TaskAgent(llm=self.llm, store=store).run(
-            traj_id=traj_id, traj_path=md_path,
-        )
+        atoms = TaskAgent(
+            agno_agent_factory=self._factory(),
+            store=store,
+            traj_root=dir_path,
+            skill_dir=self.skill_dir,
+        ).run(traj_id=traj_id, traj_path=md_path)
         last_off = store.last_offset(traj_id)
         last_id = store.last_atom_id(traj_id)
         return (fname, len(atoms), last_off, last_id, None)
@@ -1016,6 +1039,7 @@ class DirectoryWatcher:
                     atom_id=atom.atom_id, skill_name=skill_name,
                     side=header["side"], commit_sha=header.get("sha", ""),
                     score=result["score"], reasons=result["reasons"],
+                    user_model=atom.source_model,
                 )
                 self._stats["scores"] += 1
             except Exception:
@@ -1040,9 +1064,11 @@ class DirectoryWatcher:
             return
         from xskill.canary import AtomCanary
         from xskill.canary import (
-            CanaryConfig, has_staging, main_sha, pick_side, staging_sha,
+            CanaryConfig, eligible_models, has_staging, main_sha,
+            pick_side_scoped, staging_sha,
         )
         from xskill.pipeline.atom import score_atom
+        from xskill.pipeline.registry import model_share
 
         # 找到该 wd 的 dir_path + client_id（label）
         client_id = None
@@ -1063,6 +1089,8 @@ class DirectoryWatcher:
         if not atoms:
             return
         canary_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
+        # 模型分桶路由:top-N 模型才可能进 staging,unknown/非 top-N 一律 main。
+        eligible = eligible_models(model_share(**kw), canary_cfg.scope_top_n) or None
         used_any = False
         for atom in atoms:
             for skill_name in (atom.used_skills or []):
@@ -1070,7 +1098,9 @@ class DirectoryWatcher:
                 if not (skill_sub / ".git").is_dir():
                     continue
                 if has_staging(skill_sub):
-                    side = pick_side(client_id, skill_name, canary_cfg.probability)
+                    side = pick_side_scoped(
+                        client_id, skill_name, canary_cfg.probability,
+                        user_model=atom.source_model, eligible=eligible)
                     sha = staging_sha(skill_sub) if side == "staging" else main_sha(skill_sub)
                 else:
                     side = "main"
@@ -1083,6 +1113,7 @@ class DirectoryWatcher:
                         atom_id=atom.atom_id, skill_name=skill_name,
                         side=side, commit_sha=sha or "",
                         score=result["score"], reasons=result["reasons"],
+                        user_model=atom.source_model,
                     )
                     self._stats["scores"] += 1
                     used_any = True
@@ -1158,6 +1189,17 @@ def process_atom_task(*, atom_id: str, config: dict, skill_dir: Path,
     hit = find_atom_entry_in_any_skill(skill_dir, atom_id)
     skill_name = hit[0] if hit else None
     weightscore = hit[1] if hit else None
+
+    # 埋点：atom 实际落到某 skill = 一次采纳(best-effort，失败不阻断)。
+    # 在 cluster(大模型调用,按秒)之后,这条数据库写入(毫秒级)可忽略——和
+    # record_usage 同样的代价位置,生产无影响。
+    if skill_name:
+        try:
+            from xskill.pipeline.registry import record_atom_adoption
+            record_atom_adoption(atom_id=atom_id, skill=skill_name,
+                                 weightscore=weightscore or 0, was_new=True)
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.debug("atom adoption telemetry skipped", exc_info=True)
 
     return {
         "action": "clustered",

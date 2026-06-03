@@ -20,8 +20,18 @@ def test_upload_roundtrip():
     ])
     back = UploadRequest.model_validate(req.model_dump())
     assert back.trajectories[0].traj_id == "traj_cc_x_001"
+    assert back.trajectories[0].model == ""        # 默认空，老 client 不带也能解析
     resp = UploadResponse(accepted=["traj_cc_x_001"], rejected=[])
     assert UploadResponse.model_validate(resp.model_dump()).accepted == ["traj_cc_x_001"]
+
+
+def test_upload_carries_model():
+    req = UploadRequest(trajectories=[
+        UploadTrajectory(traj_id="traj_cc_x_001", content="# hi", sha256="dead",
+                         model="claude-opus-4-7"),
+    ])
+    back = UploadRequest.model_validate(req.model_dump())
+    assert back.trajectories[0].model == "claude-opus-4-7"
 
 
 def test_sync_response_slots():

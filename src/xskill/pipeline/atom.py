@@ -55,6 +55,8 @@ class AtomTask:
     post_atom_id: str | None = None
     context_prefix: str = ""
     raw_segment: str = ""
+    source_model: str = ""   # 产生该 atom 的用户 agent 模型，继承自所属轨迹的
+    #                          <traj>.json sidecar "model"（canary 按模型分桶用）
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, indent=2)

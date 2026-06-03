@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 360" font-family="-apple-system,PingFang SC,Microsoft YaHei,Segoe UI,Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="a2" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5A6E76"/></marker>
+    <marker id="a3" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#F4805E"/></marker>
+  </defs>
+  <rect width="920" height="360" rx="18" fill="#FDF3E3"/>
+  <text x="40" y="44" font-size="20" font-weight="800" fill="#243B45">跨越每个 agent 与设备 — 同一个库</text>
+
+  <!-- agent boxes row -->
+  <g font-size="13" font-weight="700" text-anchor="middle">
+    <g><rect x="60" y="74" width="150" height="46" rx="10" fill="#fff" stroke="#0E7C86" stroke-width="2"/><text x="135" y="102" fill="#0A5C64">Claude Code</text></g>
+    <g><rect x="250" y="74" width="150" height="46" rx="10" fill="#fff" stroke="#0E7C86" stroke-width="2"/><text x="325" y="102" fill="#0A5C64">Codex CLI</text></g>
+    <g><rect x="440" y="74" width="150" height="46" rx="10" fill="#fff" stroke="#0E7C86" stroke-width="2"/><text x="515" y="102" fill="#0A5C64">Cursor</text></g>
+    <g><rect x="630" y="74" width="150" height="46" rx="10" fill="#fff" stroke="#0E7C86" stroke-width="2"/><text x="705" y="102" fill="#0A5C64">OpenCode · Trae …</text></g>
+  </g>
+
+  <!-- down arrows to watcher -->
+  <g stroke="#5A6E76" stroke-width="2" fill="none">
+    <path d="M135,120 L300,168" marker-end="url(#a2)"/>
+    <path d="M325,120 L380,168" marker-end="url(#a2)"/>
+    <path d="M515,120 L470,168" marker-end="url(#a2)"/>
+    <path d="M705,120 L560,168" marker-end="url(#a2)"/>
+  </g>
+
+  <!-- flowing pulses: agents -> pipeline -->
+  <g fill="#5A6E76">
+    <circle r="4.5"><animateMotion path="M135,120 L300,168" dur="1.5s" begin="0s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.85;1" dur="1.5s" begin="0s" repeatCount="indefinite"/></circle>
+    <circle r="4.5"><animateMotion path="M325,120 L380,168" dur="1.5s" begin="0.3s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.85;1" dur="1.5s" begin="0.3s" repeatCount="indefinite"/></circle>
+    <circle r="4.5"><animateMotion path="M515,120 L470,168" dur="1.5s" begin="0.6s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.85;1" dur="1.5s" begin="0.6s" repeatCount="indefinite"/></circle>
+    <circle r="4.5"><animateMotion path="M705,120 L560,168" dur="1.5s" begin="0.9s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.85;1" dur="1.5s" begin="0.9s" repeatCount="indefinite"/></circle>
+  </g>
+
+  <!-- pipeline -->
+  <g text-anchor="middle">
+    <rect x="250" y="172" width="360" height="50" rx="12" fill="#E2F1F2" stroke="#0E7C86" stroke-width="2"/>
+    <text x="430" y="195" font-size="13" font-weight="800" fill="#0A5C64">采集 → 拆原子 → 技能路由 → 改写技能</text>
+    <text x="430" y="212" font-size="11" fill="#5A6E76">输入脱敏轨迹 · 职责很窄的 LLM agent</text>
+  </g>
+  <path d="M430,222 L430,256" stroke="#5A6E76" stroke-width="2" fill="none" marker-end="url(#a2)"/>
+  <circle r="4.5" fill="#5A6E76"><animateMotion path="M430,222 L430,256" dur="1.1s" begin="0.4s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.8;1" dur="1.1s" begin="0.4s" repeatCount="indefinite"/></circle>
+
+  <!-- breathing glow behind library -->
+  <ellipse cx="430" cy="287" rx="138" ry="38" fill="#F4805E">
+    <animate attributeName="opacity" values="0;0.18;0" dur="2.8s" repeatCount="indefinite"/>
+    <animate attributeName="rx" values="132;150;132" dur="2.8s" repeatCount="indefinite"/>
+  </ellipse>
+
+  <!-- library -->
+  <g text-anchor="middle">
+    <rect x="300" y="258" width="260" height="58" rx="14" fill="#FCE5DC" stroke="#F4805E" stroke-width="3"/>
+    <text x="430" y="284" font-size="15" font-weight="800" fill="#E0613B">进化中的技能库 (git)</text>
+    <text x="430" y="304" font-size="11" fill="#6B4A2B">每个版本经 A/B 测试、可回滚</text>
+  </g>
+
+  <!-- synced back: up the right margin, then curve left so the arrowhead points horizontally back at the agent row -->
+  <path d="M560,283 C720,300 868,288 868,180 C868,130 845,98 792,98" fill="none" stroke="#F4805E" stroke-width="2.5" stroke-dasharray="5 5" marker-end="url(#a3)"/>
+  <circle r="5" fill="#F4805E"><animateMotion path="M560,283 C720,300 868,288 868,180 C868,130 845,98 792,98" dur="2.4s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.1;0.88;1" dur="2.4s" repeatCount="indefinite"/></circle>
+  <text x="724" y="250" font-size="12" font-weight="800" fill="#E0613B" text-anchor="middle">同步回</text>
+  <text x="724" y="268" font-size="12" font-weight="800" fill="#E0613B" text-anchor="middle">你的所有 agent</text>
+</svg>

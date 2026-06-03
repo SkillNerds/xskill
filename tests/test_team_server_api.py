@@ -109,3 +109,31 @@ def test_upload_writes_traj_md_under_client_bucket(client, tmp_path):
                 / "traj_cc_x_001.md")
     assert expected.is_file()
     assert expected.read_text(encoding="utf-8") == body
+
+
+def test_upload_with_model_writes_json_sidecar(client, tmp_path):
+    import json as _json
+    r = client.post("/api/v1/team/register", json={"token": "secret-token"})
+    cid = r.json()["client_id"]
+    hdr = {"X-Xskill-Token": "secret-token", "X-Xskill-Client": cid}
+    body = "# body"
+    client.post("/api/v1/team/upload", headers=hdr, json={
+        "trajectories": [{"traj_id": "traj_cc_x_001", "content": body,
+                          "sha256": _sha(body), "model": "claude-opus-4-7"}]})
+    sess = tmp_path / "team_traj" / "clients" / cid / "sessions"
+    sidecar = sess / "traj_cc_x_001.json"
+    assert sidecar.is_file()
+    assert _json.loads(sidecar.read_text(encoding="utf-8"))["model"] == "claude-opus-4-7"
+
+
+def test_upload_without_model_no_json_sidecar(client, tmp_path):
+    r = client.post("/api/v1/team/register", json={"token": "secret-token"})
+    cid = r.json()["client_id"]
+    hdr = {"X-Xskill-Token": "secret-token", "X-Xskill-Client": cid}
+    body = "# body"
+    client.post("/api/v1/team/upload", headers=hdr, json={
+        "trajectories": [{"traj_id": "traj_cc_x_001", "content": body,
+                          "sha256": _sha(body)}]})   # 不带 model
+    sess = tmp_path / "team_traj" / "clients" / cid / "sessions"
+    assert (sess / "traj_cc_x_001.md").is_file()
+    assert not (sess / "traj_cc_x_001.json").exists()   # 行为不回归

@@ -358,6 +358,12 @@ class SqliteIngester:
                 # 生成 traj_id：含 project basename + sid8（同 CC 命名风格）；
                 # 前缀按 spec.traj_id_prefix 派生，避免对 ecosystem 硬编码 if 分支。
                 traj_id = self._sqlite_traj_id(sid, directory)
+                # 用户 agent 模型(批2):message.data.model = {providerID, modelID}
+                model = next(
+                    (m["model"].get("modelID") for m in messages
+                     if isinstance(m.get("model"), dict) and m["model"].get("modelID")),
+                    "",
+                )
                 # 拼 markdown 内容
                 md_content = self._render_session_md(
                     sid=sid, directory=directory, messages=messages,
@@ -371,6 +377,7 @@ class SqliteIngester:
                         "ecosystem": self.spec.label,
                         "session_id": sid,
                         "cwd": directory,
+                        **({"model": model} if model else {}),
                     },
                 )
                 result["session_id"] = sid

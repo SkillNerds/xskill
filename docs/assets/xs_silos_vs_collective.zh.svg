@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 340" font-family="-apple-system,PingFang SC,Microsoft YaHei,Segoe UI,Helvetica,Arial,sans-serif">
+  <rect width="920" height="340" rx="18" fill="#FFF8EE"/>
+  <!-- divider -->
+  <line x1="460" y1="30" x2="460" y2="310" stroke="#E6D8C2" stroke-width="2" stroke-dasharray="6 6"/>
+
+  <!-- LEFT: silos (intentionally static — nothing flows) -->
+  <text x="40" y="44" font-size="18" font-weight="800" fill="#9A6A55">✕ 没有 xskill：各自孤岛</text>
+  <g font-size="24" text-anchor="middle">
+    <g><circle cx="110" cy="140" r="30" fill="#fff" stroke="#C9B79A" stroke-width="2"/><text x="110" y="149">🧑‍💻</text>
+       <path d="M110,170 C70,200 150,200 110,170" fill="none" stroke="#C9B79A" stroke-width="2"/>
+       <text x="110" y="232" font-size="12" fill="#9A6A55">各自重复解</text></g>
+    <g><circle cx="240" cy="140" r="30" fill="#fff" stroke="#C9B79A" stroke-width="2"/><text x="240" y="149">👩‍💻</text>
+       <text x="240" y="232" font-size="12" fill="#9A6A55">各自重复解</text></g>
+    <g><circle cx="370" cy="140" r="30" fill="#fff" stroke="#C9B79A" stroke-width="2"/><text x="370" y="149">👨‍💻</text>
+       <text x="370" y="232" font-size="12" fill="#9A6A55">各自重复解</text></g>
+  </g>
+  <text x="240" y="284" font-size="13" font-weight="700" fill="#9A6A55" text-anchor="middle">同一问题解 3 遍 · 经验互相隔离</text>
+
+  <!-- RIGHT: collective (alive) -->
+  <text x="500" y="44" font-size="18" font-weight="800" fill="#0A5C64">✓ 有了 xskill：集体进化</text>
+
+  <!-- breathing glow behind library -->
+  <ellipse cx="765" cy="151" rx="86" ry="52" fill="#F4805E">
+    <animate attributeName="opacity" values="0;0.20;0" dur="2.6s" repeatCount="indefinite"/>
+    <animate attributeName="rx" values="82;98;82" dur="2.6s" repeatCount="indefinite"/>
+  </ellipse>
+
+  <!-- central library -->
+  <g>
+    <rect x="690" y="108" width="150" height="86" rx="14" fill="#FCE5DC" stroke="#F4805E" stroke-width="3"/>
+    <text x="765" y="142" font-size="24" text-anchor="middle">📚🧬</text>
+    <text x="765" y="172" font-size="13" font-weight="800" fill="#E0613B" text-anchor="middle">进化的技能库</text>
+  </g>
+  <g stroke="#0E7C86" stroke-width="2.5" fill="none">
+    <path d="M530,140 C600,128 640,140 688,148"/>
+    <path d="M530,180 C610,180 640,168 688,160"/>
+    <path d="M530,220 C600,210 640,185 688,176"/>
+  </g>
+
+  <!-- flowing pulses into the shared library -->
+  <g fill="#0E7C86">
+    <circle r="5"><animateMotion path="M530,140 C600,128 640,140 688,148" dur="1.8s" begin="0s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.85;1" dur="1.8s" begin="0s" repeatCount="indefinite"/></circle>
+    <circle r="5"><animateMotion path="M530,180 C610,180 640,168 688,160" dur="1.8s" begin="0.45s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.85;1" dur="1.8s" begin="0.45s" repeatCount="indefinite"/></circle>
+    <circle r="5"><animateMotion path="M530,220 C600,210 640,185 688,176" dur="1.8s" begin="0.9s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.85;1" dur="1.8s" begin="0.9s" repeatCount="indefinite"/></circle>
+  </g>
+
+  <g font-size="24" text-anchor="middle">
+    <g><circle cx="510" cy="140" r="28" fill="#fff" stroke="#2E8B6F" stroke-width="2.5"/><text x="510" y="149">🧑‍💻</text></g>
+    <g><circle cx="510" cy="180" r="28" fill="#fff" stroke="#2E8B6F" stroke-width="2.5"/><text x="510" y="189">👩‍💻</text></g>
+    <g><circle cx="510" cy="220" r="28" fill="#fff" stroke="#2E8B6F" stroke-width="2.5"/><text x="510" y="229">👨‍💻</text></g>
+  </g>
+  <text x="690" y="244" font-size="13" font-weight="700" fill="#0A5C64" text-anchor="middle">解决一次 → 共享 → 全员获益</text>
+</svg>

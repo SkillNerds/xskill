@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "note": "Vendored at build time by scripts/fetch_model_prices.py. Prices are USD per 1M tokens. This seed is the offline fallback; the build refreshes it.",
+    "source": "seed",
+    "schema": "model -> {input_per_1m, output_per_1m, cache_hit_per_1m?, cache_miss_per_1m?, embed_per_1m?}"
+  },
+  "deepseek-v4-flash": {"input_per_1m": 0.14, "output_per_1m": 0.28, "cache_hit_per_1m": 0.014, "cache_miss_per_1m": 0.14},
+  "deepseek-v4-pro":   {"input_per_1m": 0.55, "output_per_1m": 2.19, "cache_hit_per_1m": 0.055, "cache_miss_per_1m": 0.55},
+  "deepseek-chat":     {"input_per_1m": 0.27, "output_per_1m": 1.10, "cache_hit_per_1m": 0.07,  "cache_miss_per_1m": 0.27},
+  "deepseek-reasoner": {"input_per_1m": 0.55, "output_per_1m": 2.19, "cache_hit_per_1m": 0.14,  "cache_miss_per_1m": 0.55},
+  "gpt-4o":            {"input_per_1m": 2.50, "output_per_1m": 10.0},
+  "gpt-4o-mini":       {"input_per_1m": 0.15, "output_per_1m": 0.60},
+  "claude-sonnet-4-6": {"input_per_1m": 3.00, "output_per_1m": 15.0},
+  "claude-opus-4-8":   {"input_per_1m": 15.0, "output_per_1m": 75.0},
+  "text-embedding-v4":      {"embed_per_1m": 0.02},
+  "text-embedding-3-small": {"embed_per_1m": 0.02},
+  "text-embedding-3-large": {"embed_per_1m": 0.13},
+  "jina-embeddings-v3":     {"embed_per_1m": 0.02}
+}

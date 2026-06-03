@@ -828,6 +828,19 @@ def create_app(home_root: Path | str | None = None,
             return _watcher_ref["instance"].stats
         return {"running": False, "message": "watcher not started"}
 
+    # -- Usage / cost stats (Issue #43) --
+    @app.get("/api/v1/stats")
+    async def api_stats():
+        from xskill.pipeline.registry import model_share, usage_summary
+        watcher = (_watcher_ref["instance"].stats
+                   if _watcher_ref.get("instance") else None)
+        return {
+            "role": "server" if _config.get("team", {}).get("server") else "client",
+            "cost": usage_summary(),
+            "models": model_share(),
+            "pipeline": watcher,
+        }
+
     # ------------------------------------------------------------------
     @app.on_event("startup")
     async def _startup():
@@ -872,12 +885,14 @@ def create_app(home_root: Path | str | None = None,
                     CCSessionIngester, JsonlIngester, SqliteIngester,
                     CODEX_SPEC, OPENCODE_SPEC, NGAGENT_SPEC,
                     OPENCLAW_SPEC, CURSOR_SPEC,
+                    TraeIngester,
                     install_all_to_claude_code,
                     install_all_to_codex,
                     install_all_to_opencode,
                     install_all_to_ngagent,
                     install_all_to_openclaw,
                     install_all_to_cursor,
+                    install_all_to_trae,
                     make_openclaw_canary_flip_hook,
                 )
                 from xskill.canary import CanaryConfig
@@ -1112,6 +1127,38 @@ def create_app(home_root: Path | str | None = None,
                         ingester.start()
                         _watcher_ref[ingester_key] = ingester
 
+                    elif eco == "trae":
+                        # Trae IDE：workspaceStorage/state.vscdb 里的 chat blob；
+                        # Trae Agent CLI：~/trajectories/trajectory_*.json。
+                        # Skill 装 ~/.trae-cn/skills 与/或 ~/.trae/skills。
+                        try:
+                            installed = install_all_to_trae(
+                                _skill_dir, target_root=_home_root(),
+                            )
+                            for dest in installed:
+                                install_history.record(
+                                    skill=dest.parent.name, side="main", sha="",
+                                )
+                            logger.info(
+                                "startup install_all_to_trae: %d skills installed",
+                                len(installed),
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "startup install_all_to_trae failed", exc_info=True,
+                            )
+                            install_history.record_fail(
+                                skill="<startup_all>", agent="trae",
+                                reason=str(e)[:200],
+                            )
+                        ingester = TraeIngester(
+                            target_traj_dir=bridge,
+                            home_root=_home_root(),
+                            poll_interval=poll_interval,
+                        )
+                        ingester.start()
+                        _watcher_ref[ingester_key] = ingester
+
                     logger.info(
                         "ecosystem %s detected: source=%s bridge=%s",
                         eco, det["source"], bridge,
@@ -1196,5 +1243,9 @@ def create_app(home_root: Path | str | None = None,
                     v.stop()
                 except Exception:
                     logger.warning("failed to stop %s", k, exc_info=True)
+
+    # 看板:仅当 config.dashboard.enabled 时挂载(默认不挂)
+    from xskill.dashboard.mount import mount_dashboard
+    mount_dashboard(app, _config)
 
     return app

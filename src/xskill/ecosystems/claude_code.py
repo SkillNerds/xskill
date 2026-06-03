@@ -294,6 +294,7 @@ def _adapt_claude_code_jsonl(content: str, metadata: dict) -> tuple[str, dict]:
     session_id = ""
     cwd = ""
     git_branch = ""
+    model = ""           # 用户 agent 模型(批2):取 assistant message.model
     first_user_query = ""
     t = 0
     step = 0
@@ -317,6 +318,8 @@ def _adapt_claude_code_jsonl(content: str, metadata: dict) -> tuple[str, dict]:
         git_branch = git_branch or event.get("gitBranch", "") or ""
 
         msg = event.get("message") or {}
+        if ev_type == "assistant" and not model:
+            model = msg.get("model") or ""
         msg_content = msg.get("content")
 
         if ev_type == "user":
@@ -449,6 +452,8 @@ def _adapt_claude_code_jsonl(content: str, metadata: dict) -> tuple[str, dict]:
     meta.setdefault("category", "claude_code_session")
     if session_id:
         meta.setdefault("session_id", session_id)
+    if model:
+        meta.setdefault("model", model)
     if cwd:
         meta.setdefault("cwd", cwd)
     if git_branch:

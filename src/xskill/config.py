@@ -63,21 +63,42 @@ llm:
 
 # ===== Embedding (vector retrieval) =====
 # Any OpenAI-compatible embeddings endpoint. dim: 0 auto-probes on first call.
+#
+# DeepSeek does NOT provide an embeddings API. Choose one of these:
+#   • Alibaba DashScope:  base_url=https://dashscope.aliyuncs.com/compatible-mode/v1  model=text-embedding-v4
+#   • OpenAI:             base_url=https://api.openai.com/v1                          model=text-embedding-3-small
+#   • Ollama (local):     base_url=http://localhost:11434/v1                          model=nomic-embed-text
+#   • Jina AI:            base_url=https://api.jina.ai/v1                             model=jina-embeddings-v3
 embedding:
-  base_url: https://api.deepseek.com
-  model:    deepseek-embedding
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  model:    text-embedding-v4
   api_key:  PUT_YOUR_EMBEDDING_API_KEY_HERE
   dim:      0
   # api: openai | multimodal   # optional; default openai. "multimodal" for
                                # vision-style embedding endpoints.
+
+# ===== Pricing (optional; for `xskill stats` cost estimation) =====
+# Cost is ESTIMATED from response.usage tokens × price (USD per 1M tokens).
+# Resolution order: this `pricing:` map  >  the vendored price table
+# (src/xskill/data/model_prices.json, refreshed at build time)  >  `default`.
+# Leave this out entirely to rely on the vendored table + default below.
+# pricing:
+#   default: { input_per_1m: 1.0, output_per_1m: 3.0, embed_per_1m: 0.05 }
+#   deepseek-v4-flash: { input_per_1m: 0.14, output_per_1m: 0.28, cache_hit_per_1m: 0.014 }
 
 # ===== Canary (gradual rollout) =====
 canary:
   enabled:       true
   probability:   0.2            # on a retrieval hit, route to staging with prob p
   min_samples:   5              # need >= N UX scores on each side to decide
+                                # (single-bucket / un-scoped path)
   max_days_hold: 14             # max staging lifetime; discarded on timeout
   rotate_interval: 300          # standalone canary time-window rotation (seconds)
+  scope_top_n:   2              # model-scoped canary: only the top-N user models
+                                # by usage take part (routing + scoring); unknown
+                                # and non-top-N traffic stays on main
+  total_samples: 20             # model-scoped path: total UX scores needed on
+                                # each side before a weighted decision
 
 # ===== Watcher (the directory poller inside `serve`) =====
 watcher:
@@ -90,11 +111,26 @@ watcher:
   cold_start_threshold: 3       # defer process while >= N trajectories un-indexed
 
 # ===== Team C/S mode (only read by `xskill serve --server`) =====
+# 仅 server 端读这一段。客户端（`xskill connect <host:port> --token ...`）是瘦
+# 进程，不读 config.yaml——连接信息落 ~/.xskill/team_client.json；每个 server 的
+# 上传游标 / 去抖 / 安装历史独立落 ~/.xskill/clients/<server_id>/，换 server 互不
+# 污染。server 启动打印的 join token 落 ~/.xskill/team_server.json，再发给客户端。
 team:
   server:
-    traj_root:    ~/.xskill/team_trajectories
-    skill_slots:  100
-    ranked_slots: 80
+    traj_root:    ~/.xskill/team_trajectories  # 收下的客户端上传轨迹根目录
+    skill_slots:  100   # 每个客户端 manifest 的技能槽位上限（ranked + recommended）
+    ranked_slots: 80    # 其中按 UX 分排名占的槽位；剩余（100-80=20）留给向量推荐
+
+# ===== Dashboard (the built-in web console served by `xskill serve`) =====
+dashboard:
+  enabled:  false      # 设 true 才挂载控制台到 serve 的 /
+  public:   false      # 默认仅本机可达；true 才放行公网（仅看板路由）
+  password: ""         # 可选；非空时看板要求 HTTP Basic 登录（API 不受影响）
+  # 历史轨迹没记 coding agent(harness) / 模型(source_model) 时，看板按什么归类。
+  # 留空 → 'unknown'（保持原行为）。填了 → 这些缺失字段的轨迹归到该值的桶里。
+  # 仅影响看板的“生态/模型”分组展示，不改库里的真实值，也不影响 canary 路由。
+  default_harness: ""  # 例：claude_code（须是已知 harness 才会并入现有分组）
+  default_model:   ""  # 例：deepseek-v4-flash（模型名无封闭集，自由填）
 """
 
 
@@ -140,6 +176,48 @@ def get_config() -> dict:
     if not _config:
         load_config()
     return _config
+
+
+def _resolve_attribution(dashboard_section: dict) -> dict:
+    """把 dashboard 段的 default_harness / default_model 解析成看板用的归类标签。
+
+    留空（缺省 / 空串 / 全空白）→ 'unknown'，即保持历史行为；非空则去首尾空白后
+    原样用作缺失字段的归类桶。harness 不在此做白名单校验——按设计取自由字符串。
+    """
+    return {
+        "harness": str(dashboard_section.get("default_harness") or "").strip() or "unknown",
+        "model": str(dashboard_section.get("default_model") or "").strip() or "unknown",
+    }
+
+
+def dashboard_config(cfg: dict) -> dict:
+    """从已加载 config 取 dashboard 段，缺字段用显式默认（非 fallback 兼容）。"""
+    d = cfg.get("dashboard") or {}
+    attr = _resolve_attribution(d)
+    return {
+        "enabled": bool(d.get("enabled", False)),
+        "public": bool(d.get("public", False)),
+        "password": str(d.get("password", "") or ""),
+        "default_harness": attr["harness"],
+        "default_model": attr["model"],
+    }
+
+
+def dashboard_attribution_defaults(path: Optional[Path] = None) -> dict:
+    """看板归类默认值（default_harness / default_model），直接读 config.yaml 的
+    dashboard 段，**不校验 llm/embedding api_key**——独立只读看板实例（瘦进程，
+    可能没配 key）也要能用。返回 ``{"harness": <label>, "model": <label>}``，
+    留空均退 'unknown'。
+
+    config.yaml 不存在时同样返回 'unknown' 这组默认——这是看板展示偏好的显式
+    缺省（与 ``dashboard_config`` 给 enabled/password 显式默认同性质），不是吞错。
+    """
+    cfg_path = Path(path) if path else CONFIG_PATH
+    section: dict = {}
+    if cfg_path.exists():
+        with open(cfg_path, encoding="utf-8") as f:
+            section = (yaml.safe_load(f) or {}).get("dashboard") or {}
+    return _resolve_attribution(section)
 
 
 def get_skill_dir() -> Path:
@@ -201,6 +279,52 @@ def get_team_clients_db_path() -> Path:
 def get_team_client_state_path() -> Path:
     """client 端连接信息（server_url / client_id / join_token）。"""
     return XSKILL_HOME / "team_client.json"
+
+
+def _server_scope_id(server_url: str) -> str:
+    """把 server_url 映射成文件系统安全、且按 server 唯一的作用域 id。
+
+    形如 ``7.220.144.233_9961-1a2b3c4d``：前半是可读的 host_port（排错时
+    一眼能认出连的是哪台），后半是规范化 url 的短哈希消歧（不同 url 规范化
+    后撞到同一可读前缀时仍能区分）。规范化会去掉首尾空白与末尾斜杠，所以
+    ``http://h:p`` 与 ``http://h:p/`` 视为同一 server。
+    """
+    import hashlib
+    import re
+    norm = server_url.strip().rstrip("/")
+    netloc = norm.split("://", 1)[-1]
+    safe = re.sub(r"[^A-Za-z0-9.]+", "_", netloc).strip("_") or "server"
+    digest = hashlib.sha256(norm.encode("utf-8")).hexdigest()[:8]
+    return f"{safe}-{digest}"
+
+
+def get_team_client_dir(server_url: str) -> Path:
+    """client 端按 server 隔离的可变状态目录：~/.xskill/clients/<server_id>/。
+
+    上传游标 / 去抖 / 安装历史都落这里。换 server 时天然落到不同目录——不会
+    再被上一个 server 的"已上传"游标静默压制对新 server 的上传（方案 A）。
+    """
+    d = XSKILL_HOME / "clients" / _server_scope_id(server_url)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_team_client_cursor_path(server_url: str) -> Path:
+    """client 端上传游标（traj_id -> 已上传内容 sha256），按 server 分目录。
+
+    去抖 sidecar 由 collector 从本路径派生（``cursor.debounce.json``），自动
+    同目录隔离。
+    """
+    return get_team_client_dir(server_url) / "cursor.json"
+
+
+def get_team_client_history_path(server_url: str) -> Path:
+    """client 端安装历史（reconcile 落的 side 时间序列），按 server 分目录。
+
+    注意这与 server/standalone 模式的 ``XSKILL_HOME/install_history.jsonl``
+    是不同文件：那条是本机自身 canary 归因用的，与"连了哪个 server"无关。
+    """
+    return get_team_client_dir(server_url) / "install_history.jsonl"
 
 
 # 注：team client 不另开 team_skills/ / team_outbox/ 目录——

@@ -38,6 +38,8 @@ def cmd_serve(args, xskill) -> int:
         if not home_root.is_dir():
             print(f"error: --home 目录不存在: {home_root}", file=sys.stderr)
             return 2
+    from xskill.runtime import write_running
+    write_running(port=args.port, mode="server" if args.server else "standalone")
     xskill.serve(host=args.host, port=args.port, home_root=home_root,
                  server_mode=args.server)
     return 0
@@ -62,6 +64,8 @@ def cmd_registry(args, xskill) -> int:
         # ecosystem 是来源标签：``manual`` = 用户手动注册；其他如
         # ``claude_code`` = daemon 启动时自动 detect 出来的生态目录。
         # 同时用 codex / opencode 等其他工具时一眼能区分来源。
+        # 表头与数据行都用 \t 分隔；解析方只取含 ecosystem 名的数据行即可。
+        print("ID\tECOSYSTEM\tTRAJ\tINDEXED\tLABEL\tPATH")
         for w in dirs:
             print(
                 f"{w.id}\t{w.ecosystem}\t{w.traj_count}\t{w.indexed_count}\t"
@@ -71,6 +75,81 @@ def cmd_registry(args, xskill) -> int:
     return 1
 
 
+def _standalone_watch_dir_count() -> int:
+    """轻量读 registry.db 里 watch_dirs 行数（不建表、不走 facade/config）。
+
+    用于判断本机是否有 standalone/server 数据。库文件或表不存在都视作 0
+    ——这是"尚未初始化"的正常状态，不是错误，故显式查表而非吞异常。
+    """
+    import sqlite3
+    from xskill.config import get_registry_db_path
+    db = get_registry_db_path()
+    if not db.is_file():
+        return 0
+    conn = sqlite3.connect(str(db))
+    try:
+        has_table = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='watch_dirs'"
+        ).fetchone()
+        if not has_table:
+            return 0
+        return int(conn.execute("SELECT COUNT(*) FROM watch_dirs").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def cmd_registry_list_client() -> int:
+    """team 客户端模式的 ``registry list``。
+
+    瘦客户端不写 ``watch_dirs`` / ``trajectories`` 表（那是 standalone/server
+    的存储），它靠实时 ``detect_known_ecosystems`` 采集 + ``team_client_cursor``
+    记上传进度。所以这里**现算**视图：每个探测到的生态显示
+
+        ECOSYSTEM  COLLECTED  UPLOADED  SOURCE
+
+    - COLLECTED = 该生态 bridge 目录下 ``traj_*.json`` 数（已镜像采集的轨迹）
+    - UPLOADED  = 上述轨迹里已记入 cursor（已上传 server）的数
+    - SOURCE    = 用户真实的原生目录（如 ~/.claude/projects），非内部 bridge
+
+    不依赖 config.yaml / XSkill 门面——纯客户端机器也能直接看。
+    """
+    import json
+    from pathlib import Path
+    from xskill.config import (
+        XSKILL_HOME, get_team_client_state_path, get_team_client_cursor_path,
+    )
+    from xskill.ecosystems import detect_known_ecosystems
+    from xskill.team.client.state import load_client_state
+
+    home = XSKILL_HOME.parent  # 与 XSKILL_HOME 同源,避免 home 解析漂移
+    # 游标按 server 分目录（方案 A）——先读连接状态拿 server_url 才能定位。
+    # 没连过 server（无 state）则没有任何上传游标，uploaded 全 0。
+    uploaded_ids: set[str] = set()
+    state_path = get_team_client_state_path()
+    if state_path.is_file():
+        cursor_path = get_team_client_cursor_path(
+            load_client_state(state_path).server_url)
+        if cursor_path.is_file():
+            uploaded_ids = set(json.loads(cursor_path.read_text(encoding="utf-8")))
+
+    dets = detect_known_ecosystems(home_root=home)
+    if not dets:
+        print("(no agent ecosystems detected)")
+        return 0
+    print("ECOSYSTEM\tCOLLECTED\tUPLOADED\tSOURCE")
+    for det in dets:
+        bridge = Path(det["bridge"])
+        bridge_ids = (
+            {p.stem for p in bridge.glob("traj_*.json")}
+            if bridge.is_dir() else set()
+        )
+        collected = len(bridge_ids)
+        uploaded = len(bridge_ids & uploaded_ids)
+        print(f"{det['ecosystem']}\t{collected}\t{uploaded}\t{det['source']}")
+    return 0
+
+
 def cmd_connect(args) -> int:
     """team 瘦客户端：连上 server，跑采集/同步/对齐守护循环。
 
@@ -78,7 +157,10 @@ def cmd_connect(args) -> int:
     ``xskill connect``                          复用已存连接
     """
     import socket as _socket
-    from xskill.config import get_team_client_state_path, XSKILL_HOME
+    from xskill.config import (
+        get_team_client_state_path, XSKILL_HOME,
+        get_team_client_cursor_path, get_team_client_history_path,
+    )
     from xskill.team.client.state import (
         ClientState, load_client_state, save_client_state,
     )
@@ -107,7 +189,11 @@ def cmd_connect(args) -> int:
                 # 走指纹回查或新发。损坏的 state 接下来会被新的 save 覆盖。
                 existing_client_id = None
         import httpx
-        http = httpx.Client(base_url=server_url, timeout=30.0)
+        # 默认 trust_env=False：team server 是已知、可直连的内网主机，绕开公司
+        # 代理（SWG）才是正确语义——经代理常因代理出口连不上 server 而 504。
+        # --use-proxy 时恢复读取系统/环境代理（含 Windows 注册表代理）。
+        http = httpx.Client(base_url=server_url, timeout=30.0,
+                            trust_env=args.use_proxy)
         try:
             client_id = register_with_server(
                 http, token=args.token,
@@ -129,18 +215,64 @@ def cmd_connect(args) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 1
         import httpx
-        http = httpx.Client(base_url=state.server_url, timeout=30.0)
+        # 同上：复用连接的后台同步也走直连，否则"注册过了同步全 504"。
+        http = httpx.Client(base_url=state.server_url, timeout=30.0,
+                            trust_env=args.use_proxy)
         print(f"reconnecting: client_id={state.client_id}  server={state.server_url}")
 
     # skill working copies 复用标准 skill_dir（~/.xskill/skill/）——瘦客户端
     # 没有 config.yaml，直接用默认路径，不走 get_skill_dir()（那会 load_config）。
+    # 游标 / 去抖 / 安装历史按 server 分目录（方案 A）——换 server 不再被上一个
+    # server 的"已上传"游标静默压制对新 server 的上传。skill 工作副本仍复用共享
+    # 的 skill_dir（cleanup 已按 manifest 摘除旧 server 的残留 skill）。
     client = TeamClient(
         state=state, http=http,
         skill_dir=XSKILL_HOME / "skill",
-        cursor_path=XSKILL_HOME / "team_client_cursor.json",
-        history_path=XSKILL_HOME / "install_history.jsonl",
+        cursor_path=get_team_client_cursor_path(state.server_url),
+        history_path=get_team_client_history_path(state.server_url),
     )
     client.run_forever()   # 阻塞
+    return 0
+
+
+def cmd_stats(args) -> int:
+    """token/成本统计。直接读 registry(~/.xskill/registry.db)。
+
+    模型分布的 unknown 兜底标签复用 config 的 ``dashboard.default_model``——与看板
+    口径一致，让"没记到模型名"的存量轨迹在 stats 里也归到指定模型而非 unknown。
+    经 ``dashboard_attribution_defaults`` 读取：只看 dashboard 段、不校验
+    llm/embedding key，config.yaml 缺失则退 'unknown'，瘦客户端无 config 也能用。
+    纯展示——不改库里真实值、不影响 canary（灰度走 runner 里另一条默认 unknown 的
+    路径，与此互不串）。
+    """
+    import json as _json
+    import time
+    from xskill.config import dashboard_attribution_defaults
+    from xskill.pipeline.registry import model_share, usage_summary
+    from xskill.runtime import read_status
+    from xskill.usage import render_stats
+
+    unknown_model = dashboard_attribution_defaults()["model"]
+
+    def _emit() -> None:
+        s = usage_summary()
+        st = read_status()
+        ms = model_share(unknown_label=unknown_model)
+        if args.json:
+            print(_json.dumps({"status": st, "cost": s, "models": ms},
+                              ensure_ascii=False, indent=2))
+        else:
+            print(render_stats(s, status=st, models=ms))
+
+    if args.watch and not args.json:
+        try:
+            while True:
+                print("\033[2J\033[H", end="")  # 清屏 + 光标归位
+                _emit()
+                time.sleep(2)
+        except KeyboardInterrupt:
+            return 0
+    _emit()
     return 0
 
 
@@ -231,6 +363,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="join token（server 启动 `xskill serve --server` 时打印）")
     p_conn.add_argument("--label", default="",
                         help="本 client 的可读标签（默认主机名）")
+    p_conn.add_argument(
+        "--use-proxy", action="store_true",
+        help="经系统/环境代理连 server（默认直连，绕开公司 SWG 代理）。"
+             "仅当本机唯一出网路径是代理、且代理能到 server 时才需要。",
+    )
+
+    p_stats = sub.add_parser(
+        "stats", help="Show token usage & estimated cost (Issue #43)",
+    )
+    p_stats.add_argument("--json", action="store_true", help="机读 JSON 输出")
+    p_stats.add_argument("--watch", action="store_true",
+                         help="htop 式整屏刷新（每 2s）")
 
     return p
 
@@ -284,6 +428,20 @@ def main() -> int:
     # connect 是瘦客户端：不读 config.yaml / 不需要 llm.api_key / 不构造 XSkill 门面
     if args.command == "connect":
         return cmd_connect(args)
+
+    # stats 只读 registry，不需要 config.yaml / llm.api_key / facade
+    if args.command == "stats":
+        return cmd_stats(args)
+
+    # team 客户端的 `registry list`：本机是 client（有 team_client.json）且没有
+    # standalone 数据（watch_dirs 为空）时，改走现算视图。放在 config/facade
+    # 之前——纯客户端没 config.yaml 也能直接看。standalone/server 机（watch_dirs
+    # 非空）走原路，不受影响（哪怕本机也存了 team_client.json）。
+    if args.command == "registry" and args.registry_action == "list":
+        from xskill.config import get_team_client_state_path
+        if (get_team_client_state_path().is_file()
+                and _standalone_watch_dir_count() == 0):
+            return cmd_registry_list_client()
 
     # 首次运行 auto-init：serve / registry / search 都需要 config.yaml。
     # 不存在就写一份模板并要求用户填 key 后重跑——比直接抛 traceback 友好。

@@ -282,6 +282,7 @@ def test_team_cs_full_loop(tmp_path, team_server):
         history_path=client_home / ".xskill" / "install_history.jsonl",
         home_root=client_home,
         quiet_seconds=0,   # 测试不等 3min 静默窗口
+        min_change_interval=0,   # 测试不等 10min 上传频率拦截窗口
     )
 
     client.collector.start_ingesters()

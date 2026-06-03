@@ -33,6 +33,18 @@ if str(SRC) not in sys.path:
 
 
 # ─────────────────────────────────────────────────────────────────
+# 真实 ~/.xskill/registry.db 防污染
+# ─────────────────────────────────────────────────────────────────
+# 管线/埋点(instrumentation)里部分 record_*(db_path=None) 会落到全局 registry。
+# 测试期间统一把 get_registry_db_path 重定向到 tmp：① 不污染真库；② 不与线上
+# serve 抢 WAL 锁(否则时序敏感测试会偶发变慢/闪红)。显式传 db_path 的测试不受影响。
+@pytest.fixture(autouse=True)
+def _isolate_registry_db(tmp_path_factory, monkeypatch):
+    db = tmp_path_factory.mktemp("xskill_reg") / "registry.db"
+    monkeypatch.setattr("xskill.pipeline.registry.get_registry_db_path", lambda: db)
+
+
+# ─────────────────────────────────────────────────────────────────
 # 真实 ~/.claude/skills/ 防污染快照
 # ─────────────────────────────────────────────────────────────────
 

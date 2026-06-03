@@ -109,8 +109,16 @@ class LLMClient:
             )
             wrapper = RateLimitedLLM(bucket=bucket, inner_call=self._raw_chat)
             resp = wrapper.call(prompt=prompt, system=system, timeout=60.0)
+            self._record(resp)
             return resp.choices[0].message.content
-        return self._raw_chat(prompt=prompt, system=system).choices[0].message.content
+        resp = self._raw_chat(prompt=prompt, system=system)
+        self._record(resp)
+        return resp.choices[0].message.content
+
+    def _record(self, resp) -> None:
+        """旁路记账(Issue #43);best-effort,绝不抛。"""
+        from xskill.usage import current_step, get_ledger
+        get_ledger().record_llm(current_step(), self.model, resp)
 
     def _raw_chat(self, *, prompt: str, system: str = ""):
         """原始 LLM 调用,返回完整 response 对象(供 wrapper reconcile usage)。"""
@@ -246,6 +254,9 @@ class EmbedClient:
             "/embeddings",
             {"model": self.model, "input": text},
         )
+        # 旁路记账(Issue #43);embeddings response 自带 usage.total_tokens。
+        from xskill.usage import get_ledger
+        get_ledger().record_embed(self.model, data)
         items = data.get("data") or []
         if not items:
             raise ValueError(f"embedding response missing data: {data!r}")

@@ -90,6 +90,7 @@
 | Codex | **未支持**，设计见 [`codex.md`](./codex.md) | 拟新增 `install_to_codex` / `ingest_codex_sessions` / `_adapt_codex_rollout_jsonl` |
 | OpenClaw | **部分支持**：adapter / ingester / 基本 install 已合入（`openclaw@2026.5.7`）；真 e2e 发现 openclaw symlink-escape 拒收 → install 改 copy 模式 + 加 dest→source 回流桥未合入，详见 [`openclaw-install-fix.md`](./openclaw-install-fix.md) | 已有 `install_to_openclaw` / `ingest_openclaw_sessions` / `_adapt_openclaw_trajectory_jsonl`；install_to_openclaw 待改 copy + 加 `reverse_sync_openclaw_dest` |
 | Hermes | **未支持**，设计见 [`hermes.md`](./hermes.md)；本机有数据 (`hermes@0.9.0`) | 拟新增 `install_to_hermes` / `ingest_hermes_sessions` / `_adapt_hermes_sqlite` |
+| Trae | **已支持**（IDE `workspaceStorage/state.vscdb` + Agent CLI `trajectory_*.json`；测试较少） | `src/xskill/ecosystems/trae.py`：`TraeIngester` / `install_to_trae` / `_adapt_trae_*`；详见 [`trae.md`](./trae.md) |
 
 ## 数据可信度声明
 
@@ -105,4 +106,5 @@
 - [Codex 接入面](./codex.md)
 - [OpenClaw 接入面](./openclaw.md)
 - [Hermes 接入面](./hermes.md)
+- [Trae 接入面](./trae.md)
 - 横向对比（更深入但按生态而非 OS 切）：[`docs/research/ecosystem-integration-survey.md`](../research/ecosystem-integration-survey.md)

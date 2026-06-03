@@ -15,6 +15,7 @@ watch_dir + trajectory 反查走这个类。
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
@@ -51,6 +52,8 @@ CREATE TABLE IF NOT EXISTS trajectories (
     skill_generated TEXT,
     skill_used    TEXT,
     canary_side   TEXT,
+    source_model  TEXT,
+    source_harness TEXT,
     ux_score      REAL,
     error_msg     TEXT,
     retry_count   INTEGER DEFAULT 0,
@@ -59,6 +62,52 @@ CREATE TABLE IF NOT EXISTS trajectories (
     indexed_at    TEXT,
     updated_at    TEXT DEFAULT (datetime('now')),
     UNIQUE(watch_dir_id, filename)
+);
+
+CREATE TABLE IF NOT EXISTS llm_usage (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT DEFAULT (datetime('now')),
+    step         TEXT,
+    model        TEXT,
+    prompt       INTEGER DEFAULT 0,
+    completion   INTEGER DEFAULT 0,
+    total        INTEGER DEFAULT 0,
+    cost_usd     REAL DEFAULT 0,
+    price_source TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_ts ON llm_usage(ts);
+
+-- 埋点(instrumentation,在代码里插记录点):三类事件,供看板算衍生率 --
+CREATE TABLE IF NOT EXISTS recommendation_log (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        TEXT DEFAULT (datetime('now')),
+    client_id TEXT,
+    skill     TEXT,
+    side      TEXT,          -- main / staging
+    bucket    TEXT           -- ranked / recommended
+);
+CREATE INDEX IF NOT EXISTS idx_reco_skill ON recommendation_log(skill);
+
+CREATE TABLE IF NOT EXISTS atom_adoption (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT DEFAULT (datetime('now')),
+    atom_id     TEXT,
+    skill       TEXT,
+    weightscore INTEGER,
+    was_new     INTEGER       -- 1=首次加入 0=覆盖
+);
+CREATE INDEX IF NOT EXISTS idx_atom_adopt ON atom_adoption(atom_id);
+
+CREATE TABLE IF NOT EXISTS canary_decision (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              TEXT DEFAULT (datetime('now')),
+    skill           TEXT,
+    action          TEXT,     -- promoted / rejected / timeout_discarded
+    main_avg        REAL,
+    staging_avg     REAL,
+    main_samples    INTEGER,
+    staging_samples INTEGER,
+    age_days        REAL
 );
 """
 
@@ -96,6 +145,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("tasks_extracted", "INTEGER DEFAULT 0"),
         ("last_offset", "INTEGER DEFAULT 0"),
         ("last_atom_id", "TEXT"),
+        # 用户 agent 模型(批2,Issue #43 关联):discover 时从 .json sidecar 写入
+        ("source_model", "TEXT"),
+        # 用户 coding agent(harness):discover 时从 .json sidecar 的 harness 写入。
+        # team server 据此按真实 coding agent 分组,替代把所有上传一律标 team_client。
+        ("source_harness", "TEXT"),
     ]
     for col, typedef in migrations:
         if col not in cols:
@@ -120,6 +174,185 @@ def _migrate(conn: sqlite3.Connection) -> None:
         " WHERE has_meta=1 AND has_embedding=0 AND (status IS NULL OR status='discovered')"
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# LLM usage / cost accounting  (Issue #43)  —— 唯一"无家可归"数据的持久化
+# ---------------------------------------------------------------------------
+
+def record_usage(*, step: str, model: str, prompt: int, completion: int,
+                 total: int, cost_usd: float, price_source: str,
+                 db_path: Optional[Path] = None) -> None:
+    """追加一条 LLM/embedding 调用的 token+成本记录。旁路 telemetry。"""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO llm_usage(step,model,prompt,completion,total,cost_usd,price_source)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (step, model, int(prompt), int(completion), int(total),
+             float(cost_usd), price_source),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# 埋点(instrumentation)：三类事件的记录 + 聚合，供看板算衍生率
+# 记录函数走旁路 telemetry——调用点用 try/except 包，记录失败绝不阻断管线。
+# ---------------------------------------------------------------------------
+
+def record_recommendation(*, client_id: str, skill: str, side: str, bucket: str,
+                          db_path: Optional[Path] = None) -> None:
+    """记一次"把 skill 推荐给某用户"。供算推荐触发率(被推荐→被采用)。"""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO recommendation_log(client_id,skill,side,bucket) VALUES(?,?,?,?)",
+            (client_id, skill, side, bucket),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def record_atom_adoption(*, atom_id: str, skill: str, weightscore: int,
+                         was_new: bool, db_path: Optional[Path] = None) -> None:
+    """记一次"某 atom 被聚进某 skill"。供算原子采纳率(采纳原子/总原子)。"""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO atom_adoption(atom_id,skill,weightscore,was_new) VALUES(?,?,?,?)",
+            (atom_id, skill, int(weightscore), 1 if was_new else 0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def record_canary_decision(*, skill: str, action: str, main_avg: float,
+                           staging_avg: float, main_samples: int,
+                           staging_samples: int, age_days: float,
+                           db_path: Optional[Path] = None) -> None:
+    """记一次灰度裁决(promoted/rejected/timeout_discarded)。供算晋升率。"""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO canary_decision(skill,action,main_avg,staging_avg,"
+            "main_samples,staging_samples,age_days) VALUES(?,?,?,?,?,?,?)",
+            (skill, action, main_avg, staging_avg, int(main_samples),
+             int(staging_samples), float(age_days)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def usage_summary(db_path: Optional[Path] = None) -> dict:
+    """跨重启的持久汇总:累计 token/$、今日 $、按 step / model 分解。"""
+    conn = get_connection(db_path)
+    try:
+        tot = conn.execute(
+            "SELECT COALESCE(SUM(total),0) t, COALESCE(SUM(cost_usd),0) c, COUNT(*) n"
+            " FROM llm_usage"
+        ).fetchone()
+        today = conn.execute(
+            "SELECT COALESCE(SUM(cost_usd),0) FROM llm_usage WHERE ts >= date('now')"
+        ).fetchone()[0]
+        estimated = conn.execute(
+            "SELECT COUNT(*) FROM llm_usage WHERE price_source != 'config'"
+        ).fetchone()[0] > 0
+        by_step = [dict(r) for r in conn.execute(
+            "SELECT step, SUM(total) tokens, SUM(cost_usd) cost, COUNT(*) calls"
+            " FROM llm_usage GROUP BY step ORDER BY cost DESC"
+        ).fetchall()]
+        by_model = [dict(r) for r in conn.execute(
+            "SELECT model, SUM(total) tokens, SUM(cost_usd) cost, COUNT(*) calls"
+            " FROM llm_usage GROUP BY model ORDER BY cost DESC"
+        ).fetchall()]
+        return {
+            "total_tokens": tot["t"], "total_usd": round(tot["c"], 6),
+            "total_calls": tot["n"], "today_usd": round(today, 6),
+            "estimated": estimated, "by_step": by_step, "by_model": by_model,
+        }
+    finally:
+        conn.close()
+
+
+def _sidecar_field(md_path: Path, key: str) -> Optional[str]:
+    """从 traj_*.md 的同名 .json sidecar 读某字段（model / harness 等）。"""
+    try:
+        meta = json.loads(md_path.with_suffix(".json").read_text(encoding="utf-8"))
+        v = meta.get(key)
+        return str(v) if v else None
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+
+
+def _sidecar_model(md_path: Path) -> Optional[str]:
+    """从 traj_*.md 的同名 .json sidecar 读用户 agent 模型(meta['model'])。"""
+    return _sidecar_field(md_path, "model")
+
+
+# 每条轨迹的 coding agent(harness)推断：
+#   1) 优先 client 上报的 source_harness（team 上传带）；
+#   2) 缺失时,非 team_client 目录的 ecosystem 本身就是 harness
+#      （本机 claude_code / codex / opencode sessions 目录）；
+#   3) 都没有（团队上传但旧 client 没带 harness）→ 兜底标签（默认 'unknown'，
+#      看板可经 config 的 dashboard.default_harness 改成别的已知 harness）。
+# 这样既替代了"全是 team_client"的无信息分组,也不需要为本机轨迹回填。
+# 兜底标签经 SQL 命名绑定参数 ``:hlabel`` 注入（自由字符串，防注入/引号问题）。
+_HARNESS_EXPR = (
+    "COALESCE(NULLIF(t.source_harness,''),"
+    " CASE WHEN wd.ecosystem NOT IN ('team_client','manual')"
+    " THEN wd.ecosystem END, :hlabel)"
+)
+
+
+def harness_share(db_path: Optional[Path] = None, *,
+                  unknown_label: str = "unknown") -> list[dict]:
+    """用户 coding agent(harness)分布(按轨迹数),供看板按 coding agent 显示占比。
+
+    ``unknown_label``：harness 完全缺失时的归类桶，默认 'unknown'。看板层据
+    config 传入 dashboard.default_harness 覆盖；canary/stats 等调用不传，保持
+    'unknown' 语义不变。
+    """
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT {_HARNESS_EXPR} AS harness, COUNT(*) AS trajs"
+            " FROM trajectories t JOIN watch_dirs wd ON t.watch_dir_id=wd.id"
+            f" GROUP BY {_HARNESS_EXPR} ORDER BY trajs DESC",
+            {"hlabel": unknown_label},
+        ).fetchall()
+        total = sum(r["trajs"] for r in rows) or 1
+        return [{"harness": r["harness"], "trajs": r["trajs"],
+                 "pct": round(100 * r["trajs"] / total, 1)} for r in rows]
+    finally:
+        conn.close()
+
+
+def model_share(db_path: Optional[Path] = None, *,
+                unknown_label: str = "unknown") -> list[dict]:
+    """用户 agent 模型分布(按轨迹数),供 server stats 显示占比。source_model 缺失
+    → ``unknown_label``（默认 'unknown'，经命名参数 ``:mlabel`` 注入）。
+
+    注意：canary 的 ``eligible_models`` 把 'unknown' 当“未归属、留在 main”的哨兵，
+    所以那条路径必须用默认 'unknown'——只有看板展示层才传入 config 的覆盖值。
+    """
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT COALESCE(source_model,:mlabel) AS model, COUNT(*) AS trajs"
+            " FROM trajectories GROUP BY COALESCE(source_model,:mlabel)"
+            " ORDER BY trajs DESC",
+            {"mlabel": unknown_label},
+        ).fetchall()
+        total = sum(r["trajs"] for r in rows) or 1
+        return [{"model": r["model"], "trajs": r["trajs"],
+                 "pct": round(100 * r["trajs"] / total, 1)} for r in rows]
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -202,21 +435,34 @@ def get_watch_dir(dir_path: str | Path, *, db_path: Optional[Path] = None) -> di
 # Trajectory tracking
 # ---------------------------------------------------------------------------
 
+# mtime 变更检测时**不触碰**的中间态：split / cluster 正在 in-flight 跑，
+# 此刻翻 updated 会和在飞 future 的状态回写打架。留着旧 mtime,等它落定下一轮
+# scan 再检出变更（续写重拆最终收敛,不丢更新）。
+_ACTIVE_STATUSES = ("splitting", "clustering")
+
+
 def discover_trajectories(
     watch_dir_id: int,
     dir_path: Path,
     *,
     db_path: Optional[Path] = None,
 ) -> list[str]:
-    """扫描目录中的 traj_*.md，upsert 到 DB。返回新发现的文件名列表。"""
+    """扫描目录中的 traj_*.md，upsert 到 DB。返回新发现的文件名列表。
+
+    续写重拆触发：已存在的文件若 mtime 增大（客户端追加内容后重传覆盖写,
+    mtime 变更），把它从"已落定"状态翻回 ``updated``——watcher 下一轮会像
+    ``discovered`` 一样重新提交 split，TaskAgent 用 ``last_offset`` 续接点
+    只拆新增内容。``updated`` 不计入返回的 new_files（只统计真·新文件）。
+    """
     dir_path = Path(dir_path)
     conn = get_connection(db_path)
     new_files: list[str] = []
     try:
         existing = {
-            row["filename"]
+            row["filename"]: row
             for row in conn.execute(
-                "SELECT filename FROM trajectories WHERE watch_dir_id=?",
+                "SELECT filename, status, file_mtime FROM trajectories"
+                " WHERE watch_dir_id=?",
                 (watch_dir_id,),
             ).fetchall()
         }
@@ -225,19 +471,43 @@ def discover_trajectories(
             if md.name.endswith(".meta"):
                 continue
             mtime = md.stat().st_mtime
-            if md.name not in existing:
+            row = existing.get(md.name)
+            if row is None:
                 conn.execute(
-                    "INSERT INTO trajectories (watch_dir_id, filename, file_mtime)"
-                    " VALUES (?, ?, ?)",
-                    (watch_dir_id, md.name, mtime),
+                    "INSERT INTO trajectories"
+                    " (watch_dir_id, filename, file_mtime, source_model,"
+                    "  source_harness)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (watch_dir_id, md.name, mtime, _sidecar_model(md),
+                     _sidecar_field(md, "harness")),
                 )
                 new_files.append(md.name)
-            else:
-                # 更新 mtime（用于变更检测）
+                continue
+
+            stored_mtime = row["file_mtime"] or 0
+            if mtime <= stored_mtime:
+                continue  # 没变化
+            status = row["status"]
+            if status in _ACTIVE_STATUSES:
+                # 正在 split/cluster——别打架,留旧 mtime,落定后下一轮再检出。
+                continue
+            if status == "discovered":
+                # 还没开拆,后续 split 会读到最新内容（last_offset=0 全量拆）。
+                # 只更 mtime,不必翻 updated。
                 conn.execute(
-                    "UPDATE trajectories SET file_mtime=? WHERE watch_dir_id=? AND filename=?",
+                    "UPDATE trajectories SET file_mtime=?"
+                    " WHERE watch_dir_id=? AND filename=?",
                     (mtime, watch_dir_id, md.name),
                 )
+                continue
+            # 已落定（done/indexed/split_done/error/filtered/updated）+ 内容变更
+            # → 翻 updated,等下一轮重新 split（续接点续拆）。
+            conn.execute(
+                "UPDATE trajectories SET status='updated', file_mtime=?,"
+                " updated_at=datetime('now')"
+                " WHERE watch_dir_id=? AND filename=?",
+                (mtime, watch_dir_id, md.name),
+            )
 
         conn.commit()
         return new_files

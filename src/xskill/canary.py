@@ -49,6 +49,12 @@ class CanaryConfig:
     min_samples: int = 5
     max_days_hold: int = 14
     rotate_interval: int = 300
+    # ── 模型分桶灰度（batch3）──
+    # scope_top_n: 只有"使用量 top-N 的用户模型"参与灰度（路由 + 打分）;
+    #              unknown 与 top-N 之外的模型一律走 main，不进 staging、不计分。
+    # total_samples: 每侧（main/staging）判定所需的总样本数（跨所有参与模型）。
+    scope_top_n: int = 2
+    total_samples: int = 20
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "CanaryConfig":
@@ -58,6 +64,8 @@ class CanaryConfig:
             min_samples=int(d.get("min_samples", 5)),
             max_days_hold=int(d.get("max_days_hold", 14)),
             rotate_interval=int(d.get("rotate_interval", 300)),
+            scope_top_n=int(d.get("scope_top_n", 2)),
+            total_samples=int(d.get("total_samples", 20)),
         )
 
 
@@ -259,6 +267,22 @@ def pick_side(traj_id: str, skill_name: str, probability: float) -> str:
     return "staging" if r < probability else "main"
 
 
+def pick_side_scoped(traj_id: str, skill_name: str, probability: float,
+                     *, user_model: str, eligible: dict[str, float] | None) -> str:
+    """模型分桶路由(batch3):只有 top-N 用户模型的流量才可能进 staging。
+
+    - ``eligible`` 为 None → 未启用模型分桶,退回 :func:`pick_side`(老行为)。
+    - ``eligible`` 给定(``{model: weight}``)→ ``user_model`` 不在其中(含
+      unknown / 非 top-N)一律返回 ``main``,**不进灰度**;在其中则照常按
+      ``pick_side`` 确定性分流(各模型的灰度量天然 ∝ 其流量,即"等比推送")。
+    """
+    if eligible is None:
+        return pick_side(traj_id, skill_name, probability)
+    if user_model not in eligible:
+        return "main"
+    return pick_side(traj_id, skill_name, probability)
+
+
 def read_skill_on_branch(skill_dir: Path, branch: str) -> str | None:
     """读取指定分支上的 SKILL.md 文本。不切分支，用 git show。"""
     code, out, _ = run_git(["show", f"{branch}:SKILL.md"], cwd=str(skill_dir))
@@ -382,14 +406,62 @@ def recent_scores(
 # Controller：事件触发判定
 # ═══════════════════════════════════════════════════════════════════
 
-def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None) -> dict:
-    """每次新体验分入库后调用。返回一个结果字典，action 字段含义：
+def eligible_models(model_share: list[dict], top_n: int) -> dict[str, float]:
+    """从 registry.model_share() 结果选出"使用量 top-N 的用户模型"并归一成权重。
+
+    - 排除 ``unknown`` / 空 / ``<synthetic>``（来源不可信，不参与灰度——见设计）。
+    - 按 ``trajs`` 降序取前 ``top_n``，权重 = 各自 trajs / Σ(top-N trajs)。
+    - 返回 ``{model: weight}``，Σweight=1.0；无合格模型时返回 ``{}``。
+
+    ``model_share`` 形如 ``[{"model": "claude-opus-4-7", "trajs": 102, ...}, ...]``。
+    """
+    excluded = {"", "unknown", "<synthetic>"}
+    rows = [r for r in model_share
+            if str(r.get("model", "")).strip() not in excluded
+            and int(r.get("trajs", 0)) > 0]
+    rows.sort(key=lambda r: int(r.get("trajs", 0)), reverse=True)
+    top = rows[:max(0, top_n)]
+    total = sum(int(r["trajs"]) for r in top)
+    if total <= 0:
+        return {}
+    return {str(r["model"]): int(r["trajs"]) / total for r in top}
+
+
+def _cohort_weighted(scores: list[dict], weights: dict[str, float]
+                     ) -> tuple[float | None, dict[str, int]]:
+    """按 user_model 分桶求各桶均分，再按 ``weights`` 加权汇总成"真正体验分"。
+
+    只统计 model ∈ weights 的样本（unknown / 非 top-N 被丢弃）。权重在"实际有
+    样本的桶"上重新归一。返回 (加权分 or None, 各桶样本数)；无任一合格桶→None。
+    """
+    by_model: dict[str, list[float]] = {}
+    for s in scores:
+        m = str(s.get("user_model", ""))
+        if m in weights:
+            by_model.setdefault(m, []).append(float(s["score"]))
+    if not by_model:
+        return None, {}
+    wsum = sum(weights[m] for m in by_model)
+    weighted = sum((weights[m] / wsum) * (sum(v) / len(v))
+                   for m, v in by_model.items())
+    return weighted, {m: len(v) for m, v in by_model.items()}
+
+
+def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None,
+                     *, weights: dict[str, float] | None = None) -> dict:
+    """每次新体验分入库后调用。返回结果字典，action 字段含义：
 
     - no_staging     :  该 skill 无 staging 分支，什么都不做
     - waiting        :  样本不足，继续收集
     - timeout_discarded : 超过 max_days 仍不足 → 丢弃 staging
-    - promoted       :  staging 均分 ≥ main → 合入 main
-    - rejected       :  staging 均分 < main → 丢弃 staging
+    - promoted       :  加权 staging 分 ≥ 加权 main → 合入 main
+    - rejected       :  加权 staging 分 < 加权 main → 丢弃 staging
+
+    ``weights``: ``{user_model: 权重}``（来自 :func:`eligible_models`）。
+    - 给定时走**模型分桶加权**:只统计 top-N 模型样本(unknown 等被排除)，每侧
+      需 ≥ ``total_samples`` 个合格样本；加权体验分 = Σ 桶均分 × 桶人口权重。
+    - 为 None 时退化为**单桶**(全部样本一个桶、权重 1)，阈值用 ``min_samples``——
+      等价于旧的简单均分(单机/未开模型分桶场景)。两者同一套分桶算法，非两条路径。
     """
     cfg = config or CanaryConfig()
     skill_dir = Path(skill_dir)
@@ -407,47 +479,72 @@ def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None) -> dic
     if created is not None:
         age_days = (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).days
 
-    main_recent = recent_scores(skill_dir, side="main", commit_sha=m_sha, n=cfg.min_samples)
-    staging_recent = recent_scores(skill_dir, side="staging", commit_sha=s_sha, n=cfg.min_samples)
+    scoped = weights is not None
+    need = cfg.total_samples if scoped else cfg.min_samples
+    # 单桶用通配权重 {"*": 1.0}，并把样本的 user_model 临时视作 "*"。
+    eff_weights = weights if scoped else {"*": 1.0}
 
-    enough = (
-        len(main_recent) >= cfg.min_samples
-        and len(staging_recent) >= cfg.min_samples
-    )
+    n_collect = max(need * (len(eff_weights) or 1), need)
+    main_all = recent_scores(skill_dir, side="main", commit_sha=m_sha, n=n_collect)
+    staging_all = recent_scores(skill_dir, side="staging", commit_sha=s_sha, n=n_collect)
+    if not scoped:
+        for s in main_all + staging_all:
+            s["user_model"] = "*"
+
+    main_n = sum(1 for s in main_all if s.get("user_model") in eff_weights)
+    staging_n = sum(1 for s in staging_all if s.get("user_model") in eff_weights)
+    enough = main_n >= need and staging_n >= need
 
     if not enough:
         if age_days is not None and age_days >= cfg.max_days_hold:
             discard_staging(skill_dir)
-            return {
-                "action": "timeout_discarded",
-                "age_days": age_days,
-                "main_samples": len(main_recent),
-                "staging_samples": len(staging_recent),
-            }
-        return {
-            "action": "waiting",
-            "age_days": age_days,
-            "main_samples": len(main_recent),
-            "staging_samples": len(staging_recent),
-            "need": cfg.min_samples,
-        }
+            _record_decision(skill_dir, "timeout_discarded", 0.0, 0.0,
+                             main_n, staging_n, age_days)
+            return {"action": "timeout_discarded", "age_days": age_days,
+                    "main_samples": main_n, "staging_samples": staging_n}
+        return {"action": "waiting", "age_days": age_days,
+                "main_samples": main_n, "staging_samples": staging_n, "need": need}
 
-    main_avg = sum(s["score"] for s in main_recent) / len(main_recent)
-    staging_avg = sum(s["score"] for s in staging_recent) / len(staging_recent)
+    main_w, main_cohorts = _cohort_weighted(main_all, eff_weights)
+    staging_w, staging_cohorts = _cohort_weighted(staging_all, eff_weights)
+    if main_w is None or staging_w is None:
+        return {"action": "waiting", "age_days": age_days,
+                "main_samples": main_n, "staging_samples": staging_n, "need": need}
+
     summary = {
-        "main_avg": round(main_avg, 3),
-        "staging_avg": round(staging_avg, 3),
-        "main_samples": len(main_recent),
-        "staging_samples": len(staging_recent),
+        "main_avg": round(main_w, 3),
+        "staging_avg": round(staging_w, 3),
+        "main_samples": main_n,
+        "staging_samples": staging_n,
+        "main_cohorts": main_cohorts,
+        "staging_cohorts": staging_cohorts,
         "age_days": age_days,
     }
 
-    if staging_avg >= main_avg:
+    if staging_w >= main_w:
         ok = merge_staging_to_main(skill_dir)
+        if ok:
+            _record_decision(skill_dir, "promoted", main_w, staging_w,
+                             main_n, staging_n, age_days)
         return {"action": "promoted" if ok else "merge_failed", **summary}
-    else:
-        discard_staging(skill_dir)
-        return {"action": "rejected", **summary}
+    discard_staging(skill_dir)
+    _record_decision(skill_dir, "rejected", main_w, staging_w,
+                     main_n, staging_n, age_days)
+    return {"action": "rejected", **summary}
+
+
+def _record_decision(skill_dir, action: str, main_avg: float, staging_avg: float,
+                     main_n: int, staging_n: int, age_days) -> None:
+    """埋点：记一次灰度终态裁决(best-effort，失败不阻断判定/翻牌)。"""
+    try:
+        from xskill.pipeline.registry import record_canary_decision
+        record_canary_decision(
+            skill=Path(skill_dir).name, action=action,
+            main_avg=float(main_avg or 0), staging_avg=float(staging_avg or 0),
+            main_samples=int(main_n or 0), staging_samples=int(staging_n or 0),
+            age_days=float(age_days or 0))
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.debug("canary decision telemetry skipped", exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -500,10 +597,12 @@ class AtomCanary:
     skill_dir: Path
 
     def append(self, *, atom_id: str, skill_name: str, side: str,
-               commit_sha: str, score: float, reasons: str) -> bool:
+               commit_sha: str, score: float, reasons: str,
+               user_model: str = "") -> bool:
         """幂等追加一条 atom 体验分。
 
         同一 (atom_id, skill_name, side) 三元组已存在则返回 False，不重复写入。
+        ``user_model``: 产生该 atom 的用户模型，供模型分桶加权裁决用。
         """
         existing = load_ux_scores(self.skill_dir)
         for e in existing:
@@ -518,6 +617,7 @@ class AtomCanary:
             "commit_sha": commit_sha,
             "score": float(score),
             "reasons": reasons,
+            "user_model": user_model,
             "scored_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         p = self.skill_dir / UX_SCORES_FILENAME
@@ -536,9 +636,13 @@ class AtomCanary:
         filtered.sort(key=lambda s: s.get("scored_at", ""), reverse=True)
         return filtered[:n]
 
-    def check_and_decide(self, *, config: "CanaryConfig | None" = None) -> dict:
-        """代理 ``check_and_decide``——判定逻辑不区分 atom/traj 粒度。"""
-        return check_and_decide(self.skill_dir, config=config)
+    def check_and_decide(self, *, config: "CanaryConfig | None" = None,
+                         weights: "dict[str, float] | None" = None) -> dict:
+        """代理 ``check_and_decide``——判定逻辑不区分 atom/traj 粒度。
+
+        ``weights`` 透传:给定则按模型分桶加权裁决,None 则单桶(等价旧均分)。
+        """
+        return check_and_decide(self.skill_dir, config=config, weights=weights)
 
 
 # =============================================================================

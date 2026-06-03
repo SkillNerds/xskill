@@ -13,11 +13,12 @@ from xskill.pipeline.registry import (
 )
 from xskill.pipeline.runner import DirectoryWatcher
 from tests.test_atom_task_store import _FakeEmbed
-from tests.test_task_agent import _TRAJ_MD, _AutoSplitLLM
+from tests.test_task_agent import _TRAJ_MD, _AutoSplitLLM, autosplit_submit
 
 
 class _StubAgno:
     """根据 sysprompt 头分发：
+    - split agent (AtomTask 拆分员) → 扫 [line:N] 标记逐个 submit_atom
     - cluster agent → 调 new_skill_folder + add_task_to_skill 给 auto-skill 打 10 分
     - edit agent (baby)  → 写 SKILL.md + commit_baby_to_main
     - edit agent (main)  → 写 SKILL.md + commit_to_staging
@@ -28,9 +29,18 @@ class _StubAgno:
         self.tools = {getattr(t, "__name__", ""): t for t in tools}
 
     def run(self, user_msg, **kw):
-        head = (self.instructions[0] if self.instructions else "")[:60]
+        head = (self.instructions[0] if self.instructions else "")[:80]
+        if "AtomTask 拆分员" in head:
+            autosplit_submit(user_msg, self.tools)
+            class _R: pass
+            r = _R(); r.content = "split"; return r
         if "TaskClusterAgent" in head:
             import re
+            import time as _t
+            # 真聚类要等大模型(按秒)；stub 模拟一点耗时,让"逐 atom 写 registry"
+            # 这类毫秒级旁路开销相对可忽略,贴近生产时序(否则瞬时 stub 会放大
+            # 旁路写入、扰动 candidates 晋升竞态)。
+            _t.sleep(0.03)
             m = re.search(r"atom_id:\s*(\S+)", user_msg)
             atom_id = m.group(1) if m else None
             if "new_skill_folder" in self.tools:
@@ -259,8 +269,14 @@ class TestClusterAllFailed:
         class _AlwaysFailAgno:
             def __init__(self, *, instructions, tools):
                 self.instructions = instructions
+                self.tools = {getattr(t, "__name__", ""): t for t in tools}
             def run(self, msg, **kw):
-                if "TaskClusterAgent" in (self.instructions[0] or "")[:60]:
+                head = (self.instructions[0] or "")[:80]
+                if "AtomTask 拆分员" in head:
+                    autosplit_submit(msg, self.tools)
+                    class _R: pass
+                    r = _R(); r.content = "split"; return r
+                if "TaskClusterAgent" in head:
                     raise RuntimeError("Insufficient Balance (stub LLM 402)")
                 class _R: pass
                 r = _R(); r.content = ""; return r
@@ -329,7 +345,11 @@ class TestIndependentSkillEditScan:
                 self.instructions = instructions
                 self.tools = {getattr(t, "__name__", ""): t for t in tools}
             def run(self, msg, **kw):
-                head = (self.instructions[0] if self.instructions else "")[:60]
+                head = (self.instructions[0] if self.instructions else "")[:80]
+                if "AtomTask 拆分员" in head:
+                    autosplit_submit(msg, self.tools)
+                    class _R: pass
+                    r = _R(); r.content = "split"; return r
                 if "TaskClusterAgent" in head:
                     raise RuntimeError("cluster LLM 402")
                 # SkillEditAgent on baby：写 SKILL.md + 调 commit_baby_to_main
@@ -490,6 +510,91 @@ class TestUxScoreAtomLevel:
                 if get_status_counts(db_path=db).get("done"):
                     break
             mock_score.assert_not_called()
+
+
+class TestContinuationResplit:
+    """fix-dicover 验收：同名轨迹追加内容后重传 → 出现新 atom（行号 ≥ 续接点、
+    不与旧 atom 重叠、旧 atom 不被重复生成）。"""
+
+    def _drive_to_done(self, watcher, db, fname, rounds=25):
+        from xskill.pipeline.registry import register_dir as _reg
+        for _ in range(rounds):
+            watcher._scan_once()
+            for _ in range(30):
+                if not watcher._futures:
+                    break
+                time.sleep(0.05)
+                watcher._harvest()
+            if get_status_counts(db_path=db).get("done"):
+                return
+
+    def test_appended_traj_resplits_from_resume_point(self, tmp_path):
+        import os
+        db = tmp_path / "test.db"
+        wd = tmp_path / "wd"; wd.mkdir()
+        skill_dir = tmp_path / "skill"; skill_dir.mkdir()
+        traj = wd / "traj_cont.md"
+        traj.write_text(_TRAJ_MD, encoding="utf-8")
+
+        register_dir(wd, db_path=db)
+        store = AtomTaskStore(root=wd)
+        watcher = DirectoryWatcher(
+            llm=_AutoSplitLLM(),
+            embed_client=_FakeEmbed(),
+            config={"llm": {"base_url": "x", "model": "y", "api_key": "z"}},
+            skill_dir=skill_dir,
+            poll_interval=0.0,
+            max_concurrent=4,
+            db_path=db,
+            cold_start_threshold=999,
+            store=store,
+            agno_agent_factory=_StubAgno,
+            home_root=tmp_path,
+        )
+
+        # 第一次处理到 done：2 个 atom
+        self._drive_to_done(watcher, db, "traj_cont.md")
+        first_atoms = store.list_by_traj("traj_cont")
+        assert len(first_atoms) == 2
+        first_ids = {a.atom_id for a in first_atoms}
+        resume = store.last_offset("traj_cont")  # 续接点 = 末 atom offset_end
+        assert resume == 24
+
+        # 续写：追加一个新 ## User 回合，重传（覆盖写 + mtime 增大）
+        appended = "\n## User\n\nAdd unit tests.\n\n## Assistant\n\nWriting pytest...\n"
+        traj.write_text(_TRAJ_MD + appended, encoding="utf-8")
+        st = traj.stat()
+        os.utime(traj, (st.st_atime + 100, st.st_mtime + 100))
+
+        # 再驱动若干轮：discover 翻 updated → 重新 split 续拆 → 回到 done
+        for _ in range(25):
+            watcher._scan_once()
+            for _ in range(30):
+                if not watcher._futures:
+                    break
+                time.sleep(0.05)
+                watcher._harvest()
+            if "traj_cont.md" in get_trajs_by_status(
+                register_dir(wd, db_path=db), "done", db_path=db):
+                if len(store.list_by_traj("traj_cont")) == 3:
+                    break
+
+        final_atoms = store.list_by_traj("traj_cont")
+        # 出现 1 个新 atom（共 3）
+        assert len(final_atoms) == 3
+        new_atoms = [a for a in final_atoms if a.atom_id not in first_ids]
+        assert len(new_atoms) == 1
+        na = new_atoms[0]
+        # 新 atom 行号 ≥ 续接点，不与旧 atom 重叠
+        assert na.offset_start == resume
+        assert na.offset_start >= resume
+        # 旧 atom 未被重复生成（id 不变、行号不变）
+        kept = {a.atom_id: (a.offset_start, a.offset_end)
+                for a in final_atoms if a.atom_id in first_ids}
+        for a in first_atoms:
+            assert kept[a.atom_id] == (a.offset_start, a.offset_end)
+        # 链表衔接：新 atom 接在旧末 atom 之后
+        assert na.pre_atom_id in first_ids
 
 
 class TestPipelineRun:

@@ -1,6 +1,5 @@
 pyyaml>=6.0
 numpy>=1.24
-scikit-learn>=1.3
 openai>=1.0                 # LLM + Embedding API 客户端 (兼容各种 provider)
 agno
 

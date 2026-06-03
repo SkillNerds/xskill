@@ -1,0 +1,21 @@
+{
+  "sessionId": "sess-demo-001",
+  "title": "Fix login bug",
+  "createdAt": 1710000000000,
+  "updatedAt": 1710000060000,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Fix the authentication timeout in auth.py"
+    },
+    {
+      "role": "assistant",
+      "content": "I'll inspect auth.py and add a retry.",
+      "toolCalls": [{"name": "read_file"}]
+    },
+    {
+      "role": "user",
+      "content": "Looks good, thanks"
+    }
+  ]
+}

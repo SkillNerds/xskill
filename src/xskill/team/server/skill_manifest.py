@@ -14,6 +14,7 @@ slot 结构 = 80 ranked + 20 recommended：
 """
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 
@@ -21,6 +22,8 @@ from xskill.canary import has_staging, main_sha, pick_side, staging_sha
 from xskill.skill.skill import Skill
 from xskill.skill.repo import SkillRepo
 from xskill.team.shared.protocol import SkillSlot, SyncResponse
+
+_logger = logging.getLogger("xskill.team.manifest")
 
 
 def _rank_key(skill: Skill) -> tuple[float, int]:
@@ -89,6 +92,16 @@ def build_manifest(
     for idx, skill in enumerate(chosen):
         bucket = "ranked" if idx < ranked_slots else "recommended"
         slots.append(_resolve_slot(skill, client_id, probability, bucket))
+    # 埋点：只记画像推荐位(recommended bucket)——推荐触发率衡量的就是这部分命中。
+    # best-effort，记录失败绝不阻断同步。
+    try:
+        from xskill.pipeline.registry import record_recommendation
+        for s in slots:
+            if s.bucket == "recommended":
+                record_recommendation(client_id=client_id, skill=s.skill_name,
+                                      side=s.side or "main", bucket=s.bucket)
+    except Exception:  # pylint: disable=broad-exception-caught
+        _logger.debug("recommendation telemetry skipped", exc_info=True)
     return SyncResponse(slots=slots, server_time=time.time())
 
 

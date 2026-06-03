@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" width="900" height="600" font-family="'Segoe UI', system-ui, -apple-system,PingFang SC,Microsoft YaHei, sans-serif">
+  <rect width="900" height="600" fill="#FFF8F0" rx="12"/>
+
+  <text x="450" y="36" text-anchor="middle" fill="#3D3229" font-size="19" font-weight="800" letter-spacing="0.5">xskill — 架构总览</text>
+
+  <!-- ZONE 1 — Agent Ecosystems -->
+  <rect x="30" y="52" width="840" height="82" rx="8" fill="#F5EDE3" stroke="#D4C5B2" stroke-width="1.5"/>
+  <text x="450" y="68" text-anchor="middle" fill="#8B7D6B" font-size="11" font-weight="700" letter-spacing="1.2">AGENT 生态</text>
+
+  <rect x="48"  y="76" width="134" height="48" rx="6" fill="#FFFFFF" stroke="#4A90B8" stroke-width="1.5"/>
+  <text x="115" y="98" text-anchor="middle" fill="#4A90B8" font-size="13" font-weight="700">Claude Code</text>
+  <text x="115" y="115" text-anchor="middle" fill="#8B7D6B" font-size="10" font-weight="600">~/.claude/projects/</text>
+
+  <rect x="198" y="76" width="134" height="48" rx="6" fill="#FFFFFF" stroke="#4A90B8" stroke-width="1.5"/>
+  <text x="265" y="98" text-anchor="middle" fill="#4A90B8" font-size="13" font-weight="700">Codex CLI</text>
+  <text x="265" y="115" text-anchor="middle" fill="#8B7D6B" font-size="10" font-weight="600">~/.codex/sessions/</text>
+
+  <rect x="348" y="76" width="134" height="48" rx="6" fill="#FFFFFF" stroke="#4A90B8" stroke-width="1.5"/>
+  <text x="415" y="98" text-anchor="middle" fill="#4A90B8" font-size="13" font-weight="700">OpenCode</text>
+  <text x="415" y="115" text-anchor="middle" fill="#8B7D6B" font-size="10" font-weight="600">SQLite opencode.db</text>
+
+  <rect x="498" y="76" width="134" height="48" rx="6" fill="#FFFFFF" stroke="#D4C5B2" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="565" y="98" text-anchor="middle" fill="#8B7D6B" font-size="13" font-weight="700">OpenClaw</text>
+  <text x="565" y="115" text-anchor="middle" fill="#A89880" font-size="10" font-weight="600">~/.openclaw/agents/</text>
+
+  <rect x="648" y="76" width="134" height="48" rx="6" fill="#FFFFFF" stroke="#D4C5B2" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="715" y="98" text-anchor="middle" fill="#8B7D6B" font-size="13" font-weight="700">Cursor</text>
+  <text x="715" y="115" text-anchor="middle" fill="#A89880" font-size="10" font-weight="600">agent-transcripts/</text>
+
+  <line x1="115" y1="124" x2="115" y2="152" stroke="#D4C5B2" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="265" y1="124" x2="265" y2="152" stroke="#D4C5B2" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="415" y1="124" x2="415" y2="152" stroke="#D4C5B2" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="565" y1="124" x2="565" y2="152" stroke="#D4C5B2" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-dim)"/>
+  <line x1="715" y1="124" x2="715" y2="152" stroke="#D4C5B2" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-dim)"/>
+
+  <!-- ZONE 2 — Core Pipeline -->
+  <rect x="30" y="152" width="840" height="194" rx="8" fill="#F5EDE3" stroke="#D4C5B2" stroke-width="1.5"/>
+  <text x="450" y="170" text-anchor="middle" fill="#8B7D6B" font-size="11" font-weight="700" letter-spacing="1.2">核心流水线</text>
+
+  <rect x="50"  y="180" width="155" height="58" rx="6" fill="#FDF0EC" stroke="#E07A5F" stroke-width="1.5"/>
+  <text x="128" y="203" text-anchor="middle" fill="#E07A5F" font-size="13" font-weight="800">轨迹</text>
+  <text x="128" y="219" text-anchor="middle" fill="#E07A5F" font-size="13" font-weight="800">采集器</text>
+  <text x="128" y="233" text-anchor="middle" fill="#8B7D6B" font-size="10" font-weight="600">traj_*.md / SQLite</text>
+
+  <line x1="205" y1="209" x2="232" y2="209" stroke="#E07A5F" stroke-width="1.5" marker-end="url(#arrow-coral)"/>
+
+  <rect x="232" y="180" width="155" height="58" rx="6" fill="#FDF0EC" stroke="#E07A5F" stroke-width="1.5"/>
+  <text x="310" y="203" text-anchor="middle" fill="#E07A5F" font-size="13" font-weight="800">原子</text>
+  <text x="310" y="219" text-anchor="middle" fill="#E07A5F" font-size="13" font-weight="800">拆分器</text>
+  <text x="310" y="233" text-anchor="middle" fill="#8B7D6B" font-size="10" font-weight="600">单一意图切片</text>
+
+  <line x1="387" y1="209" x2="414" y2="209" stroke="#E07A5F" stroke-width="1.5" marker-end="url(#arrow-coral)"/>
+
+  <rect x="414" y="180" width="155" height="58" rx="6" fill="#FDF0EC" stroke="#E07A5F" stroke-width="1.5"/>
+  <text x="492" y="203" text-anchor="middle" fill="#E07A5F" font-size="13" font-weight="800">技能</text>
+  <text x="492" y="219" text-anchor="middle" fill="#E07A5F" font-size="13" font-weight="800">路由器</text>
+  <text x="492" y="233" text-anchor="middle" fill="#8B7D6B" font-size="10" font-weight="600">BM25 + embedding</text>
+
+  <line x1="569" y1="209" x2="596" y2="209" stroke="#E07A5F" stroke-width="1.5" marker-end="url(#arrow-coral)"/>
+
+  <rect x="596" y="180" width="155" height="58" rx="6" fill="#FDF0EC" stroke="#E07A5F" stroke-width="1.5"/>
+  <text x="674" y="203" text-anchor="middle" fill="#E07A5F" font-size="13" font-weight="800">技能编辑</text>
+  <text x="674" y="219" text-anchor="middle" fill="#E07A5F" font-size="13" font-weight="800">Agent</text>
+  <text x="674" y="233" text-anchor="middle" fill="#8B7D6B" font-size="10" font-weight="600">改写 SKILL.md</text>
+
+  <line x1="674" y1="238" x2="674" y2="268" stroke="#E07A5F" stroke-width="1.5" marker-end="url(#arrow-coral)"/>
+
+  <!-- Canary A/B -->
+  <rect x="414" y="268" width="420" height="60" rx="6" fill="#FBF3E9" stroke="#D4A574" stroke-width="1.5"/>
+  <text x="624" y="291" text-anchor="middle" fill="#C49360" font-size="13" font-weight="800">灰度 A/B 测试</text>
+  <text x="624" y="307" text-anchor="middle" fill="#8B7D6B" font-size="10" font-weight="600">真实流量 · 体验分 1–10 · 胜者替换当前</text>
+  <text x="624" y="321" text-anchor="middle" fill="#8B7D6B" font-size="10" font-weight="600">吸收用户的手动改动</text>
+
+  <line x1="624" y1="328" x2="624" y2="358" stroke="#D4A574" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
+
+  <!-- ZONE 3 — Skill Repo + Team -->
+  <rect x="30" y="358" width="380" height="84" rx="8" fill="#F5EDE3" stroke="#D4C5B2" stroke-width="1.5"/>
+  <text x="220" y="375" text-anchor="middle" fill="#8B7D6B" font-size="11" font-weight="700" letter-spacing="1.2">技能仓库</text>
+
+  <rect x="48"  y="385" width="166" height="46" rx="6" fill="#FFFFFF" stroke="#4A90B8" stroke-width="1.5"/>
+  <text x="131" y="405" text-anchor="middle" fill="#4A90B8" font-size="13" font-weight="700">技能存储</text>
+  <text x="131" y="422" text-anchor="middle" fill="#8B7D6B" font-size="10" font-weight="600">SKILL.md · dulwich git</text>
+
+  <rect x="228" y="385" width="166" height="46" rx="6" fill="#FFFFFF" stroke="#4A90B8" stroke-width="1.5"/>
+  <text x="311" y="405" text-anchor="middle" fill="#4A90B8" font-size="13" font-weight="700">检索索引</text>
+  <text x="311" y="422" text-anchor="middle" fill="#8B7D6B" font-size="10" font-weight="600">BM25 + 向量混合</text>
+
+  <!-- Team Mode -->
+  <rect x="430" y="358" width="440" height="84" rx="8" fill="#F5EDE3" stroke="#D4C5B2" stroke-width="1.5"/>
+  <text x="650" y="375" text-anchor="middle" fill="#8B7D6B" font-size="11" font-weight="700" letter-spacing="1.2">团队模式</text>
+
+  <rect x="448" y="385" width="186" height="46" rx="6" fill="#FBF3E9" stroke="#D4A574" stroke-width="1.5"/>
+  <text x="541" y="405" text-anchor="middle" fill="#C49360" font-size="13" font-weight="700">团队 Server</text>
+  <text x="541" y="422" text-anchor="middle" fill="#8B7D6B" font-size="10" font-weight="600">FastAPI · SSE · token auth</text>
+
+  <rect x="650" y="385" width="204" height="46" rx="6" fill="#FBF3E9" stroke="#D4A574" stroke-width="1.5"/>
+  <text x="752" y="405" text-anchor="middle" fill="#C49360" font-size="13" font-weight="700">团队 Client</text>
+  <text x="752" y="422" text-anchor="middle" fill="#8B7D6B" font-size="10" font-weight="600">脱敏 → 上传 · 同步技能</text>
+
+  <line x1="634" y1="411" x2="650" y2="411" stroke="#D4A574" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
+  <line x1="650" y1="401" x2="634" y2="401" stroke="#D4A574" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
+  <line x1="410" y1="408" x2="448" y2="408" stroke="#D4C5B2" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="414" y1="298" x2="220" y2="298" stroke="#D4A574" stroke-width="1" stroke-dasharray="4,3"/>
+  <line x1="220" y1="298" x2="220" y2="358" stroke="#D4A574" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-amber)"/>
+
+  <!-- ZONE 4 — CLI -->
+  <rect x="30" y="458" width="840" height="52" rx="8" fill="#F5EDE3" stroke="#D4C5B2" stroke-width="1.5"/>
+
+  <rect x="48"  y="468" width="155" height="32" rx="5" fill="#FFFFFF" stroke="#4A90B8" stroke-width="1.2"/>
+  <text x="125" y="489" text-anchor="middle" fill="#4A90B8" font-size="12" font-weight="700">xskill CLI</text>
+
+  <rect x="218" y="468" width="155" height="32" rx="5" fill="#FFFFFF" stroke="#4A90B8" stroke-width="1.2"/>
+  <text x="295" y="489" text-anchor="middle" fill="#4A90B8" font-size="12" font-weight="700">xskill serve</text>
+
+  <rect x="388" y="468" width="155" height="32" rx="5" fill="#FFFFFF" stroke="#4A90B8" stroke-width="1.2"/>
+  <text x="465" y="489" text-anchor="middle" fill="#4A90B8" font-size="12" font-weight="700">registry add</text>
+
+  <rect x="558" y="468" width="155" height="32" rx="5" fill="#FFFFFF" stroke="#4A90B8" stroke-width="1.2"/>
+  <text x="635" y="489" text-anchor="middle" fill="#4A90B8" font-size="12" font-weight="700">xskill connect</text>
+
+  <rect x="728" y="468" width="126" height="32" rx="5" fill="#FFFFFF" stroke="#4A90B8" stroke-width="1.2"/>
+  <text x="791" y="489" text-anchor="middle" fill="#4A90B8" font-size="12" font-weight="700">Python SDK</text>
+
+  <!-- Legend -->
+  <text x="450" y="538" text-anchor="middle" fill="#A89880" font-size="11" font-weight="600">
+    ── verified   - - - planned   ── ── canary flow
+  </text>
+  <line x1="160" y1="534" x2="192" y2="534" stroke="#E07A5F" stroke-width="2"/>
+  <line x1="280" y1="534" x2="326" y2="534" stroke="#D4C5B2" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <line x1="385" y1="534" x2="431" y2="534" stroke="#D4A574" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#D4C5B2"/>
+    </marker>
+    <marker id="arrow-dim" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#D4C5B2" opacity="0.5"/>
+    </marker>
+    <marker id="arrow-coral" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#E07A5F"/>
+    </marker>
+    <marker id="arrow-amber" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#D4A574"/>
+    </marker>
+  </defs>
+</svg>

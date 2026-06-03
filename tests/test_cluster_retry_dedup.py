@@ -23,7 +23,7 @@ from xskill.pipeline.runner import DirectoryWatcher, MAX_CLUSTER_RETRIES
 from xskill.skill import candidates as C
 
 from tests.test_atom_task_store import _FakeEmbed
-from tests.test_task_agent import _TRAJ_MD, _AutoSplitLLM
+from tests.test_task_agent import _TRAJ_MD, _AutoSplitLLM, autosplit_submit
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -44,7 +44,12 @@ class _OneAtomFailsStub:
         self.tools = {getattr(t, "__name__", ""): t for t in tools}
 
     def run(self, user_msg, **kw):
-        head = (self.instructions[0] if self.instructions else "")[:60]
+        head = (self.instructions[0] if self.instructions else "")[:80]
+        if "AtomTask 拆分员" in head:
+            autosplit_submit(user_msg, self.tools)
+            class _R:
+                pass
+            r = _R(); r.content = "split"; return r
         if "TaskClusterAgent" in head:
             type(self).call_count += 1
             if type(self).call_count <= type(self).fail_first_n_calls:
@@ -81,7 +86,12 @@ class _CountingClusterStub:
         self.tools = {getattr(t, "__name__", ""): t for t in tools}
 
     def run(self, user_msg, **kw):
-        head = (self.instructions[0] if self.instructions else "")[:60]
+        head = (self.instructions[0] if self.instructions else "")[:80]
+        if "AtomTask 拆分员" in head:
+            autosplit_submit(user_msg, self.tools)
+            class _R:
+                pass
+            r = _R(); r.content = "split"; return r
         if "TaskClusterAgent" in head:
             import re
             m = re.search(r"atom_id:\s*(\S+)", user_msg)
@@ -310,11 +320,18 @@ class TestPerAtomLog:
     def test_silent_drop_emits_warning(self, tmp_path, caplog):
         """cluster agent 没调 add_task_to_skill（silent drop）必须发 WARNING。"""
         class _DropAllStub:
-            """完全不调 add_task_to_skill——模拟 prompt 违规。"""
+            """cluster 阶段完全不调 add_task_to_skill——模拟 prompt 违规（silent drop）。
+
+            split 阶段仍正常 submit_atom（否则没 atom 进 cluster，测不到 drop）。
+            """
             def __init__(self, *, instructions, tools):
                 self.instructions = instructions
+                self.tools = {getattr(t, "__name__", ""): t for t in tools}
 
             def run(self, msg, **kw):
+                head = (self.instructions[0] if self.instructions else "")[:80]
+                if "AtomTask 拆分员" in head:
+                    autosplit_submit(msg, self.tools)
                 class _R:
                     pass
                 r = _R()

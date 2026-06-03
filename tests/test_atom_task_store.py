@@ -139,3 +139,32 @@ class TestAllAtoms:
         store.save(_atom(atom_id="atom_b_0001", traj_id="b"))
         ids = {a.atom_id for a in store.all_atoms()}
         assert ids == {"atom_a_0001", "atom_b_0001"}
+
+
+# ────────────────────────────────────────────────────────────────────
+# source_model 继承(batch3):AtomTask 带 model + json 往返兼容旧文件
+# ────────────────────────────────────────────────────────────────────
+
+def test_atom_source_model_json_roundtrip():
+    a = AtomTask(atom_id="atom_t_0001", traj_id="t", offset_start=1,
+                 offset_end=2, intent="i", summary="s",
+                 source_model="claude-opus-4-7")
+    back = AtomTask.from_json(a.to_json())
+    assert back.source_model == "claude-opus-4-7"
+
+
+def test_atom_from_json_without_source_model_defaults_empty():
+    # 旧 json(无 source_model 字段)仍能加载,默认空串
+    legacy = ('{"atom_id":"a","traj_id":"t","offset_start":1,"offset_end":2,'
+              '"intent":"i","summary":"s"}')
+    assert AtomTask.from_json(legacy).source_model == ""
+
+
+def test_task_agent_sidecar_model_reader(tmp_path):
+    from xskill.agents.task_agent import _sidecar_model
+    md = tmp_path / "traj_cc_x_001.md"
+    md.write_text("# body", encoding="utf-8")
+    assert _sidecar_model(md) == ""                       # 无 sidecar → 空
+    (tmp_path / "traj_cc_x_001.json").write_text(
+        '{"model": "deepseek-v4-flash"}', encoding="utf-8")
+    assert _sidecar_model(md) == "deepseek-v4-flash"      # 有 sidecar → 读出

@@ -3,7 +3,7 @@ ecosystems/_shared.py -- 跨平台共享件
 =====================================
 
 xskill 把蒸馏出的 Skill 装进各 AI-agent 生态（Claude Code / Codex / Cursor /
-OpenClaw / OpenCode），并把这些生态的原生会话轨迹桥接回 xskill 的标准
+Trae / OpenClaw / OpenCode），并把这些生态的原生会话轨迹桥接回 xskill 的标准
 ``traj_*.md`` 格式。
 
 本模块收集**不属于任何单一平台**的共享件：
@@ -215,6 +215,12 @@ def detect_known_ecosystems(home_root: Path | str | None = None) -> list[dict]:
             "source": source.resolve(),
             "bridge": (root / spec["bridge_subpath"]).resolve(),
         })
+    # Trae：多路径探测（IDE workspaceStorage / ~/.trae-cn / CLI trajectories）
+    from xskill.ecosystems.trae import detect_trae_record
+
+    trae_det = detect_trae_record(root)
+    if trae_det is not None:
+        found.append(trae_det)
     return found
 
 
@@ -493,8 +499,9 @@ def adapt_trajectory(
       Converted to a markdown trajectory.
     - ``raw`` -- plain text; wrapped in a basic trajectory markdown template.
     - ``claude_code_jsonl`` / ``codex_rollout_jsonl`` /
-      ``openclaw_trajectory_jsonl`` / ``cursor_transcripts_jsonl`` -- 各 agent
-      生态原生 session JSONL；分发到对应平台模块的 ``_adapt_*``。
+      ``openclaw_trajectory_jsonl`` / ``cursor_transcripts_jsonl`` /
+      ``trae_ide_session_json`` / ``trae_agent_trajectory_json`` -- 各 agent
+      生态原生 session；分发到对应平台模块的 ``_adapt_*``。
 
     Returns ``(md_content, json_metadata)``.
     """
@@ -503,6 +510,10 @@ def adapt_trajectory(
     from xskill.ecosystems.codex import _adapt_codex_rollout_jsonl
     from xskill.ecosystems.openclaw import _adapt_openclaw_trajectory_jsonl
     from xskill.ecosystems.cursor import _adapt_cursor_transcripts_jsonl
+    from xskill.ecosystems.trae import (
+        _adapt_trae_agent_trajectory_json,
+        _adapt_trae_ide_session_json,
+    )
 
     metadata = metadata or {}
 
@@ -526,6 +537,12 @@ def adapt_trajectory(
 
     if format == "cursor_transcripts_jsonl":
         return _adapt_cursor_transcripts_jsonl(content, metadata)
+
+    if format == "trae_ide_session_json":
+        return _adapt_trae_ide_session_json(content, metadata)
+
+    if format == "trae_agent_trajectory_json":
+        return _adapt_trae_agent_trajectory_json(content, metadata)
 
     raise ValueError(f"unsupported trajectory format: {format!r}")
 

@@ -54,7 +54,7 @@ def test_template_top_level_keys_are_exactly_live_set():
     """
     parsed = yaml.safe_load(CONFIG_TEMPLATE)
     assert set(parsed.keys()) == {
-        "skill_dir", "llm", "embedding", "canary", "watcher", "team",
+        "skill_dir", "llm", "embedding", "canary", "watcher", "team", "dashboard",
     }, f"模板顶层键漂移：{sorted(parsed.keys())}"
 
 

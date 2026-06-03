@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>xskill 控制台</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/css/tabler.min.css">
+<style>
+  :root{--tblr-primary:#1C7A8C;--tblr-primary-rgb:28,122,140;}
+  body{background:radial-gradient(900px 300px at 90% -120px,#FFE79A55,transparent 60%),#F6F1E7;color:#3a2d20}
+  .navbar-vertical{background:linear-gradient(180deg,#1C7A8C,#155f6e)!important}
+  .card{border:1px solid #E6D3AC;background:#FFFDF7;border-radius:14px}
+  .card-sm .h1,.kpi{color:#1C7A8C}
+  .subheader{color:#9a7c4e}.page-pretitle{color:#9a7c4e!important}
+  .nav-link.active{background:rgba(255,255,255,.14)!important;border-radius:8px}
+  header.navbar{background:#FFFDF7!important;border-bottom:1px solid #E6D3AC}
+  header .form-control{background:#FFF8EA;border-color:#E6D3AC}
+  .hero-accent{height:5px;border-radius:14px 14px 0 0;background:linear-gradient(90deg,#2A9DB0,#FFCB3D,#E2725B)}
+  .mini{font-size:12px;color:#9a7c4e}.sec-page{display:none}.sec-page.on{display:block}
+  .hint{cursor:help;color:#1C7A8C;font-size:11px;opacity:.85}.hint:hover{opacity:1}
+  #users-body tr[data-uid]{cursor:pointer}
+  .tagchip{transition:opacity .12s}.tagchip.dim{opacity:.18}.tagchip.hot{outline:2px solid #1C7A8C;outline-offset:1px}
+</style></head>
+<body>
+<div class="page">
+  <aside class="navbar navbar-vertical navbar-expand-lg" data-bs-theme="dark"><div class="container-fluid">
+    <div class="navbar-brand px-0 fs-2 fw-bold text-white">🐚 xskill <span class="badge bg-yellow text-dark ms-1" style="font-size:10px">控制台</span></div>
+    <div class="collapse navbar-collapse"><ul class="navbar-nav pt-2" id="nav">
+      <li class="nav-item"><a class="nav-link text-white" data-pg="overview" href="#">📊 总览</a></li>
+      <li class="nav-item"><a class="nav-link text-white-50" data-pg="cost" href="#">💰 成本 & 用量</a></li>
+      <li class="nav-item"><a class="nav-link text-white-50" data-pg="profile" href="#">🏄 用户 & 画像</a></li>
+      <li class="nav-item"><a class="nav-link text-white-50" data-pg="skills" href="#">🐚 技能库</a></li>
+      <li class="nav-item"><a class="nav-link text-white-50" data-pg="canary" href="#">🧪 灰度 Canary</a></li>
+      <li class="nav-item"><a class="nav-link text-white-50" data-pg="eco" href="#">🏝 生态目录</a></li>
+    </ul></div>
+  </div></aside>
+
+  <div class="page-wrapper">
+    <header class="navbar navbar-expand-md d-print-none"><div class="container-xl">
+      <div class="col"><div class="input-icon"><span class="input-icon-addon">🔍</span>
+        <input type="text" class="form-control" placeholder="搜索…"></div></div>
+      <div class="navbar-nav flex-row ms-3"><span class="badge bg-teal-lt me-2 my-auto" data-m="role">—</span>
+        <span class="text-secondary small my-auto">🖥 本机实时</span></div>
+    </div></header>
+
+    <div class="page-header"><div class="container-xl"><div class="row align-items-center">
+      <div class="col"><div class="page-pretitle">xskill 控制台 🏖</div><h2 class="page-title" id="pgname">总览</h2></div>
+    </div></div></div>
+
+    <div class="page-body"><div class="container-xl">
+
+    <!-- 总览 -->
+    <div class="sec-page on" id="pg-overview">
+      <div class="row row-deck row-cards">
+        <div class="col-6 col-lg"><div class="card card-sm"><div class="hero-accent"></div><div class="card-body"><div class="subheader">轨迹总数 🌊 <span class="hint" data-bs-toggle="tooltip" title="已入库的对话轨迹文件总数（每条来自一次 coding agent 会话）。">ⓘ</span></div><div class="h1 mb-0" data-m="overview.trajs">—</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card card-sm"><div class="hero-accent"></div><div class="card-body"><div class="subheader">原子总数 ⚛ <span class="hint" data-bs-toggle="tooltip" title="从所有轨迹按用户意图切出的 AtomTask 总数——可被独立检索、提炼成 skill 的最小单元。">ⓘ</span></div><div class="h1 mb-0" data-m="overview.atoms">—</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card card-sm"><div class="hero-accent"></div><div class="card-body"><div class="subheader">今日成本 💰 <span class="hint" data-bs-toggle="tooltip" title="今天 xskill 处理轨迹（拆分/聚类/打分等）调用 LLM 的累计成本（USD）。">ⓘ</span></div><div class="h1 mb-0" data-m="cost.today">—</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card card-sm"><div class="hero-accent"></div><div class="card-body"><div class="subheader">平均 ux 🏄 <span class="hint" data-bs-toggle="tooltip" title="所有轨迹的平均用户体验分（1–10，质量驱动评分）。越高代表 agent 更常一步到位。">ⓘ</span></div><div class="h1 mb-0" data-m="overview.avg_ux">—</div></div></div></div>
+      </div>
+
+      <div class="row row-cards mt-1"><div class="col-12"><div class="card"><div class="card-header"><h3 class="card-title">📐 关键指标</h3></div>
+        <div class="card-body"><div class="row g-3 text-center">
+          <div class="col-6 col-md-3"><div class="kpi h2 mb-0" data-m="overview.avg_atoms_per_traj">—</div><div class="mini">单轨迹均原子 <span class="hint" data-bs-toggle="tooltip" title="原子总数 ÷ 轨迹总数。一条轨迹平均切出几个完整用户意图。">ⓘ</span></div></div>
+          <div class="col-6 col-md-3"><div class="kpi h2 mb-0" data-m="overview.skill_yield">—</div><div class="mini">技能产出率 <span class="hint" data-bs-toggle="tooltip" title="产出过 skill 的轨迹占比 = 生成了 skill 的轨迹数 ÷ 轨迹总数。">ⓘ</span></div></div>
+          <div class="col-6 col-md-3"><div class="kpi h2 mb-0" data-m="overview.success_rate">—</div><div class="mini">处理成功率 <span class="hint" data-bs-toggle="tooltip" title="处理到 done 的轨迹占比 = done 轨迹数 ÷ 轨迹总数。">ⓘ</span></div></div>
+          <div class="col-6 col-md-3"><div class="kpi h2 mb-0" data-m="overview.retry_rate">—</div><div class="mini">重试率 <span class="hint" data-bs-toggle="tooltip" title="处理过程中发生过重试的轨迹占比。偏高提示流水线某阶段不稳定。">ⓘ</span></div></div>
+          <div class="col-6 col-md-3"><div class="kpi h2 mb-0" data-m="rates.trigger">—</div><div class="mini">推荐触发率 <span class="hint" data-bs-toggle="tooltip" title="被推荐给用户的 skill 中、随后被实际采用的占比（skill 粗粒度近似）。">ⓘ</span></div></div>
+          <div class="col-6 col-md-3"><div class="kpi h2 mb-0" data-m="rates.adoption">—</div><div class="mini">原子采纳率 <span class="hint" data-bs-toggle="tooltip" title="拆出的原子中、被聚合进某个 skill 的比例 = 采纳原子数 ÷ 原子总数。">ⓘ</span></div></div>
+          <div class="col-6 col-md-3"><div class="kpi h2 mb-0" data-m="rates.promotion">—</div><div class="mini">canary 晋升率 <span class="hint" data-bs-toggle="tooltip" title="灰度候选裁决中晋升为正式版的比例 = 晋升数 ÷ 已裁决数（晋升+拒绝+超时丢弃）。">ⓘ</span></div></div>
+        </div>
+        </div></div></div></div>
+
+      <div class="row row-cards mt-1">
+        <div class="col-lg-6"><div class="card"><div class="card-header"><h3 class="card-title">🔬 按生态对比</h3></div>
+          <div class="table-responsive"><table class="table card-table table-vcenter">
+            <thead><tr><th>生态</th><th class="text-end">轨迹</th><th class="text-end">均原子</th><th class="text-end">产 skill</th><th class="text-end">平均 ux</th></tr></thead>
+            <tbody id="eco-body"><tr><td colspan="5" class="text-secondary">加载中…</td></tr></tbody></table></div></div></div>
+        <div class="col-lg-6"><div class="card"><div class="card-header"><h3 class="card-title">🔬 按用户模型对比</h3></div>
+          <div class="table-responsive"><table class="table card-table table-vcenter">
+            <thead><tr><th>模型</th><th class="text-end">轨迹</th><th class="text-end">均原子</th><th class="text-end">产 skill</th><th class="text-end">平均 ux</th></tr></thead>
+            <tbody id="model-body"><tr><td colspan="5" class="text-secondary">加载中…</td></tr></tbody></table></div></div></div>
+      </div>
+    </div>
+
+    <!-- 成本 & 用量 -->
+    <div class="sec-page" id="pg-cost">
+      <div class="row row-deck row-cards">
+        <div class="col-6 col-lg"><div class="card card-sm"><div class="card-body"><div class="subheader">今日</div><div class="h1 mb-0" data-m="cost.today2">—</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card card-sm"><div class="card-body"><div class="subheader">累计</div><div class="h1 mb-0" data-m="cost.total">—</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card card-sm"><div class="card-body"><div class="subheader">tokens</div><div class="h1 mb-0" data-m="cost.tokens">—</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card card-sm"><div class="card-body"><div class="subheader">calls</div><div class="h1 mb-0" data-m="cost.calls">—</div></div></div></div>
+      </div>
+      <div class="row row-cards mt-1">
+        <div class="col-lg-7"><div class="card"><div class="card-header"><h3 class="card-title">💰 按模型</h3></div>
+          <div class="table-responsive"><table class="table card-table table-vcenter">
+            <thead><tr><th>模型</th><th class="text-end">tokens</th><th class="text-end">calls</th><th class="text-end">成本</th></tr></thead>
+            <tbody id="cost-model-body"><tr><td colspan="4" class="text-secondary">加载中…</td></tr></tbody></table></div>
+          <div class="card-body py-2" id="price-warn"></div></div></div>
+        <div class="col-lg-5"><div class="card"><div class="card-header"><h3 class="card-title">按步骤</h3></div>
+          <div class="table-responsive"><table class="table card-table table-vcenter">
+            <thead><tr><th>步骤</th><th class="text-end">tokens</th><th class="text-end">成本</th></tr></thead>
+            <tbody id="cost-step-body"><tr><td colspan="3" class="text-secondary">加载中…</td></tr></tbody></table></div></div></div>
+      </div>
+    </div>
+
+    <!-- 用户 & 画像 -->
+    <div class="sec-page" id="pg-profile">
+      <div class="row row-cards">
+        <div class="col-lg-6"><div class="card"><div class="card-header"><h3 class="card-title">🧑‍💻 用户 coding agent 占比 <span class="hint" data-bs-toggle="tooltip" title="按轨迹来源统计每个 coding agent（harness，如 claude_code / codex / opencode）的占比。">ⓘ</span></h3></div>
+          <div class="table-responsive"><table class="table card-table table-vcenter">
+            <thead><tr><th>coding agent</th><th class="text-end">轨迹</th><th class="text-end">占比</th></tr></thead>
+            <tbody id="profile-harness-body"><tr><td colspan="3" class="text-secondary">加载中…</td></tr></tbody></table></div></div></div>
+        <div class="col-lg-6"><div class="card"><div class="card-header"><h3 class="card-title">🏄 用户模型占比 <span class="hint" data-bs-toggle="tooltip" title="按轨迹来源统计每个用户 agent 模型（如 claude-opus / deepseek-v4）的占比。">ⓘ</span></h3></div>
+          <div class="table-responsive"><table class="table card-table table-vcenter">
+            <thead><tr><th>模型</th><th class="text-end">轨迹</th><th class="text-end">占比</th></tr></thead>
+            <tbody id="profile-model-body"><tr><td colspan="3" class="text-secondary">加载中…</td></tr></tbody></table></div></div></div>
+      </div>
+      <div class="card mt-3"><div class="card-header">
+        <h3 class="card-title">👥 团队用户</h3>
+        <span class="card-subtitle ms-auto text-secondary" data-m="users.summary">—</span></div>
+        <div class="table-responsive"><table class="table card-table table-vcenter">
+          <thead><tr><th>用户 (client)</th><th class="text-end">轨迹</th><th class="text-end">原子</th><th>最近活跃</th></tr></thead>
+          <tbody id="users-body"><tr><td colspan="4" class="text-secondary">加载中…</td></tr></tbody></table></div></div>
+
+      <div class="card mt-3"><div class="card-header">
+        <h3 class="card-title">🏷 标签云 / 关键词</h3>
+        <span class="card-subtitle ms-auto text-secondary">来自原子 tags 聚合，字号 ∝ 出现次数</span></div>
+        <div class="card-body" id="tagcloud" style="line-height:2.2">
+          <span class="text-secondary">加载中…</span></div></div>
+    </div>
+
+    <!-- 技能库 -->
+    <div class="sec-page" id="pg-skills">
+      <div class="card mb-3"><div class="card-header">
+        <h3 class="card-title">🐚 技能库</h3>
+        <span class="card-subtitle ms-auto text-secondary" data-m="skills.summary">—</span></div>
+        <div class="table-responsive"><table class="table card-table table-vcenter">
+          <thead><tr><th>技能</th><th>状态 <span class="hint" data-bs-toggle="tooltip" title="baby=cluster 刚建的草稿；main=已正式产出；staging=灰度候选并存。">ⓘ</span></th><th>描述</th><th class="text-end">版本</th><th class="text-end">候选 <span class="hint" data-bs-toggle="tooltip" title=".candidates.yml 里待攒分的 atom 数。">ⓘ</span></th><th class="text-end">使用次数</th></tr></thead>
+          <tbody id="skills-body"><tr><td colspan="6" class="text-secondary">加载中…</td></tr></tbody></table></div></div>
+
+      <div class="card"><div class="card-header"><h3 class="card-title">🐚 单 skill 触发率</h3>
+        <span class="card-subtitle ms-auto text-secondary">推荐→被采用</span></div>
+        <div class="table-responsive"><table class="table card-table table-vcenter">
+          <thead><tr><th>技能</th><th class="text-end">被推荐(去重用户)</th><th class="text-end">被采用</th><th class="text-end">触发率</th></tr></thead>
+          <tbody id="trigger-body"><tr><td colspan="4" class="text-secondary">加载中…</td></tr></tbody></table></div>
+        <div class="card-body py-2"><span class="mini">触发率 = 被采用 / 被推荐(去重用户)，封顶 100%。低触发率 = 推荐错配或描述不准，该优化。</span></div></div>
+    </div>
+
+    <!-- 灰度 -->
+    <div class="sec-page" id="pg-canary">
+      <div class="row row-deck row-cards">
+        <div class="col-lg"><div class="card card-sm"><div class="card-body"><div class="subheader">canary 晋升率</div><div class="h1 mb-0" data-m="rates.promotion2">—</div><div class="mini" data-m="promotion.detail">—</div></div></div></div>
+      </div>
+      <div class="card mt-1"><div class="card-header"><h3 class="card-title">🧪 灰度分桶分布（轨迹）</h3></div>
+        <div class="table-responsive"><table class="table card-table table-vcenter">
+          <thead><tr><th>分桶</th><th class="text-end">轨迹</th><th class="text-end">平均 ux</th></tr></thead>
+          <tbody id="canary-body"><tr><td colspan="3" class="text-secondary">加载中…</td></tr></tbody></table></div></div>
+    </div>
+
+    <!-- 生态目录 -->
+    <div class="sec-page" id="pg-eco">
+      <div class="card"><div class="card-header"><h3 class="card-title">🏝 生态目录</h3></div>
+        <div class="table-responsive"><table class="table card-table table-vcenter">
+          <thead><tr><th>生态</th><th class="text-end">轨迹</th><th class="text-end">已索引</th><th>路径</th></tr></thead>
+          <tbody id="dirs-body"><tr><td colspan="4" class="text-secondary">加载中…</td></tr></tbody></table></div></div>
+    </div>
+
+    </div></div>
+  </div>
+</div>
+<script src="app.js" defer></script>
+</body></html>
