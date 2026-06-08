@@ -302,6 +302,116 @@ def cmd_search(args, xskill) -> int:
     return 1
 
 
+def _find_skill_dir_for_conflict(xskill, skill_name: str):
+    sd = xskill.skill_repo.root / skill_name
+    if not sd.is_dir():
+        print(f"error: skill not found: {skill_name}", file=sys.stderr)
+        return None
+    return sd
+
+
+def _all_skill_dirs(xskill):
+    root = xskill.skill_repo.root
+    if not root.is_dir():
+        return []
+    return [p for p in sorted(root.iterdir()) if p.is_dir() and not p.name.startswith(".")]
+
+
+def cmd_conflict(args, xskill) -> int:
+    from xskill.skill import candidates as C
+
+    action = args.conflict_action
+    if action == "list":
+        sd = _find_skill_dir_for_conflict(xskill, args.skill_name)
+        if sd is None:
+            return 1
+        data = C.load_conflicts(sd)
+        conflicts = data.get("conflicts", []) or []
+        if not conflicts:
+            print(f"(no conflicts for {args.skill_name})")
+            return 0
+        print("ID\tTYPE\tSTATUS\tSUMMARY")
+        for item in conflicts:
+            status = "resolved" if item.get("resolution") else "unresolved"
+            print(
+                f"{item.get('id')}\t{item.get('type')}\t{status}\t"
+                f"{item.get('conflict_summary', '')}"
+            )
+        return 0
+
+    if action == "show":
+        import yaml
+        for sd in _all_skill_dirs(xskill):
+            data = C.load_conflicts(sd)
+            for item in data.get("conflicts", []) or []:
+                if item.get("id") == args.conflict_id:
+                    print(f"skill: {sd.name}")
+                    print(yaml.safe_dump(item, allow_unicode=True, sort_keys=False))
+                    return 0
+        print(f"error: conflict not found: {args.conflict_id}", file=sys.stderr)
+        return 1
+
+    if action == "resolve":
+        sd = _find_skill_dir_for_conflict(xskill, args.skill_name)
+        if sd is None:
+            return 1
+        data = C.load_conflicts(sd)
+        conflicts = data.get("conflicts", []) or []
+        unresolved = [
+            item for item in conflicts
+            if item.get("type") == "hard" and not item.get("resolution")
+        ]
+        if not unresolved:
+            print(f"(no unresolved hard conflicts for {args.skill_name})")
+            return 0
+        changed = False
+        for item in unresolved:
+            atoms = item.get("atoms", []) or []
+            print("")
+            print(f"Skill {args.skill_name} conflict {item.get('id')}:")
+            print(f"  {item.get('conflict_summary', '')}")
+            for idx, atom in enumerate(atoms):
+                label = chr(ord("A") + idx)
+                print(
+                    f"  [{label}] {atom.get('position', '')} "
+                    f"({atom.get('weightscore', 0)}分, "
+                    f"{atom.get('supporting_trajs', 1)}条轨迹支持)"
+                )
+            choice = input("选择: [A/B...] winner / [M] 合并为条件分支 / [S] 跳过: ")
+            choice = choice.strip().upper()
+            if choice == "S" or not choice:
+                continue
+            from datetime import datetime
+            resolved_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+            if choice == "M":
+                merged = input("合并内容: ").strip()
+                item["resolution"] = {
+                    "strategy": "conditional_merge",
+                    "merged_content": merged,
+                    "resolved_by": "user",
+                    "resolved_at": resolved_at,
+                }
+                changed = True
+                continue
+            index = ord(choice[0]) - ord("A")
+            if index < 0 or index >= len(atoms):
+                print("  invalid choice; skipped")
+                continue
+            item["resolution"] = {
+                "strategy": "manual",
+                "winner": atoms[index].get("atom_id"),
+                "resolved_by": "user",
+                "resolved_at": resolved_at,
+            }
+            changed = True
+        if changed:
+            C.save_conflicts(sd, {"conflicts": conflicts})
+            print("resolved")
+        return 0
+
+    return 1
+
+
 # ═══════════════════════════════════════════════════════════════
 # argparse
 # ═══════════════════════════════════════════════════════════════
@@ -376,6 +486,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_stats.add_argument("--watch", action="store_true",
                          help="htop 式整屏刷新（每 2s）")
 
+    p_conflict = sub.add_parser(
+        "conflict", help="Inspect and resolve skill candidate conflicts",
+    )
+    p_conflict.add_argument("conflict_action", choices=["list", "show", "resolve"])
+    p_conflict.add_argument("skill_name", nargs="?",
+                            help="skill name for list/resolve")
+    p_conflict.add_argument("conflict_id", nargs="?",
+                            help="conflict id for show")
+
     return p
 
 
@@ -424,6 +543,13 @@ def main() -> int:
     if args.command == "registry" and args.registry_action in ("add", "remove"):
         if not args.path:
             parser.error(f"path is required for 'registry {args.registry_action}'")
+    if args.command == "conflict":
+        if args.conflict_action in ("list", "resolve") and not args.skill_name:
+            parser.error(f"skill_name is required for 'conflict {args.conflict_action}'")
+        if args.conflict_action == "show" and not (args.conflict_id or args.skill_name):
+            parser.error("conflict_id is required for 'conflict show'")
+        if args.conflict_action == "show" and not args.conflict_id:
+            args.conflict_id = args.skill_name
 
     # connect 是瘦客户端：不读 config.yaml / 不需要 llm.api_key / 不构造 XSkill 门面
     if args.command == "connect":
@@ -462,6 +588,7 @@ def main() -> int:
         "serve":    cmd_serve,
         "registry": cmd_registry,
         "search":   cmd_search,
+        "conflict": cmd_conflict,
     }.get(args.command)
     return handler(args, xskill) if handler else (parser.print_help() or 1)
 
