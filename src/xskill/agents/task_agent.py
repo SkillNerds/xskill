@@ -280,12 +280,41 @@ class TaskAgent:
     # ── public API ────────────────────────────────────────────────
 
     def run(self, *, traj_id: str, traj_path: Path) -> list[AtomTask]:
+        """增量拆分整条轨迹：逐窗推进，直到 last_offset 覆盖到文件末尾。
+
+        单次 ``run`` 内**循环拆完所有窗**，而不是只拆第一窗——避免大轨迹
+        （超过 ``max_context_chars`` 一窗装不下）在标 split_done 后剩余窗
+        永不被调度的静默漏拆。每窗落盘后 last_offset 自然推进，作为下一窗
+        续接点；某窗未推进续接点（窗内无 ``## User`` / 模型 0 提交）即停，
+        避免死循环。
+        """
         traj_path = Path(traj_path)
         text = traj_path.read_text(encoding="utf-8")
         lines = text.splitlines(keepends=True)
         total_lines = len(lines)
         source_model = _sidecar_model(traj_path)   # 轨迹的用户模型，继承给每个 atom
 
+        all_new: list[AtomTask] = []
+        while (self.store.last_offset(traj_id) or 1) <= total_lines:
+            before = self.store.last_offset(traj_id)
+            batch = self._split_one_window(
+                traj_id=traj_id, traj_path=traj_path, text=text,
+                lines=lines, total_lines=total_lines, source_model=source_model,
+            )
+            all_new.extend(batch)
+            if self.store.last_offset(traj_id) <= before:
+                # 本窗未推进续接点 → 停。剩余内容留待文件再增长或人工重拆。
+                break
+        return all_new
+
+    def _split_one_window(self, *, traj_id: str, traj_path: Path, text: str,
+                          lines: list[str], total_lines: int,
+                          source_model: str | None) -> list[AtomTask]:
+        """拆当前续接点所在的**单个窗口**，落盘并返回该窗新 atom（可能为空）。
+
+        续接点 / prior_atoms 每次都从 store 现读——上一窗已落盘，所以本窗
+        自然衔接上一窗末 atom。
+        """
         # resume：start_line 是 1-based 行号。store 空时 last_offset 返回 0。
         start_line = self.store.last_offset(traj_id) or 1
         if start_line > total_lines:
@@ -300,7 +329,17 @@ class TaskAgent:
         annotated, user_lines = _annotate_user_lines(
             window_text, first_line_no=start_line)
         if not user_lines:
-            # 窗口内没有 ## User —— 没有可切分的新 atom，省一次 LLM 调用
+            # 窗口内没有 ## User：这是上一个意图的延续（例如一大段 assistant
+            # 输出/工具结果），没有新的 atom 边界。把它并入上一 atom 的区间，
+            # 推进续接点，让 run() 的循环能跨过这段继续拆后面的窗——避免在
+            # 无 ## User 窗处卡死、剩余内容静默漏拆。无 prior atom 可并（文件
+            # 开头即无 user）则停。
+            if prior_atom is None:
+                return []
+            prior_atom.offset_end = window_end_line
+            prior_atom.raw_segment = "".join(
+                lines[prior_atom.offset_start - 1:window_end_line - 1])
+            self.store.save(prior_atom)
             return []
 
         # ── 跑 agentic 拆分：submit_atom 收集到 run-scoped 列表 ──

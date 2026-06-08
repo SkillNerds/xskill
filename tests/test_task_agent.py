@@ -336,6 +336,47 @@ class TestIncrementalRun:
 
 
 # ────────────────────────────────────────────────────────────────────
+# 多窗：一条超过单窗的轨迹应在一次 run 内被逐窗拆完（回归：曾只拆第一窗）
+# ────────────────────────────────────────────────────────────────────
+
+class TestMultiWindow:
+    def test_large_traj_splits_all_windows_in_one_run(self, tmp_path):
+        """轨迹跨多个窗时，一次 run() 必须拆完全部窗、覆盖到 EOF。
+
+        回归此前缺陷：run() 只拆第一窗就返回，剩余窗永不调度 →
+        大轨迹静默漏拆，coverage 卡在第一窗占比。
+        """
+        traj_dir = tmp_path / "cc-sessions"
+        traj_dir.mkdir()
+        traj_path = traj_dir / "traj_big.md"
+        # 6 个短 user turn（每段 ~36 字符，都含 ## User）。配小 max_context_chars
+        # 使一窗只能容 2~3 段 → 需多窗才能覆盖全文；段够短保证不出现无 ## User 窗。
+        segs = [f"## User\n\nTask {i}\n\n## Assistant\n\ndone\n" for i in range(6)]
+        full = "".join(segs)
+        traj_path.write_text(full, encoding="utf-8")
+        total_lines = len(full.splitlines(keepends=True))
+        store = AtomTaskStore(root=traj_dir)
+
+        atoms = TaskAgent(
+            agno_agent_factory=_AutoSplitAgno, store=store,
+            max_context_chars=100,
+        ).run(traj_id="traj_big", traj_path=traj_path)
+
+        # 6 个 user turn 全部拆出（修复前只会拿到第一窗的 2~3 个）
+        assert len(atoms) == 6
+        assert len(store.list_by_traj("traj_big")) == 6
+        # 续接点覆盖到文件末尾（半开：末行号 + 1）
+        assert store.last_offset("traj_big") == total_lines + 1
+        # 链表跨窗连续：相邻 atom 半开衔接、pre/post 不断裂
+        ordered = sorted(store.list_by_traj("traj_big"),
+                         key=lambda a: a.offset_start)
+        for prev, cur in zip(ordered, ordered[1:]):
+            assert prev.offset_end == cur.offset_start
+            assert cur.pre_atom_id == prev.atom_id
+            assert prev.post_atom_id == cur.atom_id
+
+
+# ────────────────────────────────────────────────────────────────────
 # submit_atom 提交即校验：非法 → error 返回 + 不落盘
 # ────────────────────────────────────────────────────────────────────
 
