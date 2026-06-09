@@ -305,7 +305,7 @@ def has_pending_dest_edit(
     判据：
     - dest 存在
     - 能读到 install-meta 里的 installed_at
-    - dest 某文件 mtime > installed_at + 1 秒（用户改过）
+    - dest 某文件 mtime > installed_at（用户改过）
     - now - max_mtime >= quiet_seconds（停手 ≥3 分钟）
     """
     if not dest_dir.is_dir():
@@ -314,7 +314,11 @@ def has_pending_dest_edit(
     if installed_at is None:
         return False
     max_mtime = _dest_user_edit_mtime(dest_dir, exclude)
-    if max_mtime - installed_at < 1.0:
+    # install-meta 写在 dest 外部，且 installed_at 是 copy 完成后的浮点秒。
+    # dest 内部内容只要晚于 installed_at，就说明安装后被用户或外部 agent 改过。
+    # 这里不沿用 source 仓的 1 秒阈值；那个阈值是为 git commit 整数秒截断
+    # 设计的，放在 copy-mode dest 上会让 Windows CI 的边界时间戳漏判。
+    if max_mtime <= installed_at:
         return False
     if (time.time() - max_mtime) < quiet_seconds:
         return False

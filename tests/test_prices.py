@@ -129,13 +129,23 @@ def _err_fetcher(exc):
     return f
 
 
-@pytest.mark.parametrize("exc,kind", [
-    (urllib.error.HTTPError("u", 404, "gone", {}, None), "source_moved"),
-    (urllib.error.URLError("conn refused"), "unreachable"),
-    (TimeoutError("slow"), "unreachable"),
-    (ValueError("解析到的条目过少(3)"), "schema_changed"),   # MIN_ENTRIES / 非JSON
-    (RuntimeError("???"), "unknown"),
-])
+@pytest.mark.parametrize(
+    "exc,kind",
+    [
+        (urllib.error.HTTPError("u", 404, "gone", {}, None), "source_moved"),
+        (urllib.error.URLError("conn refused"), "unreachable"),
+        (TimeoutError("slow"), "unreachable"),
+        (ValueError("解析到的条目过少(3)"), "schema_changed"),   # MIN_ENTRIES / 非JSON
+        (RuntimeError("???"), "unknown"),
+    ],
+    ids=[
+        "http-error",
+        "url-error",
+        "timeout",
+        "schema-changed",
+        "unknown-error",
+    ],
+)
 def test_refresh_records_failure_kind(tmp_path, exc, kind):
     cache = tmp_path / "model_prices.json"
     t = P.maybe_refresh(cache_path=cache, fetcher=_err_fetcher(exc))

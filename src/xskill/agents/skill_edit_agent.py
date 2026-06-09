@@ -154,7 +154,12 @@ class SkillEditAgent:
             return False
         # 守门 2: 阈值
         data = C.load_candidates(self.skill_dir)
-        ready = C.ready_for_promotion_v2(data, threshold=self.threshold)
+        ready = C.ready_for_promotion_v2(
+            data, threshold=self.threshold, skill_dir=self.skill_dir,
+        )
+        if not ready:
+            return False
+        ready = self._detect_and_resolve_conflicts(ready)
         if not ready:
             return False
         # 守门 3: 若场景是 "create staging"（即在 main 上）→ 额外要求 main 真有人用过
@@ -223,6 +228,29 @@ class SkillEditAgent:
                     self.skill_dir.name)
         return True
 
+    def _detect_and_resolve_conflicts(self, ready: list[dict]) -> list[dict]:
+        """Persist conflicts, auto-resolve obvious ones, and return safe candidates."""
+        def _load(atom_id: str):
+            if self.store is None:
+                raise FileNotFoundError(atom_id)
+            return self.store.load(atom_id)
+
+        groups = C.detect_conflicts(
+            self.skill_dir,
+            ready,
+            atom_loader=_load if self.store is not None else None,
+        )
+        hard = [g for g in groups if g.type == "hard" and not g.resolution]
+        if hard:
+            C.resolve_conflicts(self.skill_dir, hard)
+            if C.has_unresolved_hard_conflicts(self.skill_dir):
+                logger.warning(
+                    "Skill %s 存在未解决的硬冲突，暂停自动更新",
+                    self.skill_dir.name,
+                )
+                return []
+        return C.filter_candidates_by_resolved_conflicts(self.skill_dir, ready)
+
     def _main_has_ux_score(self) -> bool:
         """检查该 skill 的 .ux_scores.jsonl 是否有至少 1 条 side=main 记录。
 
@@ -281,6 +309,21 @@ class SkillEditAgent:
                 f"- atom_id={c['atom_id']}  weightscore={c['weightscore']}{ext}"
             )
         scenario_lines.append("")
+        soft_hints = C.soft_conflict_merge_hints(
+            self.skill_dir,
+            candidate_ids={str(c.get("atom_id", "")) for c in ready},
+        )
+        if soft_hints:
+            import json as _json
+            scenario_lines.append("# 冲突合并提示")
+            scenario_lines.append(
+                "以下 soft conflict 已由系统判定为可共存。写 SKILL.md 时不要二选一，"
+                "应合并为条件分支、优先级规则或同一 section 下的不同步骤："
+            )
+            scenario_lines.append(
+                _json.dumps(soft_hints, ensure_ascii=False, indent=2)
+            )
+            scenario_lines.append("")
         scenario_lines.append(f"目标 skill 目录: {self.skill_dir}")
         scenario_lines.append(f"目标 SKILL.md 路径: {skill_md}")
 

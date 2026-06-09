@@ -21,8 +21,12 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import defaultdict
+from dataclasses import asdict, dataclass
 from datetime import date, datetime
+from hashlib import sha1
 from pathlib import Path
+from typing import Any, Callable
 
 import yaml
 
@@ -31,6 +35,7 @@ from xskill.skill.frontmatter import parse as fm_parse, serialize as fm_serializ
 logger = logging.getLogger("candidates")
 
 CANDIDATES_FILENAME = ".candidates.yml"
+CONFLICTS_FILENAME = ".conflicts.yml"
 FUZZY_PREFIX = 60
 
 # v2 schema：以 atom_id 为单位累计 weightscore（cluster agent 给的 0-10 分）。
@@ -72,6 +77,453 @@ def save_candidates(skill_dir: Path, data: dict) -> None:
         yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Conflict persistence + resolution (v2 atom candidates)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class AtomPosition:
+    atom_id: str
+    position: str
+    weightscore: int = 0
+    supporting_trajs: int = 1
+
+
+@dataclass
+class ConflictGroup:
+    id: str
+    type: str
+    atoms: list[AtomPosition]
+    affected_section: str = ""
+    conflict_summary: str = ""
+    detected_at: str = ""
+    resolution: dict | None = None
+
+
+def _conflicts_path(skill_dir: Path) -> Path:
+    return Path(skill_dir) / CONFLICTS_FILENAME
+
+
+def load_conflicts(skill_dir: Path) -> dict:
+    p = _conflicts_path(skill_dir)
+    if not p.exists():
+        return {"conflicts": []}
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except Exception as e:
+        logger.warning("failed to parse %s: %s; starting empty", p, e)
+        return {"conflicts": []}
+    if not isinstance(data, dict):
+        return {"conflicts": []}
+    if data.get("conflicts") is None:
+        data["conflicts"] = []
+    return data
+
+
+def save_conflicts(skill_dir: Path, data: dict) -> None:
+    p = _conflicts_path(skill_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def _conflict_to_dict(group: ConflictGroup) -> dict:
+    d = asdict(group)
+    d["status"] = "resolved" if group.resolution else "unresolved"
+    return d
+
+
+def _conflict_from_dict(d: dict) -> ConflictGroup:
+    atoms = [
+        AtomPosition(
+            atom_id=str(a.get("atom_id", "")),
+            position=str(a.get("position", "")),
+            weightscore=int(a.get("weightscore", 0)),
+            supporting_trajs=int(a.get("supporting_trajs", 1) or 1),
+        )
+        for a in d.get("atoms", []) or []
+    ]
+    resolution = d.get("resolution")
+    if d.get("status") == "unresolved" and not resolution:
+        resolution = None
+    return ConflictGroup(
+        id=str(d.get("id", "")),
+        type=str(d.get("type", "")),
+        atoms=atoms,
+        affected_section=str(d.get("affected_section", "")),
+        conflict_summary=str(d.get("conflict_summary", "")),
+        detected_at=str(d.get("detected_at", "")),
+        resolution=resolution if isinstance(resolution, dict) else None,
+    )
+
+
+def _now_iso() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _stable_conflict_id(atom_ids: list[str]) -> str:
+    joined = "_".join(sorted(atom_ids))
+    digest = sha1(joined.encode("utf-8")).hexdigest()[:8]
+    return f"cg_{date.today().strftime('%Y%m%d')}_{digest}"
+
+
+def _supporting_count(c: dict) -> int:
+    vals = c.get("supporting_trajs")
+    if isinstance(vals, list) and vals:
+        return len(vals)
+    return int(c.get("supporting_count") or c.get("supporting_traj_count") or 1)
+
+
+def _atom_context(atom: Any) -> dict:
+    if atom is None:
+        return {}
+    if isinstance(atom, dict):
+        return atom
+    out: dict[str, Any] = {}
+    for name in (
+        "atom_id", "traj_id", "intent", "summary", "tags",
+        "raw_segment", "used_skills",
+    ):
+        if hasattr(atom, name):
+            out[name] = getattr(atom, name)
+    return out
+
+
+def _candidate_text(c: dict, atom: dict | None = None) -> str:
+    atom = atom or {}
+    parts = [
+        c.get("note", ""),
+        atom.get("intent", ""),
+        atom.get("summary", ""),
+        atom.get("raw_segment", ""),
+    ]
+    tags = atom.get("tags") or []
+    if isinstance(tags, list):
+        parts.append(" ".join(str(t) for t in tags))
+    return "\n".join(str(p) for p in parts if p).strip()
+
+
+def _affected_section(c: dict, atom: dict | None = None) -> str:
+    atom = atom or {}
+    for src in (c, atom):
+        for key in ("affected_section", "attach_to", "section"):
+            val = src.get(key) if isinstance(src, dict) else None
+            if val:
+                return str(val)
+    return ""
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        t for t in re.findall(r"[A-Za-z0-9_./:-]+|[\u4e00-\u9fff]{2,}", text.lower())
+        if len(t) > 1
+    }
+
+
+def _semantic_similarity(a: str, b: str) -> float:
+    ta = _tokens(a)
+    tb = _tokens(b)
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    union = len(ta | tb)
+    return inter / union if union else 0.0
+
+
+_MUTEX_TOOL_GROUPS = [
+    {"pip", "poetry", "uv", "conda", "pipenv"},
+    {"npm", "yarn", "pnpm", "bun"},
+]
+
+_SOFT_TOOL_GROUPS = [
+    {"black", "ruff", "autopep8", "yapf"},
+]
+
+
+def _mutex_tools(text: str) -> set[str]:
+    toks = _tokens(text)
+    found: set[str] = set()
+    for group in _MUTEX_TOOL_GROUPS:
+        found.update(toks & group)
+    return found
+
+
+def _heuristic_judge(a: dict, b: dict) -> dict:
+    ta = a["text"]
+    tb = b["text"]
+    sim = _semantic_similarity(ta, tb)
+    tools_a = _mutex_tools(ta)
+    tools_b = _mutex_tools(tb)
+    same_mutex_family = any(
+        tools_a & group and tools_b & group and not (tools_a & tools_b & group)
+        for group in _MUTEX_TOOL_GROUPS
+    )
+    same_soft_family = any(
+        _tokens(ta) & group and _tokens(tb) & group
+        and not (_tokens(ta) & _tokens(tb) & group)
+        for group in _SOFT_TOOL_GROUPS
+    )
+    same_section = bool(a.get("affected_section") and
+                        a.get("affected_section") == b.get("affected_section"))
+    if same_mutex_family and (sim >= 0.15 or same_section):
+        return {
+            "conflict_type": "hard",
+            "opposition_score": 8,
+            "reasoning": "同一决策点上使用了互斥工具或流程。",
+            "can_merge": False,
+            "merge_suggestion": "",
+        }
+    if same_soft_family and (sim >= 0.15 or same_section):
+        return {
+            "conflict_type": "soft",
+            "opposition_score": 5,
+            "reasoning": "同一主题下的工具选择不同，但可写成优先级或降级分支。",
+            "can_merge": True,
+            "merge_suggestion": "优先使用项目已配置的工具；无明确配置时按团队默认顺序选择。",
+        }
+    if sim >= 0.35 or same_section:
+        return {
+            "conflict_type": "soft",
+            "opposition_score": 5,
+            "reasoning": "建议影响同一主题，可通过条件分支或优先级合并。",
+            "can_merge": True,
+            "merge_suggestion": "保留两侧建议，写成按项目约束选择的条件分支。",
+        }
+    return {
+        "conflict_type": "complement",
+        "opposition_score": 2,
+        "reasoning": "内容可共存。",
+        "can_merge": True,
+        "merge_suggestion": "",
+    }
+
+
+def _group_conflict_pairs(pairs: list[tuple[dict, dict, dict]]) -> list[list[tuple[dict, dict, dict]]]:
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for a, b, _ in pairs:
+        union(a["atom_id"], b["atom_id"])
+
+    grouped: dict[str, list[tuple[dict, dict, dict]]] = defaultdict(list)
+    for pair in pairs:
+        grouped[find(pair[0]["atom_id"])].append(pair)
+    return list(grouped.values())
+
+
+def detect_conflicts(
+    skill_dir: Path,
+    candidates: list[dict],
+    *,
+    atom_loader: Callable[[str], Any] | None = None,
+    judge: Callable[[dict, dict], dict] | None = None,
+    similarity_threshold: float = 0.20,
+    max_candidates: int = 10,
+) -> list[ConflictGroup]:
+    """Detect hard/soft conflicts among ready atom candidates.
+
+    ``judge`` is an optional LLM-backed classifier. When omitted, a deterministic
+    conservative classifier handles common mutually-exclusive tool decisions.
+    """
+    if len(candidates) < 2:
+        return []
+    selected = sorted(
+        candidates, key=lambda c: int(c.get("weightscore", 0)), reverse=True,
+    )[:max_candidates]
+    enriched: list[dict] = []
+    for c in selected:
+        atom: dict = {}
+        if atom_loader:
+            try:
+                atom = _atom_context(atom_loader(str(c.get("atom_id", ""))))
+            except Exception:
+                atom = {}
+        text = _candidate_text(c, atom)
+        enriched.append({
+            **c,
+            "text": text,
+            "affected_section": _affected_section(c, atom),
+            "supporting_trajs": _supporting_count(c),
+        })
+
+    conflict_pairs: list[tuple[dict, dict, dict]] = []
+    for i, a in enumerate(enriched):
+        for b in enriched[i + 1:]:
+            sim = _semantic_similarity(a["text"], b["text"])
+            same_section = bool(a.get("affected_section") and
+                                a.get("affected_section") == b.get("affected_section"))
+            if sim < similarity_threshold and not same_section:
+                continue
+            verdict = (judge or _heuristic_judge)(a, b)
+            ctype = str(verdict.get("conflict_type", "")).lower()
+            if ctype in {"hard", "soft"}:
+                conflict_pairs.append((a, b, verdict))
+
+    groups: list[ConflictGroup] = []
+    for pairs in _group_conflict_pairs(conflict_pairs):
+        atom_map: dict[str, dict] = {}
+        types: list[str] = []
+        summaries: list[str] = []
+        merge_suggestions: list[str] = []
+        for a, b, verdict in pairs:
+            atom_map[a["atom_id"]] = a
+            atom_map[b["atom_id"]] = b
+            types.append(str(verdict.get("conflict_type", "soft")).lower())
+            if verdict.get("reasoning"):
+                summaries.append(str(verdict["reasoning"]))
+            if verdict.get("merge_suggestion"):
+                merge_suggestions.append(str(verdict["merge_suggestion"]))
+        gtype = "hard" if "hard" in types else "soft"
+        atoms = [
+            AtomPosition(
+                atom_id=aid,
+                position=(item.get("text") or item.get("note") or aid)[:240],
+                weightscore=int(item.get("weightscore", 0)),
+                supporting_trajs=int(item.get("supporting_trajs", 1)),
+            )
+            for aid, item in sorted(
+                atom_map.items(),
+                key=lambda kv: int(kv[1].get("weightscore", 0)),
+                reverse=True,
+            )
+        ]
+        sections = [a.get("affected_section", "") for a in atom_map.values()
+                    if a.get("affected_section")]
+        group = ConflictGroup(
+            id=_stable_conflict_id([a.atom_id for a in atoms]),
+            type=gtype,
+            atoms=atoms,
+            affected_section=sections[0] if sections else "",
+            conflict_summary=summaries[0] if summaries else "候选 Atom 存在冲突",
+            detected_at=_now_iso(),
+            resolution={
+                "strategy": "conditional_merge",
+                "merged_content": merge_suggestions[0] if merge_suggestions else
+                "将冲突建议合并为条件分支。",
+                "resolved_by": "auto",
+                "resolved_at": _now_iso(),
+            } if gtype == "soft" else None,
+        )
+        groups.append(group)
+
+    if groups:
+        _upsert_conflicts(skill_dir, groups)
+    return groups
+
+
+def _upsert_conflicts(skill_dir: Path, groups: list[ConflictGroup]) -> None:
+    data = load_conflicts(skill_dir)
+    by_id = {str(c.get("id", "")): c for c in data.get("conflicts", []) or []}
+    for group in groups:
+        existing = by_id.get(group.id)
+        if existing and existing.get("resolution"):
+            continue
+        by_id[group.id] = _conflict_to_dict(group)
+    data["conflicts"] = list(by_id.values())
+    save_conflicts(skill_dir, data)
+
+
+def has_unresolved_hard_conflicts(skill_dir: Path) -> bool:
+    data = load_conflicts(skill_dir)
+    for item in data.get("conflicts", []) or []:
+        if item.get("type") == "hard" and not item.get("resolution"):
+            return True
+    return False
+
+
+def resolve_conflicts(
+    skill_dir: Path,
+    groups: list[ConflictGroup] | None = None,
+) -> list[dict]:
+    """Auto-resolve conflict groups when evidence is clearly one-sided.
+
+    Returns the persisted conflict records after attempted resolution.
+    """
+    data = load_conflicts(skill_dir)
+    stored = [_conflict_from_dict(x) for x in data.get("conflicts", []) or []]
+    incoming = {g.id: g for g in groups or []}
+    merged: dict[str, ConflictGroup] = {g.id: g for g in stored if g.id}
+    merged.update({gid: g for gid, g in incoming.items() if gid})
+
+    for group in merged.values():
+        if group.resolution or group.type != "hard" or len(group.atoms) < 2:
+            continue
+        atoms = sorted(group.atoms, key=lambda a: a.weightscore, reverse=True)
+        winner, runner_up = atoms[0], atoms[1]
+        strategy = ""
+        if winner.weightscore >= max(1, runner_up.weightscore) * 2:
+            strategy = "weight_compare"
+        elif winner.supporting_trajs >= 3 and runner_up.supporting_trajs == 1:
+            strategy = "supporting_trajs"
+        if strategy:
+            group.resolution = {
+                "strategy": strategy,
+                "winner": winner.atom_id,
+                "resolved_by": "auto",
+                "resolved_at": _now_iso(),
+            }
+
+    out = [_conflict_to_dict(g) for g in merged.values()]
+    save_conflicts(skill_dir, {"conflicts": out})
+    return out
+
+
+def filter_candidates_by_resolved_conflicts(
+    skill_dir: Path,
+    candidates: list[dict],
+) -> list[dict]:
+    removed: set[str] = set()
+    data = load_conflicts(skill_dir)
+    for item in data.get("conflicts", []) or []:
+        res = item.get("resolution") or {}
+        winner = res.get("winner")
+        if not winner:
+            continue
+        for atom in item.get("atoms", []) or []:
+            aid = atom.get("atom_id")
+            if aid and aid != winner:
+                removed.add(str(aid))
+    return [c for c in candidates if str(c.get("atom_id", "")) not in removed]
+
+
+def soft_conflict_merge_hints(
+    skill_dir: Path,
+    *,
+    candidate_ids: set[str] | None = None,
+) -> list[dict]:
+    data = load_conflicts(skill_dir)
+    hints = []
+    for item in data.get("conflicts", []) or []:
+        res = item.get("resolution") or {}
+        if item.get("type") != "soft" and res.get("strategy") != "conditional_merge":
+            continue
+        if candidate_ids is not None:
+            ids = {str(a.get("atom_id", "")) for a in item.get("atoms", []) or []}
+            if not ids & candidate_ids:
+                continue
+        hints.append({
+            "id": item.get("id"),
+            "atoms": item.get("atoms", []),
+            "affected_section": item.get("affected_section", ""),
+            "conflict_summary": item.get("conflict_summary", ""),
+            "merge_suggestion": res.get("merged_content", ""),
+        })
+    return hints
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -191,13 +643,18 @@ def add_atom_contribution(
 
 
 def ready_for_promotion_v2(
-    data: dict, threshold: int = ATOM_PROMOTION_THRESHOLD,
+    data: dict,
+    threshold: int = ATOM_PROMOTION_THRESHOLD,
+    *,
+    skill_dir: Path | None = None,
 ) -> list[dict]:
     """v2.1 简化：candidates 全是 pending（无 promoted 字段），sum 所有
     ``weightscore`` ≥ threshold 即 ready。
 
     返回 buffer 中所有 candidates iff 总分 ≥ threshold；否则空列表。
     """
+    if skill_dir is not None and has_unresolved_hard_conflicts(skill_dir):
+        return []
     cands = data.get("candidates", []) or []
     total = sum(int(c.get("weightscore", 0)) for c in cands)
     if total >= threshold:
