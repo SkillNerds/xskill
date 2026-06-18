@@ -158,6 +158,19 @@ watcher:
                                 # watch dir). Default 8; set 1 for the old
                                 # one-atom-per-call behavior.
 
+# ===== Cold-start epoch barrier (traj-jam fix) =====
+# 默认关闭 → 走正常在线增量 SkillEdit。开启后：冷启动阶段 hold 住所有增量
+# SkillEdit，让整个 epoch 的全部子轨迹 atom 攒进各 skill 的 candidates；算法在
+# epoch 训练结束后 touch barrier_path 这个 sentinel，watcher 检出即用极低
+# flush_threshold 把每个有候选的 baby 技能一次性批量毕业到 main（引用该 epoch
+# 累积的全部 atom）。跑满 epochs 个 epoch 后自动转入在线增量 + 灰度。
+# 适用于小数据冷启动——atom 稀少时正常阈值永远到不了、没有技能能毕业的堰塞。
+# cold_start:
+#   enabled: false            # 启用冷启动屏障（默认 false = 零行为变化）
+#   flush_threshold: 1        # 屏障 flush 的 weightscore 门槛（≥1；1=任何有候选的都毕业）
+#   epochs: 1                 # hold+flush 的冷启动 epoch 数（≥1），之后转在线
+#   barrier_path: ""          # sentinel 绝对路径；空=<home>/EPOCH_FLUSH
+
 # ===== Ingest (bridging native agent sessions into traj_*.md) =====
 # 各生态 session ingester（claude_code / codex / openclaw / cursor 的 JSONL
 # 桥接）入库行为。

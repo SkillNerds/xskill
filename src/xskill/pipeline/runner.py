@@ -108,6 +108,13 @@ class DirectoryWatcher:
             Path(install_history_path) if install_history_path
             else XSKILL_HOME / "install_history.jsonl"
         )
+        # 冷启动 epoch 屏障：config['cold_start'] 控制。默认关闭（active=False）
+        # → 走正常在线增量。屏障 sentinel 默认落在 home_root（测试注入的 tmp 或
+        # daemon --home）下，缺省回退 XSKILL_HOME。见 pipeline/cold_start.py。
+        from xskill.pipeline.cold_start import ColdStartController
+        self._cold_start = ColdStartController.from_config(
+            self.config, self.home_root or XSKILL_HOME,
+        )
         self.poll_interval = poll_interval
         self.max_concurrent = max_concurrent
         self.max_retries = max_retries
@@ -236,7 +243,7 @@ class DirectoryWatcher:
         # 已满阈值的 skill 仍能在每轮 scan 中被检出 + 触发 SkillEdit。
         # 不放在 _scan_dir 内是因为 skill_dir 不是 watch_dir，跟 wd 循环
         # 无关——每个 watcher 只有一个全局 skill_dir。
-        self._check_pending_skill_edits()
+        self._run_skill_edit_step()
 
         # ── Step 6: 灰度判定独立轮询 ──
         # 对每个 staging 分支存在的 skill 跑 AtomCanary.check_and_decide：
@@ -263,8 +270,32 @@ class DirectoryWatcher:
         if not self.server_mode:
             self._reconcile_skill_sides()
 
-    def _check_pending_skill_edits(self):
+    def _run_skill_edit_step(self):
+        """Step 5 的冷启动感知封装。
+
+        冷启动阶段（``_cold_start.active``）：hold 住增量 SkillEdit，让 candidates
+        攒满整个 epoch；直到算法落屏障 sentinel → 用 ``flush_threshold`` 一次性
+        批量毕业所有有候选的 skill，然后消费屏障（epoch 计数 +1，跑满即转在线）。
+        非冷启动（默认/已转在线）：走正常阈值在线增量。
+        """
+        cs = self._cold_start
+        if cs.active:
+            if cs.barrier_reached():
+                logger.info(
+                    "冷启动 epoch 屏障到达 → 批量 flush SkillEdit (flush_threshold=%d)",
+                    cs.flush_threshold,
+                )
+                self._check_pending_skill_edits(threshold=cs.flush_threshold)
+                cs.consume_barrier()
+            # 屏障未到：hold，本轮不写正文（让 atom 继续攒进 candidates）
+            return
+        self._check_pending_skill_edits()
+
+    def _check_pending_skill_edits(self, threshold=None):
         """遍历每个 skill 目录调 SkillEditAgent.maybe_run()。
+
+        ``threshold``：None 时各 skill 用默认 ATOM_PROMOTION_THRESHOLD（在线增量）；
+        冷启动屏障 flush 传入低门槛（如 1）→ 任何有候选的 skill 都批量毕业。
 
         独立于 process_atom_task：不依赖任何 atom 处理成功；只看 candidates.yml
         当前累计 weightscore 是否够阈值。即便某次 cluster 抛异常导致 buffer
@@ -331,6 +362,7 @@ class DirectoryWatcher:
                 agno_agent_factory=factory,
                 llm_cfg=self.config.get("llm", {}),
                 traj_root=traj_root,
+                **({} if threshold is None else {"threshold": threshold}),
             )
             try:
                 return d, bool(editor.maybe_run())
