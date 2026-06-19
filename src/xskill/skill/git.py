@@ -1591,6 +1591,41 @@ def commit_to_staging_branch(skill_dir: str, message: str) -> bool:
     return True
 
 
+def commit_update_main_branch(skill_dir: str, message: str) -> bool:
+    """冷启动在线进化专用：在 **main 分支原地** commit 一次正文更新。
+
+    与 ``commit_to_staging_branch`` 的区别：不开 staging / 不物化 canary / 不走
+    灰度，直接把 SkillEditAgent 重写后的 SKILL.md（基于现有正文 + 新 epoch 的
+    candidates atom）commit 进 main —— 技能逐 epoch 在 main 上原地进化。
+
+    前提：当前在 main 分支（冷启动 flush 时，已毕业的技能都在 main）。
+    流程：add -A + commit -m <message>（无改动则 nothing-to-commit 返回 False）。
+
+    不在 main → 直接 throw（不做 fallback），由 caller 兜异常并保留 candidates 重试。
+    """
+    with skill_repo_lock(skill_dir):
+        with _open_repo(skill_dir) as repo:
+            cur = _current_branch_name(repo)
+            if cur != "main":
+                raise RuntimeError(
+                    f"commit_update_main_branch 要求当前在 main 分支，实际在 {cur!r}"
+                )
+            _stage_all(repo, Path(skill_dir))
+            sha, err = _do_commit(repo, message)
+            if sha is None:
+                if err == "nothing to commit":
+                    logger.warning(
+                        "commit_update_main_branch 无改动可提交: %s",
+                        Path(skill_dir).name,
+                    )
+                    return False
+                raise RuntimeError(f"commit_update_main_branch commit 失败: {err}")
+    logger.info(
+        "♻️  main 原地进化 commit: %s: %s", Path(skill_dir).name, message
+    )
+    return True
+
+
 def ensure_repo(skill_dir: str):
     """确保 skill_dir 是一个 git 仓库，在 main 分支上。"""
     p = Path(skill_dir)

@@ -879,6 +879,44 @@ def commit_to_staging(skill_name: str, message: str) -> str:
     return f"committed to staging: {slug}"
 
 
+def commit_update_main(skill_name: str, message: str) -> str:
+    """冷启动在线进化专用：把 main 上的技能正文更新**直接 commit 回 main**。
+
+    前提：该 skill 当前在 main 分支（冷启动 flush 已让它毕业到 main）。
+    行为：跑 description 触发优化 → git add . + commit on main（不开 staging /
+    不走灰度 / 不物化 canary）。技能逐 epoch 在 main 上原地进化。
+
+    Args:
+        skill_name: 目标 skill 的 slug
+        message: commit message，应写明本次基于哪些 atom_id 进化
+
+    Returns:
+        成功："updated on main: <skill_name>"
+        失败："error: ..."
+    """
+    from xskill.skill.git import commit_update_main_branch
+    skill_dir = _ctx_v2["skill_dir"]
+    if skill_dir is None:
+        return "error: v2 context not initialized"
+    slug = _slugify(skill_name)
+    target = skill_dir / slug
+    if not target.is_dir():
+        return f"error: skill {slug} not found"
+    if not (target / ".git").is_dir():
+        return f"error: skill {slug} 没 git 仓库"
+    msg = (message or "").strip()
+    if not msg:
+        return "error: commit message 必填"
+    # commit 前先跑 description 触发优化（best desc 写回 frontmatter）。失败只
+    # log，不阻断 commit。
+    _run_description_optimization(target, slug)
+    ok = commit_update_main_branch(str(target), msg)
+    if not ok:
+        return ("error: commit_update_main 失败"
+                "（不在 main 分支 / 无改动可提交——看日志）")
+    return f"updated on main: {slug}"
+
+
 def absorb_user_edit_to_main(skill_name: str, message: str) -> str:
     """UserEditAbsorbAgent 专用：把用户手改吸收为 main 分支一次 commit。
 

@@ -11,6 +11,13 @@ SkillEdit**，让本轮导入的全部子轨迹 atom 攒进各 skill 的 ``.cand
 子轨迹 atom——把 baby 技能批量毕业到 main。消费屏障后轮次计数 +1；跑满
 ``epochs`` 即转入正常在线增量 + 灰度路径。
 
+多轮批量进化语义（``epochs`` ≥ 2 时）：``epochs`` 是总批量 flush 轮数。
+第 1 轮把 baby 技能毕业到 main；第 2..N 轮的 flush 走 ``cold_flush`` 路径——
+main 上的技能跳过 ux_score 守门，基于"现有正文 + 本轮新 candidates 的 atom"
+原地重新精炼并直接 commit 回 main（version 逐轮递增），不开 staging / 不走灰度。
+这适用于批量冷启动期间还没有真实用户流量、但需要多轮历史轨迹继续完善首版技能库
+的场景；跑满 ``epochs`` 后自动回到正常在线增量 + 灰度路径。
+
 设计原则：默认 ``enabled=False`` → 对既有部署零行为变化；非法配置直接抛错
 （不做兜底回退）。屏障用文件 sentinel 而非新增 CLI 子命令，外部批量导入编排
 在一轮导入结束后 ``touch`` 约定路径即可触发。

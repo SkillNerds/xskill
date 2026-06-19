@@ -286,17 +286,22 @@ class DirectoryWatcher:
                     "冷启动批量 flush 屏障到达 → SkillEdit (flush_threshold=%d)",
                     cs.flush_threshold,
                 )
-                self._check_pending_skill_edits(threshold=cs.flush_threshold)
+                self._check_pending_skill_edits(
+                    threshold=cs.flush_threshold, cold_flush=True)
                 cs.consume_barrier()
             # 屏障未到：hold，本轮不写正文（让 atom 继续攒进 candidates）
             return
         self._check_pending_skill_edits()
 
-    def _check_pending_skill_edits(self, threshold=None):
+    def _check_pending_skill_edits(self, threshold=None, cold_flush=False):
         """遍历每个 skill 目录调 SkillEditAgent.maybe_run()。
 
         ``threshold``：None 时各 skill 用默认 ATOM_PROMOTION_THRESHOLD（在线增量）；
         冷启动屏障 flush 传入低门槛（如 1）→ 任何有候选的 skill 都批量毕业。
+
+        ``cold_flush``：冷启动批量 flush 屏障触发时传 True，透传给 SkillEditAgent。
+        作用：main 上的技能跳过 ux_score 守门、基于新 candidates 原地重精炼并
+        直接 commit 回 main（在线进化），不开 staging / 不走灰度。
 
         独立于 process_atom_task：不依赖任何 atom 处理成功；只看 candidates.yml
         当前累计 weightscore 是否够阈值。即便某次 cluster 抛异常导致 buffer
@@ -363,6 +368,7 @@ class DirectoryWatcher:
                 agno_agent_factory=factory,
                 llm_cfg=self.config.get("llm", {}),
                 traj_root=traj_root,
+                cold_flush=cold_flush,
                 **({} if threshold is None else {"threshold": threshold}),
             )
             try:
