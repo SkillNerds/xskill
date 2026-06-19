@@ -9,7 +9,15 @@ epoch 的全部子轨迹 atom 攒进各 skill 的 ``.candidates.yml``；epoch �
 算法落一个 sentinel 文件（屏障）。watcher 检出屏障后，用极低的 ``flush_threshold``
 对每个有候选的 skill 一次性批量写正文——引用该 epoch 累积的全部子轨迹 atom——
 把 baby 技能批量毕业到 main。消费屏障后 epoch 计数 +1；跑满 ``epochs`` 即转入
-正常在线增量 + 灰度路径（后续 epoch 在线进化）。
+正常在线增量 + 灰度路径。
+
+多 epoch 在线进化语义（``epochs`` ≥ 2 时）：``epochs`` 是**总 force-flush 轮数**，
+每个训练 epoch 末落一次屏障 → flush 一次。第 1 个 epoch 把 baby 技能毕业到 main；
+第 2..N 个 epoch 的 flush 走 ``cold_flush`` 路径——main 上的技能跳过 ux_score 守门，
+基于"现有正文 + 该 epoch 新 candidates 的 atom"**原地重新精炼并直接 commit 回
+main**（version 逐 epoch 递增），不开 staging / 不走灰度。训练容器没有真实用户
+反馈，灰度无从决策，故 cold_flush 让技能在 main 上逐 epoch 原地进化，跑满
+``epochs`` 后 collect 即可拿到进化后的 main 技能。
 
 设计原则：默认 ``enabled=False`` → 对既有部署零行为变化；非法配置直接抛错
 （不做兜底回退）。屏障用文件 sentinel 而非新增 CLI 子命令，算法在 epoch 训练

@@ -38,12 +38,72 @@ def _seed_baby(skill_root, slug, weightscore):
     return sd
 
 
+def _add_candidate(sd, atom_id, weightscore):
+    """给已存在的 skill 追加一个候选 atom。"""
+    data = C.load_candidates(sd)
+    data, _ = C.add_atom_contribution(data, atom_id, weightscore)
+    C.save_candidates(sd, data)
+
+
+def _make_evolve_agno():
+    """冷启动在线进化 agno stub：
+      - baby 分支：写正文 + commit_baby_to_main（首次毕业）。
+      - main 分支（冷启动 cold_flush）：读现有正文，写**带递增 version**的新正文
+        （body 含 epoch 标记），调 commit_update_main 原地 commit 回 main。
+    串扰锚点 = 正文里写自己的 slug。
+    """
+    import re
+
+    class _EvolveStub:
+        def __init__(self, *, instructions, tools):
+            self.instructions = instructions
+            self.tools = {getattr(t, "__name__", ""): t for t in tools}
+
+        def run(self, user_msg, **kw):
+            m_dir = re.search(r"目标 skill 目录:\s*(\S+)", user_msg)
+            slug = m_dir.group(1).rstrip("/").split("/")[-1] if m_dir else "?"
+            m = re.search(r"目标 SKILL\.md 路径:\s*(\S+)", user_msg)
+            md_path = m.group(1) if m else None
+            cold_evolve = "冷启动在线进化" in user_msg
+
+            if cold_evolve:
+                # main 原地进化：读现有版本号 → +1 → 写新正文
+                prev = self.tools["skill_read"](slug) if "skill_read" in self.tools else ""
+                vm = re.search(r"version:\s*(\d+)", prev)
+                ver = (int(vm.group(1)) if vm else 1) + 1
+                if md_path and "write_file" in self.tools:
+                    self.tools["write_file"](
+                        md_path,
+                        f"---\nname: {slug}\ndescription: evolved body for {slug}\n"
+                        f"metadata:\n  version: {ver}\n---\n"
+                        f"# {slug}\nbody-of-{slug}-v{ver}\n",
+                    )
+                if "commit_update_main" in self.tools:
+                    self.tools["commit_update_main"](slug, f"evolve {slug} v{ver}")
+            else:
+                # baby 首次毕业
+                if md_path and "write_file" in self.tools:
+                    self.tools["write_file"](
+                        md_path,
+                        f"---\nname: {slug}\ndescription: real body for {slug}\n"
+                        f"metadata:\n  version: 1\n---\n# {slug}\nbody-of-{slug}-v1\n",
+                    )
+                if "commit_baby_to_main" in self.tools:
+                    self.tools["commit_baby_to_main"](slug, f"graduate {slug}")
+
+            class _R:
+                content = ""
+            return _R()
+
+    return lambda **kw: _EvolveStub(**kw)
+
+
 def _serial_factory():
     """非并发 agno stub：写 SKILL.md + commit_baby_to_main（barrier=1 即时放行）。"""
     return _make_barrier_agno(1, threading.Barrier(1))
 
 
-def _make_watcher(tmp_path, skill_root, cold_start_cfg):
+def _make_watcher(tmp_path, skill_root, cold_start_cfg, factory=None):
     db = tmp_path / "test.db"
     wd = tmp_path / "wd"
     wd.mkdir(exist_ok=True)
@@ -61,7 +121,7 @@ def _make_watcher(tmp_path, skill_root, cold_start_cfg):
         max_concurrent=4,
         db_path=db,
         store=store,
-        agno_agent_factory=_serial_factory(),
+        agno_agent_factory=factory or _serial_factory(),
         home_root=tmp_path,
     )
 
@@ -167,3 +227,79 @@ class TestColdStartEpochFlush:
         (tmp_path / "EPOCH_FLUSH").touch()
         w._run_skill_edit_step()
         assert current_branch(str(second)) == "baby", "在线阶段低分技能不该毕业"
+
+
+# ───────────────────────── 多 epoch 在线进化（cold_flush） ─────────────────────────
+
+class TestColdStartMultiEpochEvolution:
+    def test_main_evolves_in_place_across_epochs(self, tmp_path):
+        """多 epoch 冷启动在线进化：
+          epoch1 flush → baby 技能毕业到 main（version 1）；
+          给同一技能加新候选 → epoch2 flush（cold_flush）→ 技能**仍在 main**
+          （没开 staging、没被 ux_score 守门挡住）、SKILL.md 正文进化、version
+          递增、candidates 清空。
+        """
+        skill_root = tmp_path / "skill"; skill_root.mkdir()
+        slug = "sk-evolve"
+        sd = _seed_baby(skill_root, slug, weightscore=3)
+        w = _make_watcher(
+            tmp_path, skill_root,
+            cold_start_cfg={"enabled": True, "flush_threshold": 1, "epochs": 2},
+            factory=_make_evolve_agno(),
+        )
+
+        # ── epoch 1：baby → main 毕业 ──
+        (tmp_path / "EPOCH_FLUSH").touch()
+        w._run_skill_edit_step()
+        assert current_branch(str(sd)) == "main", "epoch1 后应毕业到 main"
+        body_v1 = (sd / "SKILL.md").read_text(encoding="utf-8")
+        assert "body-of-sk-evolve-v1" in body_v1
+        assert "version: 1" in body_v1
+        assert C.load_candidates(sd)["candidates"] == [], "epoch1 后候选应清空"
+        # epoch 还没跑满（epochs=2，刚消费 1 个）—— main 上无人用没有 ux_score，
+        # 但下一个 epoch 的 cold_flush 仍能进化（证明守门 3 被跳过）
+        assert w._cold_start.active is True
+
+        # ── 给同一技能加新候选（模拟 epoch2 攒进的新 atom）──
+        _add_candidate(sd, f"atom_{slug}_0002", 4)
+        assert C.load_candidates(sd)["candidates"], "新候选应已写入"
+
+        # ── epoch 2：cold_flush 原地进化（不走 staging）──
+        (tmp_path / "EPOCH_FLUSH").touch()
+        w._run_skill_edit_step()
+
+        # 仍在 main，没开 staging
+        from xskill.skill.git import run_git
+        code, _, _ = run_git(["rev-parse", "--verify", "staging"], cwd=str(sd))
+        assert code != 0, "cold_flush 进化不该开 staging 分支"
+        assert current_branch(str(sd)) == "main", "epoch2 进化后仍应在 main"
+
+        # 正文进化 + version 递增 + 候选清空
+        body_v2 = (sd / "SKILL.md").read_text(encoding="utf-8")
+        assert "body-of-sk-evolve-v2" in body_v2, "epoch2 正文应已进化"
+        assert "version: 2" in body_v2, "epoch2 version 应递增到 2"
+        assert body_v2 != body_v1, "epoch2 正文应与 epoch1 不同"
+        assert C.load_candidates(sd)["candidates"] == [], "epoch2 后候选应清空"
+
+        # 跑满 2 epoch → 转在线
+        assert w._cold_start.active is False
+        assert w._stats["skills_edited"] == 2
+
+    def test_no_canary_materialized_on_evolution(self, tmp_path):
+        """cold_flush 进化不物化 .canary（不走灰度路径）。"""
+        skill_root = tmp_path / "skill"; skill_root.mkdir()
+        slug = "sk-nocanary"
+        sd = _seed_baby(skill_root, slug, weightscore=3)
+        w = _make_watcher(
+            tmp_path, skill_root,
+            cold_start_cfg={"enabled": True, "flush_threshold": 1, "epochs": 2},
+            factory=_make_evolve_agno(),
+        )
+        (tmp_path / "EPOCH_FLUSH").touch()
+        w._run_skill_edit_step()  # epoch1 graduate
+        _add_candidate(sd, f"atom_{slug}_0002", 5)
+        (tmp_path / "EPOCH_FLUSH").touch()
+        w._run_skill_edit_step()  # epoch2 evolve
+
+        canary_dir = skill_root / ".canary" / slug
+        assert not canary_dir.exists(), "cold_flush 进化不该物化 .canary"

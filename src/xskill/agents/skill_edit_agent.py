@@ -184,7 +184,8 @@ commit message 写明本次基于哪些 atom_id 整理，例如：
 - list_files(path) — 列目录文件
 - write_file(path, content) — 写任意文件到 skill_dir 下
 - commit_baby_to_main(skill_name, message) — 仅 baby 分支可用
-- commit_to_staging(skill_name, message) — 仅 main 分支可用
+- commit_to_staging(skill_name, message) — 仅 main 分支可用（灰度路径）
+- commit_update_main(skill_name, message) — main 分支冷启动在线进化：原地 commit 回 main
 
 # 隐私守护
 
@@ -282,6 +283,7 @@ class SkillEditAgent:
     llm_cfg: dict
     traj_root: Path
     threshold: int = C.ATOM_PROMOTION_THRESHOLD
+    cold_flush: bool = False
 
     def maybe_run(self) -> bool:
         """检查所有守门条件 → 触发 agent → 验证落盘 → 清 buffer。
@@ -311,7 +313,9 @@ class SkillEditAgent:
         # 守门 3: 若场景是 "create staging"（即在 main 上）→ 额外要求 main 真有人用过
         cur = current_branch(str(self.skill_dir))
         if cur == "main":
-            if not self._main_has_ux_score():
+            # cold_flush 在线进化：训练容器没真实用户 → 没有 ux_score；此模式下
+            # 跳过守门 3，允许 main 技能基于新 epoch candidates 原地重新精炼。
+            if not self.cold_flush and not self._main_has_ux_score():
                 logger.info(
                     "skip SkillEdit: %s main 还没真实 ux_score，"
                     "保留 candidates 等用户用 main 后再产 staging",
@@ -401,6 +405,20 @@ class SkillEditAgent:
                 "写完 SKILL.md 后调 ``commit_baby_to_main(skill_name, message)`` "
                 "graduate 到 main 分支。"
             )
+        elif self.cold_flush:
+            # 冷启动在线进化：main 上的技能基于"现有正文 + 新 epoch candidates"
+            # 原地重写，直接 commit 回 main（不开 staging / 不走灰度）。
+            scenario_lines.append(
+                "skill_name: " + self.skill_dir.name
+                + "（**main 分支 · 冷启动在线进化** —— 原地更新现有 skill）"
+            )
+            scenario_lines.append(
+                "先用 ``skill_read(skill_name)`` 读现有 SKILL.md 正文，**在现有"
+                "正文基础上**融合本轮新 candidates 的 atom 知识重写正文（version "
+                "号 +1），写完后调 ``commit_update_main(skill_name, message)`` "
+                "**直接 commit 回 main**——这是本 epoch 的在线进化，不开 staging、"
+                "不走灰度。"
+            )
         else:
             scenario_lines.append(
                 "skill_name: " + self.skill_dir.name + "（**main 分支** —— 更新现有 skill）"
@@ -452,6 +470,7 @@ class SkillEditAgent:
                 ST.write_file,
                 ST.commit_baby_to_main,
                 ST.commit_to_staging,
+                ST.commit_update_main,
             ],
         )
         # 逐轮 CoT/工具调用 → logs/agents/skill_edit_agents/skills/<skill>_<ts>.log
