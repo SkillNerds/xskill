@@ -535,6 +535,9 @@ def sandbox(tmp_path, fake_server):
         "canary": {
             "enabled": True, "probability": 0.5,
             "min_samples": CANARY_MIN_SAMPLES, "max_days_hold": 14,
+            # E2E 只测纯 ux 翻牌链路，不跑 val 评测 → 关掉决策触发式 val
+            # （否则缺 val 分会让 check_and_decide 永远 waiting_val 挂起）。
+            "val_block": False,
         },
         "watcher": {"poll_interval": 2},
         # 入库完成屏障（settle barrier，src/xskill 的 ingest 路径，默认 120s）

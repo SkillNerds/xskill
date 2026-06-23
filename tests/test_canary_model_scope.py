@@ -111,7 +111,8 @@ def test_weighted_decision_flips_naive_average(tmp_path):
     _seed(sd, "staging", s_sha, "small", 10, 3)
     _seed(sd, "main", m_sha, "big", 8, 1)
     _seed(sd, "main", m_sha, "small", 8, 3)
-    cfg = CanaryConfig(total_samples=2, min_samples=2)
+    # 模型分桶加权裁决测试：无 val 分，val_block=False 走纯 ux 回退路径
+    cfg = CanaryConfig(total_samples=2, min_samples=2, val_block=False)
     weights = {"big": 0.9, "small": 0.1}
 
     res = canary.check_and_decide(sd, cfg, weights=weights)

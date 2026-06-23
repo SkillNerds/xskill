@@ -386,8 +386,9 @@ class TestCanaryGradualLoad:
         m_sha = canary.main_sha(skill_dir)
         s_sha = canary.staging_sha(skill_dir)
 
-        # 灌 ux 分：staging 明显胜
-        cfg = canary.CanaryConfig(probability=0.5, min_samples=5, max_days_hold=14)
+        # 灌 ux 分：staging 明显胜（纯 ux 翻牌：无 val 分，val_block=False）
+        cfg = canary.CanaryConfig(probability=0.5, min_samples=5, max_days_hold=14,
+                                  val_block=False)
         for i in range(cfg.min_samples):
             canary.append_ux_score(
                 skill_dir, traj_id=f"m_{i}", skill_name="skill-x",
@@ -417,7 +418,8 @@ class TestCanaryGradualLoad:
         m_sha = canary.main_sha(skill_dir)
         s_sha = canary.staging_sha(skill_dir)
 
-        cfg = canary.CanaryConfig(probability=0.5, min_samples=5, max_days_hold=14)
+        cfg = canary.CanaryConfig(probability=0.5, min_samples=5, max_days_hold=14,
+                                  val_block=False)
         for i in range(cfg.min_samples):
             canary.append_ux_score(
                 skill_dir, traj_id=f"m_{i}", skill_name="skill-y",

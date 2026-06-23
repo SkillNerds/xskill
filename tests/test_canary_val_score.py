@@ -153,9 +153,11 @@ class TestValPullsStagingDown:
 # ──────────────────────────────────────────────────────
 
 class TestFallbackNoValFile:
+    # 这些用例验证"缺 val 退回纯 ux"的旧行为；决策触发式 val（val_block 默认
+    # True）会把缺 val 改成挂起等 val，故这里显式 val_block=False 走旧回退路径。
     def test_no_val_file_promotes_on_ux(self, tmp_path):
         sd = _setup_staged(tmp_path)
-        cfg = CanaryConfig(min_samples=3, val_weight=0.5)
+        cfg = CanaryConfig(min_samples=3, val_weight=0.5, val_block=False)
         _fill_ux(sd, main_score=3, staging_score=9, n=3)
         # 不写 .val_scores.json
         res = canary.check_and_decide(sd, cfg)
@@ -168,7 +170,7 @@ class TestFallbackNoValFile:
 
     def test_no_val_file_rejects_on_ux(self, tmp_path):
         sd = _setup_staged(tmp_path)
-        cfg = CanaryConfig(min_samples=3, val_weight=0.5)
+        cfg = CanaryConfig(min_samples=3, val_weight=0.5, val_block=False)
         _fill_ux(sd, main_score=9, staging_score=2, n=3)
         res = canary.check_and_decide(sd, cfg)
         assert res["action"] == "rejected"
@@ -179,7 +181,7 @@ class TestFallbackNoValFile:
         """.val_scores.json 存在但只含 main 的 sha（staging sha 换了读不到）→
         staging 侧退回纯 ux，main 侧用 val。"""
         sd = _setup_staged(tmp_path)
-        cfg = CanaryConfig(min_samples=3, val_weight=0.5)
+        cfg = CanaryConfig(min_samples=3, val_weight=0.5, val_block=False)
         _fill_ux(sd, main_score=6, staging_score=9, n=3)
         m_sha = canary.main_sha(sd)
         # 只写 main 的 val，staging sha 缺失
@@ -195,7 +197,7 @@ class TestFallbackNoValFile:
 
     def test_corrupt_val_file_falls_back(self, tmp_path):
         sd = _setup_staged(tmp_path)
-        cfg = CanaryConfig(min_samples=3, val_weight=0.5)
+        cfg = CanaryConfig(min_samples=3, val_weight=0.5, val_block=False)
         _fill_ux(sd, main_score=3, staging_score=9, n=3)
         (sd / canary.VAL_SCORES_FILENAME).write_text("{not json", encoding="utf-8")
         res = canary.check_and_decide(sd, cfg)

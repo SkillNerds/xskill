@@ -606,6 +606,9 @@ class DirectoryWatcher:
                     # promote 成功 → 重新 install symlink (内容已变)
                     if action == "promoted":
                         self._install_skill_to_all_detected(d)
+                elif action == "waiting_val":
+                    # 缺 val 分挂起，已写 .val_request.json 等 algo 后台补分
+                    logger.info("canary %s waiting val: %s", d.name, decision)
             except Exception:
                 logger.exception("check_and_decide failed: %s", d.name)
 

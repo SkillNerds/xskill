@@ -225,7 +225,8 @@ class TestController:
 
     def test_promoted_when_staging_wins(self, tmp_path):
         sd = self._setup_staged(tmp_path)
-        cfg = canary.CanaryConfig(min_samples=3)
+        # 纯 ux 翻牌机制测试：无 val 分，val_block=False 走旧回退路径
+        cfg = canary.CanaryConfig(min_samples=3, val_block=False)
         m_sha = canary.main_sha(sd)
         s_sha = canary.staging_sha(sd)
         for i in range(3):
@@ -241,7 +242,8 @@ class TestController:
 
     def test_rejected_when_main_wins(self, tmp_path):
         sd = self._setup_staged(tmp_path)
-        cfg = canary.CanaryConfig(min_samples=3)
+        # 纯 ux 翻牌机制测试：无 val 分，val_block=False 走旧回退路径
+        cfg = canary.CanaryConfig(min_samples=3, val_block=False)
         m_sha = canary.main_sha(sd)
         s_sha = canary.staging_sha(sd)
         for i in range(3):

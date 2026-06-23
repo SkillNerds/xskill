@@ -108,5 +108,6 @@ class TestCheckAndDecide:
                       side="main", commit_sha=main_sha, score=6, reasons="")
             ac.append(atom_id=f"s{i}", skill_name="skill_p",
                       side="staging", commit_sha=staging_sha, score=9, reasons="")
-        result = ac.check_and_decide()
+        # 纯 ux 翻牌机制测试：无 val 分，val_block=False 走旧回退路径
+        result = ac.check_and_decide(config=canary.CanaryConfig(val_block=False))
         assert result["action"] == "promoted"

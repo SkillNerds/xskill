@@ -38,6 +38,7 @@ logger = logging.getLogger("xskill.canary")
 STAGING_BRANCH = "staging"
 UX_SCORES_FILENAME = ".ux_scores.jsonl"
 VAL_SCORES_FILENAME = ".val_scores.json"
+VAL_REQUEST_FILENAME = ".val_request.json"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -65,6 +66,20 @@ class CanaryConfig:
     # val_weight=0.5 → ux 与 val 各占一半（默认）。当某 side 缺 val 分时，本侧
     # 退回纯 ux（val_weight 对该侧实际为 0），不报错、行为同启用 val 之前。
     val_weight: float = 0.5
+    # ── 决策触发式 val 评测（val_block）──────────────────────────────────
+    # val_block=True（默认）：ux 样本已够、本应裁决，但 main/staging 任一 sha 在
+    #   .val_scores.json 里缺 val 分时——**不立即用纯 ux 回退裁决**，而是写一个
+    #   <skill_dir>/.val_request.json 请求外部（algo 后台 loop）补这两个 sha 的
+    #   val 分，本轮对该技能返回 ``waiting_val``（既不 promote 也不 discard，staging
+    #   不动），等下一轮 watcher tick val 分齐了再走综合分裁决。保证每次晋升都真
+    #   用上了 val。仅在 val_weight>0 时有意义（val_weight=0 时综合分本就退回纯
+    #   ux，无须等 val）。
+    # val_block=False：保持旧行为——缺 val 直接退回纯 ux 裁决（向后兼容）。
+    val_block: bool = True
+    # 兜底超时（秒）：val_request 写出后等太久（loop 没跟上 / val 评测一直失败）
+    # 仍缺 val 分，则放弃等待、退回纯 ux 裁决，避免灰度被无限挂起。0 = 不超时
+    # （一直等到 val 齐）。默认 1 小时。
+    val_block_timeout: float = 3600.0
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "CanaryConfig":
@@ -77,6 +92,8 @@ class CanaryConfig:
             scope_top_n=int(d.get("scope_top_n", 2)),
             total_samples=int(d.get("total_samples", 20)),
             val_weight=float(d.get("val_weight", 0.5)),
+            val_block=bool(d.get("val_block", True)),
+            val_block_timeout=float(d.get("val_block_timeout", 3600.0)),
         )
 
 
@@ -439,6 +456,56 @@ def val_acc_for_sha(skill_dir: Path, commit_sha: str) -> float | None:
         return None
 
 
+def _val_request_path(skill_dir: Path) -> Path:
+    return Path(skill_dir) / VAL_REQUEST_FILENAME
+
+
+def load_val_request(skill_dir: Path) -> dict | None:
+    """读 ``<skill_dir>/.val_request.json``（决策触发式 val 评测请求）。
+
+    结构：``{"main_sha":..,"staging_sha":..,"requested_ts": <iso8601>}``——canary
+    在缺 val 分而本应裁决时写出，请求 algo 后台 loop 对这两个 sha 补 val 分。文件
+    不存在 / 解析失败 → None。
+    """
+    p = _val_request_path(skill_dir)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.warning("bad .val_request.json in %s: %s", skill_dir, e)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_val_request(skill_dir: Path, *, main_sha_: str, staging_sha_: str,
+                      requested_ts: str) -> None:
+    """写/更新 val 评测请求。``requested_ts`` 由调用方传入（沿用 canary 的时间源，
+    见 check_and_decide 用 ``datetime.now(timezone.utc)``——可复现性靠注入而非
+    内部取时）。同一对 (main_sha, staging_sha) 已请求则不刷新 ts，避免兜底超时
+    被无限续期。"""
+    p = _val_request_path(skill_dir)
+    existing = load_val_request(skill_dir)
+    if (existing
+            and existing.get("main_sha") == main_sha_
+            and existing.get("staging_sha") == staging_sha_):
+        return  # 同一对 sha 的请求已在，保留原 requested_ts
+    record = {
+        "main_sha": main_sha_,
+        "staging_sha": staging_sha_,
+        "requested_ts": requested_ts,
+    }
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+
+def clear_val_request(skill_dir: Path) -> None:
+    """删 ``.val_request.json``（val 分齐了 / 放弃等待时）。不存在则静默。"""
+    p = _val_request_path(skill_dir)
+    if p.exists():
+        p.unlink()
+
+
 def recent_scores(
     skill_dir: Path,
     *,
@@ -523,6 +590,9 @@ def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None,
 
     - no_staging     :  该 skill 无 staging 分支，什么都不做
     - waiting        :  样本不足，继续收集
+    - waiting_val    :  ux 样本已够、本应裁决，但 main/staging 缺 val 分且
+                        val_block=True → 写 .val_request.json 请求补 val，本轮
+                        挂起（不动 staging），等下一轮 val 齐了再综合裁决
     - timeout_discarded : 超过 max_days 仍不足 → 丢弃 staging
     - promoted       :  staging 综合分 ≥ main 综合分 → 合入 main
     - rejected       :  staging 综合分 < main 综合分 → 丢弃 staging
@@ -590,6 +660,50 @@ def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None,
     # ── 综合分：0.5·ux + 0.5·val（val_weight 可配；缺 val 分则退回纯 ux）──
     main_val_acc = val_acc_for_sha(skill_dir, m_sha)
     staging_val_acc = val_acc_for_sha(skill_dir, s_sha)
+
+    # ── 决策触发式 val：ux 已够、本应裁决，但缺 val 分 → 挂起等 val（不回退纯 ux）──
+    # 只在 val_block=True 且 val_weight>0 时生效。任一 side 缺 val 分即触发：写
+    # val_request 请外部补分、本轮返回 waiting_val（不动 staging）。等下一轮 val 齐
+    # 了再综合裁决。带兜底超时：等太久仍缺 → 放弃等待、清请求、退回纯 ux 裁决，
+    # 避免灰度被无限挂起。
+    now = datetime.now(timezone.utc)
+    missing_val = main_val_acc is None or staging_val_acc is None
+    if cfg.val_block and cfg.val_weight > 0 and missing_val:
+        req = load_val_request(skill_dir)
+        timed_out = False
+        if req is not None and cfg.val_block_timeout > 0:
+            try:
+                waited = (now - _parse_git_iso(
+                    str(req.get("requested_ts", "")))).total_seconds()
+            except (ValueError, TypeError):
+                waited = 0.0
+            if waited >= cfg.val_block_timeout:
+                timed_out = True
+        if timed_out:
+            logger.warning(
+                "%s canary val wait timed out (>%.0fs): main_sha=%s "
+                "staging_sha=%s — 放弃等 val，退回纯 ux 裁决",
+                Path(skill_dir).name, cfg.val_block_timeout,
+                m_sha[:8], s_sha[:8])
+            clear_val_request(skill_dir)
+            # 落到下方综合分逻辑：缺 val 的 side 自然退回纯 ux
+        else:
+            write_val_request(skill_dir, main_sha_=m_sha, staging_sha_=s_sha,
+                              requested_ts=now.isoformat(timespec="seconds"))
+            logger.info(
+                "canary waiting val: %s main_sha=%s staging_sha=%s "
+                "(val 未就绪：main_val=%s staging_val=%s)",
+                Path(skill_dir).name, m_sha[:8], s_sha[:8],
+                "n/a" if main_val_acc is None else f"{main_val_acc:.3f}",
+                "n/a" if staging_val_acc is None else f"{staging_val_acc:.3f}")
+            return {"action": "waiting_val", "age_days": age_days,
+                    "main_samples": main_n, "staging_samples": staging_n,
+                    "main_val_acc": main_val_acc,
+                    "staging_val_acc": staging_val_acc}
+
+    # val 齐全（或 val_block 关 / val_weight=0 / 超时放弃）→ 正常裁决，清掉请求
+    clear_val_request(skill_dir)
+
     main_w, main_val_norm = _composite_score(main_ux, main_val_acc, cfg.val_weight)
     staging_w, staging_val_norm = _composite_score(
         staging_ux, staging_val_acc, cfg.val_weight)
@@ -652,6 +766,7 @@ def _record_decision(skill_dir, action: str, main_avg: float, staging_avg: float
 GITIGNORE_TEMPLATE = """# canary runtime data — NOT versioned
 .ux_scores.jsonl
 .val_scores.json
+.val_request.json
 .lock
 """
 
@@ -660,7 +775,8 @@ def ensure_gitignore(skill_dir: Path) -> None:
     p = Path(skill_dir) / ".gitignore"
     if p.exists():
         current = p.read_text(encoding="utf-8")
-        if ".ux_scores.jsonl" in current and ".val_scores.json" in current:
+        if (".ux_scores.jsonl" in current and ".val_scores.json" in current
+                and ".val_request.json" in current):
             return
         # 追加缺失条目
         added = []
@@ -668,6 +784,8 @@ def ensure_gitignore(skill_dir: Path) -> None:
             added.append(".ux_scores.jsonl")
         if ".val_scores.json" not in current:
             added.append(".val_scores.json")
+        if ".val_request.json" not in current:
+            added.append(".val_request.json")
         if ".lock" not in current:
             added.append(".lock")
         if added:
