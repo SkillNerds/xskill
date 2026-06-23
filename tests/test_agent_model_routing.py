@@ -89,3 +89,42 @@ class TestBuildChatModelRouting:
         }, log)
         assert m.id == "deepseek-reasoner"
         assert "deepseek.com" in m.base_url
+
+
+class TestTemperatureDeterminism:
+    """temperature 缺省钉死 0（消除聚类 run-to-run 抖动）；config 显式值可覆盖。"""
+
+    def test_deepseek_defaults_temperature_zero(self, log):
+        m = _build_chat_model({
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek-v4-flash",
+            "api_key": "sk-test",
+        }, log)
+        assert m.temperature == 0.0
+
+    def test_openai_defaults_temperature_zero(self, log):
+        m = _build_chat_model({
+            "base_url": "https://api.openai.com/v1",
+            "model": "gpt-4o",
+            "api_key": "sk-test",
+        }, log)
+        assert m.temperature == 0.0
+
+    def test_config_temperature_overrides_default(self, log):
+        m = _build_chat_model({
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek-v4-flash",
+            "api_key": "sk-test",
+            "temperature": 0.7,
+        }, log)
+        assert m.temperature == 0.7
+
+    def test_config_temperature_zero_explicit(self, log):
+        # 显式 0 与缺省 0 等价（不被 "is None" 误当未设）
+        m = _build_chat_model({
+            "base_url": "https://api.openai.com/v1",
+            "model": "gpt-4o",
+            "api_key": "sk-test",
+            "temperature": 0,
+        }, log)
+        assert m.temperature == 0.0

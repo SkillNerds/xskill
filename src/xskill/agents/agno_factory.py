@@ -170,12 +170,24 @@ def build_chat_model(llm_cfg: dict, log: StreamLog | None = None):
                              connect=min(connect_timeout, request_timeout))
     client_max_retries = int(llm_cfg.get("client_max_retries", 0) or 0)
 
+    # ── 确定化：temperature 缺省 0（消除 run-to-run 抖动）──────────────
+    # DeepSeek / OpenAI 兼容端点默认 temperature=1.0（DeepSeek 直连尤甚）。聚类
+    # agent（TaskClusterAgent）"第一个技能 description 写宽还是写窄"在 temp>0 下
+    # 纯随机，导致同样输入有时聚成 1 个技能、有时 7 个。给所有 agent（split /
+    # cluster / edit）统一钉死 temperature=0 → 确定化输出，干净对照。
+    # 用户仍可在 ``llm`` config 显式给 temperature 覆盖（含 0 以外的值）。
+    temperature = llm_cfg.get("temperature")
+    if temperature is None:
+        temperature = 0.0
+    temperature = float(temperature)
+
     common_kwargs = dict(
         id=model_id,
         base_url=llm_cfg.get("base_url", ""),
         api_key=api_key,
         timeout=timeout,
         max_retries=client_max_retries,
+        temperature=temperature,
         role_map={
             "system": "system",
             "user": "user",
