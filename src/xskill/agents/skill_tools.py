@@ -612,6 +612,15 @@ def read_traj(traj_id: str, offset_start: int, offset_end: int) -> str:
     traj_root = _ctx_v2["traj_root"]
     if traj_root is None:
         return "error: v2 context not initialized"
+    # team-CS 多 store：traj.md 落在 atom 所属 client 的 watch_dir 下，不一定是
+    # 绑定的 traj_root。store 若支持 traj_root_for（MultiAtomTaskStore），按
+    # traj_id 跨所有 root 解析；解析不到再退回绑定 traj_root（单 store 行为不变）。
+    store = _ctx_v2["store"]
+    resolver = getattr(store, "traj_root_for", None)
+    if callable(resolver):
+        resolved = resolver(traj_id)
+        if resolved is not None:
+            traj_root = resolved
     p = traj_root / f"{traj_id}.md"
     if not p.is_file():
         return f"error: traj file not found: {p}"

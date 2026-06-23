@@ -314,20 +314,27 @@ class DirectoryWatcher:
             return
         from xskill.agents.skill_edit_agent import SkillEditAgent
         factory = self._factory()
-        # store 选哪个：edit agent 工具 (atom_task_read/read_traj) 需要
-        # store + traj_root 来工作；从已注册的第一个 wd 取（生产环境通常
-        # 只有 cc_sessions 一个有 atom 的 dir）。
-        store = None
-        traj_root = None
+        # store 选哪个：edit agent 工具 (atom_task_read/read_traj) 需要 store +
+        # traj_root 才能读到 atom 原文。单机只有一个 watch_dir（cc_sessions）。
+        # team-CS server 下有 N 个 watch_dir（每个 client 上传轨迹注册成一个 wd，
+        # label=client_id），某 skill 的 candidates 里的 atom 可能来自任意 client
+        # 的 store——只绑第一个 wd 的 store，跨 client 的 atom 必然 not found。
+        # 因此收集所有 wd 的 store：>1 个时包一层 MultiAtomTaskStore 做跨 store
+        # 路由；单个时直接用它（单机/cold_flush 行为零变化）。
+        stores = []
         for wd in list_watch_dirs(**self._db_kw()):
             try:
-                store = self._store_for(Path(wd["path"]))
-                traj_root = Path(wd["path"])
-                break
+                stores.append(self._store_for(Path(wd["path"])))
             except Exception:
                 continue
-        if store is None:
+        if not stores:
             return
+        if len(stores) == 1:
+            store = stores[0]
+        else:
+            from xskill.pipeline.atom import MultiAtomTaskStore
+            store = MultiAtomTaskStore(stores)
+        traj_root = Path(stores[0].root)
         # 初始化 v2 工具 ctx（SkillEditAgent 工具用）
         from xskill.agents import skill_tools as ST
         ST.init_context_v2(
