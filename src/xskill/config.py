@@ -114,6 +114,13 @@ canary:
                                 # and non-top-N traffic stays on main
   total_samples: 20             # model-scoped path: total UX scores needed on
                                 # each side before a weighted decision
+  val_weight:    0.5            # promotion compares a composite score:
+                                # (1-val_weight)*ux_avg + val_weight*(val_acc*10).
+                                # val_acc is the side's solve-correctness on the
+                                # val set, read from <skill_dir>/.val_scores.json
+                                # by commit sha (written externally during canary
+                                # settle). 0.5 = ux and val each weigh half; a
+                                # side missing its val entry falls back to pure ux.
 
 # ===== Skill description trigger optimization =====
 # Before each promotion commit (baby→main / main→staging) the daemon runs a

@@ -37,6 +37,7 @@ logger = logging.getLogger("xskill.canary")
 
 STAGING_BRANCH = "staging"
 UX_SCORES_FILENAME = ".ux_scores.jsonl"
+VAL_SCORES_FILENAME = ".val_scores.json"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -55,6 +56,15 @@ class CanaryConfig:
     # total_samples: 每侧（main/staging）判定所需的总样本数（跨所有参与模型）。
     scope_top_n: int = 2
     total_samples: int = 20
+    # ── val 集解题正确率接入综合分（追上 SkillOpt 的 val 监督）──
+    # 晋升比较分 = (1 - val_weight) * ux_avg + val_weight * val_score_norm，
+    #   ux_avg        : 该 side 的 ux_score 均分（0–10，沿用现有分桶加权逻辑）
+    #   val_score_norm: 该 side 技能版本在 val 集上的正确率，归一化到 0–10
+    #                   （acc∈[0,1] × 10）。从 <skill_dir>/.val_scores.json 按
+    #                   该 side 的 commit_sha 读取，由 algo 外部写入。
+    # val_weight=0.5 → ux 与 val 各占一半（默认）。当某 side 缺 val 分时，本侧
+    # 退回纯 ux（val_weight 对该侧实际为 0），不报错、行为同启用 val 之前。
+    val_weight: float = 0.5
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "CanaryConfig":
@@ -66,6 +76,7 @@ class CanaryConfig:
             rotate_interval=int(d.get("rotate_interval", 300)),
             scope_top_n=int(d.get("scope_top_n", 2)),
             total_samples=int(d.get("total_samples", 20)),
+            val_weight=float(d.get("val_weight", 0.5)),
         )
 
 
@@ -386,6 +397,48 @@ def append_ux_score(
     return True
 
 
+def _val_scores_path(skill_dir: Path) -> Path:
+    return Path(skill_dir) / VAL_SCORES_FILENAME
+
+
+def load_val_scores(skill_dir: Path) -> dict:
+    """读 ``<skill_dir>/.val_scores.json``。
+
+    结构：``{"<commit_sha>": {"acc": 0.7, "n": 10}, ...}``——按技能版本的 git
+    commit sha 存该版本在 val 集上的解题正确率（``acc``∈[0,1]）与题数（``n``）。
+    由 algo 外部（灰度 settle 阶段跑 val 评测）写入。文件不存在 / 解析失败 → 返回
+    空 dict（不报错，退回纯 ux 决策，行为同未启用 val）。
+    """
+    p = _val_scores_path(skill_dir)
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.warning("bad .val_scores.json in %s: %s", skill_dir, e)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def val_acc_for_sha(skill_dir: Path, commit_sha: str) -> float | None:
+    """返回某 commit_sha 在 val 集上的正确率 ``acc``∈[0,1]；缺则 None。
+
+    sha 一变就读不到是预期的——新版本要有人重新写 val 分。check_and_decide 缺该
+    sha 条目时按"该侧无 val 分"处理（退回纯 ux）。
+    """
+    val = load_val_scores(skill_dir)
+    entry = val.get(commit_sha)
+    if not isinstance(entry, dict):
+        return None
+    acc = entry.get("acc")
+    if acc is None:
+        return None
+    try:
+        return float(acc)
+    except (TypeError, ValueError):
+        return None
+
+
 def recent_scores(
     skill_dir: Path,
     *,
@@ -447,6 +500,23 @@ def _cohort_weighted(scores: list[dict], weights: dict[str, float]
     return weighted, {m: len(v) for m, v in by_model.items()}
 
 
+def _composite_score(ux_avg: float, val_acc: float | None, val_weight: float
+                     ) -> tuple[float, float | None]:
+    """综合分 = (1-w)·ux_avg + w·(val_acc×10)。
+
+    - ``val_acc`` 为 None（该 side 无 val 分）→ 退回纯 ux：综合分 = ux_avg，
+      val_score_norm 返回 None（日志里区分"没测过 val"与"val=0"）。
+    - 否则 val_score_norm = val_acc × 10（acc∈[0,1] → 0–10，与 ux 同量纲）。
+
+    返回 (综合分, val_score_norm or None)。
+    """
+    if val_acc is None or val_weight <= 0:
+        return ux_avg, None
+    val_norm = val_acc * 10.0
+    composite = (1.0 - val_weight) * ux_avg + val_weight * val_norm
+    return composite, val_norm
+
+
 def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None,
                      *, weights: dict[str, float] | None = None) -> dict:
     """每次新体验分入库后调用。返回结果字典，action 字段含义：
@@ -454,8 +524,14 @@ def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None,
     - no_staging     :  该 skill 无 staging 分支，什么都不做
     - waiting        :  样本不足，继续收集
     - timeout_discarded : 超过 max_days 仍不足 → 丢弃 staging
-    - promoted       :  加权 staging 分 ≥ 加权 main → 合入 main
-    - rejected       :  加权 staging 分 < 加权 main → 丢弃 staging
+    - promoted       :  staging 综合分 ≥ main 综合分 → 合入 main
+    - rejected       :  staging 综合分 < main 综合分 → 丢弃 staging
+
+    比较分为**综合分**而非纯 ux：每侧综合分 =
+    ``(1-val_weight)·ux_avg + val_weight·(val_acc×10)``。``val_acc`` 按该侧
+    commit_sha 从 ``.val_scores.json`` 读（algo 在灰度 settle 时跑 val 集写入）；
+    该侧缺 val 分时退回纯 ux（行为同未启用 val）。这样某 staging 即便 ux 更高，
+    若 val 正确率拉胯，综合分仍可能被 main 反超而 discard。
 
     ``weights``: ``{user_model: 权重}``（来自 :func:`eligible_models`）。
     - 给定时走**模型分桶加权**:只统计 top-N 模型样本(unknown 等被排除)，每侧
@@ -505,21 +581,43 @@ def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None,
         return {"action": "waiting", "age_days": age_days,
                 "main_samples": main_n, "staging_samples": staging_n, "need": need}
 
-    main_w, main_cohorts = _cohort_weighted(main_all, eff_weights)
-    staging_w, staging_cohorts = _cohort_weighted(staging_all, eff_weights)
-    if main_w is None or staging_w is None:
+    main_ux, main_cohorts = _cohort_weighted(main_all, eff_weights)
+    staging_ux, staging_cohorts = _cohort_weighted(staging_all, eff_weights)
+    if main_ux is None or staging_ux is None:
         return {"action": "waiting", "age_days": age_days,
                 "main_samples": main_n, "staging_samples": staging_n, "need": need}
 
+    # ── 综合分：0.5·ux + 0.5·val（val_weight 可配；缺 val 分则退回纯 ux）──
+    main_val_acc = val_acc_for_sha(skill_dir, m_sha)
+    staging_val_acc = val_acc_for_sha(skill_dir, s_sha)
+    main_w, main_val_norm = _composite_score(main_ux, main_val_acc, cfg.val_weight)
+    staging_w, staging_val_norm = _composite_score(
+        staging_ux, staging_val_acc, cfg.val_weight)
+
     summary = {
+        # 综合分（最终比较用）
         "main_avg": round(main_w, 3),
         "staging_avg": round(staging_w, 3),
+        # 拆解：ux 均分 + val 正确率 + 归一化 val 分，便于排查
+        "main_ux": round(main_ux, 3),
+        "staging_ux": round(staging_ux, 3),
+        "main_val_acc": main_val_acc,
+        "staging_val_acc": staging_val_acc,
+        "val_weight": cfg.val_weight,
         "main_samples": main_n,
         "staging_samples": staging_n,
         "main_cohorts": main_cohorts,
         "staging_cohorts": staging_cohorts,
         "age_days": age_days,
     }
+    logger.info(
+        "%s canary composite: main(ux=%.3f val_acc=%s →%.3f) "
+        "staging(ux=%.3f val_acc=%s →%.3f) val_weight=%.2f",
+        Path(skill_dir).name, main_ux,
+        "n/a" if main_val_acc is None else f"{main_val_acc:.3f}", main_w,
+        staging_ux,
+        "n/a" if staging_val_acc is None else f"{staging_val_acc:.3f}", staging_w,
+        cfg.val_weight)
 
     if staging_w >= main_w:
         ok = merge_staging_to_main(skill_dir)
@@ -553,6 +651,7 @@ def _record_decision(skill_dir, action: str, main_avg: float, staging_avg: float
 
 GITIGNORE_TEMPLATE = """# canary runtime data — NOT versioned
 .ux_scores.jsonl
+.val_scores.json
 .lock
 """
 
@@ -561,12 +660,14 @@ def ensure_gitignore(skill_dir: Path) -> None:
     p = Path(skill_dir) / ".gitignore"
     if p.exists():
         current = p.read_text(encoding="utf-8")
-        if ".ux_scores.jsonl" in current:
+        if ".ux_scores.jsonl" in current and ".val_scores.json" in current:
             return
         # 追加缺失条目
         added = []
         if ".ux_scores.jsonl" not in current:
             added.append(".ux_scores.jsonl")
+        if ".val_scores.json" not in current:
+            added.append(".val_scores.json")
         if ".lock" not in current:
             added.append(".lock")
         if added:
