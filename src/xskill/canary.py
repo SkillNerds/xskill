@@ -66,7 +66,7 @@ class CanaryConfig:
     # val_weight=0.5 → ux 与 val 各占一半（默认）。当某 side 缺 val 分时，本侧
     # 退回纯 ux（val_weight 对该侧实际为 0），不报错、行为同启用 val 之前。
     val_weight: float = 0.5
-    # ── 决策触发式 val 评测（val_block）──────────────────────────────────
+    # ── 决策触发式 val 评测（val_block）──────────────────────────────────────
     # val_block=True（默认）：ux 样本已够、本应裁决，但 main/staging 任一 sha 在
     #   .val_scores.json 里缺 val 分时——**不立即用纯 ux 回退裁决**，而是写一个
     #   <skill_dir>/.val_request.json 请求外部（algo 后台 loop）补这两个 sha 的
@@ -80,6 +80,12 @@ class CanaryConfig:
     # 仍缺 val 分，则放弃等待、退回纯 ux 裁决，避免灰度被无限挂起。0 = 不超时
     # （一直等到 val 齐）。默认 1 小时。
     val_block_timeout: float = 3600.0
+    # ── 轨迹堰塞强砍阈值（jam_threshold）─────────────────────────────
+    # staging 存在期间闸门一本会无条件 hold 所有 SkillEdit；候选累计 weightscore
+    # 攒到 jam_threshold 仍未等到灰度裁决 → 判定堰塞（疑似灰度错位/无真实流量），
+    # 越过灰度合并 main+staging+候选出新 main 并删 staging。必须 > 正常毕业阈值
+    # (ATOM_PROMOTION_THRESHOLD=10)，否则正常增量就会被误判堰塞。默认 50。
+    jam_threshold: int = 50
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "CanaryConfig":
@@ -94,6 +100,7 @@ class CanaryConfig:
             val_weight=float(d.get("val_weight", 0.5)),
             val_block=bool(d.get("val_block", True)),
             val_block_timeout=float(d.get("val_block_timeout", 3600.0)),
+            jam_threshold=int(d.get("jam_threshold", 50)),
         )
 
 

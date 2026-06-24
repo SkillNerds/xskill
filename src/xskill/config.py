@@ -121,6 +121,13 @@ canary:
                                 # by commit sha (written externally during canary
                                 # settle). 0.5 = ux and val each weigh half; a
                                 # side missing its val entry falls back to pure ux.
+  jam_threshold: 50             # traj-jam breaker: while staging is open, gate-1
+                                # holds all SkillEdit; if pending candidates'
+                                # weightscore sums to >= this, declare a jam
+                                # (gray misaligned / no real traffic), bypass gray:
+                                # merge main+staging+candidates into a new main and
+                                # discard staging. Must exceed the graduation
+                                # threshold (10) so normal increments aren't misread.
 
 # ===== Skill description trigger optimization =====
 # Before each promotion commit (baby→main / main→staging) the daemon runs a
