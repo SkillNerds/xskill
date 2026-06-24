@@ -424,9 +424,17 @@ class SkillEditAgent:
         from xskill.skill.frontmatter import parse as fm_parse  # noqa: F401
 
         if jam:
+            from xskill.canary import materialize_staging
             skill_md = self.skill_dir / "SKILL.md"
             staging_body = (self.skill_dir.parent / ".canary"
                             / self.skill_dir.name / "SKILL.md")
+            if not staging_body.is_file():
+                materialize_staging(self.skill_dir,
+                                    self.skill_dir.parent / ".canary")
+            if not staging_body.is_file():
+                raise RuntimeError(
+                    f"jam-merge: staging body for {self.skill_dir.name} could not be "
+                    f"materialized — refusing to merge and discard (would lose staging work)")
             lines = [
                 MERGE_DISCIPLINE_BLOCK,
                 "",

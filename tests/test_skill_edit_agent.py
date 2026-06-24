@@ -448,8 +448,10 @@ def test_jam_merge_fires_above_threshold_and_discards_staging(tmp_path):
     from xskill.agents import skill_tools as ST
     from xskill.pipeline.atom import AtomTaskStore
     sd = _make_main_skill(tmp_path, "jam-skill")
+    # skill_dir must be the *parent* of the skill repo so commit_update_main
+    # resolves "jam-skill" → tmp_path / "jam-skill" correctly
     ST.init_context_v2(
-        skill_dir=sd, store=AtomTaskStore(root=tmp_path / "store"),
+        skill_dir=tmp_path, store=AtomTaskStore(root=tmp_path / "store"),
         embed_client=None, traj_root=tmp_path / "store",
     )
     # 写点东西并开 staging（灰度中）
@@ -458,6 +460,10 @@ def test_jam_merge_fires_above_threshold_and_discards_staging(tmp_path):
     assert (sd.parent / ".canary" / "jam-skill" / "SKILL.md").is_file()
     # 候选攒到 60 ≥ jam_threshold(50)
     _seed_candidates(sd, 60)
+
+    # Fix 2: capture main HEAD sha before running so we can assert it advanced
+    _, sha_before, _ = run_git(["rev-parse", "HEAD"], cwd=str(sd))
+    sha_before = sha_before.strip()
 
     _JamMergeStubAgno.invoked = False
     agent = SkillEditAgent(
@@ -473,6 +479,10 @@ def test_jam_merge_fires_above_threshold_and_discards_staging(tmp_path):
     # 候选清空、HEAD 在 main、最新 commit 是合并
     assert C.load_candidates(sd)["candidates"] == []
     assert current_branch(str(sd)) == "main"
+    # Fix 2: assert main HEAD actually advanced (merge was persisted, not just staging removed)
+    _, sha_after, _ = run_git(["rev-parse", "HEAD"], cwd=str(sd))
+    sha_after = sha_after.strip()
+    assert sha_after != sha_before, "main HEAD should have advanced after jam-merge"
 
 def test_no_jam_below_threshold_keeps_staging(tmp_path):
     sd = _make_main_skill(tmp_path, "calm-skill")
@@ -488,3 +498,95 @@ def test_no_jam_below_threshold_keeps_staging(tmp_path):
     assert _JamMergeStubAgno.invoked is False
     code, _, _ = run_git(["rev-parse", "--verify", "staging"], cwd=str(sd))
     assert code == 0                            # staging 仍在
+
+
+class _JamMergeRematerializeStubAgno(_BabyStubAgno):
+    """Fix 3 专用 stub：在 run() 里主动读 staging_body_path，断言其内容存在（非报错）。
+
+    staging_body_path 从 scenario user_msg 里解析
+    ``staging 正文路径（用 read_file 读）：<path>`` 这行。
+    """
+    staging_body_content_seen: str = ""
+
+    def run(self, user_msg, **kw):
+        type(self).invoked = True
+        type(self).user_msg = user_msg
+        import re
+        skill = re.search(r"skill_name:\s*([\w-]+)", user_msg).group(1)
+        target = re.search(r"目标 SKILL\.md 路径:\s*(\S+)", user_msg).group(1)
+        # 从 scenario 行解析 staging body 路径
+        m = re.search(r"staging 正文路径（用 read_file 读）：(\S+)", user_msg)
+        assert m, "scenario must contain staging body path line"
+        staging_path = m.group(1)
+        # 读 staging body（通过 read_file 工具）
+        content = self.tools["read_file"](staging_path)
+        type(self).staging_body_content_seen = content
+        # 写合并产物并 commit
+        self.tools["write_file"](target, (
+            "---\nname: %s\ndescription: merged after rematerialize\n"
+            "compatibility: test only; 负向：仅测试\n"
+            "metadata:\n  version: 2\n  source_atoms: [\"atom_x_0001\"]\n---\n\n"
+            "# merged\n\n## 核心原则\n- re-materialized merge\n" % skill
+        ))
+        self.tools["commit_update_main"](skill, "v2: jam-merge 重物化后合并")
+        class _R: pass
+        r = _R(); r.content = "done"; return r
+
+
+def test_jam_merge_rematerializes_missing_staging_body(tmp_path):
+    """Fix 3: .canary/<name>/ 目录不存在时，jam 分支应从 staging 分支重新物化，
+    然后 agent 能正常读到 staging 内容（非报错字符串），合并成功，staging 被删除。"""
+    import shutil
+    from xskill.agents import skill_tools as ST
+    from xskill.pipeline.atom import AtomTaskStore
+
+    sd = _make_main_skill(tmp_path, "rematerialize-skill")
+    # skill_dir must be the *parent* of the skill repo so commit_update_main
+    # resolves "rematerialize-skill" → tmp_path / "rematerialize-skill" correctly.
+    # Also initialize old _ctx so read_file (which uses _ctx["skill_dir"].parent)
+    # allows reading files under tmp_path.
+    ST.init_context_v2(
+        skill_dir=tmp_path, store=AtomTaskStore(root=tmp_path / "store"),
+        embed_client=None, traj_root=tmp_path / "store",
+    )
+    ST.init_context(
+        skill_dir=tmp_path / "rematerialize-skill",
+        data_dir=tmp_path / "store",
+        llm_client=None, embed_client=None, config={},
+    )
+    # 写 staging 分支（包含可识别内容）
+    staging_content = (sd / "SKILL.md").read_text() + "\n<!-- unique staging marker -->\n"
+    (sd / "SKILL.md").write_text(staging_content, encoding="utf-8")
+    assert commit_to_staging_branch(str(sd), "stub staging candidate") is True
+    # 确认 .canary 已物化
+    canary_dir = sd.parent / ".canary" / "rematerialize-skill"
+    assert canary_dir.is_dir()
+    # 模拟 best-effort 物化失败：删除整个 .canary/<name>/ 目录
+    shutil.rmtree(canary_dir)
+    assert not canary_dir.exists()
+
+    # 候选超过 jam_threshold
+    _seed_candidates(sd, 60)
+
+    _JamMergeRematerializeStubAgno.invoked = False
+    _JamMergeRematerializeStubAgno.staging_body_content_seen = ""
+    agent = SkillEditAgent(
+        skill_dir=sd, store=None,
+        agno_agent_factory=lambda **kw: _JamMergeRematerializeStubAgno(**kw),
+        llm_cfg={}, traj_root=tmp_path, jam_threshold=50,
+    )
+    result = agent.maybe_run()
+    assert result is True, "jam-merge with re-materialization should succeed"
+    assert _JamMergeRematerializeStubAgno.invoked is True
+    # staging body が actually read as real content (not "file not found" / error)
+    seen = _JamMergeRematerializeStubAgno.staging_body_content_seen
+    assert seen and "not found" not in seen.lower() and "error" not in seen.lower(), (
+        f"expected staging content, got: {seen!r}")
+    assert "unique staging marker" in seen or "SKILL" in seen, (
+        f"expected staging SKILL.md content, got: {seen!r}")
+    # staging 已被 discard
+    code, _, _ = run_git(["rev-parse", "--verify", "staging"], cwd=str(sd))
+    assert code != 0, "staging branch should be deleted after jam-merge"
+    # candidates cleared
+    assert C.load_candidates(sd)["candidates"] == []
+    assert current_branch(str(sd)) == "main"
