@@ -6,7 +6,7 @@
 
 **Architecture:** 改 `SkillEditAgent.maybe_run` 的闸门一——staging 存在时不再无条件 hold，而是看候选累计分：≥ jam_threshold 走新增的 "jam-merge" scenario（让同一个 agent 用 main/staging 两侧正文 + 候选 atom 合并出新 main，调 `commit_update_main`，再由编排层 `discard_staging`）；< jam_threshold 维持现有 hold。不新增 agent 实体；merge 纪律以一小块提示词注入 scenario。
 
-**Tech Stack:** Python 3.9+，dulwich-backed skill git（`run_git` dispatcher），agno agent 工厂（测试用 stub），pytest，pylint。
+**Tech Stack:** Python 3.11（解释器 = `python3.11`；本仓 `python`/`python3` 是 3.6.8，**不可用**），dulwich-backed skill git（`run_git` dispatcher），agno agent 工厂（测试用 stub），pytest，pylint。所有测试命令用 `python3.11 -m pytest …` 或 `make test`（= `python3.11 -m pytest tests/ --ignore=tests/docker_e2e --ignore=tests/live -q`）。
 
 设计依据：`docs/superpowers/specs/2026-06-24-anti-trajjam-rebuild-design.md` §2、§4、§5。
 
@@ -49,7 +49,7 @@ def test_jam_threshold_read_from_dict():
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd ~/traj2skill && python -m pytest tests/test_canary.py -k jam_threshold -v`
+Run: `cd ~/traj2skill && python3.11 -m pytest tests/test_canary.py -k jam_threshold -v`
 Expected: FAIL — `AttributeError: 'CanaryConfig' object has no attribute 'jam_threshold'`
 
 - [ ] **Step 3: 加字段 + from_dict**
@@ -87,12 +87,12 @@ Expected: FAIL — `AttributeError: 'CanaryConfig' object has no attribute 'jam_
 
 - [ ] **Step 5: 跑测试确认通过**
 
-Run: `cd ~/traj2skill && python -m pytest tests/test_canary.py -k jam_threshold -v`
+Run: `cd ~/traj2skill && python3.11 -m pytest tests/test_canary.py -k jam_threshold -v`
 Expected: PASS（2 passed）
 
 - [ ] **Step 6: 守卫测试 + lint + commit**
 
-Run: `cd ~/traj2skill && python -m pytest tests/test_config_autoinit.py -v && pylint --disable=all --enable=E,W src/xskill/canary.py src/xskill/config.py`
+Run: `cd ~/traj2skill && python3.11 -m pytest tests/test_config_autoinit.py -v && pylint --disable=all --enable=E,W src/xskill/canary.py src/xskill/config.py`
 Expected: 既有配置模板测试仍 PASS；pylint 无新增 E/W。
 
 ```bash
@@ -188,7 +188,7 @@ def test_no_jam_below_threshold_keeps_staging(tmp_path):
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd ~/traj2skill && python -m pytest tests/test_skill_edit_agent.py -k jam -v`
+Run: `cd ~/traj2skill && python3.11 -m pytest tests/test_skill_edit_agent.py -k jam -v`
 Expected: FAIL — `TypeError: __init__() got an unexpected keyword argument 'jam_threshold'`（字段未加）。
 
 - [ ] **Step 3: 加字段 + 合并纪律常量**
@@ -321,12 +321,12 @@ candidates 已堆到强砍阈值仍未等到灰度裁决（疑似灰度错位/�
 
 - [ ] **Step 6: 跑测试确认通过**
 
-Run: `cd ~/traj2skill && python -m pytest tests/test_skill_edit_agent.py -k jam -v`
+Run: `cd ~/traj2skill && python3.11 -m pytest tests/test_skill_edit_agent.py -k jam -v`
 Expected: PASS（2 passed）。
 
 - [ ] **Step 7: 全量回归 + lint**
 
-Run: `cd ~/traj2skill && python -m pytest tests/test_skill_edit_agent.py -q && pylint --disable=all --enable=E,W src/xskill/agents/skill_edit_agent.py`
+Run: `cd ~/traj2skill && python3.11 -m pytest tests/test_skill_edit_agent.py -q && pylint --disable=all --enable=E,W src/xskill/agents/skill_edit_agent.py`
 Expected: 既有 SkillEditAgent 测试全 PASS（闸门一改写未破坏 baby/main/staging/cold_flush 既有路径）；pylint 无新增 E/W。
 
 - [ ] **Step 8: Commit**
@@ -384,7 +384,7 @@ def test_runner_passes_jam_threshold(monkeypatch, tmp_path):
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd ~/traj2skill && python -m pytest tests/ -k jam_threshold and runner -v`
+Run: `cd ~/traj2skill && python3.11 -m pytest tests/ -k jam_threshold and runner -v`
 Expected: FAIL — `captured["jam_threshold"]` 为 `None`（runner 还没传）。
 
 - [ ] **Step 3: runner 传 jam_threshold**
@@ -408,7 +408,7 @@ Expected: FAIL — `captured["jam_threshold"]` 为 `None`（runner 还没传）�
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `cd ~/traj2skill && python -m pytest tests/ -k "jam_threshold and runner" -v`
+Run: `cd ~/traj2skill && python3.11 -m pytest tests/ -k "jam_threshold and runner" -v`
 Expected: PASS。
 
 - [ ] **Step 5: 全量回归 + lint + commit**
