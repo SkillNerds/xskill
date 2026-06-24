@@ -366,6 +366,9 @@ class DirectoryWatcher:
         if not skill_dirs:
             return
 
+        jam_threshold = CanaryConfig.from_dict(
+            self.config.get("canary", {})).jam_threshold
+
         def _run_one(d):
             """在 pool 工作线程里跑单个 skill 的 maybe_run；返回 (d, promoted)。
             异常吞在这里 log，不抛回 future 以免中断整批收集。"""
@@ -375,6 +378,7 @@ class DirectoryWatcher:
                 llm_cfg=self.config.get("llm", {}),
                 traj_root=traj_root,
                 cold_flush=cold_flush,
+                jam_threshold=jam_threshold,
                 **({} if threshold is None else {"threshold": threshold}),
             )
             try:

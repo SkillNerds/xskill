@@ -104,6 +104,56 @@ def _make_watcher(tmp_path, skill_root, factory, max_concurrent):
     )
 
 
+def _make_watcher_with_config(tmp_path, skill_root, factory, config):
+    """Like _make_watcher but accepts a full config dict (for testing config wiring)."""
+    db = tmp_path / "test.db"
+    wd = tmp_path / "wd"
+    wd.mkdir(exist_ok=True)
+    register_dir(wd, db_path=db)
+    store = AtomTaskStore(root=wd)
+    return DirectoryWatcher(
+        llm=_AutoSplitLLM(),
+        embed_client=_FakeEmbed(),
+        config=config,
+        skill_dir=skill_root,
+        poll_interval=0.0,
+        max_concurrent=1,
+        db_path=db,
+        store=store,
+        agno_agent_factory=factory,
+        home_root=tmp_path,
+    )
+
+
+def test_runner_passes_jam_threshold(monkeypatch, tmp_path):
+    """runner 构造 SkillEditAgent 时，把 config.canary.jam_threshold 注入。"""
+    import xskill.agents.skill_edit_agent as SEA
+    captured = {}
+    real_init = SEA.SkillEditAgent.__init__
+    def spy_init(self, *a, **kw):
+        captured["jam_threshold"] = kw.get("jam_threshold")
+        return real_init(self, *a, **kw)
+    monkeypatch.setattr(SEA.SkillEditAgent, "__init__", spy_init)
+
+    skill_root = tmp_path / "skill"
+    skill_root.mkdir()
+    # ws=15 > ATOM_PROMOTION_THRESHOLD(10) → 触发 _run_one
+    _seed_baby_skill(skill_root, "s1")
+
+    noop_barrier = threading.Barrier(1)
+    factory = _make_barrier_agno(1, noop_barrier)
+    config = {
+        "llm": {"base_url": "x", "model": "y", "api_key": "z"},
+        "canary": {"jam_threshold": 33},
+    }
+    w = _make_watcher_with_config(tmp_path, skill_root, factory, config)
+    w._check_pending_skill_edits()
+
+    assert captured.get("jam_threshold") == 33, (
+        f"jam_threshold was not wired from config; captured={captured!r}"
+    )
+
+
 class TestSkillEditParallel:
     def test_concurrent_no_cross_contamination_and_all_graduate(self, tmp_path):
         """N 个 baby skill 并发跑 SkillEdit：barrier 凑齐证明真并发，
