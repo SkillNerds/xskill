@@ -259,6 +259,10 @@ def discard_staging(skill_dir: Path) -> bool:
         if code != 0:
             logger.error(f"{skill_dir.name}: discard staging failed: {err}")
             return False
+    # 清理物化目录（materialize_staging 留下的 .canary/<name>/）
+    canary_copy = skill_dir.parent / ".canary" / skill_dir.name
+    if canary_copy.exists():
+        shutil.rmtree(canary_copy)
     logger.info(f"{skill_dir.name}: staging discarded")
     return True
 

@@ -101,6 +101,22 @@ DEFAULT_GUIDANCE_BLOCK_2 = """# 正文结构纪律
 """
 
 
+# 轨迹堰塞强砍（jam-merge）专用纪律：注入 scenario，约束"合并去重而非拼接"。
+MERGE_DISCIPLINE_BLOCK = """# 本次是【轨迹堰塞强砍合并】，不是普通蒸馏
+candidates 已堆到强砍阈值仍未等到灰度裁决（疑似灰度错位/无真实流量）。你要把
+**现有 main 正文 + staging 正文 + 下列候选 atom** 合并成一份新的 main 正文：
+- **合并去重，不是拼接**：main 与 staging 里的同义规则/坑位合并成一条，证据强度
+  `[实证:N]` 相加计票，不要并列两条近义内容。
+- **冲突择强**：main 与 staging 对同一点说法相反时，标注分歧并择证据强者保留，
+  不允许两条都留。
+- **守预算与 schema**：正文 ≤200 行、frontmatter schema 不变、`source_atoms`
+  取三方并集（main + staging + 本次候选）。
+- 写完调 `commit_update_main(skill_name, message)` 直接 commit 回 main（不开
+  staging、不走灰度）。commit message 注明：发生轨迹堰塞、疑似灰度错位，并分列
+  provenance——哪些来自存量（main/staging）、哪些是本次候选合并进来的。
+"""
+
+
 SYSTEM_PROMPT_TEMPLATE = """你是 SkillEditAgent。某 skill 的 candidates buffer 累计
 weightscore ≥ 10，需要你产出/更新它的 SKILL.md。
 
@@ -284,13 +300,16 @@ class SkillEditAgent:
     traj_root: Path
     threshold: int = C.ATOM_PROMOTION_THRESHOLD
     cold_flush: bool = False
+    jam_threshold: int = 50  # 候选累计 ws ≥ 此值且 staging 存在 → 越过灰度强砍
 
     def maybe_run(self) -> bool:
         """检查所有守门条件 → 触发 agent → 验证落盘 → 清 buffer。
 
         守门顺序（任一失败即 return False）：
-          1. 该 skill 有 staging 分支 → 灰度中，不触发
-          2. candidates 累计 weightscore < threshold → 没攒够
+          1. 该 skill 有 staging 分支 → 灰度中：
+             - 候选累计 ws ≥ jam_threshold → 越过灰度强砍（jam 路径）
+             - 否则维持 hold
+          2. 无 staging 时：candidates 累计 weightscore < threshold → 没攒够
           3. 触发场景是 "create staging"（main 已存在）：
              - .ux_scores.jsonl 必须至少有 1 条 side=main → 证明 main 真有人用
              - 否则保留 candidates 等用户用过 main 再触发
@@ -300,41 +319,47 @@ class SkillEditAgent:
         """
         from xskill.skill.git import current_branch, run_git
 
-        # 守门 1: 灰度中（有 staging）不触发
-        code, _, _ = run_git(["rev-parse", "--verify", "staging"],
-                             cwd=str(self.skill_dir))
-        if code == 0:
-            return False
-        # 守门 2: 阈值
+        # 守门 1（改）：staging 存在时——候选累计 ws ≥ jam_threshold → 越过灰度强砍；
+        # 否则维持 hold（灰度中不触发普通 SkillEdit）。
+        staging_exists = run_git(
+            ["rev-parse", "--verify", "staging"], cwd=str(self.skill_dir))[0] == 0
         data = C.load_candidates(self.skill_dir)
-        ready = C.ready_for_promotion_v2(data, threshold=self.threshold)
-        if not ready:
+        total_ws = sum(int(c.get("weightscore", 0))
+                       for c in (data.get("candidates", []) or []))
+        jam = staging_exists and total_ws >= self.jam_threshold
+        if staging_exists and not jam:
             return False
-        # 守门 3: 若场景是 "create staging"（即在 main 上）→ 额外要求 main 真有人用过
-        cur = current_branch(str(self.skill_dir))
-        if cur == "main":
-            # cold_flush 在线进化：训练容器没真实用户 → 没有 ux_score；此模式下
-            # 跳过守门 3，允许 main 技能基于新 epoch candidates 原地重新精炼。
-            if not self.cold_flush and not self._main_has_ux_score():
-                logger.info(
-                    "skip SkillEdit: %s main 还没真实 ux_score，"
-                    "保留 candidates 等用户用 main 后再产 staging",
-                    self.skill_dir.name,
-                )
+
+        if not staging_exists:
+            # 守门 2: 阈值
+            ready = C.ready_for_promotion_v2(data, threshold=self.threshold)
+            if not ready:
                 return False
-        elif cur != "baby":
-            logger.warning(
-                "skip SkillEdit: %s 在异常分支 %r (期望 baby 或 main)",
-                self.skill_dir.name, cur,
-            )
-            return False
+            # 守门 3: 在 main 上（create staging 场景）要求 main 真有人用过
+            cur = current_branch(str(self.skill_dir))
+            if cur == "main":
+                if not self.cold_flush and not self._main_has_ux_score():
+                    logger.info(
+                        "skip SkillEdit: %s main 还没真实 ux_score，"
+                        "保留 candidates 等用户用 main 后再产 staging",
+                        self.skill_dir.name)
+                    return False
+            elif cur != "baby":
+                logger.warning(
+                    "skip SkillEdit: %s 在异常分支 %r (期望 baby 或 main)",
+                    self.skill_dir.name, cur)
+                return False
+        else:
+            # jam 路径：强砍始终在 main 上合并
+            ready = list(data.get("candidates", []) or [])
+            cur = "main"
 
         skill_md = self.skill_dir / "SKILL.md"
         mtime_before = skill_md.stat().st_mtime if skill_md.is_file() else 0.0
         size_before = skill_md.stat().st_size if skill_md.is_file() else 0
 
         try:
-            self._run(ready, current_branch_name=cur)
+            self._run(ready, current_branch_name=cur, jam=jam)
         except Exception:
             logger.exception("SkillEditAgent _run failed: %s", self.skill_dir.name)
 
@@ -371,6 +396,10 @@ class SkillEditAgent:
             )
             return False
 
+        if jam:
+            from xskill.canary import discard_staging
+            discard_staging(self.skill_dir)
+
         # commit 工具的成功效应（baby→main 或 main→staging）通过当前分支变化
         # 自然反映，不需要在这里做额外检查
         C.clear_candidates(self.skill_dir)
@@ -390,9 +419,48 @@ class SkillEditAgent:
             return False
         return any(s.get("side") == "main" for s in scores)
 
-    def _run(self, ready: list[dict], current_branch_name: str) -> None:
+    def _run(self, ready: list[dict], current_branch_name: str, jam: bool = False) -> None:
         from xskill.agents import skill_tools as ST
-        from xskill.skill.frontmatter import parse as fm_parse
+        from xskill.skill.frontmatter import parse as fm_parse  # noqa: F401
+
+        if jam:
+            skill_md = self.skill_dir / "SKILL.md"
+            staging_body = (self.skill_dir.parent / ".canary"
+                            / self.skill_dir.name / "SKILL.md")
+            lines = [
+                MERGE_DISCIPLINE_BLOCK,
+                "",
+                f"skill_name: {self.skill_dir.name}（**main 分支 · 轨迹堰塞强砍合并**）",
+                f"现有 main 正文：用 skill_read('{self.skill_dir.name}') 读。",
+                f"staging 正文路径（用 read_file 读）：{staging_body}",
+                "",
+                "# 待合并候选（按 weightscore 倒序）",
+            ]
+            for c in sorted(ready, key=lambda x: x.get("weightscore", 0), reverse=True):
+                note = c.get("note", "")
+                lines.append(
+                    f"- atom_id={c['atom_id']}  weightscore={c['weightscore']}"
+                    + (f"  note: {note}" if note else ""))
+            lines += ["", f"目标 skill 目录: {self.skill_dir}",
+                      f"目标 SKILL.md 路径: {skill_md}"]
+            scenario_block = "\n".join(lines)
+            sysprompt = build_system_prompt(
+                scenario_block=scenario_block, branch_now="main")
+            agent = self.agno_agent_factory(
+                instructions=[sysprompt],
+                tools=[ST.atom_task_read, ST.read_traj, ST.skill_read,
+                       ST.read_file, ST.list_files, ST.write_file,
+                       ST.commit_update_main],
+            )
+            import time as _time
+            from xskill.agents.agent_trace import trace_to
+            from xskill.config import get_logs_dir
+            _ts = _time.strftime("%Y%m%d-%H%M%S")
+            sink = (get_logs_dir() / "agents" / "skill_edit_agents" / "skills"
+                    / f"{self.skill_dir.name}_jam_{_ts}.log")
+            with trace_to(sink):
+                agent.run(scenario_block)
+            return
 
         # 构造 scenario_block + branch_now 给 prompt 用
         skill_md = self.skill_dir / "SKILL.md"
