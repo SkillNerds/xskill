@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from xskill.skill import candidates as C
-from xskill.agents.skill_edit_agent import SkillEditAgent, SYSTEM_PROMPT_TEMPLATE
+from xskill.agents.skill_edit_agent import (
+    SkillEditAgent,
+    SYSTEM_PROMPT_TEMPLATE,
+    build_system_prompt,
+)
 from xskill.skill.git import init_skill_repo_on_baby, run_git
 
 
@@ -344,7 +348,7 @@ class TestUserMsgContext:
 class TestWritingDisciplineInPrompt:
     def test_template_still_formats(self):
         """模板里新增的表格/示例不能引入裸 {}，否则 .format 会 KeyError。"""
-        out = SYSTEM_PROMPT_TEMPLATE.format(scenario_block="SCN", branch_now="baby")
+        out = build_system_prompt("SCN", "baby")
         assert "SCN" in out and "baby" in out
 
     def test_has_knowledge_distillation_goal(self):
@@ -353,18 +357,21 @@ class TestWritingDisciplineInPrompt:
 
     def test_has_anti_pattern_blacklist(self):
         """反模式黑名单三件套必须明示。"""
+        prompt = build_system_prompt("SCN", "baby")
         for kw in ("反模式", "任务流程复述", "实例细节搬运", "触发表述抄题面"):
-            assert kw in SYSTEM_PROMPT_TEMPLATE, f"缺反模式纪律词 {kw!r}"
+            assert kw in prompt, f"缺反模式纪律词 {kw!r}"
 
     def test_has_generalization_gate(self):
         """泛化自检闸必须在场。"""
-        assert "泛化自检" in SYSTEM_PROMPT_TEMPLATE
+        prompt = build_system_prompt("SCN", "baby")
+        assert "泛化自检" in prompt
 
     def test_has_pitfall_quadruple(self):
         """坑位四元组（错误模式→症状→根因→修法）必须明示。"""
-        assert "坑位四元组" in SYSTEM_PROMPT_TEMPLATE
+        prompt = build_system_prompt("SCN", "baby")
+        assert "坑位四元组" in prompt
         for col in ("错误模式", "症状", "根因", "修法"):
-            assert col in SYSTEM_PROMPT_TEMPLATE, f"坑位四元组缺列 {col!r}"
+            assert col in prompt, f"坑位四元组缺列 {col!r}"
 
     def test_has_evidence_strength(self):
         """证据强度标注三档 + [推断] 上限。"""
@@ -375,18 +382,21 @@ class TestWritingDisciplineInPrompt:
 
     def test_has_param_no_fallback(self):
         """参数化禁兜底——禁止硬编码默认值。"""
-        assert "禁止任何具体值兜底" in SYSTEM_PROMPT_TEMPLATE
-        assert "somefile.xlsx" in SYSTEM_PROMPT_TEMPLATE
+        prompt = build_system_prompt("SCN", "baby")
+        assert "禁止任何具体值兜底" in prompt
+        assert "somefile.xlsx" in prompt
 
     def test_has_failure_mining(self):
         """失败挖掘三规则：死因回溯 / 成败差分 / 无症状死亡。"""
+        prompt = build_system_prompt("SCN", "baby")
         for kw in ("死因", "成败差分", "无症状死亡"):
-            assert kw in SYSTEM_PROMPT_TEMPLATE, f"缺失败挖掘纪律词 {kw!r}"
+            assert kw in prompt, f"缺失败挖掘纪律词 {kw!r}"
 
     def test_has_length_budget_and_deletion_rule(self):
         """≤200 行长度预算 + 删减铁律（宁删整条弱规则不砍强规则半条）。"""
-        assert "200 行" in SYSTEM_PROMPT_TEMPLATE
-        assert "宁可删掉整条弱规则" in SYSTEM_PROMPT_TEMPLATE
+        prompt = build_system_prompt("SCN", "baby")
+        assert "200 行" in prompt
+        assert "宁可删掉整条弱规则" in prompt
 
     def test_has_four_section_structure(self):
         """V4 四段结构：核心原则 / 领域规则 / 坑位清单 / 工具。"""
