@@ -49,6 +49,41 @@ class TestAtomTaskRead:
         assert out.startswith("error")
 
 
+class TestReadAtomMeta:
+    def test_returns_meta_fields(self, tmp_path):
+        """元信息含 traj_id / offset / n_lines / intent / summary / tags 等。"""
+        import json
+        _setup(tmp_path)
+        out = ST.read_atom_meta("atom_x_0001")
+        meta = json.loads(out)
+        assert meta["atom_id"] == "atom_x_0001"
+        assert meta["traj_id"] == "x"
+        assert meta["offset_start"] == 1
+        assert meta["offset_end"] == 3
+        assert meta["n_lines"] == 2  # offset_end - offset_start
+        assert meta["intent"] == "修 django migration"
+        assert meta["summary"] == "跑了 makemigrations 找冲突"
+        assert meta["tags"] == ["django"]
+        assert "used_skills" in meta
+        assert "source_model" in meta
+
+    def test_excludes_raw_segment_and_context_prefix(self, tmp_path):
+        """关键：元信息**不含** raw_segment / context_prefix 大字段（防上下文爆炸）。"""
+        import json
+        _setup(tmp_path)
+        out = ST.read_atom_meta("atom_x_0001")
+        meta = json.loads(out)
+        assert "raw_segment" not in meta
+        assert "context_prefix" not in meta
+        # raw_segment 的内容 "MIGRATIONS!" 不应出现在返回里
+        assert "MIGRATIONS!" not in out
+
+    def test_not_found_returns_error(self, tmp_path):
+        _setup(tmp_path)
+        out = ST.read_atom_meta("atom_nonexistent")
+        assert out.startswith("error")
+
+
 class TestAtomTaskSearch:
     def test_returns_hits_in_json(self, tmp_path):
         _setup(tmp_path)

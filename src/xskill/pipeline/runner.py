@@ -323,7 +323,7 @@ class DirectoryWatcher:
             return
         from xskill.agents.skill_edit_agent import SkillEditAgent
         factory = self._factory()
-        # store 选哪个：edit agent 工具 (atom_task_read/read_traj) 需要 store +
+        # store 选哪个：edit agent 工具 (read_atom_meta/read_traj) 需要 store +
         # traj_root 才能读到 atom 原文。单机只有一个 watch_dir（cc_sessions）。
         # team-CS server 下有 N 个 watch_dir（每个 client 上传轨迹注册成一个 wd，
         # label=client_id），某 skill 的 candidates 里的 atom 可能来自任意 client
@@ -1275,7 +1275,7 @@ def process_atom_task(*, atom_id: str, config: dict, skill_dir: Path,
         agno_agent_factory=agno_agent_factory,
         llm_cfg=config.get("llm", {}),
         tools=[
-            ST.atom_task_read, ST.atom_task_search, ST.read_traj,
+            ST.read_atom_meta, ST.atom_task_search, ST.read_traj,
             ST.skill_read, ST.read_skill_tasks,
             ST.new_skill_folder, ST.add_task_to_skill,
             ST.rename_skill, ST.move_task_to,
@@ -1351,7 +1351,7 @@ def process_atom_batch(*, atom_ids: list[str], config: dict, skill_dir: Path,
         agno_agent_factory=agno_agent_factory,
         llm_cfg=config.get("llm", {}),
         tools=[
-            ST.atom_task_read, ST.atom_task_search, ST.read_traj,
+            ST.read_atom_meta, ST.atom_task_search, ST.read_traj,
             ST.skill_read, ST.read_skill_tasks,
             ST.new_skill_folder, ST.add_task_to_skill,
             ST.rename_skill, ST.move_task_to,

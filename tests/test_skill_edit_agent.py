@@ -341,6 +341,39 @@ class TestUserMsgContext:
 
 
 # ────────────────────────────────────────────────────────────────────
+# 工具集：SkillEdit 用 read_atom_meta（元信息）+ read_traj（范围读），
+# 不再挂 atom_task_read（全量 dump raw_segment 会撑爆上下文）。
+# ────────────────────────────────────────────────────────────────────
+
+class TestSkillEditToolset:
+    def test_toolset_has_read_atom_meta_not_atom_task_read(self, tmp_path):
+        """跑一轮 SkillEdit，断言传给 agno factory 的工具集含 read_atom_meta /
+        read_traj，**不含** atom_task_read。"""
+        skill_dir = _make_baby_skill(tmp_path / "skill", "toolset-skill")
+        data = {"candidates": []}
+        data, _ = C.add_atom_contribution(data, "atom_a", 10)
+        C.save_candidates(skill_dir, data)
+        _BabyStubAgno.writes_skill_md_with = (
+            "---\nname: toolset-skill\n---\n# body\n"
+        )
+        captured: dict = {}
+
+        def _capturing_factory(*, instructions, tools):
+            captured["names"] = {getattr(t, "__name__", "") for t in tools}
+            return _BabyStubAgno(instructions=instructions, tools=tools)
+
+        SkillEditAgent(
+            skill_dir=skill_dir, store=None,
+            agno_agent_factory=_capturing_factory,
+            llm_cfg={}, traj_root=tmp_path,
+        ).maybe_run()
+        names = captured["names"]
+        assert "read_atom_meta" in names
+        assert "read_traj" in names
+        assert "atom_task_read" not in names
+
+
+# ────────────────────────────────────────────────────────────────────
 # 写作纪律：SYSTEM_PROMPT_TEMPLATE 是模型行为的唯一指令源——知识提炼
 # 的关键纪律词必须以确定字符串呈现，旧的"完整可执行"导向必须删干净。
 # ────────────────────────────────────────────────────────────────────
@@ -415,7 +448,14 @@ class TestWritingDisciplineInPrompt:
         assert "commit_baby_to_main" in SYSTEM_PROMPT_TEMPLATE
         assert "commit_to_staging" in SYSTEM_PROMPT_TEMPLATE
         assert "隐私守护" in SYSTEM_PROMPT_TEMPLATE
-        assert "AtomTaskRead" in SYSTEM_PROMPT_TEMPLATE
+        # 工具清单：元信息 + 范围读（防上下文爆炸），不再 dump 完整 atom
+        assert "ReadAtomMeta" in SYSTEM_PROMPT_TEMPLATE
+        assert "ReadTraj" in SYSTEM_PROMPT_TEMPLATE
+
+    def test_old_full_atom_read_removed_from_prompt(self):
+        """旧的 AtomTaskRead（读完整 atom JSON）措辞必须从 prompt 删干净——
+        whole 模式下全量返回 raw_segment 会撑爆上下文。"""
+        assert "AtomTaskRead" not in SYSTEM_PROMPT_TEMPLATE
 
 
 # ────────────────────────────────────────────────────────────────────

@@ -586,6 +586,40 @@ def atom_task_read(atom_id: str) -> str:
         return f"error: {e}"
 
 
+def read_atom_meta(atom_id: str) -> str:
+    """读一个 AtomTask 的**元信息** JSON（不含 raw_segment / context_prefix 大字段）。
+
+    whole 模式下一个技能候选可能含多条整条轨迹，``atom_task_read`` 全量返回
+    ``raw_segment``（整条轨迹原文）会撑爆 agent 上下文。本工具只返回"这个 atom
+    落在哪条轨迹（traj_id）的第几行到第几行、多大、意图/摘要/标签是什么"，让
+    agent 据此决定用 ``read_traj(traj_id, start, end)`` 按需范围读原文。
+
+    返回字段：``atom_id`` / ``traj_id`` / ``offset_start`` / ``offset_end`` /
+    ``n_lines``（= offset_end - offset_start）/ ``intent`` / ``summary`` /
+    ``tags`` / ``used_skills`` / ``source_model``。
+    """
+    store = _ctx_v2["store"]
+    if store is None:
+        return "error: v2 context not initialized"
+    try:
+        atom = store.load(atom_id)
+    except FileNotFoundError as e:
+        return f"error: {e}"
+    meta = {
+        "atom_id": atom.atom_id,
+        "traj_id": atom.traj_id,
+        "offset_start": atom.offset_start,
+        "offset_end": atom.offset_end,
+        "n_lines": atom.offset_end - atom.offset_start,
+        "intent": atom.intent,
+        "summary": atom.summary,
+        "tags": atom.tags,
+        "used_skills": atom.used_skills,
+        "source_model": atom.source_model,
+    }
+    return json.dumps(meta, ensure_ascii=False, indent=2)
+
+
 def atom_task_search(query: str, top_k: int = 5) -> str:
     """混合检索（向量 ⊕ BM25 关键字）AtomTask；返回 JSON 命中列表。
 

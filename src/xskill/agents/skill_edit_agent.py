@@ -126,8 +126,10 @@ weightscore ≥ 10，需要你产出/更新它的 SKILL.md。
 
 # 你的目标
 
-读 atom 内容（AtomTaskRead），必要时读 traj 原文（ReadTraj），从轨迹里
-**提炼可泛化的知识**，写成 skill。skill 的价值 = 读它的人少踩多少坑、
+先用 ReadAtomMeta 看每个 atom 落在哪条轨迹（traj_id）的哪段（offset_start /
+offset_end 行号 + n_lines 多大）、意图/摘要是什么，再用 ReadTraj 按需范围读那段
+原文，从轨迹里**提炼可泛化的知识**，写成 skill。轨迹可能很大，**按需分段读、
+别一次性把巨大区间全读回来**——这是为了让上下文有界、不爆。skill 的价值 = 读它的人少踩多少坑、
 少试多少次错，而不是把一次执行过程复述一遍。SKILL.md 是必产物，但你
 **不限于**只写 SKILL.md——可以补充任何辅助文件，只要在 skill 目录范围内：
 
@@ -194,8 +196,11 @@ commit message 写明本次基于哪些 atom_id 整理，例如：
 ``"v2: 合并 atom_traj_x_0001/0003 的 zombie cleanup 步骤；新增 references/pidns_pitfall.md"``
 
 # 可用工具
-- AtomTaskRead(atom_id) — 读 atom JSON
-- ReadTraj(traj_id, offset_start, offset_end) — 按行号取轨迹原文（offset 即 1-based 行号）
+- ReadAtomMeta(atom_id) — 读 atom 元信息 JSON（traj_id / offset_start / offset_end /
+  n_lines / intent / summary / tags / used_skills / source_model，**不含**整条轨迹
+  原文 raw_segment）。先看它落在哪条轨迹的哪段、多大，再决定去读哪段。
+- ReadTraj(traj_id, offset_start, offset_end) — 按行号取轨迹原文（offset 即 1-based
+  行号）。轨迹可能很大，**按需分段读、别一次性全读**——上下文要有界。
 - SkillRead(skill_name) — 读现有 SKILL.md（更新场景用）
 - list_files(path) — 列目录文件
 - write_file(path, content) — 写任意文件到 skill_dir 下
@@ -234,7 +239,7 @@ source atom / traj 原文来自真实开发轨迹，即便上传时已脱敏，�
 held-out test 集选优；你只需先写个像样的初稿。）
 
 # 硬禁止
-- 不要随便引用没在 atom 中出现过的命令/函数；以 AtomTaskRead 为唯一可信来源
+- 不要随便引用没在 atom 中出现过的命令/函数；以 ReadAtomMeta + ReadTraj 读到的轨迹原文为唯一可信来源
 - 不要在描述里发明用户群体或场景
 - 正文超长按上面的「长度预算」铁律删减；过长的参考材料拆到 references/ 或 scripts/
 - 不要写 ``## trigger`` / ``## 触发条件`` 段——触发信号只在 frontmatter.description
@@ -294,7 +299,7 @@ def build_system_prompt(scenario_block: str, branch_now: str) -> str:
 class SkillEditAgent:
     """每个实例服务**一个**具体 skill 子目录。"""
     skill_dir: Path
-    store: Any  # AtomTaskStore (only needed by atom_task_read tool indirectly)
+    store: Any  # AtomTaskStore (only needed by read_atom_meta / read_traj tools indirectly)
     agno_agent_factory: Callable[..., Any]
     llm_cfg: dict
     traj_root: Path
@@ -456,7 +461,7 @@ class SkillEditAgent:
                 scenario_block=scenario_block, branch_now="main")
             agent = self.agno_agent_factory(
                 instructions=[sysprompt],
-                tools=[ST.atom_task_read, ST.read_traj, ST.skill_read,
+                tools=[ST.read_atom_meta, ST.read_traj, ST.skill_read,
                        ST.read_file, ST.list_files, ST.write_file,
                        ST.commit_update_main],
             )
@@ -539,7 +544,7 @@ class SkillEditAgent:
         agent = self.agno_agent_factory(
             instructions=[sysprompt],
             tools=[
-                ST.atom_task_read,
+                ST.read_atom_meta,
                 ST.read_traj,
                 ST.skill_read,
                 ST.list_files,

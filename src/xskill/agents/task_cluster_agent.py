@@ -143,9 +143,12 @@ add_task_to_skill），或者应该新建一个 skill 容纳它（用 NewSkillFo
 add_task_to_skill）。**每个 AtomTask 都必须 add_task_to_skill，一个都不能漏。**
 
 # 可用工具
-- AtomTaskRead(atom_id) — 读 atom 完整 JSON（intent / summary / raw_segment 全字段）
+- ReadAtomMeta(atom_id) — 读 atom 元信息 JSON（atom_id / traj_id / offset_start /
+  offset_end / n_lines / intent / summary / tags / used_skills / source_model，
+  **不含**整条轨迹原文 raw_segment）。看 atom 落在哪条轨迹的哪段、多大、意图摘要。
 - AtomTaskSearch(query) — 混合检索其他 atom（语义向量 + BM25 关键字 union）
-- ReadTraj(traj_id, offset_start, offset_end) — 按行号读 traj.md 原文片段（offset 即 1-based 行号）
+- ReadTraj(traj_id, offset_start, offset_end) — 按行号读 traj.md 原文片段（offset 即
+  1-based 行号）。轨迹可能很大，**按需分段读、别一次性全读**——上下文要有界。
 - SkillRead(skill_name) — 读 skill 的 SKILL.md（baby 返回 stub，main/staging 返回正版）
 - ReadSkillTasks(skill_name) — **看某 skill 的 candidates buffer 内已有哪些 atom**
   （和 SkillRead 不同——SkillRead 看 SKILL.md，ReadSkillTasks 看正在攒分的 atom
@@ -294,7 +297,7 @@ class TaskClusterAgent:
         与 ``process``（单 atom）共用同一 system prompt；user 消息把整批 atom 的
         **位置**（atom_id / traj_id / intent / summary / tags / 行号）逐条列出，
         要求 agent 逐个 ``add_task_to_skill``。atom 的完整内容仍由 agent 按需用
-        ``AtomTaskRead`` / ``ReadTraj`` 工具拉取——批量的是"位置"而非"内容"，
+        ``ReadAtomMeta`` / ``ReadTraj`` 工具拉取——批量的是"位置"而非"内容"，
         把"逐 atom 一次 LLM 往返"压成"一批一次往返"。
 
         ``atoms`` 可能跨多条轨迹（watcher 跨轨迹池化）。空列表直接返回空串。
