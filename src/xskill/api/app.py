@@ -1215,13 +1215,17 @@ def create_app(home_root: Path | str | None = None,
         # 该门会让空 home 启动的 daemon 永远起不了 watcher，故直接去掉。
         try:
             from xskill.pipeline.runner import DirectoryWatcher
+            from xskill.config import split_mode_config
             watcher_cfg = _config.get("watcher", {})
+            # 拆分模式：env XSKILL_SPLIT_MODE 覆盖 config.atom.split_mode。
+            split_mode = split_mode_config(_config)
             watcher = DirectoryWatcher(
                 llm=llm, embed_client=embed, config=_config,
                 skill_dir=_skill_dir,
                 poll_interval=float(watcher_cfg.get("poll_interval", 30)),
                 max_concurrent=int(watcher_cfg.get("max_concurrent", 30)),
                 cluster_batch_size=int(watcher_cfg.get("cluster_batch_size", 8)),
+                split_mode=split_mode,
                 server_mode=team_server,
                 on_poll_hook=_ensure_ingesters_for_detected_ecosystems,
             )

@@ -56,6 +56,7 @@ def test_template_top_level_keys_are_exactly_live_set():
     assert set(parsed.keys()) == {
         "skill_dir", "llm", "embedding", "canary", "watcher", "team", "dashboard",
         "skill_opt", "ingest",  # ingest 段由 config.ingest_config 消费（settle 屏障/去壳掩码）
+        "atom",  # atom 段由 config.split_mode_config 消费（split_mode: agentic|whole）
     }, f"模板顶层键漂移：{sorted(parsed.keys())}"
 
 

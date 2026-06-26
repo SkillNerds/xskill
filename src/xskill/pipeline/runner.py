@@ -88,7 +88,8 @@ class DirectoryWatcher:
                  max_retries=3, db_path=None,
                  store=None, agno_agent_factory=None, home_root=None,
                  server_mode=False, install_history_path=None,
-                 on_poll_hook=None, cluster_batch_size=8):
+                 on_poll_hook=None, cluster_batch_size=8,
+                 split_mode="agentic"):
         self.llm = llm
         self.embed_client = embed_client
         self.config = config or {}
@@ -131,6 +132,14 @@ class DirectoryWatcher:
         # 多个 atom 的位置，减少往返次数提速。聚类仍串行（同 wd 同时只一个 batch
         # future）。1 = 退回逐 atom 一次往返的旧行为。
         self.cluster_batch_size = max(1, int(cluster_batch_size))
+
+        # 轨迹→AtomTask 拆分模式。``agentic``（默认）= TaskAgent 按用户意图拆
+        # 1..N 个 atom；``whole`` = 消融，整条新增轨迹成 1 个 atom（不调 LLM 拆分），
+        # 下游 index→cluster→SkillEdit 原样复用。非法值直接抛（不静默回退）。
+        if split_mode not in ("agentic", "whole"):
+            raise ValueError(
+                f"split_mode={split_mode!r} 非法，必须是 'agentic' 或 'whole'")
+        self.split_mode = split_mode
 
         # v2 注入：AtomTaskStore + agno agent 工厂
         # store None 时本 watcher 不能跑 splitting/clustering（仅 ux_score 还能跑）
@@ -889,14 +898,23 @@ class DirectoryWatcher:
             n_lines = sum(1 for _ in md_path.open(encoding="utf-8", errors="ignore"))
         except OSError:
             n_lines = -1
-        logger.info("⟳ split 开始 %s（%d 行）", fname, n_lines)
+        logger.info("⟳ split 开始 %s（%d 行，mode=%s）", fname, n_lines,
+                    self.split_mode)
         t0 = time.monotonic()
-        atoms = TaskAgent(
-            agno_agent_factory=self._factory(),
-            store=store,
-            traj_root=dir_path,
-            skill_dir=self.skill_dir,
-        ).run(traj_id=traj_id, traj_path=md_path)
+        if self.split_mode == "whole":
+            # 消融：整条新增轨迹成 1 个 atom（不调 LLM 拆分）。
+            from xskill.agents.whole_splitter import WholeTrajSplitter
+            atoms = WholeTrajSplitter(
+                store=store,
+                traj_root=dir_path,
+            ).run(traj_id=traj_id, traj_path=md_path)
+        else:
+            atoms = TaskAgent(
+                agno_agent_factory=self._factory(),
+                store=store,
+                traj_root=dir_path,
+                skill_dir=self.skill_dir,
+            ).run(traj_id=traj_id, traj_path=md_path)
         last_off = store.last_offset(traj_id)
         last_id = store.last_atom_id(traj_id)
         # 处理后：打一条"拆完"(带 atom 数 + 耗时),0 个也明确说明是"无可拆 User 回合"。

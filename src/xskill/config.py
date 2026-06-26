@@ -152,6 +152,22 @@ skill_opt:
                              # hanging the optimization loop. 0 disables.
   rerun_enabled:      true    # dashboard "re-run case" action endpoint on/off
 
+# ===== Atom split (trajectory → AtomTask) =====
+# split_mode controls how a trajectory is turned into AtomTask(s) before the
+# downstream index → cluster → SkillEdit pipeline.
+#   • agentic (default): the windowless single-pass TaskAgent splits the
+#     trajectory into 1..N AtomTasks by user-intent switches (one LLM agent
+#     run per trajectory).
+#   • whole: ABLATION — skip the agentic split entirely. The whole newly-added
+#     trajectory segment [last_offset, EOF) becomes exactly ONE AtomTask. No
+#     LLM is called for splitting; `intent` is heuristically lifted from the
+#     first User request's first line. Used to validate whether atom-splitting
+#     is necessary at all.
+# Override at runtime with the env var XSKILL_SPLIT_MODE (agentic|whole); the
+# env var takes precedence over this config field.
+atom:
+  split_mode: agentic
+
 # ===== Watcher (the directory poller inside `serve`) =====
 watcher:
   poll_interval:  30            # seconds between scans of every watch_dir
@@ -357,6 +373,44 @@ def ingest_config(path: Optional[Path] = None) -> dict:
             ) from e
         patterns.append(p)
     return {"settle_seconds": float(settle), "mask_patterns": patterns}
+
+
+SPLIT_MODE_DEFAULT = "agentic"
+SPLIT_MODE_ENV = "XSKILL_SPLIT_MODE"
+_SPLIT_MODES = ("agentic", "whole")
+
+
+def split_mode_config(cfg: Optional[dict] = None) -> str:
+    """解析轨迹→AtomTask 的拆分模式：``agentic``（默认 TaskAgent 拆）或
+    ``whole``（消融：整条新增轨迹成 1 个 atom，不调 LLM 拆分）。
+
+    解析顺序（**env 覆盖 config**，无老配置兼容）：
+      1. 环境变量 ``XSKILL_SPLIT_MODE``（评测/消融现场注入用）；
+      2. config.yaml 的 ``atom.split_mode`` 字段；
+      3. 缺省 ``agentic``。
+
+    非法值（不在 agentic|whole 内）直接抛 ValueError（CLAUDE.md：遇到问题
+    throw error，不静默回退）。``cfg`` 缺省时取 ``get_config()``——但 env 命中
+    时不读 config（消融现场可能没配 llm.api_key，env 单开即可）。
+    """
+    import os
+
+    env_val = os.environ.get(SPLIT_MODE_ENV)
+    if env_val is not None:
+        mode = env_val.strip().lower()
+        if mode not in _SPLIT_MODES:
+            raise ValueError(
+                f"{SPLIT_MODE_ENV}={env_val!r} 非法，必须是 {_SPLIT_MODES} 之一"
+            )
+        return mode
+
+    section = (cfg if cfg is not None else get_config()).get("atom") or {}
+    mode = str(section.get("split_mode", SPLIT_MODE_DEFAULT)).strip().lower()
+    if mode not in _SPLIT_MODES:
+        raise ValueError(
+            f"atom.split_mode={mode!r} 非法，必须是 {_SPLIT_MODES} 之一"
+        )
+    return mode
 
 
 def get_skill_dir() -> Path:
