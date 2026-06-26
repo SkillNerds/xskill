@@ -901,20 +901,16 @@ class DirectoryWatcher:
         logger.info("⟳ split 开始 %s（%d 行，mode=%s）", fname, n_lines,
                     self.split_mode)
         t0 = time.monotonic()
-        if self.split_mode == "whole":
-            # 消融：整条新增轨迹成 1 个 atom（不调 LLM 拆分）。
-            from xskill.agents.whole_splitter import WholeTrajSplitter
-            atoms = WholeTrajSplitter(
-                store=store,
-                traj_root=dir_path,
-            ).run(traj_id=traj_id, traj_path=md_path)
-        else:
-            atoms = TaskAgent(
-                agno_agent_factory=self._factory(),
-                store=store,
-                traj_root=dir_path,
-                skill_dir=self.skill_dir,
-            ).run(traj_id=traj_id, traj_path=md_path)
+        # whole 与 agentic 都走 TaskAgent（LLM）——只是把 split_mode 透传进去，
+        # 让它选不同 system prompt（whole=整轨 1 atom / agentic=按意图切 0~N）。
+        # whole 模式照常由 LLM 产出 used_skills / ux_score，CS 归因与在线进化不空转。
+        atoms = TaskAgent(
+            agno_agent_factory=self._factory(),
+            store=store,
+            traj_root=dir_path,
+            skill_dir=self.skill_dir,
+            split_mode=self.split_mode,
+        ).run(traj_id=traj_id, traj_path=md_path)
         last_off = store.last_offset(traj_id)
         last_id = store.last_atom_id(traj_id)
         # 处理后：打一条"拆完"(带 atom 数 + 耗时),0 个也明确说明是"无可拆 User 回合"。

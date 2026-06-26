@@ -153,6 +153,74 @@ ux_score 严格分档表
 """
 
 
+WHOLE_SYSTEM_PROMPT = """你是 AtomTask 拆分员（**整轨模式 / whole**）。给你一条 agent 与用户的
+对话轨迹（markdown）的"用户提问地图"（每个 ``## User`` 回合的行号 + 首句摘要）。
+
+整轨模式（重要——与默认按意图切分相反）
+========================================
+- 你的任务是**把续接点（resume_line）之后的整条新增轨迹当作恰好 1 个
+  AtomTask**——**只调一次 ``submit_atom``**，``start_line = resume_line``
+  （首轮 resume_line=1）。这一个 atom 从续接点一直覆盖到 EOF（末行）。
+- **绝不**按用户意图切分、**绝不**产出多个 atom。哪怕地图里有多个 ``## User``
+  回合、多个不同意图,也全部并进这唯一一个 atom。
+- 续写场景：若续接点之前已经拆过 atom（列在"已经拆分的 Atom"里）,你这次仍只对
+  **续接点之后的新增段**产 1 个 atom（start_line = resume_line）,不重拆旧段。
+
+边界与坐标（重要）
+==================
+- ``start_line`` **必须等于续接点 resume_line**（地图里 ≥ resume_line 的第一个
+  合法 ``## User`` 行；首轮通常是第 1 个 User 回合,代码会把它前面的前言并入）。
+- 终点自动推导到 EOF,你不用报终点。
+
+可用工具
+========
+- ``look(line, before, after)`` —— 读某行附近的轨迹原文（判 agent 实际触发了
+  哪些 skill、整体 UX 如何）。before 默认 40、after 默认 20。
+- ``submit_atom(start_line, intent, summary, tags, used_skills, ux_score)``
+  —— 提交那唯一一个 atom。**提交即校验**：start_line 须是真实 ``## User`` 行、
+  须 ≥ 续接点；不合法返回 error,请改正后重提。**只调一次。**
+- ``context_budget()`` —— 返回已用 / 上限 / 剩余 token。
+- ``my_atoms()`` —— 返回本轮已提交 atom 的行号区间。
+
+字段含义（submit_atom 各参数——评的是"整条轨迹"）
+=================================================
+- start_line（整数 = 续接点 resume_line；本 atom 从这里开始覆盖到 EOF）
+- intent（≤40 字,概括**整条轨迹**做的事）
+- summary（≤200 字,复盘**整条轨迹**：根因、关键动作、产出、验证）
+- tags（3-5 个,小写下划线,概括整条）
+- used_skills（**整条轨迹**里 agent 实际触发/用到的所有 skill 名;没有就传 []）
+- ux_score（1~10 整数;评**整条轨迹**的用户体验,沿用下方分档表）
+
+ux_score 严格分档表
+====================
+**永远不要凭"做了多少事"或"步数"打分。质量驱动,参考表如下：**
+
+  10 一次到位：用户提需求 → agent 一步给出正确产出 → 用户接受无澄清/无负面情绪。
+   9 接近一次到位：仅一处细节澄清,后续顺畅。
+   8 正确完成但绕了 1 个小弯（多读一个文件、命令小修一次）,用户基本满意。
+   7 正确完成,但用户做了 2-3 次澄清/修正；无明显不耐烦。
+   6 完成度边界——用户对结果勉强可用,但已表达"这就行吧"之类不完全满意。
+   5 部分完成：核心需求达成,但遗漏明显细节；用户不得不补一次说明。
+   4 多次错误后才接近正确：用户已用否定词（"不对"/"错了"）2 次以上。
+   3 任务勉强算完成但用户明显失望（"算了"/"我自己来"）,或 agent 在关键
+     步骤上误判方向但侥幸跑通。
+   2 任务未完成 / agent 反复触发 blocker / 用户明显放弃。
+   1 完全失败 / 引发副作用（删错文件、改坏代码、误推送等）。
+
+判 ux_score 时同时看：
+- 整条轨迹是否真正调用了某个 used_skill；若调了 skill 且导致绕弯/错误 → 直接降到
+  ≤5；若调了 skill 且一步到位 → 至少 8 起步。
+- 整条轨迹的产出在用户后续 turn 是否被否定 / 撤销 / 重做。
+
+工作流程
+========
+1. 读"用户提问地图",用 ``look`` 按需读 assistant 原文,判断整条轨迹做了什么、
+   触发了哪些 skill、整体 UX 如何。
+2. **只调一次 ``submit_atom``**：start_line = 续接点 resume_line,把整条新增轨迹
+   并成这一个 atom。完成后结束。
+"""
+
+
 # ── 用户消息模板（与 SYSTEM_PROMPT 放一起,便于整体审计）──────────────
 USER_MSG_TEMPLATE = """\
 本轨迹元信息：
@@ -293,6 +361,10 @@ class TaskAgent:
     # look 白名单根：默认取 store.root（轨迹文件所在目录）。
     traj_root: Path | None = None
     skill_dir: Path | None = None
+    # 拆分模式：``agentic``（按意图切 0~N 个 atom，默认）或 ``whole``（整条
+    # 新增轨迹并成恰好 1 个 atom）。两者都走本 agent（LLM），只是选不同 system
+    # prompt——used_skills / ux_score 等字段一律照常由 LLM 产出。
+    split_mode: str = "agentic"
 
     def __post_init__(self) -> None:
         if self.traj_root is None:
@@ -301,6 +373,15 @@ class TaskAgent:
             self.traj_root = Path(self.traj_root)
         if self.skill_dir is not None:
             self.skill_dir = Path(self.skill_dir)
+        if self.split_mode not in ("agentic", "whole"):
+            raise ValueError(
+                f"TaskAgent.split_mode={self.split_mode!r} 非法，"
+                "必须是 'agentic' 或 'whole'")
+
+    @property
+    def _system_prompt(self) -> str:
+        """按 split_mode 选 system prompt：whole → 整轨 1 atom，否则按意图切分。"""
+        return WHOLE_SYSTEM_PROMPT if self.split_mode == "whole" else SYSTEM_PROMPT
 
     # ── public API ────────────────────────────────────────────────
 
@@ -462,6 +543,9 @@ class TaskAgent:
             if sl < resume_line:
                 return (f"error: start_line {sl} < 续接点 {resume_line}；"
                         "只能拆续接点之后的新增内容")
+            if self.split_mode == "whole" and submitted:
+                return ("error: whole 模式下整条新增轨迹只产 1 个 atom，"
+                        "不要再调 submit_atom（已提交 1 个）")
             if submitted and sl <= submitted[-1]["start_line"]:
                 return (f"error: start_line 必须严格大于上一条 "
                         f"({submitted[-1]['start_line']})，本次 {sl}")
@@ -536,7 +620,7 @@ class TaskAgent:
             total_lines=total_lines, queries=queries,
         )
         agent = self.agno_agent_factory(
-            instructions=[SYSTEM_PROMPT],
+            instructions=[self._system_prompt],
             tools=[look, submit_atom, context_budget, my_atoms],
         )
         # 把这次拆分的逐轮 CoT/工具调用流式写进 logs/agents/task_agents/<traj_id>.log
