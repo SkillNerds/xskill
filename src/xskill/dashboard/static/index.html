@@ -71,10 +71,12 @@
       <div class="row row-cards mt-1">
         <div class="col-lg-6"><div class="card"><div class="card-header"><h3 class="card-title">🔬 按生态对比</h3></div>
           <div class="table-responsive"><table class="table card-table table-vcenter">
+            <caption class="visually-hidden">按生态对比</caption>
             <thead><tr><th>生态</th><th class="text-end">轨迹</th><th class="text-end">均原子</th><th class="text-end">产 skill</th><th class="text-end">平均 ux</th></tr></thead>
             <tbody id="eco-body"><tr><td colspan="5" class="text-secondary">加载中…</td></tr></tbody></table></div></div></div>
         <div class="col-lg-6"><div class="card"><div class="card-header"><h3 class="card-title">🔬 按用户模型对比</h3></div>
           <div class="table-responsive"><table class="table card-table table-vcenter">
+            <caption class="visually-hidden">按用户模型对比</caption>
             <thead><tr><th>模型</th><th class="text-end">轨迹</th><th class="text-end">均原子</th><th class="text-end">产 skill</th><th class="text-end">平均 ux</th></tr></thead>
             <tbody id="model-body"><tr><td colspan="5" class="text-secondary">加载中…</td></tr></tbody></table></div></div></div>
       </div>
@@ -91,11 +93,13 @@
       <div class="row row-cards mt-1">
         <div class="col-lg-7"><div class="card"><div class="card-header"><h3 class="card-title">💰 按模型</h3></div>
           <div class="table-responsive"><table class="table card-table table-vcenter">
+            <caption class="visually-hidden">按模型统计成本</caption>
             <thead><tr><th>模型</th><th class="text-end">tokens</th><th class="text-end">calls</th><th class="text-end">成本</th></tr></thead>
             <tbody id="cost-model-body"><tr><td colspan="4" class="text-secondary">加载中…</td></tr></tbody></table></div>
           <div class="card-body py-2" id="price-warn"></div></div></div>
         <div class="col-lg-5"><div class="card"><div class="card-header"><h3 class="card-title">按步骤</h3></div>
           <div class="table-responsive"><table class="table card-table table-vcenter">
+            <caption class="visually-hidden">按步骤统计成本</caption>
             <thead><tr><th>步骤</th><th class="text-end">tokens</th><th class="text-end">成本</th></tr></thead>
             <tbody id="cost-step-body"><tr><td colspan="3" class="text-secondary">加载中…</td></tr></tbody></table></div></div></div>
       </div>
@@ -106,10 +110,12 @@
       <div class="row row-cards">
         <div class="col-lg-6"><div class="card"><div class="card-header"><h3 class="card-title">🧑‍💻 用户 coding agent 占比 <span class="hint" data-bs-toggle="tooltip" title="按轨迹来源统计每个 coding agent（harness，如 claude_code / codex / opencode）的占比。">ⓘ</span></h3></div>
           <div class="table-responsive"><table class="table card-table table-vcenter">
+            <caption class="visually-hidden">用户 coding agent 占比</caption>
             <thead><tr><th>coding agent</th><th class="text-end">轨迹</th><th class="text-end">占比</th></tr></thead>
             <tbody id="profile-harness-body"><tr><td colspan="3" class="text-secondary">加载中…</td></tr></tbody></table></div></div></div>
         <div class="col-lg-6"><div class="card"><div class="card-header"><h3 class="card-title">🏄 用户模型占比 <span class="hint" data-bs-toggle="tooltip" title="按轨迹来源统计每个用户 agent 模型（如 claude-opus / deepseek-v4）的占比。">ⓘ</span></h3></div>
           <div class="table-responsive"><table class="table card-table table-vcenter">
+            <caption class="visually-hidden">用户模型占比</caption>
             <thead><tr><th>模型</th><th class="text-end">轨迹</th><th class="text-end">占比</th></tr></thead>
             <tbody id="profile-model-body"><tr><td colspan="3" class="text-secondary">加载中…</td></tr></tbody></table></div></div></div>
       </div>
@@ -117,6 +123,7 @@
         <h3 class="card-title">👥 团队用户</h3>
         <span class="card-subtitle ms-auto text-secondary" data-m="users.summary">—</span></div>
         <div class="table-responsive"><table class="table card-table table-vcenter">
+          <caption class="visually-hidden">团队用户列表</caption>
           <thead><tr><th>用户 (client)</th><th class="text-end">轨迹</th><th class="text-end">原子</th><th>最近活跃</th></tr></thead>
           <tbody id="users-body"><tr><td colspan="4" class="text-secondary">加载中…</td></tr></tbody></table></div></div>
 
@@ -133,12 +140,14 @@
         <h3 class="card-title">🐚 技能库</h3>
         <span class="card-subtitle ms-auto text-secondary" data-m="skills.summary">—</span></div>
         <div class="table-responsive"><table class="table card-table table-vcenter">
+          <caption class="visually-hidden">技能库列表</caption>
           <thead><tr><th>技能</th><th>状态 <span class="hint" data-bs-toggle="tooltip" title="baby=cluster 刚建的草稿；main=已正式产出；staging=灰度候选并存。">ⓘ</span></th><th>描述</th><th class="text-end">版本</th><th class="text-end">候选 <span class="hint" data-bs-toggle="tooltip" title=".candidates.yml 里待攒分的 atom 数。">ⓘ</span></th><th class="text-end">使用次数</th></tr></thead>
           <tbody id="skills-body"><tr><td colspan="6" class="text-secondary">加载中…</td></tr></tbody></table></div></div>
 
       <div class="card"><div class="card-header"><h3 class="card-title">🐚 单 skill 触发率</h3>
         <span class="card-subtitle ms-auto text-secondary">推荐→被采用</span></div>
         <div class="table-responsive"><table class="table card-table table-vcenter">
+          <caption class="visually-hidden">单 skill 触发率</caption>
           <thead><tr><th>技能</th><th class="text-end">被推荐(去重用户)</th><th class="text-end">被采用</th><th class="text-end">触发率</th></tr></thead>
           <tbody id="trigger-body"><tr><td colspan="4" class="text-secondary">加载中…</td></tr></tbody></table></div>
         <div class="card-body py-2"><span class="mini">触发率 = 被采用 / 被推荐(去重用户)，封顶 100%。低触发率 = 推荐错配或描述不准，该优化。</span></div></div>
@@ -151,6 +160,7 @@
       </div>
       <div class="card mt-1"><div class="card-header"><h3 class="card-title">🧪 灰度分桶分布（轨迹）</h3></div>
         <div class="table-responsive"><table class="table card-table table-vcenter">
+          <caption class="visually-hidden">灰度分桶分布</caption>
           <thead><tr><th>分桶</th><th class="text-end">轨迹</th><th class="text-end">平均 ux</th></tr></thead>
           <tbody id="canary-body"><tr><td colspan="3" class="text-secondary">加载中…</td></tr></tbody></table></div></div>
     </div>
@@ -159,6 +169,7 @@
     <div class="sec-page" id="pg-eco">
       <div class="card"><div class="card-header"><h3 class="card-title">🏝 生态目录</h3></div>
         <div class="table-responsive"><table class="table card-table table-vcenter">
+          <caption class="visually-hidden">生态目录</caption>
           <thead><tr><th>生态</th><th class="text-end">轨迹</th><th class="text-end">已索引</th><th>路径</th></tr></thead>
           <tbody id="dirs-body"><tr><td colspan="4" class="text-secondary">加载中…</td></tr></tbody></table></div></div>
     </div>

@@ -288,7 +288,8 @@ document.addEventListener('click', async e => {
   const rb = e.target.closest('.trig-rerun');
   if (rb) {
     e.preventDefault();
-    rb.disabled = true; const old = rb.textContent; rb.textContent = '跑…';
+    rb.disabled = true;
+    rb.textContent = '跑…';
     try {
       const resp = await fetch('api/v1/dashboard/skill/' + encodeURIComponent(rb.dataset.skill) + '/trigger/rerun',
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: rb.dataset.query }) });
@@ -298,8 +299,11 @@ document.addEventListener('click', async e => {
       else if (data.did_trigger) { rb.textContent = '触发 ✓'; rb.classList.add('btn-outline-success'); }
       else { rb.textContent = '未触发'; rb.classList.add('btn-outline-secondary'); }
       rb.title = '诱饵清单: ' + ((data.catalog || []).join(', ') || '空');
-    } catch (err) { rb.textContent = '错误'; }
-    rb.disabled = false; void old;
+    } catch (err) {
+      console.error(err);
+      rb.textContent = '错误';
+    }
+    rb.disabled = false;
     return;
   }
 });

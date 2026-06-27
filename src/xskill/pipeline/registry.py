@@ -20,7 +20,7 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from xskill.config import get_registry_db_path
 from xskill.types import WatchDir
@@ -1061,15 +1061,29 @@ class Registry:
         return self._row_to_watch_dir(row) if row else None
 
     @staticmethod
-    def _row_to_watch_dir(row: dict, **overrides) -> WatchDir:
+    def _row_value(row: dict[str, Any], key: str, default: Any) -> Any:
+        return row[key] if key in row and row[key] is not None else default
+
+    @staticmethod
+    def _row_to_watch_dir(row: dict[str, Any], **overrides) -> WatchDir:
+        traj_count = (
+            overrides["traj_count"]
+            if "traj_count" in overrides
+            else Registry._row_value(row, "traj_count", 0)
+        )
+        indexed_count = (
+            overrides["indexed_count"]
+            if "indexed_count" in overrides
+            else Registry._row_value(row, "indexed_count", 0)
+        )
         return WatchDir(
             id=row["id"],
             path=Path(row["path"]),
-            label=row.get("label", ""),
-            auto_index=bool(row.get("auto_index", 1)),
-            traj_count=overrides.get("traj_count", row.get("traj_count", 0)),
-            indexed_count=overrides.get("indexed_count", row.get("indexed_count", 0)),
-            ecosystem=row.get("ecosystem", "manual"),
+            label=Registry._row_value(row, "label", ""),
+            auto_index=bool(Registry._row_value(row, "auto_index", 1)),
+            traj_count=traj_count,
+            indexed_count=indexed_count,
+            ecosystem=Registry._row_value(row, "ecosystem", "manual"),
         )
 
     # ─── trajectory 反查 ────────────────────────────────────────
