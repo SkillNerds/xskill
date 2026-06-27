@@ -28,6 +28,10 @@ if "xskill" not in sys.modules:
 
 FIXTURE_IDE = ROOT / "tests" / "fixtures" / "trae" / "sample_ide_session.json"
 FIXTURE_CLI = ROOT / "tests" / "fixtures" / "trae" / "sample_agent_trajectory.json"
+TRAE_CN_DIR = ".trae-cn"
+XSKILL_DIR = ".xskill"
+CHAT_SESSION_KEY = "chat.ChatSessionStore.index"
+TRAE_MD_GLOB = "traj_trae_*.md"
 
 PASS = 0
 FAIL = 0
@@ -61,9 +65,9 @@ def section(title: str) -> None:
 def main() -> int:
     section("0. 环境路径")
     home = Path.home()
-    trae_cn = home / ".trae-cn"
+    trae_cn = home / TRAE_CN_DIR
     ws = Path(os.environ.get("APPDATA", "")) / "TRAE SOLO CN" / "User" / "workspaceStorage"
-    xskill_cfg = home / ".xskill" / "config.yaml"
+    xskill_cfg = home / XSKILL_DIR / "config.yaml"
     print(f"  .trae-cn: {trae_cn.is_dir()}")
     print(f"  workspaceStorage: {ws.is_dir()}")
     print(f"  config.yaml: {xskill_cfg.is_file()}")
@@ -131,7 +135,7 @@ def main() -> int:
     section("4. chat blob 解析")
     try:
         blob = {"version": 1, "entries": {"s1": {"sessionId": "s1", "messages": [{"role": "user", "content": "hi"}]}}}
-        assert len(_sessions_from_chat_blob(blob, "chat.ChatSessionStore.index")) == 1
+        assert len(_sessions_from_chat_blob(blob, CHAT_SESSION_KEY)) == 1
         ok("_sessions_from_chat_blob")
     except Exception as e:
         fail("chat blob", e)
@@ -140,12 +144,12 @@ def main() -> int:
     try:
         with tempfile.TemporaryDirectory() as td:
             h = Path(td)
-            (h / ".trae-cn").mkdir()
+            (h / TRAE_CN_DIR).mkdir()
             skill = h / "skill" / "demo"
             skill.mkdir(parents=True)
             (skill / "SKILL.md").write_text("---\nname: demo\ndescription: d\nversion: 1\n---\n# demo\n", encoding="utf-8")
             dest = install_to_trae(skill, target_root=h)
-            assert (h / ".trae-cn" / "skills" / "demo" / "SKILL.md").is_file()
+            assert (h / TRAE_CN_DIR / "skills" / "demo" / "SKILL.md").is_file()
             ok(f"install_to_trae -> {dest.name}")
     except Exception as e:
         fail("install_to_trae", e)
@@ -154,9 +158,9 @@ def main() -> int:
     try:
         with tempfile.TemporaryDirectory() as td:
             h = Path(td)
-            (h / ".trae-cn" / "trajectories").mkdir(parents=True)
+            (h / TRAE_CN_DIR / "trajectories").mkdir(parents=True)
             agent = FIXTURE_CLI.read_text(encoding="utf-8")
-            (h / ".trae-cn" / "trajectories" / "trajectory_test.json").write_text(agent, encoding="utf-8")
+            (h / TRAE_CN_DIR / "trajectories" / "trajectory_test.json").write_text(agent, encoding="utf-8")
             out = h / "bridge"
             recs = TraeIngester(target_traj_dir=out, home_root=h).scan_and_bridge()
             assert len(recs) == 1
@@ -179,7 +183,7 @@ def main() -> int:
             conn.execute("CREATE TABLE ItemTable (key TEXT UNIQUE, value BLOB)")
             conn.execute(
                 "INSERT INTO ItemTable VALUES (?, ?)",
-                ("chat.ChatSessionStore.index", json.dumps({"version": 1, "entries": {"sess-demo-001": session}})),
+                (CHAT_SESSION_KEY, json.dumps({"version": 1, "entries": {"sess-demo-001": session}})),
             )
             conn.commit()
             conn.close()
@@ -189,7 +193,7 @@ def main() -> int:
                 out = h / "bridge_ide"
                 recs = TraeIngester(target_traj_dir=out, home_root=h).scan_and_bridge()
                 assert len(recs) == 1
-                md = next(out.glob("traj_trae_*.md"))
+                md = next(out.glob(TRAE_MD_GLOB))
                 assert "authentication timeout" in md.read_text(encoding="utf-8")
                 ok(f"IDE vscdb ingest: {md.name}")
             finally:
@@ -215,7 +219,7 @@ def main() -> int:
                 c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
                 row = c.execute(
                     "SELECT value FROM ItemTable WHERE key = ?",
-                    ("chat.ChatSessionStore.index",),
+                    (CHAT_SESSION_KEY,),
                 ).fetchone()
                 c.close()
                 if row:
@@ -232,11 +236,11 @@ def main() -> int:
             warn("实机 chat entries=0，serve 后 IDE 轨迹可能不会桥接（需先在 Trae Builder 对话）")
         else:
             try:
-                out = home / ".xskill" / "trae_sessions_test_run"
+                out = home / XSKILL_DIR / "trae_sessions_test_run"
                 out.mkdir(parents=True, exist_ok=True)
-                before = set(out.glob("traj_trae_*.md"))
+                before = set(out.glob(TRAE_MD_GLOB))
                 recs = ingest_trae_sessions(out, home_root=home)
-                after = set(out.glob("traj_trae_*.md")) - before
+                after = set(out.glob(TRAE_MD_GLOB)) - before
                 if recs or after:
                     ok(f"实机 ingest 桥接 {len(recs)} 条, 新 md {len(after)}")
                 else:

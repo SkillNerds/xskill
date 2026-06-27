@@ -51,6 +51,10 @@ logger = logging.getLogger("xskill.git_lock")
 # init_skill_repo_on_baby 设的 ``xskill@local`` / ``xskill`` 身份，每次
 # commit 我们显式传 author/committer bytes，且仓库初始化时直接写 .git/config。
 XSKILL_AUTHOR = b"xskill <xskill@local>"
+REFS_HEADS = b"refs/heads/"
+GITIGNORE_FILENAME = ".gitignore"
+GITKEEP_FILENAME = ".gitkeep"
+NOTHING_TO_COMMIT = "nothing to commit"
 
 
 def _write_repo_identity(repo: Repo) -> None:
@@ -171,7 +175,7 @@ def _resolve_rev(repo: Repo, rev: str) -> bytes | None:
             return repo.refs[b"HEAD"]
         except KeyError:
             return None
-    for candidate in (rev_b, b"refs/heads/" + rev_b, b"refs/tags/" + rev_b):
+    for candidate in (rev_b, REFS_HEADS + rev_b, b"refs/tags/" + rev_b):
         try:
             sha = repo.refs[candidate]
             return sha
@@ -196,8 +200,8 @@ def _current_branch_name(repo: Repo) -> str:
         last = head_target[-1]
         if last == b"HEAD":
             return ""
-        if last.startswith(b"refs/heads/"):
-            return last[len(b"refs/heads/"):].decode("utf-8")
+        if last.startswith(REFS_HEADS):
+            return last[len(REFS_HEADS):].decode("utf-8")
         return ""
     except (KeyError, IndexError):
         return ""
@@ -206,8 +210,8 @@ def _current_branch_name(repo: Repo) -> str:
 def _list_branches(repo: Repo) -> list[str]:
     out = []
     for ref in repo.refs.keys():
-        if ref.startswith(b"refs/heads/"):
-            out.append(ref[len(b"refs/heads/"):].decode("utf-8"))
+        if ref.startswith(REFS_HEADS):
+            out.append(ref[len(REFS_HEADS):].decode("utf-8"))
     return sorted(out)
 
 
@@ -359,7 +363,7 @@ def _stage_all(repo: Repo, root: Path) -> bool:
 
 
 def _load_gitignore_patterns(root: Path) -> list[str]:
-    p = root / ".gitignore"
+    p = root / GITIGNORE_FILENAME
     if not p.is_file():
         return []
     out = []
@@ -419,7 +423,7 @@ def _do_commit(repo: Repo, message: str, *, allow_empty: bool = False) -> tuple[
             head_tree_sha = None
 
     if (not allow_empty) and head_tree_sha is not None and index_tree_sha == head_tree_sha:
-        return None, "nothing to commit"
+        return None, NOTHING_TO_COMMIT
 
     try:
         sha = porcelain.commit(
@@ -986,8 +990,8 @@ def _h_commit(args: list[str], cwd: str) -> tuple[int, str, str]:
     with _open_repo(cwd) as repo:
         sha, err = _do_commit(repo, msg, allow_empty=allow_empty)
     if sha is None:
-        if err == "nothing to commit":
-            return 1, "", "nothing to commit"
+        if err == NOTHING_TO_COMMIT:
+            return 1, "", NOTHING_TO_COMMIT
         return 1, "", err
     return 0, f"[{sha[:7].decode('ascii')}] {msg}", ""
 
@@ -1448,7 +1452,7 @@ def init_skill_repo_on_baby(skill_dir: str, name: str, description: str) -> None
         try:
             _write_repo_identity(repo)
 
-            (p / ".gitignore").write_text(SKILL_GITIGNORE, encoding="utf-8")
+            (p / GITIGNORE_FILENAME).write_text(SKILL_GITIGNORE, encoding="utf-8")
 
             today = _date.today().isoformat()
             stub_md = (
@@ -1471,8 +1475,8 @@ def init_skill_repo_on_baby(skill_dir: str, name: str, description: str) -> None
 
             (p / "scripts").mkdir(exist_ok=True)
             (p / "references").mkdir(exist_ok=True)
-            (p / "scripts" / ".gitkeep").write_text("", encoding="utf-8")
-            (p / "references" / ".gitkeep").write_text("", encoding="utf-8")
+            (p / "scripts" / GITKEEP_FILENAME).write_text("", encoding="utf-8")
+            (p / "references" / GITKEEP_FILENAME).write_text("", encoding="utf-8")
 
             _stage_all(repo, p)
             sha, err = _do_commit(repo, f"init({name}): baby branch with stub SKILL.md")
@@ -1512,7 +1516,7 @@ def commit_baby_to_main_branch(skill_dir: str, message: str) -> bool:
                 return False
             _stage_all(repo, Path(skill_dir))
             sha, err = _do_commit(repo, message)
-            if sha is None and err != "nothing to commit":
+            if sha is None and err != NOTHING_TO_COMMIT:
                 logger.warning(f"baby commit 失败: {err}")
                 return False
             # rename baby → main
@@ -1555,7 +1559,7 @@ def commit_to_staging_branch(skill_dir: str, message: str) -> bool:
 
             _stage_all(repo, p)
             sha, err = _do_commit(repo, message)
-            if sha is None and err != "nothing to commit":
+            if sha is None and err != NOTHING_TO_COMMIT:
                 logger.warning(f"staging commit 失败: {err}")
                 # rollback
                 repo.refs.set_symbolic_ref(b"HEAD", _ref_for_branch("main"))
@@ -1592,8 +1596,8 @@ def ensure_repo(skill_dir: str):
         repo = porcelain.init(str(p), bare=False)
         try:
             _write_repo_identity(repo)
-            (p / ".gitkeep").touch()
-            (p / ".gitignore").write_text(
+            (p / GITKEEP_FILENAME).touch()
+            (p / GITIGNORE_FILENAME).write_text(
                 "# canary runtime data — NOT versioned\n.ux_scores.jsonl\n.lock\n",
                 encoding="utf-8",
             )
@@ -1644,7 +1648,7 @@ def commit_changes(skill_dir: str, message: str) -> bool:
     if sha is not None:
         logger.info(f"📝 commit: {message}")
         return True
-    if err and err != "nothing to commit":
+    if err and err != NOTHING_TO_COMMIT:
         logger.warning(f"commit 失败: {err}")
     return False
 

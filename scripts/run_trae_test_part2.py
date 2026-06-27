@@ -22,19 +22,23 @@ from xskill.ecosystems._fallback import install_dir
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_CLI = ROOT / "tests/fixtures/trae/sample_agent_trajectory.json"
 FIXTURE_IDE = ROOT / "tests/fixtures/trae/sample_ide_session.json"
+TRAE_CN_DIR = ".trae-cn"
+XSKILL_DIR = ".xskill"
+CHAT_SESSION_KEY = "chat.ChatSessionStore.index"
+TRAE_MD_GLOB = "traj_trae_*.md"
 home = Path.home()
 
 print("--- 5 install (copy mode; skip symlink on win32) ---")
 try:
     with tempfile.TemporaryDirectory() as td:
         h = Path(td)
-        (h / ".trae-cn").mkdir()
+        (h / TRAE_CN_DIR).mkdir()
         skill = h / "skill" / "demo"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text(
             "---\nname: demo\ndescription: d\nversion: 1\n---\n# d\n", encoding="utf-8"
         )
-        dest_dir = h / ".trae-cn" / "skills" / "demo"
+        dest_dir = h / TRAE_CN_DIR / "skills" / "demo"
         dest_dir.parent.mkdir(parents=True, exist_ok=True)
         mode = install_dir(skill, dest_dir, force_mode="copy")
         print("OK install_dir force copy:", mode, (dest_dir / "SKILL.md").is_file())
@@ -49,8 +53,8 @@ except Exception as e:
 print("--- 6 CLI ingest ---")
 with tempfile.TemporaryDirectory() as td:
     h = Path(td)
-    (h / ".trae-cn" / "trajectories").mkdir(parents=True)
-    (h / ".trae-cn" / "trajectories" / "t.json").write_text(
+    (h / TRAE_CN_DIR / "trajectories").mkdir(parents=True)
+    (h / TRAE_CN_DIR / "trajectories" / "t.json").write_text(
         FIXTURE_CLI.read_text(encoding="utf-8"), encoding="utf-8"
     )
     out = h / "bridge"
@@ -70,7 +74,7 @@ with tempfile.TemporaryDirectory() as td:
     conn.execute(
         "INSERT INTO ItemTable VALUES (?, ?)",
         (
-            "chat.ChatSessionStore.index",
+            CHAT_SESSION_KEY,
             json.dumps({"version": 1, "entries": {"sess-demo-001": session}}),
         ),
     )
@@ -81,7 +85,7 @@ with tempfile.TemporaryDirectory() as td:
     try:
         out = h / "bridge"
         r = TraeIngester(target_traj_dir=out, home_root=h).scan_and_bridge()
-        print("OK IDE bridged", len(r), [p.name for p in out.glob("traj_trae_*.md")])
+        print("OK IDE bridged", len(r), [p.name for p in out.glob(TRAE_MD_GLOB)])
     finally:
         if old is None:
             os.environ.pop("APPDATA", None)
@@ -102,17 +106,17 @@ for d in ws.iterdir():
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     row = conn.execute(
         "SELECT value FROM ItemTable WHERE key = ?",
-        ("chat.ChatSessionStore.index",),
+        (CHAT_SESSION_KEY,),
     ).fetchone()
     conn.close()
     if row:
         entries += len(json.loads(row[0]).get("entries") or {})
 print(f"workspaces with db: {db_count}, chat entries: {entries}")
 
-out = home / ".xskill" / "trae_sessions_test_run"
+out = home / XSKILL_DIR / "trae_sessions_test_run"
 out.mkdir(parents=True, exist_ok=True)
 r = ingest_trae_sessions(out, home_root=home)
-mds = list(out.glob("traj_trae_*.md"))
+mds = list(out.glob(TRAE_MD_GLOB))
 print(f"real ingest: records={len(r)}, md_files={len(mds)}")
 
 print("--- 9 serve smoke (import app hook only) ---")

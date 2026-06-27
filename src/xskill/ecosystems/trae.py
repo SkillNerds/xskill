@@ -39,6 +39,10 @@ from xskill.ecosystems._shared import (
 
 logger = logging.getLogger("xskill.ecosystems")
 
+TRAE_CN_DIR = ".trae-cn"
+TRAE_CN_APP_NAME = "Trae CN"
+XSKILL_DIR = ".xskill"
+
 # state.vscdb 里可能出现的 chat blob 键（按优先级）
 _TRAE_CHAT_KEYS: tuple[str, ...] = (
     "memento/icube-ai-agent-storage",
@@ -63,7 +67,7 @@ _TRAE_AGENT_TRAJ_DIRS: tuple[str, ...] = (
 
 def _trae_edition_home_dirs(home: Path) -> tuple[Path, Path]:
     """国内版 / 国际版用户配置根。"""
-    return home / ".trae-cn", home / ".trae"
+    return home / TRAE_CN_DIR, home / ".trae"
 
 
 def _trae_skills_roots(home: Path) -> list[Path]:
@@ -75,7 +79,7 @@ def _trae_skills_roots(home: Path) -> list[Path]:
             roots.append(skills)
     if not roots:
         # 未安装过 Trae 时默认国内路径，便于首次 install 落盘
-        roots.append(home / ".trae-cn" / "skills")
+        roots.append(home / TRAE_CN_DIR / "skills")
     return roots
 
 
@@ -83,7 +87,7 @@ def _trae_workspace_storage_roots(home: Path) -> list[Path]:
     """各平台 Trae IDE ``User/workspaceStorage`` 候选路径。"""
     roots: list[Path] = []
     if sys.platform == "darwin":
-        for app_name in ("Trae", "Trae CN"):
+        for app_name in ("Trae", TRAE_CN_APP_NAME):
             roots.append(
                 home / "Library" / "Application Support" / app_name
                 / "User" / "workspaceStorage"
@@ -91,12 +95,12 @@ def _trae_workspace_storage_roots(home: Path) -> list[Path]:
     elif sys.platform == "win32":
         appdata = os.environ.get("APPDATA")
         if appdata:
-            for app_name in ("TRAE SOLO CN", "Trae CN", "Trae"):
+            for app_name in ("TRAE SOLO CN", TRAE_CN_APP_NAME, "Trae"):
                 roots.append(
                     Path(appdata) / app_name / "User" / "workspaceStorage"
                 )
     else:
-        for cfg_name in ("Trae", "Trae CN"):
+        for cfg_name in ("Trae", TRAE_CN_APP_NAME):
             roots.append(
                 home / ".config" / cfg_name / "User" / "workspaceStorage"
             )
@@ -200,20 +204,20 @@ def detect_trae_record(home_root: Path) -> dict | None:
             return {
                 "ecosystem": "trae",
                 "source": ws_root.resolve(),
-                "bridge": (home_root / ".xskill" / "trae_sessions").resolve(),
+                "bridge": (home_root / XSKILL_DIR / "trae_sessions").resolve(),
             }
     for edition_home in _trae_edition_home_dirs(home_root):
         if edition_home.is_dir():
             return {
                 "ecosystem": "trae",
                 "source": edition_home.resolve(),
-                "bridge": (home_root / ".xskill" / "trae_sessions").resolve(),
+                "bridge": (home_root / XSKILL_DIR / "trae_sessions").resolve(),
             }
     if _trae_agent_trajectory_roots(home_root):
         return {
             "ecosystem": "trae",
             "source": _trae_agent_trajectory_roots(home_root)[0].resolve(),
-            "bridge": (home_root / ".xskill" / "trae_sessions").resolve(),
+            "bridge": (home_root / XSKILL_DIR / "trae_sessions").resolve(),
         }
     return None
 
