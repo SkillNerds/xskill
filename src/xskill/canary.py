@@ -447,6 +447,97 @@ def _cohort_weighted(scores: list[dict], weights: dict[str, float]
     return weighted, {m: len(v) for m, v in by_model.items()}
 
 
+def _staging_age_days(skill_dir: Path) -> int | None:
+    created = staging_created_at(skill_dir)
+    if created is None:
+        return None
+    return (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).days
+
+
+def _decision_scope(cfg: CanaryConfig, weights: dict[str, float] | None
+                    ) -> tuple[bool, int, dict[str, float]]:
+    scoped = weights is not None
+    need = cfg.total_samples if scoped else cfg.min_samples
+    return scoped, need, weights if scoped else {"*": 1.0}
+
+
+def _collect_decision_scores(
+    skill_dir: Path, main_commit: str, staging_commit: str,
+    need: int, eff_weights: dict[str, float],
+) -> tuple[list[dict], list[dict]]:
+    n_collect = max(need * (len(eff_weights) or 1), need)
+    main_all = recent_scores(
+        skill_dir, side="main", commit_sha=main_commit, n=n_collect,
+    )
+    staging_all = recent_scores(
+        skill_dir, side="staging", commit_sha=staging_commit, n=n_collect,
+    )
+    return main_all, staging_all
+
+
+def _mark_single_bucket_scores(main_all: list[dict],
+                               staging_all: list[dict]) -> None:
+    for score in main_all + staging_all:
+        score["user_model"] = "*"
+
+
+def _weighted_sample_count(scores: list[dict],
+                           eff_weights: dict[str, float]) -> int:
+    return sum(1 for score in scores if score.get("user_model") in eff_weights)
+
+
+def _waiting_decision(skill_dir: Path, cfg: CanaryConfig, age_days: int | None,
+                      main_n: int, staging_n: int, need: int) -> dict:
+    if age_days is not None and age_days >= cfg.max_days_hold:
+        discard_staging(skill_dir)
+        _record_decision(
+            skill_dir, "timeout_discarded", 0.0, 0.0,
+            main_n, staging_n, age_days,
+        )
+        return {
+            "action": "timeout_discarded", "age_days": age_days,
+            "main_samples": main_n, "staging_samples": staging_n,
+        }
+    return {
+        "action": "waiting", "age_days": age_days,
+        "main_samples": main_n, "staging_samples": staging_n, "need": need,
+    }
+
+
+def _canary_summary(main_w: float, staging_w: float, main_n: int,
+                    staging_n: int, main_cohorts: dict[str, int],
+                    staging_cohorts: dict[str, int],
+                    age_days: int | None) -> dict:
+    return {
+        "main_avg": round(main_w, 3),
+        "staging_avg": round(staging_w, 3),
+        "main_samples": main_n,
+        "staging_samples": staging_n,
+        "main_cohorts": main_cohorts,
+        "staging_cohorts": staging_cohorts,
+        "age_days": age_days,
+    }
+
+
+def _finalize_canary_decision(skill_dir: Path, main_w: float, staging_w: float,
+                              main_n: int, staging_n: int,
+                              age_days: int | None, summary: dict) -> dict:
+    if staging_w >= main_w:
+        ok = merge_staging_to_main(skill_dir)
+        if ok:
+            _record_decision(
+                skill_dir, "promoted", main_w, staging_w,
+                main_n, staging_n, age_days,
+            )
+        return {"action": "promoted" if ok else "merge_failed", **summary}
+    discard_staging(skill_dir)
+    _record_decision(
+        skill_dir, "rejected", main_w, staging_w,
+        main_n, staging_n, age_days,
+    )
+    return {"action": "rejected", **summary}
+
+
 def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None,
                      *, weights: dict[str, float] | None = None) -> dict:
     """每次新体验分入库后调用。返回结果字典，action 字段含义：
@@ -474,63 +565,37 @@ def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None,
     if not m_sha or not s_sha:
         return {"action": "no_staging"}
 
-    created = staging_created_at(skill_dir)
-    age_days = None
-    if created is not None:
-        age_days = (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).days
-
-    scoped = weights is not None
-    need = cfg.total_samples if scoped else cfg.min_samples
-    # 单桶用通配权重 {"*": 1.0}，并把样本的 user_model 临时视作 "*"。
-    eff_weights = weights if scoped else {"*": 1.0}
-
-    n_collect = max(need * (len(eff_weights) or 1), need)
-    main_all = recent_scores(skill_dir, side="main", commit_sha=m_sha, n=n_collect)
-    staging_all = recent_scores(skill_dir, side="staging", commit_sha=s_sha, n=n_collect)
+    age_days = _staging_age_days(skill_dir)
+    scoped, need, eff_weights = _decision_scope(cfg, weights)
+    main_all, staging_all = _collect_decision_scores(
+        skill_dir, m_sha, s_sha, need, eff_weights,
+    )
     if not scoped:
-        for s in main_all + staging_all:
-            s["user_model"] = "*"
+        _mark_single_bucket_scores(main_all, staging_all)
 
-    main_n = sum(1 for s in main_all if s.get("user_model") in eff_weights)
-    staging_n = sum(1 for s in staging_all if s.get("user_model") in eff_weights)
+    main_n = _weighted_sample_count(main_all, eff_weights)
+    staging_n = _weighted_sample_count(staging_all, eff_weights)
     enough = main_n >= need and staging_n >= need
 
     if not enough:
-        if age_days is not None and age_days >= cfg.max_days_hold:
-            discard_staging(skill_dir)
-            _record_decision(skill_dir, "timeout_discarded", 0.0, 0.0,
-                             main_n, staging_n, age_days)
-            return {"action": "timeout_discarded", "age_days": age_days,
-                    "main_samples": main_n, "staging_samples": staging_n}
-        return {"action": "waiting", "age_days": age_days,
-                "main_samples": main_n, "staging_samples": staging_n, "need": need}
+        return _waiting_decision(
+            skill_dir, cfg, age_days, main_n, staging_n, need,
+        )
 
     main_w, main_cohorts = _cohort_weighted(main_all, eff_weights)
     staging_w, staging_cohorts = _cohort_weighted(staging_all, eff_weights)
     if main_w is None or staging_w is None:
-        return {"action": "waiting", "age_days": age_days,
-                "main_samples": main_n, "staging_samples": staging_n, "need": need}
+        return _waiting_decision(
+            skill_dir, cfg, age_days, main_n, staging_n, need,
+        )
 
-    summary = {
-        "main_avg": round(main_w, 3),
-        "staging_avg": round(staging_w, 3),
-        "main_samples": main_n,
-        "staging_samples": staging_n,
-        "main_cohorts": main_cohorts,
-        "staging_cohorts": staging_cohorts,
-        "age_days": age_days,
-    }
-
-    if staging_w >= main_w:
-        ok = merge_staging_to_main(skill_dir)
-        if ok:
-            _record_decision(skill_dir, "promoted", main_w, staging_w,
-                             main_n, staging_n, age_days)
-        return {"action": "promoted" if ok else "merge_failed", **summary}
-    discard_staging(skill_dir)
-    _record_decision(skill_dir, "rejected", main_w, staging_w,
-                     main_n, staging_n, age_days)
-    return {"action": "rejected", **summary}
+    summary = _canary_summary(
+        main_w, staging_w, main_n, staging_n,
+        main_cohorts, staging_cohorts, age_days,
+    )
+    return _finalize_canary_decision(
+        skill_dir, main_w, staging_w, main_n, staging_n, age_days, summary,
+    )
 
 
 def _record_decision(skill_dir, action: str, main_avg: float, staging_avg: float,

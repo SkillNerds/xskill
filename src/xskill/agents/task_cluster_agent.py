@@ -33,6 +33,62 @@ _DESC_MIN_CHARS = 75   # 约 25 token；低于这个值就只留 name
 _DESC_HARD_CAP = 300   # 单条 desc 上限（即使预算够也别全塞）
 
 
+def _iter_skill_dirs(skill_dir: Path) -> list[Path]:
+    if not skill_dir.is_dir():
+        return []
+    return [
+        d for d in sorted(skill_dir.iterdir())
+        if d.is_dir() and not d.name.startswith(".")
+    ]
+
+
+def _skill_git_state(skill_path: Path) -> str:
+    if not (skill_path / ".git").is_dir():
+        return "unknown"
+
+    from xskill.skill.git import run_git
+    _, branches_out, _ = run_git(["branch", "--list"], cwd=str(skill_path))
+    branches = {
+        line.lstrip("* ").strip()
+        for line in branches_out.splitlines() if line.strip()
+    }
+    if "staging" in branches:
+        return "staging"  # 包含 main+staging 情况；staging 中的是新候选
+    if "main" in branches:
+        return "main"
+    if "baby" in branches:
+        return "baby"
+    return "unknown"
+
+
+def _skill_description(skill_path: Path) -> str:
+    skill_md = skill_path / "SKILL.md"
+    if not skill_md.is_file():
+        return ""
+    try:
+        fm, _ = fm_parse(skill_md.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    return (fm.get("description") or "").strip().replace("\n", " ")
+
+
+def _candidate_count(skill_path: Path) -> int:
+    cand_yml = skill_path / ".candidates.yml"
+    if not cand_yml.is_file():
+        return 0
+    try:
+        import yaml
+        data = yaml.safe_load(cand_yml.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return 0
+    return len(data.get("candidates", []) or [])
+
+
+def _with_baby_buffer_count(desc: str, skill_path: Path) -> str:
+    n_cand = _candidate_count(skill_path)
+    return f"{desc} ({n_cand} cand in buffer)" if desc else f"({n_cand} cand)"
+
+
 def _scan_skill_state(skill_dir: Path) -> list[tuple[str, str, str]]:
     """扫所有 skill 子目录，返回 ``[(name, state, desc), ...]``。
 
@@ -46,57 +102,23 @@ def _scan_skill_state(skill_dir: Path) -> list[tuple[str, str, str]]:
     取，确保 cluster agent 看到的 desc 是 cluster 自己当初在 new_skill_folder
     时填的语义边界——和 main/staging 状态 desc 信息密度对等。
     """
-    from xskill.skill.git import run_git
     out: list[tuple[str, str, str]] = []
-    if not skill_dir.is_dir():
-        return out
-    for d in sorted(skill_dir.iterdir()):
-        if not d.is_dir() or d.name.startswith("."):
-            continue
+    for d in _iter_skill_dirs(skill_dir):
         name = d.name
         if not (d / ".git").is_dir():
             # 没初始化 git——历史遗留或异常
             out.append((name, "unknown", "(skill 无 git 仓库)"))
             continue
 
-        # 用 git branch --list 判 state
-        _, branches_out, _ = run_git(["branch", "--list"], cwd=str(d))
-        branches = {
-            line.lstrip("* ").strip()
-            for line in branches_out.splitlines() if line.strip()
-        }
-        if "staging" in branches:
-            state = "staging"  # 包含 main+staging 情况；staging 中的是新候选
-        elif "main" in branches:
-            state = "main"
-        elif "baby" in branches:
-            state = "baby"
-        else:
-            state = "unknown"
+        state = _skill_git_state(d)
 
         # 读当前 SKILL.md frontmatter 取 desc（baby/main/staging 的 SKILL.md
         # 都至少含 stub frontmatter）
-        desc = ""
-        skill_md = d / "SKILL.md"
-        if skill_md.is_file():
-            try:
-                fm, _ = fm_parse(skill_md.read_text(encoding="utf-8"))
-                desc = (fm.get("description") or "").strip().replace("\n", " ")
-            except Exception:
-                pass
+        desc = _skill_description(d)
 
         # baby 状态额外拼 buffer 计数让 agent 看到"还差多少分到阈值"
         if state == "baby":
-            n_cand = 0
-            cand_yml = d / ".candidates.yml"
-            if cand_yml.is_file():
-                try:
-                    import yaml
-                    data = yaml.safe_load(cand_yml.read_text(encoding="utf-8")) or {}
-                    n_cand = len(data.get("candidates", []) or [])
-                except Exception:
-                    pass
-            desc = f"{desc} ({n_cand} cand in buffer)" if desc else f"({n_cand} cand)"
+            desc = _with_baby_buffer_count(desc, d)
         out.append((name, state, desc))
     return out
 

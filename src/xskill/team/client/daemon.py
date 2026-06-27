@@ -184,6 +184,61 @@ class TeamClient:
                                repo_dir.name, det["ecosystem"], exc_info=True)
 
     # ── ④ push 用户手改 ──────────────────────────────────────────
+    def _push_user_edit_repo(self, repo_dir: Path, reverse_sync_openclaw_dest) -> bool:
+        """Push one skill repo's local user edits, returning True on success."""
+        if not (repo_dir / ".git").is_dir():
+            return False
+
+        # openclaw 回流（dest → working copy）— 没装到 openclaw 时 no-op
+        dest_dir = self.home_root / ".agents" / "skills" / repo_dir.name
+        try:
+            reverse_sync_openclaw_dest(dest_dir, repo_dir)
+        except Exception:
+            logger.warning("openclaw reverse_sync failed: %s",
+                           repo_dir.name, exc_info=True)
+
+        # 用 git status 当门——直接看工作树相对 HEAD 的真实差异（含
+        # untracked）。不用 has_pending_user_edit 的 mtime 启发式：
+        # reconcile 刚做的 git checkout 会把 SKILL.md mtime 抬到 now，
+        # 而 commit_ts 是几秒前的（commit ≥1s 早于 checkout）→ mtime
+        # 启发式会对**每个 reconcile 过的 skill** 都误判"有手改"，造成
+        # 每轮 _tick 给所有 skill 刷一次 commit 尝试和警告日志。
+        code, status_out, _ = run_git(["status", "--porcelain"], cwd=str(repo_dir))
+        if code != 0 or not status_out.strip():
+            return False   # 无真实手改（含 untracked）
+
+        # 把手改 commit 到 _useredit 分支（从当前 _active 起）
+        run_git(["checkout", "-B", "_useredit"], cwd=str(repo_dir))
+        run_git(["add", "-A"], cwd=str(repo_dir))
+        code, out, err = run_git(
+            ["commit", "-m", f"user edit from {self.state.client_id}"],
+            cwd=str(repo_dir),
+        )
+        if code != 0:
+            combined = (out + err).strip()
+            # "nothing to commit" 走 stdout 不走 stderr；且既然
+            # status --porcelain 之前非空,这里走到 nothing-to-commit
+            # 多半是 .gitignore 把改动全屏蔽了——静默跳过不报警。
+            if "nothing to commit" in combined:
+                return False
+            logger.warning("commit user edit failed: %s: %s",
+                           repo_dir.name, combined)
+            return False
+
+        bundle = make_branch_bundle(repo_dir, "_useredit")
+        resp = self.http.post(
+            "/api/v1/team/push-edit",
+            headers=self._hdr({"X-Xskill-Skill": repo_dir.name}),
+            content=bundle,
+        )
+        if resp.status_code == 200:
+            logger.info("pushed user edit: %s -> %s",
+                        repo_dir.name, resp.json()["branch"])
+            return True
+        logger.warning("push-edit failed: %s HTTP %s",
+                       repo_dir.name, resp.status_code)
+        return False
+
     def push_user_edits(self) -> int:
         """检测本地 working copy 的未吸收手改，推成 user-staging/<client_id>。
 
@@ -198,56 +253,8 @@ class TeamClient:
 
         pushed = 0
         for repo_dir in sorted(self.skill_dir.iterdir()):
-            if not (repo_dir / ".git").is_dir():
-                continue
-
-            # openclaw 回流（dest → working copy）— 没装到 openclaw 时 no-op
-            dest_dir = self.home_root / ".agents" / "skills" / repo_dir.name
-            try:
-                reverse_sync_openclaw_dest(dest_dir, repo_dir)
-            except Exception:
-                logger.warning("openclaw reverse_sync failed: %s",
-                               repo_dir.name, exc_info=True)
-
-            # 用 git status 当门——直接看工作树相对 HEAD 的真实差异（含
-            # untracked）。不用 has_pending_user_edit 的 mtime 启发式：
-            # reconcile 刚做的 git checkout 会把 SKILL.md mtime 抬到 now，
-            # 而 commit_ts 是几秒前的（commit ≥1s 早于 checkout）→ mtime
-            # 启发式会对**每个 reconcile 过的 skill** 都误判"有手改"，造成
-            # 每轮 _tick 给所有 skill 刷一次 commit 尝试和警告日志。
-            code, status_out, _ = run_git(["status", "--porcelain"], cwd=str(repo_dir))
-            if code != 0 or not status_out.strip():
-                continue   # 无真实手改（含 untracked）
-            # 把手改 commit 到 _useredit 分支（从当前 _active 起）
-            run_git(["checkout", "-B", "_useredit"], cwd=str(repo_dir))
-            run_git(["add", "-A"], cwd=str(repo_dir))
-            code, out, err = run_git(
-                ["commit", "-m", f"user edit from {self.state.client_id}"],
-                cwd=str(repo_dir),
-            )
-            if code != 0:
-                combined = (out + err).strip()
-                # "nothing to commit" 走 stdout 不走 stderr；且既然
-                # status --porcelain 之前非空,这里走到 nothing-to-commit
-                # 多半是 .gitignore 把改动全屏蔽了——静默跳过不报警。
-                if "nothing to commit" in combined:
-                    continue
-                logger.warning("commit user edit failed: %s: %s",
-                               repo_dir.name, combined)
-                continue
-            bundle = make_branch_bundle(repo_dir, "_useredit")
-            resp = self.http.post(
-                "/api/v1/team/push-edit",
-                headers=self._hdr({"X-Xskill-Skill": repo_dir.name}),
-                content=bundle,
-            )
-            if resp.status_code == 200:
+            if self._push_user_edit_repo(repo_dir, reverse_sync_openclaw_dest):
                 pushed += 1
-                logger.info("pushed user edit: %s -> %s",
-                            repo_dir.name, resp.json()["branch"])
-            else:
-                logger.warning("push-edit failed: %s HTTP %s",
-                               repo_dir.name, resp.status_code)
         return pushed
 
     # ── ⑤ cleanup ───────────────────────────────────────────────

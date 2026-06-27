@@ -32,6 +32,7 @@ import logging
 import random
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,263 @@ DESC_HARD_LIMIT = 1024
 def _load_prompt(name: str) -> str:
     p = _PROMPTS_DIR / name
     return p.read_text(encoding="utf-8")
+
+
+def _skill_opt_settings(config: dict) -> dict:
+    opt_cfg = dict(config.get("skill_opt", {}) or {})
+    return {
+        "enabled": opt_cfg.get("enabled", True),
+        "n_cases": int(opt_cfg.get("n_cases", 20)),
+        "runs_per_case": int(opt_cfg.get("runs_per_case", 3)),
+        "max_iters": int(opt_cfg.get("max_iters", 5)),
+        "max_llm_calls": int(opt_cfg.get("max_llm_calls", 400)),
+        "train_frac": float(opt_cfg.get("train_frac", 0.6)),
+        "seed": int(opt_cfg.get("seed", 42)),
+        "catalog_max_skills": int(opt_cfg.get("catalog_max_skills", 12)),
+        "catalog_desc_cap": int(opt_cfg.get("catalog_desc_cap", 256)),
+        "probe_case_timeout": float(opt_cfg.get("probe_case_timeout", 60.0) or 0.0),
+    }
+
+
+def _read_skill_context(skill_dir: Path) -> tuple[Path, dict, str, str, str, str]:
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.is_file():
+        raise FileNotFoundError(f"SKILL.md not found: {skill_md}")
+
+    skill_content = skill_md.read_text(encoding="utf-8")
+    fm_dict, body = fm.parse(skill_content)
+    skill_name = str(fm_dict.get("name") or skill_dir.name).strip()
+    current_description = str(fm_dict.get("description") or "").strip()
+    if not current_description:
+        raise ValueError(f"SKILL.md 没有 description，无法优化: {skill_md}")
+    return skill_md, fm_dict, body, skill_name, current_description, skill_content
+
+
+def _build_catalogs(
+    cases: list[dict],
+    skill_name: str,
+    *,
+    skill_root: Path,
+    embed_client: Any,
+    max_skills: int,
+    desc_cap: int,
+) -> dict:
+    return {
+        c["query"]: build_probe_catalog(
+            c["query"], skill_name, skill_root=skill_root,
+            embed_client=embed_client, max_skills=max_skills,
+            desc_cap=desc_cap,
+        )
+        for c in cases
+    }
+
+
+def _catalog_mode(cases: list[dict], catalog_by_query: dict, skill_name: str) -> tuple[int, bool]:
+    avg_catalog = 0
+    if cases:
+        avg_catalog = round(
+            sum(len(catalog_by_query.get(c["query"], [])) for c in cases)
+            / len(cases)
+        )
+    no_competition = avg_catalog == 0
+    if no_competition:
+        logger.warning(
+            "description_opt[%s]: 诱饵清单全空（catalog_size=0，无竞争模式）"
+            "——触发率只反映“有/没有触发”，与有竞争场景的分数不可比",
+            skill_name,
+        )
+    return avg_catalog, no_competition
+
+
+def _create_exp_dir(opt_root: Path) -> tuple[str, Path]:
+    exp_id = _next_exp_id(opt_root)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    exp_dir = opt_root / f"{exp_id}_{ts}"
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    return exp_id, exp_dir
+
+
+def _record_candidate(
+    candidates: list[dict],
+    attempts_path: Path,
+    *,
+    iteration: int,
+    desc: str,
+    train: list[dict],
+    budget: Any,
+    skill_name: str,
+    catalog_by_query: dict,
+    runs_per_case: int,
+    exp_dir: Path,
+    agno_agent_factory: Any,
+    desc_cap: int,
+    case_timeout: float,
+) -> dict:
+    """评 train，落 attempts.jsonl + per-case json，返回候选条目（test 分后填）。"""
+    train_score, train_results = _score_description(
+        desc, train, budget, skill_name, catalog_by_query,
+        runs_per_case, exp_dir, agno_agent_factory=agno_agent_factory,
+        desc_cap=desc_cap, tag=f"iter{iteration}_train",
+        case_timeout=case_timeout,
+    )
+    entry = {
+        "iter": iteration,
+        "description": desc,
+        "train_score": train_score,
+        "test_score": None,
+        "_train_results": train_results,
+    }
+    candidates.append(entry)
+    _append_jsonl(attempts_path, {
+        "iter": iteration, "description": desc,
+        "train_score": train_score, "test_score": None,
+    })
+    logger.info(
+        "description_opt[%s] iter %d: train_score=%.3f desc=%r",
+        skill_name, iteration, train_score, desc[:80],
+    )
+    return entry
+
+
+@dataclass(frozen=True)
+class _EvolutionContext:
+    max_iters: int
+    max_llm_calls: int
+    train: list[dict]
+    budget: Any
+    llm: Any
+    skill_name: str
+    skill_content: str
+    catalog_by_query: dict
+    runs_per_case: int
+    exp_dir: Path
+    attempts_path: Path
+    agno_agent_factory: Any
+    desc_cap: int
+    case_timeout: float
+
+
+def _evolve_candidates(
+    current_description: str,
+    *,
+    ctx: _EvolutionContext,
+) -> list[dict]:
+    candidates: list[dict] = []
+    try:
+        # 原始 desc 作为 iter 0 候选
+        _record_candidate(
+            candidates, ctx.attempts_path, iteration=0, desc=current_description,
+            train=ctx.train, budget=ctx.budget, skill_name=ctx.skill_name,
+            catalog_by_query=ctx.catalog_by_query, runs_per_case=ctx.runs_per_case,
+            exp_dir=ctx.exp_dir, agno_agent_factory=ctx.agno_agent_factory,
+            desc_cap=ctx.desc_cap, case_timeout=ctx.case_timeout,
+        )
+
+        improve_tmpl = _load_prompt("improve_description.txt")
+        for it in range(1, ctx.max_iters + 1):
+            prev = candidates[-1]
+            prompt = _improve_prompt(
+                improve_tmpl, prev, ctx.train, candidates,
+                ctx.skill_name, ctx.skill_content,
+            )
+            raw = ctx.budget.chat(ctx.llm, prompt)
+            new_desc = _parse_new_description(raw)
+            if not new_desc:
+                logger.warning(
+                    "description_opt[%s] iter %d: LLM 未返回 <new_description>，停止进化",
+                    ctx.skill_name, it,
+                )
+                break
+            _record_candidate(
+                candidates, ctx.attempts_path, iteration=it,
+                desc=_enforce_limit(new_desc, ctx.llm, ctx.budget),
+                train=ctx.train, budget=ctx.budget, skill_name=ctx.skill_name,
+                catalog_by_query=ctx.catalog_by_query,
+                runs_per_case=ctx.runs_per_case,
+                exp_dir=ctx.exp_dir, agno_agent_factory=ctx.agno_agent_factory,
+                desc_cap=ctx.desc_cap, case_timeout=ctx.case_timeout,
+            )
+    except _LLMBudgetExhausted:
+        logger.warning(
+            "description_opt[%s]: 命中 max_llm_calls=%d，提前停止进化，"
+            "用已有候选选优", ctx.skill_name, ctx.max_llm_calls,
+        )
+    return candidates
+
+
+def _improve_prompt(
+    improve_tmpl: str, prev: dict, train: list[dict], candidates: list[dict],
+    skill_name: str, skill_content: str,
+) -> str:
+    scores_summary = (
+        f"train_score={prev['train_score']:.3f}, "
+        f"{len(train)} train cases"
+    )
+    scores_detail = _format_scores_detail(prev["_train_results"], candidates)
+    return improve_tmpl.format(
+        skill_name=skill_name,
+        current_description=prev["description"],
+        scores_summary=scores_summary,
+        scores_detail=scores_detail,
+        skill_content=skill_content,
+    )
+
+
+def _write_best_description(
+    skill_md: Path, fm_dict: dict, body: str, skill_name: str,
+    best: dict, current_description: str,
+) -> str:
+    best_desc = best["description"]
+    if best_desc != current_description:
+        fm_dict["description"] = best_desc
+        skill_md.write_text(fm.serialize(fm_dict, body), encoding="utf-8")
+        logger.info(
+            "description_opt[%s]: 写回 best desc (test_score=%.3f): %r",
+            skill_name, best["test_score"], best_desc[:80],
+        )
+    else:
+        logger.info(
+            "description_opt[%s]: 原始 desc 已是 test 最优 (test_score=%.3f)，不改",
+            skill_name, best["test_score"],
+        )
+    return best_desc
+
+
+def _record_trigger_eval_best(
+    skill_dir: Path, skill_name: str, exp_id: str, best: dict,
+    cases: list[dict], avg_catalog: int,
+) -> None:
+    try:
+        from xskill.canary import main_sha as _main_sha
+        from xskill.pipeline.registry import record_trigger_eval
+        record_trigger_eval(
+            skill=skill_name, version_sha=_main_sha(skill_dir),
+            exp_id=exp_id, train_score=float(best["train_score"]),
+            test_score=float(best["test_score"] or 0.0),
+            n_cases=len(cases), catalog_size=avg_catalog,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("record_trigger_eval 失败（不阻断）: %s", skill_name)
+
+
+def _optimization_result(
+    best_desc: str, summary: dict, avg_catalog: int, no_competition: bool,
+    candidates: list[dict], exp_dir: Path, budget: Any,
+) -> dict:
+    return {
+        "enabled": True,
+        "best_description": best_desc,
+        "chosen_reason": summary["chosen_reason"],
+        "catalog_size": avg_catalog,
+        "no_competition": no_competition,
+        "candidates": [
+            {"iter": c["iter"], "description": c["description"],
+             "train_score": c["train_score"], "test_score": c["test_score"]}
+            for c in candidates
+        ],
+        "exp_dir": str(exp_dir),
+        "n_llm_calls": budget.used,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -96,40 +354,20 @@ def optimize_description(
     ``{"enabled": False}``（no-op）。
     """
     skill_dir = Path(skill_dir)
-    opt_cfg = dict(config.get("skill_opt", {}) or {})
+    settings = _skill_opt_settings(config)
 
-    enabled = opt_cfg.get("enabled", True)
-    if not enabled:
+    if not settings["enabled"]:
         logger.info("skill_opt disabled — skip description optimization (%s)",
                     skill_dir.name)
         return {"enabled": False}
 
-    n_cases = int(opt_cfg.get("n_cases", 20))
-    runs_per_case = int(opt_cfg.get("runs_per_case", 3))
-    max_iters = int(opt_cfg.get("max_iters", 5))
-    max_llm_calls = int(opt_cfg.get("max_llm_calls", 400))
-    train_frac = float(opt_cfg.get("train_frac", 0.6))
-    seed = int(opt_cfg.get("seed", 42))
-    catalog_max_skills = int(opt_cfg.get("catalog_max_skills", 12))
-    catalog_desc_cap = int(opt_cfg.get("catalog_desc_cap", 256))
-    # 探针单 case 墙钟兜底（秒）；0/负数=关闭。见 trigger_probe.probe_trigger。
-    probe_case_timeout = float(opt_cfg.get("probe_case_timeout", 60.0) or 0.0)
-
-    skill_md = skill_dir / "SKILL.md"
-    if not skill_md.is_file():
-        raise FileNotFoundError(f"SKILL.md not found: {skill_md}")
-
-    fm_dict, body = fm.parse(skill_md.read_text(encoding="utf-8"))
-    skill_name = str(fm_dict.get("name") or skill_dir.name).strip()
-    current_description = str(fm_dict.get("description") or "").strip()
-    skill_content = skill_md.read_text(encoding="utf-8")
-
-    if not current_description:
-        raise ValueError(f"SKILL.md 没有 description，无法优化: {skill_md}")
+    skill_md, fm_dict, body, skill_name, current_description, skill_content = (
+        _read_skill_context(skill_dir)
+    )
 
     # LLM 调用计数器（闭包共享，命中 max_llm_calls 抛 _LLMBudgetExhausted）。
     # case 生成/improve/shorten 走 budget.chat；探针每跑一轮走 budget.consume。
-    budget = _Budget(max_calls=max_llm_calls)
+    budget = _Budget(max_calls=settings["max_llm_calls"])
 
     opt_root = skill_dir / ".description_optimization"
     opt_root.mkdir(parents=True, exist_ok=True)
@@ -137,11 +375,12 @@ def optimize_description(
     # ── 1. case 生成（缓存复用）─────────────────────────────────
     cases = _load_or_generate_cases(
         opt_root, llm, budget, skill_name, current_description,
-        skill_content, n_cases,
+        skill_content, settings["n_cases"],
     )
 
     # ── 2. train/test split（分层 + 确定性）────────────────────
-    train, test = stratified_split(cases, train_frac=train_frac, seed=seed)
+    train, test = stratified_split(
+        cases, train_frac=settings["train_frac"], seed=settings["seed"])
     logger.info(
         "description_opt[%s]: %d cases → %d train / %d test",
         skill_name, len(cases), len(train), len(test),
@@ -149,130 +388,57 @@ def optimize_description(
 
     # 诱饵清单按 query 预算一次（同 query 跨候选/跨轮复用，省 embedding）。
     # 每个 query 的竞争对手可不同——这正是"不同技能列表触发率不同"的来源。
-    catalog_by_query = {
-        c["query"]: build_probe_catalog(
-            c["query"], skill_name, skill_root=skill_root,
-            embed_client=embed_client, max_skills=catalog_max_skills,
-            desc_cap=catalog_desc_cap,
-        )
-        for c in cases
-    }
+    catalog_by_query = _build_catalogs(
+        cases, skill_name, skill_root=skill_root, embed_client=embed_client,
+        max_skills=settings["catalog_max_skills"],
+        desc_cap=settings["catalog_desc_cap"],
+    )
 
     # 无竞争模式显式标记：诱饵清单全空（索引缺失重建失败 / 全库只有本 skill）
     # 时分数没有竞争区分度——绝不许悄悄当正常分。catalog_size 随结果/registry/
     # summary 一路带出去，看板与复盘据此降权。
-    avg_catalog = 0
-    if cases:
-        avg_catalog = round(
-            sum(len(catalog_by_query.get(c["query"], [])) for c in cases)
-            / len(cases)
-        )
-    no_competition = avg_catalog == 0
-    if no_competition:
-        logger.warning(
-            "description_opt[%s]: 诱饵清单全空（catalog_size=0，无竞争模式）"
-            "——触发率只反映“有/没有触发”，与有竞争场景的分数不可比",
-            skill_name,
-        )
+    avg_catalog, no_competition = _catalog_mode(cases, catalog_by_query, skill_name)
 
     # 实验目录
-    exp_id = _next_exp_id(opt_root)
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    exp_dir = opt_root / f"{exp_id}_{ts}"
-    exp_dir.mkdir(parents=True, exist_ok=True)
-
+    exp_id, exp_dir = _create_exp_dir(opt_root)
     attempts_path = exp_dir / "attempts.jsonl"
 
     # ── 3+4. 进化（improve loop）─────────────────────────────────
     # 候选 = 原始 desc + 每轮 improve 产出。每个候选先在 train 上评（拿失败
     # 喂下一轮），最后统一在 test 上评选优。
-    candidates: list[dict] = []
-
-    def _record_candidate(iteration: int, desc: str) -> dict:
-        """评 train，落 attempts.jsonl + per-case json，返回候选条目（test 分后填）。"""
-        train_score, train_results = _score_description(
-            desc, train, budget, skill_name, catalog_by_query,
-            runs_per_case, exp_dir, agno_agent_factory=agno_agent_factory,
-            desc_cap=catalog_desc_cap, tag=f"iter{iteration}_train",
-            case_timeout=probe_case_timeout,
-        )
-        entry = {
-            "iter": iteration,
-            "description": desc,
-            "train_score": train_score,
-            "test_score": None,
-            "_train_results": train_results,
-        }
-        candidates.append(entry)
-        _append_jsonl(attempts_path, {
-            "iter": iteration, "description": desc,
-            "train_score": train_score, "test_score": None,
-        })
-        logger.info(
-            "description_opt[%s] iter %d: train_score=%.3f desc=%r",
-            skill_name, iteration, train_score, desc[:80],
-        )
-        return entry
-
-    try:
-        # 原始 desc 作为 iter 0 候选
-        _record_candidate(0, current_description)
-
-        improve_tmpl = _load_prompt("improve_description.txt")
-        for it in range(1, max_iters + 1):
-            prev = candidates[-1]
-            scores_summary = (
-                f"train_score={prev['train_score']:.3f}, "
-                f"{len(train)} train cases"
-            )
-            scores_detail = _format_scores_detail(
-                prev["_train_results"], candidates,
-            )
-            prompt = improve_tmpl.format(
-                skill_name=skill_name,
-                current_description=prev["description"],
-                scores_summary=scores_summary,
-                scores_detail=scores_detail,
-                skill_content=skill_content,
-            )
-            raw = budget.chat(llm, prompt)
-            new_desc = _parse_new_description(raw)
-            if not new_desc:
-                logger.warning(
-                    "description_opt[%s] iter %d: LLM 未返回 <new_description>，停止进化",
-                    skill_name, it,
-                )
-                break
-            new_desc = _enforce_limit(new_desc, llm, budget)
-            _record_candidate(it, new_desc)
-    except _LLMBudgetExhausted:
-        logger.warning(
-            "description_opt[%s]: 命中 max_llm_calls=%d，提前停止进化，"
-            "用已有候选选优", skill_name, max_llm_calls,
-        )
+    evolution_ctx = _EvolutionContext(
+        max_iters=settings["max_iters"],
+        max_llm_calls=settings["max_llm_calls"],
+        train=train,
+        budget=budget,
+        llm=llm,
+        skill_name=skill_name,
+        skill_content=skill_content,
+        catalog_by_query=catalog_by_query,
+        runs_per_case=settings["runs_per_case"],
+        exp_dir=exp_dir,
+        attempts_path=attempts_path,
+        agno_agent_factory=agno_agent_factory,
+        desc_cap=settings["catalog_desc_cap"],
+        case_timeout=settings["probe_case_timeout"],
+    )
+    candidates = _evolve_candidates(
+        current_description, ctx=evolution_ctx,
+    )
 
     # ── 5. 筛选（test 选优；D3/D4）──────────────────────────────
     best = _select_best_on_test(
         candidates, test, budget, skill_name, catalog_by_query,
-        runs_per_case, exp_dir, current_description, attempts_path,
-        agno_agent_factory=agno_agent_factory, desc_cap=catalog_desc_cap,
-        case_timeout=probe_case_timeout,
+        settings["runs_per_case"], exp_dir, current_description, attempts_path,
+        agno_agent_factory=agno_agent_factory,
+        desc_cap=settings["catalog_desc_cap"],
+        case_timeout=settings["probe_case_timeout"],
     )
 
     # ── 6. 写回 frontmatter ─────────────────────────────────────
-    best_desc = best["description"]
-    if best_desc != current_description:
-        fm_dict["description"] = best_desc
-        skill_md.write_text(fm.serialize(fm_dict, body), encoding="utf-8")
-        logger.info(
-            "description_opt[%s]: 写回 best desc (test_score=%.3f): %r",
-            skill_name, best["test_score"], best_desc[:80],
-        )
-    else:
-        logger.info(
-            "description_opt[%s]: 原始 desc 已是 test 最优 (test_score=%.3f)，不改",
-            skill_name, best["test_score"],
-        )
+    best_desc = _write_best_description(
+        skill_md, fm_dict, body, skill_name, best, current_description,
+    )
 
     summary = _write_summary(
         exp_dir, skill_name, train, test, candidates, best,
@@ -282,32 +448,12 @@ def optimize_description(
 
     # 持久化离线探针触发率（看板用）。version_sha = 当前 main（本次写回将由随后
     # 的 commit 产新 sha，故此处记的是父版本/首版可空）。失败只 log 不阻断。
-    try:
-        from xskill.canary import main_sha as _main_sha
-        from xskill.pipeline.registry import record_trigger_eval
-        record_trigger_eval(
-            skill=skill_name, version_sha=_main_sha(skill_dir),
-            exp_id=exp_id, train_score=float(best["train_score"]),
-            test_score=float(best["test_score"] or 0.0),
-            n_cases=len(cases), catalog_size=avg_catalog,
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("record_trigger_eval 失败（不阻断）: %s", skill_name)
+    _record_trigger_eval_best(skill_dir, skill_name, exp_id, best, cases, avg_catalog)
 
-    return {
-        "enabled": True,
-        "best_description": best_desc,
-        "chosen_reason": summary["chosen_reason"],
-        "catalog_size": avg_catalog,
-        "no_competition": no_competition,
-        "candidates": [
-            {"iter": c["iter"], "description": c["description"],
-             "train_score": c["train_score"], "test_score": c["test_score"]}
-            for c in candidates
-        ],
-        "exp_dir": str(exp_dir),
-        "n_llm_calls": budget.used,
-    }
+    return _optimization_result(
+        best_desc, summary, avg_catalog, no_competition,
+        candidates, exp_dir, budget,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════

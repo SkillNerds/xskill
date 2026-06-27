@@ -63,6 +63,19 @@ def _count_lines(path: Path) -> int:
         return sum(1 for _ in fh)
 
 
+def _coverage_category(status: str, total: int, coverage: float, tasks: int, cov_warn: float) -> str:
+    if total <= 0:
+        return "file_missing" if total == -1 else "healthy"
+    if status in ERROR_STATES:
+        return "hard_abort"
+    if status not in DONE_STATES:
+        return "pending"
+    big_enough = total >= 40   # 太短的轨迹本就可能 0 意图，不算
+    if (coverage < cov_warn) or (tasks == 0 and big_enough):
+        return "silent_gap"
+    return "healthy"
+
+
 def classify(row: sqlite3.Row, *, cov_warn: float) -> TrajRow:
     wd_path = row["wd_path"]
     filename = row["filename"]
@@ -73,22 +86,8 @@ def classify(row: sqlite3.Row, *, cov_warn: float) -> TrajRow:
 
     md = Path(wd_path) / filename
     total = _count_lines(md)
-    if total <= 0:
-        cov = 0.0
-        cat = "file_missing" if total == -1 else "healthy"
-    else:
-        cov = min(last_offset, total) / total
-        if status in ERROR_STATES:
-            cat = "hard_abort"
-        elif status in DONE_STATES:
-            # 拆"完"了却覆盖不足 / 大文件 0 atom → 疑似静默漏拆
-            big_enough = total >= 40   # 太短的轨迹本就可能 0 意图，不算
-            if (cov < cov_warn) or (tasks == 0 and big_enough):
-                cat = "silent_gap"
-            else:
-                cat = "healthy"
-        else:
-            cat = "pending"   # discovered/updated/splitting…还没定论
+    cov = 0.0 if total <= 0 else min(last_offset, total) / total
+    cat = _coverage_category(status, total, cov, tasks, cov_warn)
     # error 态但文件缺失也归 hard_abort（损失定性以状态为准）
     if status in ERROR_STATES and cat == "file_missing":
         cat = "hard_abort"
@@ -112,55 +111,71 @@ def load_rows(db_path: Path, *, cov_warn: float) -> list[TrajRow]:
         conn.close()
 
 
+def _bucket_rows(rows: list[TrajRow]) -> dict[str, list[TrajRow]]:
+    buckets: dict[str, list[TrajRow]] = {}
+    for r in rows:
+        buckets.setdefault(r.category, []).append(r)
+    return buckets
+
+
+def _pct(n: int, total: int) -> str:
+    return f"{100 * n / total:5.1f}%"
+
+
+def _print_report_summary(
+    buckets: dict[str, list[TrajRow]], *, total: int, cov_warn: float,
+) -> tuple[list[TrajRow], list[TrajRow]]:
+    hard = buckets.get("hard_abort", [])
+    gap = buckets.get("silent_gap", [])
+    bug_hard = [r for r in hard if r.is_bug_signature]
+    impacted = len(hard) + len(gap)
+
+    print("=" * 64)
+    print(f"  TaskAgent 拆分损失诊断   总轨迹数 = {total}")
+    print(f"  覆盖率告警阈值 cov_warn = {cov_warn:.0%}")
+    print("=" * 64)
+    print(f"  ① 硬中止 hard_abort  : {len(hard):4d}  ({_pct(len(hard), total)})"
+          f"   其中命中本 bug 指纹 {len(bug_hard)}")
+    print(f"  ② 静默漏拆 silent_gap: {len(gap):4d}  ({_pct(len(gap), total)})")
+    print("  ─────────────────────────────────────")
+    print(f"  受影响合计 impacted  : {impacted:4d}  ({_pct(impacted, total)})")
+    print(f"  健康 healthy         : {len(buckets.get('healthy', [])):4d}"
+          f"  ({_pct(len(buckets.get('healthy', [])), total)})")
+    print(f"  未决 pending         : {len(buckets.get('pending', [])):4d}"
+          f"  ({_pct(len(buckets.get('pending', [])), total)})")
+    return hard, gap
+
+
+def _print_file_missing(buckets: dict[str, list[TrajRow]], *, total: int) -> None:
+    miss = buckets.get("file_missing", [])
+    if miss:
+        print(f"  原文缺失 file_missing: {len(miss):4d}  ({_pct(len(miss), total)})")
+    print("=" * 64)
+
+
+def _dump_rows(title: str, items: list[TrajRow], limit: int = 20) -> None:
+    if not items:
+        return
+    print(f"\n[{title}]  共 {len(items)} 条"
+          + ("（截前 %d）" % limit if len(items) > limit else ""))
+    for r in items[:limit]:
+        tail = f"  err={r.error_msg[:60]!r}" if r.error_msg else ""
+        print(f"  - {r.filename:40s} status={r.status:10s}"
+              f" cov={r.coverage:.0%} atoms={r.tasks_extracted}"
+              f" lines={r.total_lines}{tail}")
+
+
 def report(rows: list[TrajRow], *, cov_warn: float) -> None:
     total = len(rows)
     if total == 0:
         print("registry 里没有任何 trajectory 记录。")
         return
 
-    buckets: dict[str, list[TrajRow]] = {}
-    for r in rows:
-        buckets.setdefault(r.category, []).append(r)
-
-    hard = buckets.get("hard_abort", [])
-    gap = buckets.get("silent_gap", [])
-    bug_hard = [r for r in hard if r.is_bug_signature]
-    impacted = len(hard) + len(gap)
-
-    def pct(n: int) -> str:
-        return f"{100 * n / total:5.1f}%"
-
-    print("=" * 64)
-    print(f"  TaskAgent 拆分损失诊断   总轨迹数 = {total}")
-    print(f"  覆盖率告警阈值 cov_warn = {cov_warn:.0%}")
-    print("=" * 64)
-    print(f"  ① 硬中止 hard_abort  : {len(hard):4d}  ({pct(len(hard))})"
-          f"   其中命中本 bug 指纹 {len(bug_hard)}")
-    print(f"  ② 静默漏拆 silent_gap: {len(gap):4d}  ({pct(len(gap))})")
-    print("  ─────────────────────────────────────")
-    print(f"  受影响合计 impacted  : {impacted:4d}  ({pct(impacted)})")
-    print(f"  健康 healthy         : {len(buckets.get('healthy', [])):4d}"
-          f"  ({pct(len(buckets.get('healthy', [])))})")
-    print(f"  未决 pending         : {len(buckets.get('pending', [])):4d}"
-          f"  ({pct(len(buckets.get('pending', [])))})")
-    miss = buckets.get("file_missing", [])
-    if miss:
-        print(f"  原文缺失 file_missing: {len(miss):4d}  ({pct(len(miss))})")
-    print("=" * 64)
-
-    def dump(title: str, items: list[TrajRow], limit: int = 20) -> None:
-        if not items:
-            return
-        print(f"\n[{title}]  共 {len(items)} 条"
-              + ("（截前 %d）" % limit if len(items) > limit else ""))
-        for r in items[:limit]:
-            tail = f"  err={r.error_msg[:60]!r}" if r.error_msg else ""
-            print(f"  - {r.filename:40s} status={r.status:10s}"
-                  f" cov={r.coverage:.0%} atoms={r.tasks_extracted}"
-                  f" lines={r.total_lines}{tail}")
-
-    dump("① 硬中止（可重置状态续拆挽回）", hard)
-    dump("② 静默漏拆（需清 atom 重拆 / 回退 last_offset）", gap)
+    buckets = _bucket_rows(rows)
+    hard, gap = _print_report_summary(buckets, total=total, cov_warn=cov_warn)
+    _print_file_missing(buckets, total=total)
+    _dump_rows("① 硬中止（可重置状态续拆挽回）", hard)
+    _dump_rows("② 静默漏拆（需清 atom 重拆 / 回退 last_offset）", gap)
 
 
 def write_csv(rows: list[TrajRow], out: Path) -> None:

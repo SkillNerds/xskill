@@ -62,7 +62,7 @@ def section(title: str) -> None:
     print(f"\n=== {title} ===")
 
 
-def main() -> int:
+def _check_environment() -> tuple[Path, Path]:
     section("0. 环境路径")
     home = Path.home()
     trae_cn = home / TRAE_CN_DIR
@@ -79,7 +79,10 @@ def main() -> int:
         ok("TRAE SOLO CN workspaceStorage 存在")
     else:
         warn("workspaceStorage 不存在（跳过实机 IDE 摄取检查）")
+    return home, ws
 
+
+def _load_ecosystems() -> dict | None:
     section("1. 导入 xskill.ecosystems（需 dulwich）")
     try:
         from xskill.ecosystems import (
@@ -95,19 +98,31 @@ def main() -> int:
             _trae_workspace_storage_roots,
         )
         ok("ecosystems 导入成功")
+        return {
+            "TraeIngester": TraeIngester,
+            "adapt_trajectory": adapt_trajectory,
+            "detect_known_ecosystems": detect_known_ecosystems,
+            "detect_trae_record": detect_trae_record,
+            "install_to_trae": install_to_trae,
+            "ingest_trae_sessions": ingest_trae_sessions,
+            "_sessions_from_chat_blob": _sessions_from_chat_blob,
+            "_trae_workspace_storage_roots": _trae_workspace_storage_roots,
+        }
     except Exception as e:
         fail("ecosystems 导入失败（请先 pip install dulwich pyyaml）", e)
         print(f"\n合计: PASS={PASS} FAIL={FAIL} WARN={WARN}")
-        return 1
+        return None
 
+
+def _test_detect(home: Path, eco: dict) -> None:
     section("2. detect_trae_record / detect_known_ecosystems")
     try:
-        rec = detect_trae_record(home)
+        rec = eco["detect_trae_record"](home)
         if rec and rec.get("ecosystem") == "trae":
             ok(f"detect_trae_record: source={rec['source']}")
         else:
             fail(f"detect_trae_record 未返回 trae: {rec}")
-        ids = {d["ecosystem"] for d in detect_known_ecosystems(home_root=home)}
+        ids = {d["ecosystem"] for d in eco["detect_known_ecosystems"](home_root=home)}
         if "trae" in ids:
             ok("detect_known_ecosystems 含 trae")
         else:
@@ -115,6 +130,8 @@ def main() -> int:
     except Exception as e:
         fail("探测异常", e)
 
+
+def _test_adapters(adapt_trajectory) -> None:
     section("3. adapter（fixture）")
     try:
         ide = FIXTURE_IDE.read_text(encoding="utf-8")
@@ -132,14 +149,18 @@ def main() -> int:
     except Exception as e:
         fail("adapter", e)
 
+
+def _test_chat_blob(sessions_from_chat_blob) -> None:
     section("4. chat blob 解析")
     try:
         blob = {"version": 1, "entries": {"s1": {"sessionId": "s1", "messages": [{"role": "user", "content": "hi"}]}}}
-        assert len(_sessions_from_chat_blob(blob, CHAT_SESSION_KEY)) == 1
+        assert len(sessions_from_chat_blob(blob, CHAT_SESSION_KEY)) == 1
         ok("_sessions_from_chat_blob")
     except Exception as e:
         fail("chat blob", e)
 
+
+def _test_install_to_trae(install_to_trae) -> None:
     section("5. install_to_trae（临时目录）")
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -154,6 +175,8 @@ def main() -> int:
     except Exception as e:
         fail("install_to_trae", e)
 
+
+def _test_cli_ingest(trae_ingester_cls) -> None:
     section("6. ingest CLI 轨迹（临时目录）")
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -162,7 +185,7 @@ def main() -> int:
             agent = FIXTURE_CLI.read_text(encoding="utf-8")
             (h / TRAE_CN_DIR / "trajectories" / "trajectory_test.json").write_text(agent, encoding="utf-8")
             out = h / "bridge"
-            recs = TraeIngester(target_traj_dir=out, home_root=h).scan_and_bridge()
+            recs = trae_ingester_cls(target_traj_dir=out, home_root=h).scan_and_bridge()
             assert len(recs) == 1
             mds = list(out.glob("traj_trae_cli_*.md"))
             assert mds and "hello world" in mds[0].read_text(encoding="utf-8").lower()
@@ -170,6 +193,8 @@ def main() -> int:
     except Exception as e:
         fail("CLI ingest", e)
 
+
+def _test_ide_ingest(trae_ingester_cls) -> None:
     section("7. ingest IDE workspaceStorage（模拟 vscdb）")
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -191,7 +216,7 @@ def main() -> int:
             os.environ["APPDATA"] = str(appdata)
             try:
                 out = h / "bridge_ide"
-                recs = TraeIngester(target_traj_dir=out, home_root=h).scan_and_bridge()
+                recs = trae_ingester_cls(target_traj_dir=out, home_root=h).scan_and_bridge()
                 assert len(recs) == 1
                 md = next(out.glob(TRAE_MD_GLOB))
                 assert "authentication timeout" in md.read_text(encoding="utf-8")
@@ -204,29 +229,51 @@ def main() -> int:
     except Exception as e:
         fail("IDE vscdb ingest", e)
 
+
+def _scan_workspace_storage(ws: Path) -> tuple[int, int]:
+    db_count = 0
+    chat_entries = 0
+    for d in ws.iterdir():
+        if not d.is_dir():
+            continue
+        db = d / "state.vscdb"
+        if not db.is_file():
+            continue
+        db_count += 1
+        try:
+            c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            row = c.execute(
+                "SELECT value FROM ItemTable WHERE key = ?",
+                (CHAT_SESSION_KEY,),
+            ).fetchone()
+            c.close()
+            if row:
+                data = json.loads(row[0])
+                chat_entries += len(data.get("entries") or {})
+        except Exception:
+            pass
+    return db_count, chat_entries
+
+
+def _try_real_ingest(home: Path, ingest_trae_sessions) -> None:
+    try:
+        out = home / XSKILL_DIR / "trae_sessions_test_run"
+        out.mkdir(parents=True, exist_ok=True)
+        before = set(out.glob(TRAE_MD_GLOB))
+        recs = ingest_trae_sessions(out, home_root=home)
+        after = set(out.glob(TRAE_MD_GLOB)) - before
+        if recs or after:
+            ok(f"实机 ingest 桥接 {len(recs)} 条, 新 md {len(after)}")
+        else:
+            warn("实机 ingest 未桥接新会话（可能均已处理过或 entries 结构不匹配）")
+    except Exception as e:
+        fail("实机 ingest_trae_sessions", e)
+
+
+def _test_real_workspace(home: Path, ws: Path, ingest_trae_sessions) -> None:
     section("8. 本机实机 workspaceStorage（只读探测）")
     if ws.is_dir():
-        db_count = 0
-        chat_entries = 0
-        for d in ws.iterdir():
-            if not d.is_dir():
-                continue
-            db = d / "state.vscdb"
-            if not db.is_file():
-                continue
-            db_count += 1
-            try:
-                c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-                row = c.execute(
-                    "SELECT value FROM ItemTable WHERE key = ?",
-                    (CHAT_SESSION_KEY,),
-                ).fetchone()
-                c.close()
-                if row:
-                    data = json.loads(row[0])
-                    chat_entries += len(data.get("entries") or {})
-            except Exception:
-                pass
+        db_count, chat_entries = _scan_workspace_storage(ws)
         print(f"  workspace 数: {db_count}, chat.ChatSessionStore.index entries 合计: {chat_entries}")
         if db_count:
             ok(f"实机 {db_count} 个 state.vscdb")
@@ -235,21 +282,12 @@ def main() -> int:
         if chat_entries == 0:
             warn("实机 chat entries=0，serve 后 IDE 轨迹可能不会桥接（需先在 Trae Builder 对话）")
         else:
-            try:
-                out = home / XSKILL_DIR / "trae_sessions_test_run"
-                out.mkdir(parents=True, exist_ok=True)
-                before = set(out.glob(TRAE_MD_GLOB))
-                recs = ingest_trae_sessions(out, home_root=home)
-                after = set(out.glob(TRAE_MD_GLOB)) - before
-                if recs or after:
-                    ok(f"实机 ingest 桥接 {len(recs)} 条, 新 md {len(after)}")
-                else:
-                    warn("实机 ingest 未桥接新会话（可能均已处理过或 entries 结构不匹配）")
-            except Exception as e:
-                fail("实机 ingest_trae_sessions", e)
+            _try_real_ingest(home, ingest_trae_sessions)
     else:
         warn("跳过实机 workspaceStorage")
 
+
+def _test_cli_help() -> None:
     section("9. xskill CLI 可用性")
     try:
         import subprocess
@@ -267,6 +305,22 @@ def main() -> int:
             fail(f"xskill.cli exit={r.returncode}")
     except Exception as e:
         fail("xskill CLI", e)
+
+
+def main() -> int:
+    home, ws = _check_environment()
+    eco = _load_ecosystems()
+    if eco is None:
+        return 1
+
+    _test_detect(home, eco)
+    _test_adapters(eco["adapt_trajectory"])
+    _test_chat_blob(eco["_sessions_from_chat_blob"])
+    _test_install_to_trae(eco["install_to_trae"])
+    _test_cli_ingest(eco["TraeIngester"])
+    _test_ide_ingest(eco["TraeIngester"])
+    _test_real_workspace(home, ws, eco["ingest_trae_sessions"])
+    _test_cli_help()
 
     print(f"\n{'='*50}")
     print(f"合计: PASS={PASS}  FAIL={FAIL}  WARN={WARN}")

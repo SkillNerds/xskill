@@ -80,7 +80,11 @@ def main(argv: list[str]) -> int:
 
     conn = sqlite3.connect(str(db_path), timeout=10)
     try:
-        targets = find_targets(conn)
+        try:
+            targets = find_targets(conn)
+        except sqlite3.DatabaseError as exc:
+            print(f"error: failed to inspect registry db: {exc}", file=sys.stderr)
+            return 2
         print("=" * 64)
         print(f"  待重拆轨迹（续接点未到 EOF）= {len(targets)}")
         print("=" * 64)

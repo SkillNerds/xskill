@@ -394,14 +394,14 @@ CASES = [
 ]
 
 
-def main() -> None:
-    OUT.mkdir(parents=True, exist_ok=True)
-    # 1) 清空旧数据
+def _clear_output() -> None:
     for p in OUT.glob("*.md"):
         p.unlink()
     for p in OUT.glob("*.json"):
         p.unlink()
 
+
+def _write_cases() -> dict[str, dict]:
     ground: dict[str, dict] = {}
     for i, (tag, scenario, fn) in enumerate(CASES):
         case_id = f"c{i:02d}_{tag}"
@@ -419,13 +419,11 @@ def main() -> None:
         (OUT / f"{case_id}.json").write_text(
             json.dumps({"model": "deepseek-v4-flash"}), encoding="utf-8")
         ground[case_id] = gt
+    return ground
 
-    GT_PATH.write_text(
-        json.dumps(ground, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # ── 自检 ──────────────────────────────────────────────────────
+def _check_atom_starts(ground: dict[str, dict]) -> int:
     bad = 0
-    print("=" * 64)
     print("自检 1: 每个 atom_starts 行内容确为 '## User'")
     for case_id, gt in ground.items():
         lines = (OUT / f"{case_id}.md").read_text(
@@ -438,13 +436,21 @@ def main() -> None:
                 bad += 1
                 got = lines[ln - 1] if 1 <= ln <= len(lines) else "<OOR>"
                 print(f"  BAD {case_id}: line {ln} = {got!r}")
+    return bad
 
+
+def _check_boundaries(ground: dict[str, dict]) -> int:
+    bad = 0
     print("自检 2: boundaries == atom_starts[1:]")
     for case_id, gt in ground.items():
         if gt["boundaries"] != gt["atom_starts"][1:]:
             bad += 1
             print(f"  BAD {case_id}: boundaries 不等于 atom_starts[1:]")
+    return bad
 
+
+def _check_total_lines(ground: dict[str, dict]) -> int:
+    bad = 0
     print("自检 3: total_lines == 实际文件行数")
     for case_id, gt in ground.items():
         actual = len((OUT / f"{case_id}.md").read_text(
@@ -453,8 +459,10 @@ def main() -> None:
             bad += 1
             print(f"  BAD {case_id}: total_lines={gt['total_lines']} "
                   f"!= 实际 {actual}")
+    return bad
 
-    # 自检 4: 场景分布 + 字符/行数统计
+
+def _print_size_stats(ground: dict[str, dict]) -> dict[str, int]:
     print("=" * 64)
     print(f"总条数: {len(ground)}")
     print("场景分布:", dict(Counter(g["scenario"] for g in ground.values())))
@@ -467,9 +475,10 @@ def main() -> None:
           f"max={max(cs)} total={sum(cs)}")
     print(f"行数:   min={min(ls)} median={int(statistics.median(ls))} "
           f"max={max(ls)}")
+    return char_sizes
 
-    # 自检 5: 明确确认两条 >30000 字符的特例
-    print("=" * 64)
+
+def _print_large_case_checks(ground: dict[str, dict], char_sizes: dict[str, int]) -> None:
     # 前言 >30000:huge_preamble 的首个 atom_start 之前的字符数
     pre_cid = next(c for c in ground if c.endswith("huge_preamble"))
     pre_lines = (OUT / f"{pre_cid}.md").read_text(
@@ -486,6 +495,31 @@ def main() -> None:
     print(f"单意图 >30000 字符: case={over_cid} 字符数={over_chars} "
           f"单 atom={over_single} -> "
           f"{'OK' if over_chars > 30000 and over_single else 'FAIL'}")
+
+
+def main() -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+    # 1) 清空旧数据
+    _clear_output()
+
+    ground = _write_cases()
+    GT_PATH.write_text(
+        json.dumps(ground, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # ── 自检 ──────────────────────────────────────────────────────
+    print("=" * 64)
+    bad = (
+        _check_atom_starts(ground)
+        + _check_boundaries(ground)
+        + _check_total_lines(ground)
+    )
+
+    # 自检 4: 场景分布 + 字符/行数统计
+    char_sizes = _print_size_stats(ground)
+
+    # 自检 5: 明确确认两条 >30000 字符的特例
+    print("=" * 64)
+    _print_large_case_checks(ground, char_sizes)
 
     print("=" * 64)
     print(f"ground-truth 自检 bad={bad}")

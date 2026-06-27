@@ -29,7 +29,9 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future, as_completed
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
+from typing import Any
 
 from xskill.canary import CanaryConfig
 from xskill.pipeline.registry import (
@@ -54,6 +56,48 @@ _ACTION_STATUS = {
     "skip": "indexed",
     "error": "error",
 }
+
+
+@dataclass(frozen=True)
+class _DirectoryWatcherOptions:
+    llm: Any = None
+    embed_client: Any = None
+    config: dict | None = None
+    skill_dir: Any = None
+    poll_interval: float = 30.0
+    max_concurrent: int = 30
+    max_retries: int = 3
+    db_path: Any = None
+    store: Any = None
+    agno_agent_factory: Any = None
+    home_root: Any = None
+    server_mode: bool = False
+    install_history_path: Any = None
+    on_poll_hook: Any = None
+    cluster_batch_size: int = 8
+
+
+_WATCHER_OPTION_NAMES = {f.name for f in fields(_DirectoryWatcherOptions)}
+
+
+def _coerce_watcher_options(options=None, **overrides) -> _DirectoryWatcherOptions:
+    if options is None:
+        base = _DirectoryWatcherOptions()
+    elif isinstance(options, _DirectoryWatcherOptions):
+        base = options
+    elif isinstance(options, dict):
+        unknown = sorted(set(options) - _WATCHER_OPTION_NAMES)
+        if unknown:
+            raise TypeError(f"unexpected DirectoryWatcher option(s): {', '.join(unknown)}")
+        base = _DirectoryWatcherOptions(**options)
+    else:
+        raise TypeError("DirectoryWatcher options must be a mapping or _DirectoryWatcherOptions")
+
+    unknown = sorted(set(overrides) - _WATCHER_OPTION_NAMES)
+    if unknown:
+        raise TypeError(f"unexpected DirectoryWatcher option(s): {', '.join(unknown)}")
+    return replace(base, **overrides)
+
 
 def _install_thread_event_loop() -> None:
     """给工作线程装一个事件循环（Python 3.9 兼容）。
@@ -83,58 +127,54 @@ class DirectoryWatcher:
       skill 的 ``.candidates.yml`` 时才 done（文件系统即队列，天然去重+断点续传）。
     """
 
-    def __init__(self, *, llm=None, embed_client=None, config=None,
-                 skill_dir=None, poll_interval=30.0, max_concurrent=30,
-                 max_retries=3, db_path=None,
-                 store=None, agno_agent_factory=None, home_root=None,
-                 server_mode=False, install_history_path=None,
-                 on_poll_hook=None, cluster_batch_size=8):
-        self.llm = llm
-        self.embed_client = embed_client
-        self.config = config or {}
-        self.skill_dir = Path(skill_dir) if skill_dir else None
+    def __init__(self, options=None, **overrides):
+        opts = _coerce_watcher_options(options, **overrides)
+        self.llm = opts.llm
+        self.embed_client = opts.embed_client
+        self.config = opts.config or {}
+        self.skill_dir = Path(opts.skill_dir) if opts.skill_dir else None
         # home_root：install_to_claude_code 的 target root。生产 daemon 不
         # 传（None）→ 落到 server._home_root() (默认 Path.home())。测试
         # 必须显式传 tmp_path 防止污染真实 ~/.claude/skills/。
-        self.home_root = Path(home_root) if home_root else None
+        self.home_root = Path(opts.home_root) if opts.home_root else None
         # server_mode：team server 模式。server 是纯 server——不装 skill 到
         # 本机生态、不做单机灰度轮转、不做本地手改回流（手改走 client
         # push-edit → user-staging/<client_id> 分支）。只跑 agent 流水线
         # （split/cluster/SkillEdit/canary 判定）+ CS 归因打分。
-        self.server_mode = bool(server_mode)
+        self.server_mode = bool(opts.server_mode)
         # install_history 路径可注入（测试用 tmp，生产回退 ~/.xskill/）。
         from xskill.config import XSKILL_HOME
         self.install_history_path = (
-            Path(install_history_path) if install_history_path
+            Path(opts.install_history_path) if opts.install_history_path
             else XSKILL_HOME / "install_history.jsonl"
         )
-        self.poll_interval = poll_interval
-        self.max_concurrent = max_concurrent
-        self.max_retries = max_retries
-        self.db_path = db_path
+        self.poll_interval = opts.poll_interval
+        self.max_concurrent = opts.max_concurrent
+        self.max_retries = opts.max_retries
+        self.db_path = opts.db_path
         # 每轮 _loop 在 _scan_once 之前调一次的钩子，用来让 server 端的"生态
         # 检测 + ingester 启动"逻辑每轮都跑（pick up daemon 运行中新装的 agent）。
         # 钩子幂等通过 server._watcher_ref[f"ingester_{eco}"] in-check 保证。
         # 钩子抛异常不应导致 watcher 死循环退出——catch 后只记日志。
-        self.on_poll_hook = on_poll_hook
+        self.on_poll_hook = opts.on_poll_hook
 
         # 每次 ClusterAgent 调用消费的 atom 数（位置批量，非内容）。watcher 把所有
         # indexed 轨迹里"尚未落进任何 skill .candidates.yml"的 atom 汇成一个跨轨迹
         # 池，每批取 ≤ cluster_batch_size 条喂一个 ClusterAgent——一次 LLM 往返处理
         # 多个 atom 的位置，减少往返次数提速。聚类仍串行（同 wd 同时只一个 batch
         # future）。1 = 退回逐 atom 一次往返的旧行为。
-        self.cluster_batch_size = max(1, int(cluster_batch_size))
+        self.cluster_batch_size = max(1, int(opts.cluster_batch_size))
 
         # v2 注入：AtomTaskStore + agno agent 工厂
         # store None 时本 watcher 不能跑 splitting/clustering（仅 ux_score 还能跑）
-        self.store = store
-        self.agno_agent_factory = agno_agent_factory
+        self.store = opts.store
+        self.agno_agent_factory = opts.agno_agent_factory
 
         self._stop = threading.Event()
         self._pause = threading.Event()
         self._thread: threading.Thread | None = None
         self._pool = ThreadPoolExecutor(
-            max_workers=max_concurrent, initializer=_install_thread_event_loop)
+            max_workers=opts.max_concurrent, initializer=_install_thread_event_loop)
         self._futures: dict[Future, dict] = {}
         self._last_poll: float | None = None
         # 单机 canary 轮转节流：上次真跑 _reconcile_skill_sides 的时间戳。
@@ -263,36 +303,31 @@ class DirectoryWatcher:
         if not self.server_mode:
             self._reconcile_skill_sides()
 
-    def _check_pending_skill_edits(self):
-        """遍历每个 skill 目录调 SkillEditAgent.maybe_run()。
+    def _has_skill_root(self):
+        return self.skill_dir is not None and self.skill_dir.is_dir()
 
-        独立于 process_atom_task：不依赖任何 atom 处理成功；只看 candidates.yml
-        当前累计 weightscore 是否够阈值。即便某次 cluster 抛异常导致 buffer
-        虽满阈值但 process_atom_task 没机会触发 edit，下一轮 watcher scan 这步
-        会兜底重试。
-
-        要求 skill_dir + agno_factory_factory + store 都可用；任何一项缺失
-        直接跳过（保留单测路径）。
-        """
-        if self.skill_dir is None or not self.skill_dir.is_dir():
+    def _iter_skill_dirs(self):
+        if not self._has_skill_root():
             return
-        from xskill.agents.skill_edit_agent import SkillEditAgent
-        factory = self._factory()
-        # store 选哪个：edit agent 工具 (atom_task_read/read_traj) 需要
-        # store + traj_root 来工作；从已注册的第一个 wd 取（生产环境通常
-        # 只有 cc_sessions 一个有 atom 的 dir）。
-        store = None
-        traj_root = None
+        for d in sorted(self.skill_dir.iterdir()):
+            if d.is_dir() and not d.name.startswith("."):
+                yield d
+
+    def _iter_git_skill_dirs(self):
+        for d in self._iter_skill_dirs():
+            if (d / ".git").is_dir():
+                yield d
+
+    def _first_registered_store_context(self):
         for wd in list_watch_dirs(**self._db_kw()):
             try:
-                store = self._store_for(Path(wd["path"]))
                 traj_root = Path(wd["path"])
-                break
+                return self._store_for(traj_root), traj_root
             except Exception:
                 continue
-        if store is None:
-            return
-        # 初始化 v2 工具 ctx（SkillEditAgent 工具用）
+        return None, None
+
+    def _init_skill_edit_contexts(self, store, traj_root):
         from xskill.agents import skill_tools as ST
         ST.init_context_v2(
             skill_dir=self.skill_dir, store=store,
@@ -304,6 +339,71 @@ class DirectoryWatcher:
             self.skill_dir, self.skill_dir, self.llm,
             self.embed_client, self.config,
         )
+
+    def _run_skill_edit_for_dir(self, d, store, factory, traj_root, editor_cls):
+        editor = editor_cls(
+            skill_dir=d, store=store,
+            agno_agent_factory=factory,
+            llm_cfg=self.config.get("llm", {}),
+            traj_root=traj_root,
+        )
+        try:
+            return d, bool(editor.maybe_run())
+        except Exception:
+            logger.exception("SkillEditAgent failed: %s", d.name)
+            return d, False
+
+    def _collect_promoted_skill_edits(self, skill_dirs, store, factory, traj_root,
+                                      editor_cls):
+        futures = {
+            self._pool.submit(
+                self._run_skill_edit_for_dir, d, store, factory, traj_root,
+                editor_cls,
+            ): d
+            for d in skill_dirs
+        }
+        promoted = []
+        for fut in as_completed(futures):
+            d, ok = fut.result()
+            if ok:
+                promoted.append(d)
+        return promoted
+
+    def _install_promoted_skill_edits(self, promoted):
+        for d in promoted:
+            self._stats["skills_edited"] += 1
+            logger.info("SkillEditAgent promoted: %s", d.name)
+            # 即时 install 让 Claude Code 立刻看到新生成的 SKILL.md
+            # 不必等 daemon 重启。install_to_claude_code 现在走 symlink，
+            # 后续 xskill 改 SKILL.md 也会被 CC 立即感知。
+            try:
+                self._install_skill_to_all_detected(d)
+            except Exception:
+                logger.exception("install after SkillEdit failed: %s", d.name)
+
+    def _check_pending_skill_edits(self):
+        """遍历每个 skill 目录调 SkillEditAgent.maybe_run()。
+
+        独立于 process_atom_task：不依赖任何 atom 处理成功；只看 candidates.yml
+        当前累计 weightscore 是否够阈值。即便某次 cluster 抛异常导致 buffer
+        虽满阈值但 process_atom_task 没机会触发 edit，下一轮 watcher scan 这步
+        会兜底重试。
+
+        要求 skill_dir + agno_factory_factory + store 都可用；任何一项缺失
+        直接跳过（保留单测路径）。
+        """
+        if not self._has_skill_root():
+            return
+        from xskill.agents.skill_edit_agent import SkillEditAgent
+        factory = self._factory()
+        # store 选哪个：edit agent 工具 (atom_task_read/read_traj) 需要
+        # store + traj_root 来工作；从已注册的第一个 wd 取（生产环境通常
+        # 只有 cc_sessions 一个有 atom 的 dir）。
+        store, traj_root = self._first_registered_store_context()
+        if store is None:
+            return
+        # 初始化 v2 工具 ctx（SkillEditAgent 工具用）
+        self._init_skill_edit_contexts(store, traj_root)
         # ── 跨技能并行写正文 ──
         # 每个 skill 文件夹是独立 git 仓（skill/git.py 各自 git init），仓锁
         # _repo_lock_for(repo_dir) 是 per-skill 的 → 不同技能 = 不同锁 = 零冲突，
@@ -316,46 +416,15 @@ class DirectoryWatcher:
         # 仅并行 LLM 写正文（maybe_run）这一段；结果收齐后回主线程串行做
         # _stats 自增 + 即时 install——避免对无锁的 self._stats 做并发自增，
         # install 是廉价的文件系统活，串行无碍。
-        skill_dirs = [
-            d for d in sorted(self.skill_dir.iterdir())
-            if d.is_dir() and not d.name.startswith(".")
-        ]
+        skill_dirs = list(self._iter_skill_dirs())
         if not skill_dirs:
             return
 
-        def _run_one(d):
-            """在 pool 工作线程里跑单个 skill 的 maybe_run；返回 (d, promoted)。
-            异常吞在这里 log，不抛回 future 以免中断整批收集。"""
-            editor = SkillEditAgent(
-                skill_dir=d, store=store,
-                agno_agent_factory=factory,
-                llm_cfg=self.config.get("llm", {}),
-                traj_root=traj_root,
-            )
-            try:
-                return d, bool(editor.maybe_run())
-            except Exception:
-                logger.exception("SkillEditAgent failed: %s", d.name)
-                return d, False
-
-        futures = {self._pool.submit(_run_one, d): d for d in skill_dirs}
-        promoted: list = []
-        for fut in as_completed(futures):
-            d, ok = fut.result()
-            if ok:
-                promoted.append(d)
-
         # 回主线程串行汇总：_stats 自增（无锁，必须单线程）+ 即时 install。
-        for d in promoted:
-            self._stats["skills_edited"] += 1
-            logger.info("SkillEditAgent promoted: %s", d.name)
-            # 即时 install 让 Claude Code 立刻看到新生成的 SKILL.md
-            # 不必等 daemon 重启。install_to_claude_code 现在走 symlink，
-            # 后续 xskill 改 SKILL.md 也会被 CC 立即感知。
-            try:
-                self._install_skill_to_all_detected(d)
-            except Exception:
-                logger.exception("install after SkillEdit failed: %s", d.name)
+        promoted = self._collect_promoted_skill_edits(
+            skill_dirs, store, factory, traj_root, SkillEditAgent,
+        )
+        self._install_promoted_skill_edits(promoted)
 
     def _resolve_target_root(self):
         """target_root 优先级：
@@ -532,41 +601,66 @@ class DirectoryWatcher:
         都跑一次（开销很轻：load_ux_scores + 简单算术），让 staging 命运由
         真实评分数据决定，不依赖任何 traj 触发。
         """
-        if self.skill_dir is None or not self.skill_dir.is_dir():
+        if not self._has_skill_root():
             return
         from xskill.canary import AtomCanary, CanaryConfig, eligible_models
         from xskill.pipeline.registry import model_share
-        from xskill.skill.git import run_git
         canary_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
         # 模型分桶权重:使用量 top-N 模型的人口占比(unknown 等已被排除)。
         # 有合格模型 → 按模型加权裁决;一个都没有(全 unknown)→ None = 单桶均分,
         # 不让纯 unknown 部署的灰度永远卡住。
         weights = eligible_models(model_share(**self._db_kw()),
                                   canary_cfg.scope_top_n) or None
-        for d in sorted(self.skill_dir.iterdir()):
-            if not d.is_dir() or d.name.startswith("."):
-                continue
-            if not (d / ".git").is_dir():
-                continue
-            code, _, _ = run_git(["rev-parse", "--verify", "staging"], cwd=str(d))
-            if code != 0:
-                continue  # 无 staging，跳过
-            try:
-                decision = AtomCanary(skill_dir=d).check_and_decide(
-                    config=canary_cfg, weights=weights)
-                action = decision.get("action", "")
-                if action in ("promoted", "rejected", "timeout_discarded"):
-                    logger.info("canary decision %s: %s — %s",
-                                d.name, action, decision)
-                    # promote 成功 → 重新 install symlink (内容已变)
-                    if action == "promoted":
-                        self._install_skill_to_all_detected(d)
-            except Exception:
-                logger.exception("check_and_decide failed: %s", d.name)
+        for d in self._iter_git_skill_dirs():
+            if self._has_git_branch(d, "staging"):
+                self._check_canary_for_skill(d, canary_cfg, weights, AtomCanary)
 
     def _install_history(self):
         from xskill.ecosystems._history import InstallHistory
         return InstallHistory(self.install_history_path)
+
+    def _has_git_branch(self, repo_dir, branch_name):
+        from xskill.skill.git import run_git
+        code, _, _ = run_git(
+            ["rev-parse", "--verify", branch_name], cwd=str(repo_dir),
+        )
+        return code == 0
+
+    def _check_canary_for_skill(self, d, canary_cfg, weights, canary_cls):
+        try:
+            decision = canary_cls(skill_dir=d).check_and_decide(
+                config=canary_cfg, weights=weights)
+            action = decision.get("action", "")
+            if action in ("promoted", "rejected", "timeout_discarded"):
+                logger.info("canary decision %s: %s — %s",
+                            d.name, action, decision)
+                # promote 成功 → 重新 install symlink (内容已变)
+                if action == "promoted":
+                    self._install_skill_to_all_detected(d)
+        except Exception:
+            logger.exception("check_and_decide failed: %s", d.name)
+
+    def _rotation_due(self, now, rotate_interval):
+        return (
+            self._last_rotate_ts is None
+            or (now - self._last_rotate_ts) >= rotate_interval
+        )
+
+    def _reconcile_rotated_skill(self, d, window_id, canary_cfg, history,
+                                 canary_api, reconcile_skill_side):
+        has_staging, main_sha, pick_side, staging_sha = canary_api
+        if not has_staging(d):
+            return
+        # 步骤 1：时间窗伪随机定 target side（单机 bucket = window_id）
+        side = pick_side(str(window_id), d.name, canary_cfg.probability)
+        target_sha = staging_sha(d) if side == "staging" else main_sha(d)
+        if not target_sha:
+            return
+        # 步骤 2/3/4：共享调谐助手
+        reconcile_skill_side(
+            repo_dir=d, target_side=side, target_sha=target_sha,
+            history=history, on_changed=None,
+        )
 
     def _reconcile_skill_sides(self):
         """单机 canary 流量入口：周期性按概率把有 staging 的 skill 子仓
@@ -584,7 +678,7 @@ class DirectoryWatcher:
         commit 挪到 staging 分支后，staging 没有真实流量入口 → ux_score 永远
         集不齐 → check_and_decide 永远 waiting。本方法给 staging 真实流量。
         """
-        if self.skill_dir is None or not self.skill_dir.is_dir():
+        if not self._has_skill_root():
             return
         from xskill.canary import (
             CanaryConfig, has_staging, main_sha, pick_side, staging_sha,
@@ -596,33 +690,19 @@ class DirectoryWatcher:
 
         now = time.time()
         # 节流：距上次真跑不足 rotate_interval → skip 本轮。
-        if (
-            self._last_rotate_ts is not None
-            and (now - self._last_rotate_ts) < rotate_interval
-        ):
+        if not self._rotation_due(now, rotate_interval):
             return
         self._last_rotate_ts = now
 
         # 时间窗 id：同一窗口内同一 skill 的伪随机决定一致，跨窗口重新掷。
         window_id = int(now // rotate_interval) if rotate_interval > 0 else 0
         history = self._install_history()
+        canary_api = (has_staging, main_sha, pick_side, staging_sha)
 
-        for d in sorted(self.skill_dir.iterdir()):
-            if not d.is_dir() or d.name.startswith("."):
-                continue
-            if not (d / ".git").is_dir():
-                continue
-            if not has_staging(d):
-                continue
-            # 步骤 1：时间窗伪随机定 target side（单机 bucket = window_id）
-            side = pick_side(str(window_id), d.name, canary_cfg.probability)
-            target_sha = staging_sha(d) if side == "staging" else main_sha(d)
-            if not target_sha:
-                continue
-            # 步骤 2/3/4：共享调谐助手
-            reconcile_skill_side(
-                repo_dir=d, target_side=side, target_sha=target_sha,
-                history=history, on_changed=None,
+        for d in self._iter_git_skill_dirs():
+            self._reconcile_rotated_skill(
+                d, window_id, canary_cfg, history, canary_api,
+                reconcile_skill_side,
             )
 
     # ───────────────────────────────────────────────────────────
@@ -671,6 +751,101 @@ class DirectoryWatcher:
     # 扫描单个目录：发现 + 提交任务
     # ───────────────────────────────────────────────────────────
 
+    def _future_in_flight(self, wd_id, stage, fname=None):
+        return any(
+            i["stage"] == stage
+            and i.get("wd_id") == wd_id
+            and (fname is None or i.get("fname") == fname)
+            for i in self._futures.values()
+        )
+
+    def _reset_interrupted_splitting(self, wd_id, **kw):
+        for fname in get_trajs_by_status(wd_id, "splitting", **kw):
+            if not self._future_in_flight(wd_id, "split", fname):
+                update_traj_status(wd_id, fname, "discovered", **kw)
+
+    def _reset_legacy_clustering(self, wd_id, **kw):
+        for fname in get_trajs_by_status(wd_id, "clustering", **kw):
+            update_traj_status(wd_id, fname, "indexed", **kw)
+
+    def _retry_error_trajs(self, wd_id, **kw):
+        for fname in get_trajs_by_status(
+            wd_id, "error", max_retries=self.max_retries, **kw,
+        ):
+            update_traj_status(wd_id, fname, "discovered", **kw)
+            increment_retry(wd_id, fname, **kw)
+            self._stats["retries"] += 1
+
+    def _discover_new_trajs(self, wd_id, dir_path, **kw):
+        new = discover_trajectories(wd_id, dir_path, **kw)
+        if new:
+            self._stats["new_trajs"] += len(new)
+            logger.info("[%s] discovered %d new", dir_path.name, len(new))
+        return new
+
+    def _try_submit_split(self, wd_id, dir_path, fname, **kw):
+        if self._too_many_in_flight():
+            return False
+        validation = validate_trajectory_source(dir_path / fname)
+        if not validation.valid:
+            update_traj_status(
+                wd_id, fname, "filtered",
+                error_msg=validation.reason or "invalid_trajectory",
+                **kw,
+            )
+            logger.info(
+                "%s filtered before split: %s",
+                fname, validation.reason,
+            )
+            return True
+        update_traj_status(wd_id, fname, "splitting", **kw)
+        fut = self._pool.submit(self._do_split, dir_path, fname)
+        self._futures[fut] = {
+            "wd_id": wd_id, "fname": fname, "stage": "split",
+        }
+        return True
+
+    def _submit_split_jobs(self, wd_id, dir_path, **kw):
+        if self.llm is None:
+            return
+        for status in ("discovered", "updated"):
+            for fname in get_trajs_by_status(
+                wd_id, status, limit=self.max_concurrent * 2, **kw,
+            ):
+                if not self._try_submit_split(wd_id, dir_path, fname, **kw):
+                    break
+
+    def _submit_embed_job(self, wd_id, dir_path, **kw):
+        if self.embed_client is None:
+            return
+        split_done_files = get_trajs_by_status(wd_id, "split_done", **kw)
+        if not split_done_files or self._future_in_flight(wd_id, "embed"):
+            return
+        fut = self._pool.submit(
+            self._do_atom_index, dir_path, wd_id, split_done_files,
+        )
+        self._futures[fut] = {
+            "wd_id": wd_id, "fname": "_batch_embed", "stage": "embed",
+        }
+
+    def _submit_cluster_job(self, wd_id, dir_path, **kw):
+        if self._future_in_flight(wd_id, "cluster") or self._too_many_in_flight():
+            return
+        batch = self._collect_cluster_batch(dir_path, wd_id, **kw)
+        if not batch:
+            return
+        fut = self._pool.submit(self._do_cluster_batch, dir_path, batch)
+        self._futures[fut] = {
+            "wd_id": wd_id, "stage": "cluster", "atom_ids": batch,
+        }
+
+    def _run_cluster_pipeline(self, wd_id, dir_path, **kw):
+        if not self.skill_dir:
+            return
+        self._submit_cluster_job(wd_id, dir_path, **kw)
+        # ── done 标记：轨迹的 atom 全部落地 → done（+ 触发 ux 打分）──
+        self._sweep_done_trajs(wd_id, dir_path, **kw)
+
     def _scan_dir(self, wd, **kw):
         wd_id = wd["id"]
         dir_path = Path(wd["path"])
@@ -682,70 +857,28 @@ class DirectoryWatcher:
         # / 进程崩。回退到 discovered 让 watcher 下轮重新调度。
         # （cluster 无此问题：watcher 不再把轨迹置 clustering，崩溃时轨迹停在
         #  indexed，下一轮天然重新进池。遗留 clustering 在下方无条件回退 indexed。）
-        for fname in get_trajs_by_status(wd_id, "splitting", **kw):
-            if not any(
-                i["fname"] == fname and i["wd_id"] == wd_id and i["stage"] == "split"
-                for i in self._futures.values()
-            ):
-                update_traj_status(wd_id, fname, "discovered", **kw)
+        self._reset_interrupted_splitting(wd_id, **kw)
 
         # 跨轨迹批处理下 watcher 不再把轨迹置 "clustering"（done 由
         # _sweep_done_trajs 按 atom 落地情况标）。任何遗留的 "clustering"
         # （旧 daemon 升级残留 / 历史数据）一律回退 "indexed" 让其重新进池——
         # 已落地的 atom 会在 _collect_cluster_batch 被去重跳过，不会重复消费。
-        for fname in get_trajs_by_status(wd_id, "clustering", **kw):
-            update_traj_status(wd_id, fname, "indexed", **kw)
+        self._reset_legacy_clustering(wd_id, **kw)
 
         # 重试 error
-        for fname in get_trajs_by_status(wd_id, "error", max_retries=self.max_retries, **kw):
-            update_traj_status(wd_id, fname, "discovered", **kw)
-            increment_retry(wd_id, fname, **kw)
-            self._stats["retries"] += 1
+        self._retry_error_trajs(wd_id, **kw)
 
         # 发现新文件
-        new = discover_trajectories(wd_id, dir_path, **kw)
-        if new:
-            self._stats["new_trajs"] += len(new)
-            logger.info("[%s] discovered %d new", dir_path.name, len(new))
+        new = self._discover_new_trajs(wd_id, dir_path, **kw)
 
         # ── 提交 split 任务（discovered / updated → splitting）──
         # 需要 llm；缺则 traj 留在 discovered 等条件齐备。
         # ``updated``（续写重传后 discover 翻的状态）与 ``discovered`` 同等处理：
         # 同样跑 _do_split，TaskAgent 用 last_offset 续接点只拆新增内容。
-        if self.llm is not None:
-            for status in ("discovered", "updated"):
-                for fname in get_trajs_by_status(
-                    wd_id, status, limit=self.max_concurrent * 2, **kw,
-                ):
-                    if self._too_many_in_flight():
-                        break
-                    validation = validate_trajectory_source(dir_path / fname)
-                    if not validation.valid:
-                        update_traj_status(
-                            wd_id, fname, "filtered",
-                            error_msg=validation.reason or "invalid_trajectory",
-                            **kw,
-                        )
-                        logger.info(
-                            "%s filtered before split: %s",
-                            fname, validation.reason,
-                        )
-                        continue
-                    update_traj_status(wd_id, fname, "splitting", **kw)
-                    fut = self._pool.submit(self._do_split, dir_path, fname)
-                    self._futures[fut] = {
-                        "wd_id": wd_id, "fname": fname, "stage": "split",
-                    }
+        self._submit_split_jobs(wd_id, dir_path, **kw)
 
         # ── 提交 embed 任务（split_done → indexed，整批一个任务） ──
-        if self.embed_client is not None:
-            split_done_files = get_trajs_by_status(wd_id, "split_done", **kw)
-            if split_done_files and not any(
-                i["stage"] == "embed" and i["wd_id"] == wd_id for i in self._futures.values()
-            ):
-                fut = self._pool.submit(self._do_atom_index, dir_path, wd_id,
-                                         split_done_files)
-                self._futures[fut] = {"wd_id": wd_id, "fname": "_batch_embed", "stage": "embed"}
+        self._submit_embed_job(wd_id, dir_path, **kw)
 
         # ── Cluster：跨轨迹池化 + 单批串行 ──
         # 把所有 indexed 轨迹里"尚未落进任何 skill .candidates.yml"的 atom 汇成
@@ -753,21 +886,7 @@ class DirectoryWatcher:
         # （一次 LLM 往返处理多个 atom 的位置）。同 wd 同时只允许一个 cluster
         # batch future 在飞（串行——逐批让 catalog 演化可见，避免并发 agent 各自
         # 创建近义 baby slug）。轨迹 done 不在这里标，交给 _sweep_done_trajs。
-        if self.skill_dir:
-            cluster_in_flight = any(
-                i["stage"] == "cluster" and i["wd_id"] == wd_id
-                for i in self._futures.values()
-            )
-            if not cluster_in_flight and not self._too_many_in_flight():
-                batch = self._collect_cluster_batch(dir_path, wd_id, **kw)
-                if batch:
-                    fut = self._pool.submit(self._do_cluster_batch, dir_path, batch)
-                    self._futures[fut] = {
-                        "wd_id": wd_id, "stage": "cluster", "atom_ids": batch,
-                    }
-
-            # ── done 标记：轨迹的 atom 全部落地 → done（+ 触发 ux 打分）──
-            self._sweep_done_trajs(wd_id, dir_path, **kw)
+        self._run_cluster_pipeline(wd_id, dir_path, **kw)
 
         # ── ux_score（对有 xskill header 的新轨迹）──
         if self.llm and self.skill_dir and new:
@@ -1019,6 +1138,38 @@ class DirectoryWatcher:
         """
         # noop: 打分时机改到 cluster 完成后
 
+    def _watch_dir_for_id(self, wd_id, **kw):
+        for wd in list_watch_dirs(**kw):
+            if wd["id"] == wd_id:
+                return wd
+        return None
+
+    def _traj_atoms(self, dir_path, fname):
+        md_path = dir_path / fname
+        if not md_path.is_file():
+            return md_path, []
+        store = self._store_for(dir_path)
+        return md_path, store.list_by_traj(md_path.stem)
+
+    def _append_atom_score(self, *, atom, skill_name, side, sha, canary,
+                           score_atom, log_context):
+        try:
+            result = score_atom(llm=self.llm, atom=atom, side=side)
+            if result["score"] is None:
+                return False
+            canary.append(
+                atom_id=atom.atom_id, skill_name=skill_name,
+                side=side, commit_sha=sha or "",
+                score=result["score"], reasons=result["reasons"],
+                user_model=atom.source_model,
+            )
+            self._stats["scores"] += 1
+            return True
+        except Exception:
+            logger.exception("%s score_atom failed: %s/%s",
+                             log_context, skill_name, atom.atom_id)
+            return False
+
     def _score_atoms_for_traj(self, wd_id, fname, **kw):
         """对一条已跑完 cluster 的 traj 扫所有 atom 打 ux_score。
 
@@ -1036,14 +1187,12 @@ class DirectoryWatcher:
         from xskill.pipeline.atom import score_atom
         from xskill.canary import AtomCanary
         # 找到该 wd 的 dir_path
-        for wd in list_watch_dirs(**kw):
-            if wd["id"] == wd_id:
-                dir_path = Path(wd["path"])
-                break
-        else:
+        wd = self._watch_dir_for_id(wd_id, **kw)
+        if wd is None:
             return
-        md_path = dir_path / fname
-        if not md_path.is_file():
+        dir_path = Path(wd["path"])
+        md_path, atoms = self._traj_atoms(dir_path, fname)
+        if not atoms:
             return
         md_text = md_path.read_text(encoding="utf-8")
         header = parse_traj_header(md_text)
@@ -1053,34 +1202,53 @@ class DirectoryWatcher:
         skill_sub = self.skill_dir / skill_name
         if not skill_sub.is_dir():
             return
-        traj_id = md_path.stem
-        store = self._store_for(dir_path)
-        atoms = store.list_by_traj(traj_id)
-        if not atoms:
-            return
         ac = AtomCanary(skill_dir=skill_sub)
         for atom in atoms:
-            try:
-                result = score_atom(
-                    llm=self.llm, atom=atom, side=header["side"],
-                )
-                if result["score"] is None:
-                    continue
-                ac.append(
-                    atom_id=atom.atom_id, skill_name=skill_name,
-                    side=header["side"], commit_sha=header.get("sha", ""),
-                    score=result["score"], reasons=result["reasons"],
-                    user_model=atom.source_model,
-                )
-                self._stats["scores"] += 1
-            except Exception:
-                logger.exception("score_atom failed: %s/%s",
-                                 fname, atom.atom_id)
+            self._append_atom_score(
+                atom=atom, skill_name=skill_name, side=header["side"],
+                sha=header.get("sha", ""), canary=ac,
+                score_atom=score_atom, log_context=fname,
+            )
         # 翻牌判定
         # check_and_decide 不再绑在打分链路里——移到 watcher 周期性
         # _check_canary_decisions() 独立轮询，保证灰度系统自治不依赖
         # traj 触发。这里只负责打分落盘。
         mark_skill_used(wd_id, fname, skill_name, header["side"], **kw)
+
+    def _server_score_target(self, *, skill_name, atom, client_id, canary_cfg,
+                             eligible, canary_api):
+        has_staging, main_sha, pick_side_scoped, staging_sha = canary_api
+        skill_sub = self.skill_dir / skill_name
+        if not (skill_sub / ".git").is_dir():
+            return None
+        if has_staging(skill_sub):
+            side = pick_side_scoped(
+                client_id, skill_name, canary_cfg.probability,
+                user_model=atom.source_model, eligible=eligible)
+            sha = staging_sha(skill_sub) if side == "staging" else main_sha(skill_sub)
+        else:
+            side = "main"
+            sha = main_sha(skill_sub)
+        return skill_sub, side, sha
+
+    def _score_server_atom_skills(self, *, atom, client_id, canary_cfg, eligible,
+                                  canary_api, canary_cls, score_atom, fname):
+        used_any = False
+        for skill_name in (atom.used_skills or []):
+            target = self._server_score_target(
+                skill_name=skill_name, atom=atom, client_id=client_id,
+                canary_cfg=canary_cfg, eligible=eligible, canary_api=canary_api,
+            )
+            if target is None:
+                continue
+            skill_sub, side, sha = target
+            scored = self._append_atom_score(
+                atom=atom, skill_name=skill_name, side=side, sha=sha,
+                canary=canary_cls(skill_dir=skill_sub),
+                score_atom=score_atom, log_context=f"CS {fname}",
+            )
+            used_any = used_any or scored
+        return used_any
 
     def _score_atoms_for_traj_server(self, wd_id, fname, **kw):
         """CS 模式打分：遍历每个 atom 的 used_skills，对每个用到的 team skill
@@ -1102,55 +1270,25 @@ class DirectoryWatcher:
         from xskill.pipeline.registry import model_share
 
         # 找到该 wd 的 dir_path + client_id（label）
-        client_id = None
-        dir_path = None
-        for wd in list_watch_dirs(**kw):
-            if wd["id"] == wd_id:
-                dir_path = Path(wd["path"])
-                client_id = wd.get("label") or ""
-                break
-        if dir_path is None or not client_id:
+        wd = self._watch_dir_for_id(wd_id, **kw)
+        client_id = (wd or {}).get("label") or ""
+        if wd is None or not client_id:
             return
-        md_path = dir_path / fname
-        if not md_path.is_file():
-            return
-        traj_id = md_path.stem
-        store = self._store_for(dir_path)
-        atoms = store.list_by_traj(traj_id)
+        dir_path = Path(wd["path"])
+        _md_path, atoms = self._traj_atoms(dir_path, fname)
         if not atoms:
             return
         canary_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
         # 模型分桶路由:top-N 模型才可能进 staging,unknown/非 top-N 一律 main。
         eligible = eligible_models(model_share(**kw), canary_cfg.scope_top_n) or None
+        canary_api = (has_staging, main_sha, pick_side_scoped, staging_sha)
         used_any = False
         for atom in atoms:
-            for skill_name in (atom.used_skills or []):
-                skill_sub = self.skill_dir / skill_name
-                if not (skill_sub / ".git").is_dir():
-                    continue
-                if has_staging(skill_sub):
-                    side = pick_side_scoped(
-                        client_id, skill_name, canary_cfg.probability,
-                        user_model=atom.source_model, eligible=eligible)
-                    sha = staging_sha(skill_sub) if side == "staging" else main_sha(skill_sub)
-                else:
-                    side = "main"
-                    sha = main_sha(skill_sub)
-                try:
-                    result = score_atom(llm=self.llm, atom=atom, side=side)
-                    if result["score"] is None:
-                        continue
-                    AtomCanary(skill_dir=skill_sub).append(
-                        atom_id=atom.atom_id, skill_name=skill_name,
-                        side=side, commit_sha=sha or "",
-                        score=result["score"], reasons=result["reasons"],
-                        user_model=atom.source_model,
-                    )
-                    self._stats["scores"] += 1
-                    used_any = True
-                except Exception:
-                    logger.exception("CS score_atom failed: %s/%s/%s",
-                                     fname, atom.atom_id, skill_name)
+            used_any = self._score_server_atom_skills(
+                atom=atom, client_id=client_id, canary_cfg=canary_cfg,
+                eligible=eligible, canary_api=canary_api,
+                canary_cls=AtomCanary, score_atom=score_atom, fname=fname,
+            ) or used_any
         if used_any:
             logger.info("CS attribution done: %s (client=%s)", fname, client_id)
 

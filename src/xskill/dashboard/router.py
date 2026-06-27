@@ -31,17 +31,55 @@ def _skill_dir_for(db_path: Optional[Path]) -> Path:
     return get_skill_dir()
 
 
+def _dashboard_defaults(default_harness: Optional[str],
+                        default_model: Optional[str]) -> tuple[str, str]:
+    if default_harness is not None and default_model is not None:
+        return default_harness, default_model
+    from xskill.config import dashboard_attribution_defaults
+    attr = dashboard_attribution_defaults()
+    return default_harness or attr["harness"], default_model or attr["model"]
+
+
+def _state_counts(skills: list[dict]) -> dict:
+    states: dict = {}
+    for skill in skills:
+        states[skill["state"]] = states.get(skill["state"], 0) + 1
+    return states
+
+
+def _read_skill_file(root: Path, path: str) -> dict:
+    target = _safe_join(root, path)
+    if not target.is_file():
+        return {"path": path, "error": "not a file"}
+    try:
+        return {"path": path, "content": target.read_text(encoding="utf-8")}
+    except (UnicodeDecodeError, OSError):
+        return {"path": path, "error": "binary or unreadable"}
+
+
+def _rerun_trigger_case(root: Path, name: str, body: dict) -> dict:
+    from xskill.config import get_config
+    cfg = get_config()
+    opt = (cfg.get("skill_opt") or {})
+    if not opt.get("rerun_enabled", True):
+        raise HTTPException(status_code=403, detail="rerun disabled")
+    query = str((body or {}).get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query required")
+    try:
+        from xskill.skill.trigger_probe import rerun_probe_case
+        return rerun_probe_case(root.parent, name, query, config=cfg)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        return {"query": query, "error": str(exc)}
+
+
 def build_dashboard_router(db_path: Optional[Path] = None, *,
                            default_harness: Optional[str] = None,
                            default_model: Optional[str] = None) -> APIRouter:
     # 看板归类口径：缺 source_harness/source_model 的历史轨迹归到哪个桶。
     # 显式传入优先（serve 挂载从 dashboard_config 传）；否则直接读 config.yaml 的
     # dashboard 段（独立只读实例走这条，不需要 api_key）。留空均退 'unknown'。
-    if default_harness is None or default_model is None:
-        from xskill.config import dashboard_attribution_defaults
-        attr = dashboard_attribution_defaults()
-        default_harness = default_harness or attr["harness"]
-        default_model = default_model or attr["model"]
+    default_harness, default_model = _dashboard_defaults(default_harness, default_model)
 
     router = APIRouter()
     metrics = DashboardMetrics(db_path=db_path, unknown_harness=default_harness,
@@ -107,10 +145,7 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
     def skills() -> dict:
         """skill 库存清单(分析式：读 skill 目录,不依赖埋点)。"""
         cat = skills_catalog(skill_dir)
-        states: dict = {}
-        for s in cat:
-            states[s["state"]] = states.get(s["state"], 0) + 1
-        return {"total": len(cat), "by_state": states, "skills": cat}
+        return {"total": len(cat), "by_state": _state_counts(cat), "skills": cat}
 
     # ── 单 skill 详情（drill-in）：统计 / 文件树 / 预览 / 版本 / diff ──
 
@@ -131,14 +166,7 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
     def skill_file(name: str, path: str) -> dict:
         """读 skill 目录内单文件内容（越权防御：path 必须落在 skill 目录内）。"""
         root = _skill_path(skill_dir, name)
-        target = _safe_join(root, path)
-        if not target.is_file():
-            return {"path": path, "error": "not a file"}
-        try:
-            content = target.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            return {"path": path, "error": "binary or unreadable"}
-        return {"path": path, "content": content}
+        return _read_skill_file(root, path)
 
     @router.get("/api/v1/dashboard/skill/{name}/diff")
     def skill_diff(name: str, sha: str) -> dict:
@@ -166,20 +194,8 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
         gating on config.skill_opt.rerun_enabled;走看板既有访问中间件鉴权;
         单次跑 runs_per_case 轮,失败回 error 不崩看板。
         """
-        from xskill.config import get_config
-        cfg = get_config()
-        opt = (cfg.get("skill_opt") or {})
-        if not opt.get("rerun_enabled", True):
-            raise HTTPException(status_code=403, detail="rerun disabled")
-        query = str((body or {}).get("query") or "").strip()
-        if not query:
-            raise HTTPException(status_code=400, detail="query required")
         root = _skill_path(skill_dir, name)
-        try:
-            from xskill.skill.trigger_probe import rerun_probe_case
-            return rerun_probe_case(root.parent, name, query, config=cfg)
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            return {"query": query, "error": str(exc)}
+        return _rerun_trigger_case(root, name, body)
 
     return router
 

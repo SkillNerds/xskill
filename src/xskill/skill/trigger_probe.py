@@ -65,6 +65,99 @@ def _truncate(text: str, cap: int) -> str:
 # 真实诱饵清单（D2/D3/D4/D6）：query 锚点 → main 分支 → cosine top-N → 截断
 # ═══════════════════════════════════════════════════════════════════
 
+def _main_descriptions(skill_root: Path, skill_name: str) -> dict[str, str]:
+    main_desc: dict[str, str] = {}
+    for sk in SkillRepo(skill_root):
+        if sk.name == skill_name:
+            continue
+        if main_sha(sk.path):
+            main_desc[sk.name] = sk.description
+    return main_desc
+
+
+def _ensure_probe_index(
+    index_path: Path,
+    skill_root: Path,
+    main_desc: dict[str, str],
+    embed_client: Any,
+) -> bool:
+    if index_path.is_file():
+        return True
+    if not main_desc:
+        logger.warning(
+            "build_probe_catalog: .skill_index.pkl 缺失且全库无 main 竞争"
+            " skill (%s) → 降级无竞争模式 catalog_size=0：触发率只剩"
+            "“有/没有触发”，无竞争区分度", skill_root,
+        )
+        return False
+    logger.warning(
+        "build_probe_catalog: .skill_index.pkl 缺失 (%s)，从 %d 个 main"
+        " skill 现场重建索引", skill_root, len(main_desc),
+    )
+    try:
+        from xskill.agents.skill_tools import rebuild_skill_index
+        rebuild_skill_index(skill_dir=skill_root, embed_client=embed_client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "build_probe_catalog: 索引重建失败（%s）→ 降级无竞争模式"
+            " catalog_size=0", exc,
+        )
+        return False
+    if index_path.is_file():
+        return True
+    logger.warning(
+        "build_probe_catalog: 重建后索引仍缺失 (%s) → 降级无竞争模式"
+        " catalog_size=0", skill_root,
+    )
+    return False
+
+
+def _load_probe_index(index_path: Path) -> tuple[list[str], Any] | None:
+    import pickle
+    with open(index_path, "rb") as f:
+        index = pickle.load(f)
+    names: list[str] = list(index.get("skill_names") or [])
+    embeddings = index.get("embeddings")
+    if not names or embeddings is None or len(names) != len(embeddings):
+        logger.warning("build_probe_catalog: skill_index 结构异常，诱饵清单为空"
+                       "（无竞争模式 catalog_size=0）")
+        return None
+    return names, embeddings
+
+
+def _rank_probe_index(query: str, embeddings: Any, embed_client: Any) -> np.ndarray:
+    q = np.asarray(embed_client.encode(query), dtype=np.float32)
+    norm = float(np.linalg.norm(q))
+    if norm == 0.0:
+        return np.asarray([], dtype=np.int64)
+    q = q / norm
+    sims = np.asarray(embeddings, dtype=np.float32) @ q
+    return np.argsort(-sims)
+
+
+def _catalog_from_order(
+    order: np.ndarray,
+    names: list[str],
+    main_desc: dict[str, str],
+    skill_name: str,
+    *,
+    max_skills: int,
+    desc_cap: int,
+) -> list[dict]:
+    catalog: list[dict] = []
+    for row in order:
+        nm = names[int(row)]
+        if nm == skill_name or nm not in main_desc:
+            continue
+        desc = _truncate(main_desc[nm], desc_cap)
+        if not desc:
+            continue
+        catalog.append({"name": nm, "description": desc})
+        if len(catalog) >= max_skills:
+            break
+    return catalog
+
+
 def build_probe_catalog(
     query: str,
     skill_name: str,
@@ -98,74 +191,22 @@ def build_probe_catalog(
     skill_root = Path(skill_root)
 
     # main 分支过滤 + name→description（竞争者画像，索引缺失判定也用它）
-    main_desc: dict[str, str] = {}
-    for sk in SkillRepo(skill_root):
-        if sk.name == skill_name:
-            continue
-        if main_sha(sk.path):
-            main_desc[sk.name] = sk.description
+    main_desc = _main_descriptions(skill_root, skill_name)
 
     index_path = skill_root / ".skill_index.pkl"
-    if not index_path.is_file():
-        if not main_desc:
-            logger.warning(
-                "build_probe_catalog: .skill_index.pkl 缺失且全库无 main 竞争"
-                " skill (%s) → 降级无竞争模式 catalog_size=0：触发率只剩"
-                "“有/没有触发”，无竞争区分度", skill_root,
-            )
-            return []
-        logger.warning(
-            "build_probe_catalog: .skill_index.pkl 缺失 (%s)，从 %d 个 main"
-            " skill 现场重建索引", skill_root, len(main_desc),
-        )
-        try:
-            from xskill.agents.skill_tools import rebuild_skill_index
-            rebuild_skill_index(skill_dir=skill_root,
-                                embed_client=embed_client)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "build_probe_catalog: 索引重建失败（%s）→ 降级无竞争模式"
-                " catalog_size=0", exc,
-            )
-            return []
-        if not index_path.is_file():
-            logger.warning(
-                "build_probe_catalog: 重建后索引仍缺失 (%s) → 降级无竞争模式"
-                " catalog_size=0", skill_root,
-            )
-            return []
-
-    import pickle
-    with open(index_path, "rb") as f:
-        index = pickle.load(f)
-    names: list[str] = list(index.get("skill_names") or [])
-    embeddings = index.get("embeddings")
-    if not names or embeddings is None or len(names) != len(embeddings):
-        logger.warning("build_probe_catalog: skill_index 结构异常，诱饵清单为空"
-                       "（无竞争模式 catalog_size=0）")
+    if not _ensure_probe_index(index_path, skill_root, main_desc, embed_client):
         return []
 
     # query 向量 L2 归一 → cosine = embeddings @ q
-    q = np.asarray(embed_client.encode(query), dtype=np.float32)
-    norm = float(np.linalg.norm(q))
-    if norm == 0.0:
+    loaded = _load_probe_index(index_path)
+    if loaded is None:
         return []
-    q = q / norm
-    sims = np.asarray(embeddings, dtype=np.float32) @ q
-    order = np.argsort(-sims)
-
-    catalog: list[dict] = []
-    for row in order:
-        nm = names[int(row)]
-        if nm == skill_name or nm not in main_desc:
-            continue
-        desc = _truncate(main_desc[nm], desc_cap)
-        if not desc:
-            continue
-        catalog.append({"name": nm, "description": desc})
-        if len(catalog) >= max_skills:
-            break
-    return catalog
+    names, embeddings = loaded
+    order = _rank_probe_index(query, embeddings, embed_client)
+    return _catalog_from_order(
+        order, names, main_desc, skill_name,
+        max_skills=max_skills, desc_cap=desc_cap,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -197,6 +238,67 @@ def _stub_list_files(path: str = ".") -> str:  # noqa: ARG001
     return ""
 
 
+def _skill_tools(
+    skill_name: str,
+    candidate_desc: str,
+    catalog: list[dict],
+    *,
+    desc_cap: int,
+    record: dict,
+) -> list[Callable]:
+    tools: list[Callable] = []
+    self_tool = _slug_to_tool(skill_name)
+    tools.append(_make_skill_tool(
+        self_tool, skill_name, _truncate(candidate_desc, desc_cap), record,
+    ))
+    used_tool_names = {self_tool}
+    for entry in catalog:
+        nm = entry["name"]
+        tname = _unique_tool_name(_slug_to_tool(nm), used_tool_names)
+        tools.append(_make_skill_tool(tname, nm, entry["description"], record))
+    return tools
+
+
+def _unique_tool_name(base: str, used_tool_names: set[str]) -> str:
+    tname = base
+    i = 2
+    while tname in used_tool_names:
+        tname = f"{base}_{i}"
+        i += 1
+    used_tool_names.add(tname)
+    return tname
+
+
+def _run_probe_agent(agent: Any, query: str) -> None:
+    try:
+        agent.run(query)
+    except Exception as exc:  # noqa: BLE001
+        # StopAgentRun 已被 agno 内部吞掉；这里兜真实异常（网络等）——记日志，
+        # 当作"未触发"，绝不让一条 case 崩掉整个优化。
+        logger.warning("probe_trigger 代理异常（视作未触发）: %s", exc)
+
+
+def _run_probe_with_timeout(
+    agent: Any, query: str, skill_name: str, case_timeout: float | None,
+) -> None:
+    if not case_timeout or case_timeout <= 0:
+        _run_probe_agent(agent, query)
+        return
+
+    import threading
+    worker = threading.Thread(target=lambda: _run_probe_agent(agent, query),
+                              daemon=True, name=f"probe-{skill_name}")
+    worker.start()
+    worker.join(case_timeout)
+    if worker.is_alive():
+        # 守护线程留它自生自灭（底层超时最终会让它退出）；本 case 按
+        # "未触发"计——宁可保守扣分，不能挂死整个优化循环。
+        logger.warning(
+            "probe_trigger 超过单 case 墙钟上限 %.0fs（视作未触发）: "
+            "skill=%s query=%.60s", case_timeout, skill_name, query,
+        )
+
+
 def probe_trigger(
     query: str,
     skill_name: str,
@@ -223,25 +325,11 @@ def probe_trigger(
         传 None/0 关闭兜底（仅限测试用）。
     """
     record: dict = {}
-    tools: list[Callable] = []
 
     # 候选 skill 在首位（描述同样按 cap 截断，保证与诱饵同一可见条件）
-    self_tool = _slug_to_tool(skill_name)
-    tools.append(_make_skill_tool(
-        self_tool, skill_name, _truncate(candidate_desc, desc_cap), record,
-    ))
-    used_tool_names = {self_tool}
-    for entry in catalog:
-        nm = entry["name"]
-        tname = _slug_to_tool(nm)
-        # 工具名撞车（slug 冲突）→ 加后缀去重，保证一一对应
-        base = tname
-        i = 2
-        while tname in used_tool_names:
-            tname = f"{base}_{i}"
-            i += 1
-        used_tool_names.add(tname)
-        tools.append(_make_skill_tool(tname, nm, entry["description"], record))
+    tools = _skill_tools(
+        skill_name, candidate_desc, catalog, desc_cap=desc_cap, record=record,
+    )
 
     # 只读空操作桩：给代理合理动作空间，零副作用
     tools.append(_stub_read_file)
@@ -252,29 +340,7 @@ def probe_trigger(
         tools=tools,
         tool_call_limit=_PROBE_TOOL_CALL_LIMIT,
     )
-    def _run_agent() -> None:
-        try:
-            agent.run(query)
-        except Exception as exc:  # noqa: BLE001
-            # StopAgentRun 已被 agno 内部吞掉；这里兜真实异常（网络等）——记日志，
-            # 当作"未触发"，绝不让一条 case 崩掉整个优化。
-            logger.warning("probe_trigger 代理异常（视作未触发）: %s", exc)
-
-    if case_timeout and case_timeout > 0:
-        import threading
-        worker = threading.Thread(target=_run_agent, daemon=True,
-                                  name=f"probe-{skill_name}")
-        worker.start()
-        worker.join(case_timeout)
-        if worker.is_alive():
-            # 守护线程留它自生自灭（底层超时最终会让它退出）；本 case 按
-            # "未触发"计——宁可保守扣分，不能挂死整个优化循环。
-            logger.warning(
-                "probe_trigger 超过单 case 墙钟上限 %.0fs（视作未触发）: "
-                "skill=%s query=%.60s", case_timeout, skill_name, query,
-            )
-    else:
-        _run_agent()
+    _run_probe_with_timeout(agent, query, skill_name, case_timeout)
 
     return record.get("triggered") or "NONE"
 

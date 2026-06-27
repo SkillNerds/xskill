@@ -278,23 +278,17 @@ def _price_warn_line(health: Optional[dict]) -> Optional[str]:
     return f"  ⚠ 价格表 {aged} · {reason},沿用旧价"
 
 
-def render_stats(summary: dict, *, status: Optional[dict] = None,
-                 models: Optional[list] = None,
-                 price_health: Optional[dict] = None) -> str:
-    """把 status(进程/角色/处理模型) + usage_summary + 用户模型占比 渲成文本仪表盘。"""
-    status = status or {}
-    role = status.get("role", "?")
-    bar_line = " " + "─" * 56
-    lines = [f"  xskill stats · {role}", bar_line]
-    if price_health is None:
-        try:
-            from xskill import prices
-            price_health = prices.refresh_health()
-        except Exception:  # pylint: disable=broad-exception-caught
-            price_health = None
-    warn = _price_warn_line(price_health)
+def _load_price_health(price_health: Optional[dict]) -> Optional[dict]:
+    if price_health is not None:
+        return price_health
+    try:
+        from xskill import prices
+        return prices.refresh_health()
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None
 
-    # ── 进程 + 处理模型 ──
+
+def _append_status_lines(lines: list[str], status: dict, bar_line: str) -> None:
     if status.get("running"):
         lines.append(f"  ● serve 运行中   pid {status.get('pid')} · :{status.get('port')}")
     else:
@@ -305,7 +299,9 @@ def render_stats(summary: dict, *, status: Optional[dict] = None,
         lines.append(f"  处理模型  {status['llm_model']} @ {prov}{em}")
     lines.append(bar_line)
 
-    # ── 成本/用量 ──
+
+def _append_usage_lines(lines: list[str], summary: dict, warn: Optional[str],
+                        bar_line: str) -> None:
     est = " · 估算" if summary.get("estimated") else ""
     lines.append(f"  💰 成本{est}      今日 ${summary.get('today_usd', 0):.4f}"
                  f"  ·  累计 ${summary.get('total_usd', 0):.4f}")
@@ -322,15 +318,37 @@ def render_stats(summary: dict, *, status: Optional[dict] = None,
                          f"{_fmt_tokens(s['tokens'] or 0):>7}  ${s['cost'] or 0:.4f}")
     lines.append(bar_line)
 
+
+def _append_model_lines(lines: list[str], models: list, bar_line: str) -> None:
+    if not models:
+        return
+    lines.append("  🧩 用户模型 (轨迹占比)")
+    for m in models[:8]:
+        bar = "█" * int(round((m.get("pct") or 0) / 100 * 14))
+        lines.append(f"     {m['model']:<22}{bar:<14} {m.get('pct', 0):>5.1f}%"
+                     f"  ({m.get('trajs', 0)})")
+    lines.append(bar_line)
+
+
+def render_stats(summary: dict, *, status: Optional[dict] = None,
+                 models: Optional[list] = None,
+                 price_health: Optional[dict] = None) -> str:
+    """把 status(进程/角色/处理模型) + usage_summary + 用户模型占比 渲成文本仪表盘。"""
+    status = status or {}
+    role = status.get("role", "?")
+    bar_line = " " + "─" * 56
+    lines = [f"  xskill stats · {role}", bar_line]
+    price_health = _load_price_health(price_health)
+    warn = _price_warn_line(price_health)
+
+    # ── 进程 + 处理模型 ──
+    _append_status_lines(lines, status, bar_line)
+
+    # ── 成本/用量 ──
+    _append_usage_lines(lines, summary, warn, bar_line)
+
     # ── 用户 agent 模型占比(轨迹来源)──
-    models = models or []
-    if models:
-        lines.append("  🧩 用户模型 (轨迹占比)")
-        for m in models[:8]:
-            bar = "█" * int(round((m.get("pct") or 0) / 100 * 14))
-            lines.append(f"     {m['model']:<22}{bar:<14} {m.get('pct', 0):>5.1f}%"
-                         f"  ({m.get('trajs', 0)})")
-        lines.append(bar_line)
+    _append_model_lines(lines, models or [], bar_line)
     return "\n".join(lines)
 
 

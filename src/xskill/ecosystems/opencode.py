@@ -27,23 +27,19 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 import sqlite3
 import threading
 import time
 from pathlib import Path
 from typing import Iterable
 
-from xskill.ecosystems._fallback import (
-    InstallMode, _is_link_or_junction, install_dir,
-)
 from xskill.ecosystems._shared import (
     SqliteEcosystemSpec,
     _agents_skills_path,
     _install_all_with,
+    _install_skill_into,
     _sanitize_for_filename,
     _scan_seen_sessions,
-    _source_md_for_side,
     submit_trajectory,
 )
 
@@ -123,49 +119,62 @@ def _render_patch_part(part: dict) -> str:
     return f"## Patch\n\n{body}"
 
 
+def _render_user_message(parts: list[dict]) -> list[str]:
+    texts = [
+        str(p.get("text") or "").strip()
+        for p in parts
+        if p.get("type") == "text"
+    ]
+    texts = [t for t in texts if t]
+    return [f"## User\n\n{chr(10).join(texts)}"] if texts else []
+
+
+def _append_assistant_text(buf: list[str], part: dict, prefix: str = "") -> None:
+    txt = str(part.get("text") or "").strip()
+    if txt:
+        buf.append(f"{prefix}{txt}" if prefix else txt)
+
+
+def _append_non_text_part(sections: list[str], part: dict) -> None:
+    ptype = part.get("type")
+    if ptype == "tool":
+        sections.append(_render_tool_part(part))
+    elif ptype == "patch":
+        sections.append(_render_patch_part(part))
+    else:
+        sections.append(
+            f"## Part: {ptype}\n\n```json\n"
+            + json.dumps(part, ensure_ascii=False, indent=2) + "\n```")
+
+
+def _flush_assistant_buf(sections: list[str], buf: list[str]) -> None:
+    if buf:
+        sections.append("## Assistant\n\n" + "\n\n".join(buf))
+        buf.clear()
+
+
 def _render_message(role: str, parts: list[dict]) -> list[str]:
     """一条 message + 它的 parts → 若干 markdown 段（保持 part 时间顺序）。"""
     if role == "user":
-        texts = [str(p.get("text") or "").strip()
-                 for p in parts if p.get("type") == "text"]
-        texts = [t for t in texts if t]
-        return [f"## User\n\n{chr(10).join(texts)}"] if texts else []
+        return _render_user_message(parts)
 
     # assistant（及其他非 user role）：reasoning / text 累积成 ## Assistant，
     # 遇到 tool / patch 就先 flush 再单独成段，保持真实时间线。
     sections: list[str] = []
     buf: list[str] = []
 
-    def flush() -> None:
-        if buf:
-            sections.append("## Assistant\n\n" + "\n\n".join(buf))
-            buf.clear()
-
     for p in parts:
         ptype = p.get("type")
         if ptype in _NOISE_PART_TYPES:
             continue
         if ptype == "reasoning":
-            txt = str(p.get("text") or "").strip()
-            if txt:
-                buf.append(f"_(reasoning)_\n\n{txt}")
+            _append_assistant_text(buf, p, prefix="_(reasoning)_\n\n")
         elif ptype == "text":
-            txt = str(p.get("text") or "").strip()
-            if txt:
-                buf.append(txt)
-        elif ptype == "tool":
-            flush()
-            sections.append(_render_tool_part(p))
-        elif ptype == "patch":
-            flush()
-            sections.append(_render_patch_part(p))
+            _append_assistant_text(buf, p)
         else:
-            # 未知 part type：不静默丢，原样留个 JSON 块
-            flush()
-            sections.append(
-                f"## Part: {ptype}\n\n```json\n"
-                + json.dumps(p, ensure_ascii=False, indent=2) + "\n```")
-    flush()
+            _flush_assistant_buf(sections, buf)
+            _append_non_text_part(sections, p)
+    _flush_assistant_buf(sections, buf)
     return sections
 
 
@@ -333,73 +342,83 @@ class SqliteIngester:
 
             for sid, directory, time_updated in sessions:
                 if sid in self._seen:
-                    # cursor 落后于 seen 集合时（重启场景），跳过已桥的
-                    if time_updated > self._cursor_ms:
-                        self._cursor_ms = time_updated
+                    self._advance_cursor(time_updated)
                     continue
 
-                # 抽这条 session 的所有 message（含 id —— 用来关联 part 表）
-                cur.execute(
-                    "SELECT id, data FROM message WHERE session_id = ? "
-                    "ORDER BY time_created",
-                    (sid,),
+                messages = self._load_session_messages(cur, sid)
+                result = self._submit_sqlite_session(
+                    sid, directory, time_updated, messages,
                 )
-                msg_rows = cur.fetchall()
-                # OpenCode 把消息内容存在 part 表（message 只是信封）。一次取
-                # 全 session 的 part，按 message_id 分组挂回各 message。
-                cur.execute(
-                    "SELECT message_id, data FROM part WHERE session_id = ? "
-                    "ORDER BY time_created",
-                    (sid,),
-                )
-                parts_by_msg: dict[str, list[dict]] = {}
-                for mid, pdata in cur.fetchall():
-                    parts_by_msg.setdefault(mid, []).append(
-                        self._parse_json_col(pdata))
-                messages = []
-                for mid, mdata in msg_rows:
-                    msg = self._parse_json_col(mdata)
-                    msg["_parts"] = parts_by_msg.get(mid, [])
-                    messages.append(msg)
-
-                # 生成 traj_id：含 project basename + sid8（同 CC 命名风格）；
-                # 前缀按 spec.traj_id_prefix 派生，避免对 ecosystem 硬编码 if 分支。
-                traj_id = self._sqlite_traj_id(sid, directory)
-                # 用户 agent 模型(批2):message.data.model = {providerID, modelID}
-                model = next(
-                    (m["model"].get("modelID") for m in messages
-                     if isinstance(m.get("model"), dict) and m["model"].get("modelID")),
-                    "",
-                )
-                # 拼 markdown 内容
-                md_content = self._render_session_md(
-                    sid=sid, directory=directory, messages=messages,
-                )
-                result = submit_trajectory(
-                    content=md_content,
-                    format="raw",
-                    traj_id=traj_id,
-                    traj_dir=self.target_traj_dir,
-                    metadata={
-                        "ecosystem": self.spec.label,
-                        "session_id": sid,
-                        "cwd": directory,
-                        **({"model": model} if model else {}),
-                    },
-                )
-                result["session_id"] = sid
-                result["session_directory"] = directory
-                result["session_time_updated"] = time_updated
-                result["messages"] = messages  # 让单测能直接断言抽取正确性
                 submitted.append(result)
                 self._seen.add(sid)
-                if time_updated > self._cursor_ms:
-                    self._cursor_ms = time_updated
+                self._advance_cursor(time_updated)
         finally:
             conn.close()
         return submitted
 
     # ── internals ─────────────────────────────────────────────────
+
+    def _advance_cursor(self, time_updated: int) -> None:
+        if time_updated > self._cursor_ms:
+            self._cursor_ms = time_updated
+
+    def _load_session_messages(self, cur, sid: str) -> list[dict]:
+        cur.execute(
+            "SELECT id, data FROM message WHERE session_id = ? "
+            "ORDER BY time_created",
+            (sid,),
+        )
+        msg_rows = cur.fetchall()
+        cur.execute(
+            "SELECT message_id, data FROM part WHERE session_id = ? "
+            "ORDER BY time_created",
+            (sid,),
+        )
+        parts_by_msg: dict[str, list[dict]] = {}
+        for mid, pdata in cur.fetchall():
+            parts_by_msg.setdefault(mid, []).append(self._parse_json_col(pdata))
+
+        messages = []
+        for mid, mdata in msg_rows:
+            msg = self._parse_json_col(mdata)
+            msg["_parts"] = parts_by_msg.get(mid, [])
+            messages.append(msg)
+        return messages
+
+    @staticmethod
+    def _session_model(messages: list[dict]) -> str:
+        return next(
+            (m["model"].get("modelID") for m in messages
+             if isinstance(m.get("model"), dict) and m["model"].get("modelID")),
+            "",
+        )
+
+    def _submit_sqlite_session(
+        self,
+        sid: str,
+        directory: str,
+        time_updated: int,
+        messages: list[dict],
+    ) -> dict:
+        model = self._session_model(messages)
+        metadata = {
+            "ecosystem": self.spec.label,
+            "session_id": sid,
+            "cwd": directory,
+            **({"model": model} if model else {}),
+        }
+        result = submit_trajectory(
+            content=self._render_session_md(sid=sid, directory=directory, messages=messages),
+            format="raw",
+            traj_id=self._sqlite_traj_id(sid, directory),
+            traj_dir=self.target_traj_dir,
+            metadata=metadata,
+        )
+        result["session_id"] = sid
+        result["session_directory"] = directory
+        result["session_time_updated"] = time_updated
+        result["messages"] = messages
+        return result
 
     @staticmethod
     def _open_ro(db_path: Path) -> "sqlite3.Connection":
@@ -492,54 +511,13 @@ def install_to_opencode(
 
     返回 dest 下的 SKILL.md 路径（约定，与 CC 版一致）。
     """
-    skill_path = Path(skill_path).resolve()
-    if not skill_path.is_dir():
-        raise NotADirectoryError(f"skill_path is not a directory: {skill_path}")
-
-    # 校验 source 齐备（main: SKILL.md 必须有；staging: .canary/<name>/SKILL.md 必须有）
-    _source_md_for_side(skill_path, side)
-
-    if side == "main":
-        src_dir = skill_path
-    elif side == "staging":
-        src_dir = (skill_path.parent / ".canary" / skill_path.name).resolve()
-    else:
-        raise ValueError(f"side must be 'main' or 'staging', got {side!r}")
-
-    name = skill_path.name
     root = Path(target_root) if target_root else Path.home()
-    skills_root = _agents_skills_path(root)
-    skills_root.mkdir(parents=True, exist_ok=True)
-    dest = skills_root / name
-
-    # 已有 link/junction 且指向正确：no-op。``_is_link_or_junction``
-    # 而非 ``is_symlink`` —— Windows 对 junction 返回 False（issue #35 同源
-    # bug），统一处理 link/junction 两种 reparse point。
-    if _is_link_or_junction(dest):
-        try:
-            cur = dest.resolve(strict=False)
-        except OSError:
-            cur = None
-        if cur == src_dir:
-            return dest / "SKILL.md"
-        dest.unlink()
-    elif dest.exists():
-        if dest.is_dir():
-            backup = skills_root / f".{name}.replaced-by-symlink"
-            if backup.exists():
-                shutil.rmtree(backup)
-            dest.rename(backup)
-        else:
-            dest.unlink()
-
-    mode: InstallMode = install_dir(src_dir, dest)
-    if mode == "copy":
-        logger.warning(
-            "install_to_opencode(%s): copy-mode install at %s — "
-            "live-update / user-edit-absorb are disabled on this destination",
-            name, dest,
-        )
-    return dest / "SKILL.md"
+    return _install_skill_into(
+        Path(skill_path),
+        _agents_skills_path(root),
+        side,
+        ecosystem_label="opencode",
+    )
 
 
 def install_all_to_opencode(

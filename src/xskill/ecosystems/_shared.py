@@ -270,6 +270,42 @@ def _source_md_for_side(skill_path: Path, side: str) -> Path:
     raise ValueError(f"side must be 'main' or 'staging', got {side!r}")
 
 
+def _source_dir_for_side(skill_path: Path, side: str) -> Path:
+    _source_md_for_side(skill_path, side)
+    if side == "main":
+        return skill_path
+    if side == "staging":
+        return (skill_path.parent / ".canary" / skill_path.name).resolve()
+    raise ValueError(f"side must be 'main' or 'staging', got {side!r}")
+
+
+def _prepare_install_dest(dest: Path, skills_root: Path, name: str, src_dir: Path) -> bool:
+    """Clean an existing install destination.
+
+    Returns True when dest already points at ``src_dir`` and installation can no-op.
+    """
+    if _is_link_or_junction(dest):
+        try:
+            cur = dest.resolve(strict=False)
+        except OSError:
+            cur = None
+        if cur == src_dir:
+            return True
+        dest.unlink()
+        return False
+
+    if not dest.exists():
+        return False
+    if dest.is_dir():
+        backup = skills_root / f".{name}.replaced-by-symlink"
+        if backup.exists():
+            shutil.rmtree(backup)
+        dest.rename(backup)
+    else:
+        dest.unlink()
+    return False
+
+
 def _install_skill_into(
     skill_path: Path,
     skills_root: Path,
@@ -300,16 +336,7 @@ def _install_skill_into(
     if not skill_path.is_dir():
         raise NotADirectoryError(f"skill_path is not a directory: {skill_path}")
 
-    # 校验源是否齐备（main: SKILL.md 必须有；staging: .canary/<name>/SKILL.md 必须有）
-    _source_md_for_side(skill_path, side)
-
-    if side == "main":
-        src_dir = skill_path
-    elif side == "staging":
-        src_dir = (skill_path.parent / ".canary" / skill_path.name).resolve()
-    else:
-        raise ValueError(f"side must be 'main' or 'staging', got {side!r}")
-
+    src_dir = _source_dir_for_side(skill_path, side)
     name = skill_path.name
     skills_root.mkdir(parents=True, exist_ok=True)
     dest = skills_root / name
@@ -317,27 +344,8 @@ def _install_skill_into(
     # 已有 symlink/junction 且指向正确：no-op。``_is_link_or_junction``
     # 而非 ``is_symlink`` —— pathlib 在 Windows 对 junction 返回 False
     # （issue #35 同源 bug），统一处理 link/junction 两种 reparse point。
-    if _is_link_or_junction(dest):
-        try:
-            cur = dest.resolve(strict=False)
-        except OSError:
-            cur = None
-        if cur == src_dir:
-            return dest / "SKILL.md"
-        # 指向别处的 link/junction 或断链 → ``unlink`` 删 reparse 本体
-        # （不递归动 target）
-        dest.unlink()
-    elif dest.exists():
-        # 旧 install 留下的真实目录或文件 → 删（保留备份避免误删用户手写）。
-        # ``.replaced-by-symlink`` 备份保留——这是用户手写 skill 目录的保护机制，
-        # 不是 boilerplate；不能直接走 ``_reset_dest`` 删掉。
-        if dest.is_dir():
-            backup = skills_root / f".{name}.replaced-by-symlink"
-            if backup.exists():
-                shutil.rmtree(backup)
-            dest.rename(backup)
-        else:
-            dest.unlink()
+    if _prepare_install_dest(dest, skills_root, name, src_dir):
+        return dest / "SKILL.md"
 
     mode: InstallMode = install_dir(src_dir, dest)
     if mode == "copy":
@@ -562,15 +570,43 @@ def adapt_trajectory(
     raise ValueError(f"unsupported trajectory format: {format!r}")
 
 
-def _adapt_json(content: str, metadata: dict) -> tuple[str, dict]:
-    """Convert a JSON trajectory to markdown + metadata."""
-    data = json.loads(content)
-
-    # Merge top-level keys (except messages/tool_calls) into metadata
+def _json_metadata(data: dict, metadata: dict) -> dict:
     meta = dict(metadata)
     for key in ("model", "instance_id", "repo", "task", "result", "exit_status"):
         if key in data and key not in meta:
             meta[key] = data[key]
+    return meta
+
+
+def _append_json_message(lines: list[str], msg: dict) -> None:
+    role = msg.get("role", "unknown")
+    text = msg.get("content", "")
+    lines.append(f"## {role.capitalize()}")
+    lines.append("")
+    if isinstance(text, str):
+        lines.append(text)
+    elif isinstance(text, list):
+        for part in text:
+            lines.append(part.get("text", str(part)) if isinstance(part, dict) else str(part))
+    lines.append("")
+
+
+def _append_json_tool_call(lines: list[str], tc: dict) -> None:
+    name = tc.get("name", tc.get("function", {}).get("name", "unknown"))
+    args = tc.get("arguments", tc.get("function", {}).get("arguments", ""))
+    lines.append(f"### {name}")
+    lines.append("```")
+    lines.append(args if isinstance(args, str) else json.dumps(args, ensure_ascii=False))
+    lines.append("```")
+    if tc.get("output"):
+        lines.append(f"\n**output**:\n```\n{tc['output']}\n```")
+    lines.append("")
+
+
+def _adapt_json(content: str, metadata: dict) -> tuple[str, dict]:
+    """Convert a JSON trajectory to markdown + metadata."""
+    data = json.loads(content)
+    meta = _json_metadata(data, metadata)
 
     # Build markdown from messages / tool_calls
     lines: list[str] = []
@@ -585,34 +621,13 @@ def _adapt_json(content: str, metadata: dict) -> tuple[str, dict]:
     tool_calls = data.get("tool_calls", [])
 
     for msg in messages:
-        role = msg.get("role", "unknown")
-        text = msg.get("content", "")
-        lines.append(f"## {role.capitalize()}")
-        lines.append("")
-        if isinstance(text, str):
-            lines.append(text)
-        elif isinstance(text, list):
-            # multi-part content
-            for part in text:
-                if isinstance(part, dict):
-                    lines.append(part.get("text", str(part)))
-                else:
-                    lines.append(str(part))
-        lines.append("")
+        _append_json_message(lines, msg)
 
     if tool_calls:
         lines.append("## Tool Calls")
         lines.append("")
         for tc in tool_calls:
-            name = tc.get("name", tc.get("function", {}).get("name", "unknown"))
-            args = tc.get("arguments", tc.get("function", {}).get("arguments", ""))
-            lines.append(f"### {name}")
-            lines.append("```")
-            lines.append(args if isinstance(args, str) else json.dumps(args, ensure_ascii=False))
-            lines.append("```")
-            if tc.get("output"):
-                lines.append(f"\n**output**:\n```\n{tc['output']}\n```")
-            lines.append("")
+            _append_json_tool_call(lines, tc)
 
     md_content = "\n".join(lines)
     return md_content, meta
@@ -885,55 +900,92 @@ class JsonlIngester:
         submitted: list[dict] = []
         for jsonl_path in sorted(sessions_root.glob(self.spec.sessions_glob)):
             sid = self.spec.session_id_from_path(jsonl_path)
-            try:
-                src_mtime = jsonl_path.stat().st_mtime
-            except OSError:
-                continue  # 扫描和写入竞态：文件刚被挪走，下轮再看
-            if settle > 0 and (now - src_mtime) < settle:
-                # 还在写（或刚停笔未满 settle）——本轮不碰，新旧一视同仁。
+            bridge_state = self._bridge_state_for_path(
+                jsonl_path, sid, seen, bridged_md, settle, now,
+            )
+            if bridge_state is None:
                 continue
-
-            rebridged = False
-            if sid in seen:
-                md_path = bridged_md.get(
-                    _sanitize_for_filename(sid, maxlen=8) or "nosid")
-                if md_path is None:
-                    continue  # 见过但 bridge 目录无 md（如 assignments 记录）→ 不回头
-                try:
-                    if src_mtime <= md_path.stat().st_mtime:
-                        continue  # 转换之后源没再增长——幂等跳过
-                except OSError:
-                    continue
-                rebridged = True  # 源在转换后又增长 → 全量重转换覆盖
-
-            content = jsonl_path.read_text(encoding="utf-8", errors="ignore")
+            content, rebridged = bridge_state
             if not content.strip():
                 continue
-            traj_id = self._make_traj_id(content, sid)
-            result = submit_trajectory(
-                content=content,
-                format=self.spec.adapter_format,
-                traj_id=traj_id,
-                traj_dir=target_traj_dir,
+            result = self._submit_jsonl_session(
+                content, sid, jsonl_path, target_traj_dir, rebridged,
             )
-            result["session_id"] = sid
-            result["source_jsonl"] = str(jsonl_path)
-            result["session_start_t"] = _session_start_t(jsonl_path)
-            result["ecosystem"] = self.spec.name
-            if rebridged:
-                result["rebridged"] = True
-                # 旧残骸轨迹拆出的 atom / 索引 / DB 状态作废，从头重拆。
-                # 函数内 import：registry 依赖 config，模块级 import 会成环。
-                from xskill.pipeline.registry import reset_trajectories
-                n = reset_trajectories(traj_id=traj_id)
-                logger.info(
-                    "JsonlIngester(%s): source grew after bridge, re-bridged "
-                    "%s (reset %d trajectory row(s))",
-                    self.spec.name, traj_id, n,
-                )
             submitted.append(result)
             seen.add(sid)
         return submitted
+
+    def _bridge_state_for_path(
+        self,
+        jsonl_path: Path,
+        sid: str,
+        seen: set[str],
+        bridged_md: dict[str, Path],
+        settle: float,
+        now: float,
+    ) -> tuple[str, bool] | None:
+        try:
+            src_mtime = jsonl_path.stat().st_mtime
+        except OSError:
+            return None
+        if settle > 0 and (now - src_mtime) < settle:
+            return None
+        rebridged = self._needs_rebridge(sid, seen, bridged_md, src_mtime)
+        if rebridged is None:
+            return None
+        return jsonl_path.read_text(encoding="utf-8", errors="ignore"), rebridged
+
+    def _needs_rebridge(
+        self,
+        sid: str,
+        seen: set[str],
+        bridged_md: dict[str, Path],
+        src_mtime: float,
+    ) -> bool | None:
+        if sid not in seen:
+            return False
+        md_path = bridged_md.get(_sanitize_for_filename(sid, maxlen=8) or "nosid")
+        if md_path is None:
+            return None
+        try:
+            if src_mtime <= md_path.stat().st_mtime:
+                return None
+        except OSError:
+            return None
+        return True
+
+    def _submit_jsonl_session(
+        self,
+        content: str,
+        sid: str,
+        jsonl_path: Path,
+        target_traj_dir: Path,
+        rebridged: bool,
+    ) -> dict:
+        traj_id = self._make_traj_id(content, sid)
+        result = submit_trajectory(
+            content=content,
+            format=self.spec.adapter_format,
+            traj_id=traj_id,
+            traj_dir=target_traj_dir,
+        )
+        result["session_id"] = sid
+        result["source_jsonl"] = str(jsonl_path)
+        result["session_start_t"] = _session_start_t(jsonl_path)
+        result["ecosystem"] = self.spec.name
+        if rebridged:
+            self._reset_rebridged_trajectory(result, traj_id)
+        return result
+
+    def _reset_rebridged_trajectory(self, result: dict, traj_id: str) -> None:
+        result["rebridged"] = True
+        from xskill.pipeline.registry import reset_trajectories
+        n = reset_trajectories(traj_id=traj_id)
+        logger.info(
+            "JsonlIngester(%s): source grew after bridge, re-bridged "
+            "%s (reset %d trajectory row(s))",
+            self.spec.name, traj_id, n,
+        )
 
     def _bridged_md_by_sid8(self, target_traj_dir: Path) -> dict[str, Path]:
         """bridge 目录里已有的 ``traj_*.md``，按文件名尾段 sid8 建索引。

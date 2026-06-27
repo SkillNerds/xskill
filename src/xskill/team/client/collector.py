@@ -187,6 +187,55 @@ class TeamCollector:
         self._ingesters.clear()
 
     # ── pending ─────────────────────────────────────────────────
+    def _pending_from_file(
+        self,
+        md: Path,
+        now: float,
+        seen_ids: set[str],
+    ) -> tuple[PendingTrajectory | None, bool]:
+        """Return one uploadable trajectory and whether debounce state changed."""
+        if not md.is_file():
+            return None, False
+        traj_id = md.stem
+        seen_ids.add(traj_id)
+        # 闸 1：mtime 静默窗口
+        if (now - md.stat().st_mtime) < self.quiet_seconds:
+            return None, False
+        raw = md.read_text(encoding="utf-8")
+        content = redact_text(raw)
+        sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if self._cursor.get(traj_id) == sha:
+            # 这个版本已上传过——清掉残留去抖状态
+            return None, self._change_state.pop(traj_id, None) is not None
+
+        # 闸 2：hash-变更去抖。内容（hash）每变一次就把 since 重置成此刻,
+        # 必须自上次变更起稳定满 min_change_interval 秒才放行。
+        changed = False
+        st = self._change_state.get(traj_id)
+        if st is None or st.get("sha") != sha:
+            st = {"sha": sha, "since": now}
+            self._change_state[traj_id] = st
+            changed = True
+        if (now - st["since"]) < self.min_change_interval:
+            return None, changed  # 还没稳定满窗口,继续拦
+
+        pending = PendingTrajectory(
+            traj_id=traj_id,
+            content=content,
+            sha256=sha,
+            model=_sidecar_model(md),
+            harness=_harness_for(md),
+        )
+        return pending, changed
+
+    def _drop_missing_change_state(self, seen_ids: set[str]) -> bool:
+        """Remove debounce entries for traj files that no longer exist."""
+        changed = False
+        for gone in [k for k in self._change_state if k not in seen_ids]:
+            del self._change_state[gone]
+            changed = True
+        return changed
+
     def pending(self) -> list[PendingTrajectory]:
         """扫 ``~/.xskill/*_sessions/`` 所有 traj_*.md，吐出满足放行条件的轨迹。
 
@@ -204,37 +253,12 @@ class TeamCollector:
         seen_ids: set[str] = set()
         changed = False
         for md in sorted(self._bridge_root.glob("*_sessions/traj_*.md")):
-            if not md.is_file():
-                continue
-            traj_id = md.stem
-            seen_ids.add(traj_id)
-            # 闸 1：mtime 静默窗口
-            if (now - md.stat().st_mtime) < self.quiet_seconds:
-                continue
-            raw = md.read_text(encoding="utf-8")
-            content = redact_text(raw)
-            sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
-            if self._cursor.get(traj_id) == sha:
-                # 这个版本已上传过——清掉残留去抖状态
-                if self._change_state.pop(traj_id, None) is not None:
-                    changed = True
-                continue
-            # 闸 2：hash-变更去抖。内容（hash）每变一次就把 since 重置成此刻,
-            # 必须自上次变更起稳定满 min_change_interval 秒才放行。
-            st = self._change_state.get(traj_id)
-            if st is None or st.get("sha") != sha:
-                st = {"sha": sha, "since": now}
-                self._change_state[traj_id] = st
-                changed = True
-            if (now - st["since"]) < self.min_change_interval:
-                continue  # 还没稳定满窗口,继续拦（min_change_interval<=0 时恒放行）
-            out.append(PendingTrajectory(traj_id=traj_id, content=content,
-                                         sha256=sha, model=_sidecar_model(md),
-                                         harness=_harness_for(md)))
+            pending, item_changed = self._pending_from_file(md, now, seen_ids)
+            changed = changed or item_changed
+            if pending is not None:
+                out.append(pending)
         # 清理已消失的 traj 的去抖状态,避免无限增长
-        for gone in [k for k in self._change_state if k not in seen_ids]:
-            del self._change_state[gone]
-            changed = True
+        changed = self._drop_missing_change_state(seen_ids) or changed
         if changed:
             self._save_change_state()
         return out

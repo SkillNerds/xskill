@@ -430,6 +430,53 @@ point. No preamble. Output the 2 sentences only.
 ---"""
 
 
+def _resolve_skill_target(skill_dir: Path, skill_name: str) -> Path | None:
+    """Return the requested skill dir, falling back to its slug variant."""
+    target = skill_dir / skill_name
+    if target.exists():
+        return target
+    target = skill_dir / _slugify(skill_name)
+    return target if target.exists() else None
+
+
+def _merge_source_trajs(meta: dict, source_trajs: list[str] | None) -> bool:
+    """Union append source trajectories and report whether the set changed."""
+    existing_trajs = list(meta.get("source_trajs") or [])
+    changed = False
+    for traj in list(source_trajs or []):
+        if traj not in existing_trajs:
+            existing_trajs.append(traj)
+            changed = True
+    meta["source_trajs"] = existing_trajs
+    return changed
+
+
+def _refresh_metadata_summary(llm, skill_name: str, fm: dict, body: str,
+                              meta: dict) -> None:
+    """Best-effort LLM summary refresh for embedding metadata."""
+    if not llm:
+        return
+    skill_text = (fm.get("description", "") + "\n\n" + body)[:4000]
+    try:
+        summary = llm.chat(SUMMARY_PROMPT.format(skill_md=skill_text)).strip()
+    except Exception as e:
+        logger.warning(f"summary generation failed for {skill_name}: {e}")
+        return
+    if summary:
+        meta["summary"] = summary[:400]
+
+
+def _unlink_if_exists(path: Path, *, log_msg: str) -> None:
+    """Remove a legacy file if present, preserving historical best-effort mode."""
+    if not path.exists():
+        return
+    try:
+        path.unlink()
+        logger.info(log_msg)
+    except Exception:
+        pass
+
+
 def update_frontmatter_metadata(skill_name: str, source_trajs: list[str] | None = None) -> str:
     """
     Update frontmatter.metadata on a skill's SKILL.md:
@@ -446,43 +493,19 @@ def update_frontmatter_metadata(skill_name: str, source_trajs: list[str] | None 
     """
     skill_dir = _ctx["skill_dir"]
     llm = _ctx["llm_client"]
-    slug = _slugify(skill_name)
-    target = skill_dir / skill_name
-    if not target.exists():
-        # try slug variant
-        target = skill_dir / slug
-    if not target.exists():
+    target = _resolve_skill_target(skill_dir, skill_name)
+    if target is None:
         return f"error: skill directory not found ({skill_name})"
 
     fm, body, path = _read_skill_md(target)
     meta = fm.setdefault("metadata", {})
 
-    # source_trajs union
-    existing_trajs = list(meta.get("source_trajs") or [])
-    new_trajs = list(source_trajs or [])
-    changed_trajs = False
-    for t in new_trajs:
-        if t not in existing_trajs:
-            existing_trajs.append(t)
-            changed_trajs = True
-    meta["source_trajs"] = existing_trajs
-
-    # version bump only if source_trajs actually changed
-    if changed_trajs:
+    if _merge_source_trajs(meta, source_trajs):
         meta["version"] = int(meta.get("version", 0)) + 1
 
     _sanitize_frontmatter_dates(fm)  # 兜底：覆盖未来日期 / 不合法 created
 
-    # LLM-generated 2-sentence summary (for embeddings)
-    if llm:
-        skill_text = (fm.get("description", "") + "\n\n" + body)[:4000]
-        try:
-            summary = llm.chat(SUMMARY_PROMPT.format(skill_md=skill_text)).strip()
-            # keep short
-            if summary:
-                meta["summary"] = summary[:400]
-        except Exception as e:
-            logger.warning(f"summary generation failed for {skill_name}: {e}")
+    _refresh_metadata_summary(llm, skill_name, fm, body, meta)
 
     # write back
     new_text = fm_serialize(fm, body)
@@ -491,20 +514,13 @@ def update_frontmatter_metadata(skill_name: str, source_trajs: list[str] | None 
     upper = target / "SKILL.md"
     upper.write_text(new_text, encoding="utf-8")
     if path.name == "skill.md" and path.exists():
-        try:
-            path.unlink()
-            logger.info(f"removed legacy {path}")
-        except Exception:
-            pass
+        _unlink_if_exists(path, log_msg=f"removed legacy {path}")
 
     # delete legacy .abstract if present
-    old_abstract = target / ".abstract"
-    if old_abstract.exists():
-        try:
-            old_abstract.unlink()
-            logger.info(f"removed legacy .abstract for {skill_name}")
-        except Exception:
-            pass
+    _unlink_if_exists(
+        target / ".abstract",
+        log_msg=f"removed legacy .abstract for {skill_name}",
+    )
 
     logger.info(f"📋 frontmatter updated: {upper} (v{meta.get('version')})")
     return json.dumps(meta, ensure_ascii=False, indent=2, default=str)

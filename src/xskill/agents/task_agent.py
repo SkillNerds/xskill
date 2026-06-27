@@ -452,32 +452,18 @@ class TaskAgent:
                 used_skills: agent 实际触发的 skill 名列表,没有传 []。
                 ux_score: 1~10 整数。
             """
-            try:
-                sl = int(start_line)
-            except (TypeError, ValueError):
-                return f"error: start_line 必须是整数 (got {start_line!r})"
-            if sl not in valid:
-                return (f"error: start_line {sl} 不是可切的 ## User 回合 "
-                        f"(合法行号: {ordered_valid})")
-            if sl < resume_line:
-                return (f"error: start_line {sl} < 续接点 {resume_line}；"
-                        "只能拆续接点之后的新增内容")
-            if submitted and sl <= submitted[-1]["start_line"]:
-                return (f"error: start_line 必须严格大于上一条 "
-                        f"({submitted[-1]['start_line']})，本次 {sl}")
-            if not (intent or "").strip() or not (summary or "").strip():
-                return "error: intent 和 summary 必填"
-            submitted.append({
-                "start_line": sl,
-                "intent": intent.strip(),
-                "summary": summary.strip(),
-                "tags": [str(t).strip() for t in (tags or []) if str(t).strip()],
-                "used_skills": [str(s).strip() for s in (used_skills or [])
-                                if str(s).strip()],
-                "ux_score": ux_score if isinstance(ux_score, int)
-                and 1 <= ux_score <= 10 else None,
-            })
-            return f"ok: 已记录 atom #{len(submitted)} (start_line={sl})"
+            return self._submit_atom(
+                submitted=submitted,
+                valid=valid,
+                ordered_valid=ordered_valid,
+                resume_line=resume_line,
+                start_line=start_line,
+                intent=intent,
+                summary=summary,
+                tags=tags,
+                used_skills=used_skills,
+                ux_score=ux_score,
+            )
 
         def look(line: int, before: int = 40, after: int = 20) -> str:
             """读轨迹某行附近的原文（含向前看,判新意图 vs 追问的主力）。
@@ -487,18 +473,10 @@ class TaskAgent:
                 before: 向前看多少行（默认 40）。
                 after: 向后看多少行（默认 20）。
             """
-            try:
-                ctr = int(line)
-                bef = max(0, int(before))
-                aft = max(0, int(after))
-            except (TypeError, ValueError):
-                return "error: line/before/after 必须是整数"
-            lo = max(1, ctr - bef)
-            hi = min(total_lines, ctr + aft)
-            out = []
-            for ln in range(lo, hi + 1):
-                out.append(f"{ln}: {all_lines[ln - 1].rstrip(chr(10))}")
-            return "\n".join(out) or "(empty range)"
+            return self._look_lines(
+                line=line, before=before, after=after,
+                all_lines=all_lines, total_lines=total_lines,
+            )
 
         def context_budget() -> str:
             """返回当前上下文 token 预算：已用 / 上限 / 剩余。
@@ -507,28 +485,12 @@ class TaskAgent:
             每次请求后写进 thread-local）；首次调用（还没发过请求）时退化为
             4 字符/token 估当前 user 消息体量。上限取 resolve 后的 max_context。
             """
-            from xskill.agents.context_budget import (
-                get_used_tokens, get_max_context, CHARS_PER_TOKEN)
-            used = get_used_tokens()
-            if used <= 0:
-                used = len(user_msg) // CHARS_PER_TOKEN
-            cap = get_max_context()
-            return json.dumps({
-                "used_tokens": used,
-                "max_tokens": cap,
-                "remaining_tokens": max(0, cap - used),
-            }, ensure_ascii=False)
+            return self._context_budget_json(user_msg)
 
         def my_atoms() -> str:
             """返回本轮已提交 atom 的行号区间（自查进度/覆盖）。"""
-            if not submitted:
-                return "(本轮尚未提交任何 atom)"
-            starts = [s["start_line"] for s in submitted]
-            spans = []
-            for i, st in enumerate(starts):
-                end = starts[i + 1] if i + 1 < len(starts) else total_lines + 1
-                spans.append(f"[{st},{end})")
-            return " ".join(spans)
+            return self._format_submitted_spans(
+                submitted, eof_line=total_lines + 1)
 
         user_msg = self._build_user_msg(
             traj_id=traj_id, traj_path=traj_path, source_model=source_model,
@@ -547,6 +509,98 @@ class TaskAgent:
             run_response = agent.run(user_msg)
         self._check_run_status(traj_id, run_response)
         return submitted
+
+    @staticmethod
+    def _submit_atom(*, submitted: list[dict], valid: set[int],
+                     ordered_valid: list[int], resume_line: int, start_line,
+                     intent: str, summary: str, tags: list | None,
+                     used_skills: list | None, ux_score: int | None) -> str:
+        """Validate and record one submitted atom."""
+        sl, error = TaskAgent._coerce_start_line(start_line)
+        if error:
+            return error
+        error = TaskAgent._validate_atom_start(
+            sl, valid=valid, ordered_valid=ordered_valid,
+            resume_line=resume_line, submitted=submitted,
+        )
+        if error:
+            return error
+        if not (intent or "").strip() or not (summary or "").strip():
+            return "error: intent 和 summary 必填"
+        submitted.append({
+            "start_line": sl,
+            "intent": intent.strip(),
+            "summary": summary.strip(),
+            "tags": [str(t).strip() for t in (tags or []) if str(t).strip()],
+            "used_skills": [str(s).strip() for s in (used_skills or [])
+                            if str(s).strip()],
+            "ux_score": ux_score if isinstance(ux_score, int)
+            and 1 <= ux_score <= 10 else None,
+        })
+        return f"ok: 已记录 atom #{len(submitted)} (start_line={sl})"
+
+    @staticmethod
+    def _coerce_start_line(start_line) -> tuple[int | None, str | None]:
+        try:
+            return int(start_line), None
+        except (TypeError, ValueError):
+            return None, f"error: start_line 必须是整数 (got {start_line!r})"
+
+    @staticmethod
+    def _validate_atom_start(sl: int, *, valid: set[int],
+                             ordered_valid: list[int], resume_line: int,
+                             submitted: list[dict]) -> str | None:
+        if sl not in valid:
+            return (f"error: start_line {sl} 不是可切的 ## User 回合 "
+                    f"(合法行号: {ordered_valid})")
+        if sl < resume_line:
+            return (f"error: start_line {sl} < 续接点 {resume_line}；"
+                    "只能拆续接点之后的新增内容")
+        if submitted and sl <= submitted[-1]["start_line"]:
+            return (f"error: start_line 必须严格大于上一条 "
+                    f"({submitted[-1]['start_line']})，本次 {sl}")
+        return None
+
+    @staticmethod
+    def _look_lines(*, line: int, before: int, after: int,
+                    all_lines: list[str], total_lines: int) -> str:
+        try:
+            ctr = int(line)
+            bef = max(0, int(before))
+            aft = max(0, int(after))
+        except (TypeError, ValueError):
+            return "error: line/before/after 必须是整数"
+        lo = max(1, ctr - bef)
+        hi = min(total_lines, ctr + aft)
+        out = []
+        for ln in range(lo, hi + 1):
+            out.append(f"{ln}: {all_lines[ln - 1].rstrip(chr(10))}")
+        return "\n".join(out) or "(empty range)"
+
+    @staticmethod
+    def _context_budget_json(user_msg: str) -> str:
+        from xskill.agents.context_budget import (
+            get_used_tokens, get_max_context, CHARS_PER_TOKEN)
+        used = get_used_tokens()
+        if used <= 0:
+            used = len(user_msg) // CHARS_PER_TOKEN
+        cap = get_max_context()
+        return json.dumps({
+            "used_tokens": used,
+            "max_tokens": cap,
+            "remaining_tokens": max(0, cap - used),
+        }, ensure_ascii=False)
+
+    @staticmethod
+    def _format_submitted_spans(submitted: list[dict], *, eof_line: int) -> str:
+        if not submitted:
+            return "(本轮尚未提交任何 atom)"
+        starts = [s["start_line"] for s in submitted]
+        spans = []
+        for i, st in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else eof_line
+            spans.append(f"[{st},{end})")
+        return " ".join(spans)
 
     @staticmethod
     def _check_run_status(traj_id: str, run_response: Any) -> None:

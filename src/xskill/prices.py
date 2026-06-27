@@ -44,27 +44,41 @@ def _per_1m(per_token) -> Optional[float]:
     return round(float(per_token) * 1_000_000, 6) if isinstance(per_token, (int, float)) else None
 
 
+def _parse_embedding_price(d: dict) -> dict | None:
+    ep = _per_1m(d.get("input_cost_per_token"))
+    return {"embed_per_1m": ep} if ep is not None else None
+
+
+def _parse_chat_price(d: dict) -> dict | None:
+    ip = _per_1m(d.get("input_cost_per_token"))
+    op = _per_1m(d.get("output_cost_per_token"))
+    if ip is None and op is None:
+        return None
+    entry = {"input_per_1m": ip or 0.0, "output_per_1m": op or 0.0}
+    ch = _per_1m(d.get("cache_read_input_token_cost"))
+    if ch is not None:
+        entry["cache_hit_per_1m"] = ch
+        entry["cache_miss_per_1m"] = entry["input_per_1m"]
+    return entry
+
+
+def _parse_model_price(d: dict) -> dict | None:
+    mode = d.get("mode")
+    if mode == "embedding":
+        return _parse_embedding_price(d)
+    if mode in (None, "chat", "completion", "responses"):
+        return _parse_chat_price(d)
+    return None
+
+
 def parse_litellm(raw: Dict[str, dict]) -> Dict[str, dict]:
     """把 LiteLLM 原始价格表解析成本项目 schema:``model -> entry``(不含 _meta)。"""
     out: Dict[str, dict] = {}
     for model, d in raw.items():
         if not isinstance(d, dict):
             continue
-        mode = d.get("mode")
-        if mode == "embedding":
-            ep = _per_1m(d.get("input_cost_per_token"))
-            if ep is not None:
-                out[model] = {"embed_per_1m": ep}
-        elif mode in (None, "chat", "completion", "responses"):
-            ip = _per_1m(d.get("input_cost_per_token"))
-            op = _per_1m(d.get("output_cost_per_token"))
-            if ip is None and op is None:
-                continue
-            entry = {"input_per_1m": ip or 0.0, "output_per_1m": op or 0.0}
-            ch = _per_1m(d.get("cache_read_input_token_cost"))
-            if ch is not None:
-                entry["cache_hit_per_1m"] = ch
-                entry["cache_miss_per_1m"] = entry["input_per_1m"]
+        entry = _parse_model_price(d)
+        if entry is not None:
             out[model] = entry
     return out
 

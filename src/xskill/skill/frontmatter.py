@@ -43,6 +43,69 @@ class FrontmatterError(ValueError):
             super().__init__(reason)
 
 
+def _require_opening_fence(text: str, lines: list[str]) -> None:
+    if not text or not text.startswith("---"):
+        raise FrontmatterError(
+            "缺少开头的 `---` frontmatter 围栏（文件首行必须是 `---`）", 1
+        )
+    if lines[0].rstrip("\r").strip() != "---":
+        raise FrontmatterError("首行必须正好是 `---`（不能有多余字符）", 1)
+
+
+def _find_closing_fence(lines: list[str]) -> int:
+    for i in range(1, len(lines)):
+        if lines[i].rstrip("\r").strip() == "---":
+            return i
+    raise FrontmatterError(
+        "缺少结尾的 `---` frontmatter 围栏（需要一行单独的 `---` 收尾）", None
+    )
+
+
+def _split_strict_parts(lines: list[str], closing_idx: int) -> tuple[str, str]:
+    yaml_block = "\n".join(lines[1:closing_idx])
+    body_lines = lines[closing_idx + 1:]
+    if body_lines and body_lines[0].strip() == "":
+        body_lines = body_lines[1:]
+    return yaml_block, "\n".join(body_lines)
+
+
+def _load_strict_yaml(yaml_block: str) -> dict:
+    if not yaml_block.strip():
+        raise FrontmatterError("frontmatter 为空：必须包含 name 与 description", 2)
+    try:
+        fm = yaml.safe_load(yaml_block)
+    except yaml.YAMLError as exc:
+        # PyYAML 标 0-based 行号，且相对 yaml_block；+1 转 1-based，再 +1 跨过首行围栏
+        mark = getattr(exc, "problem_mark", None)
+        line = (mark.line + 2) if mark is not None else None
+        problem = getattr(exc, "problem", None) or str(exc).splitlines()[0]
+        raise FrontmatterError(f"frontmatter 不是合法 YAML：{problem}", line) from exc
+    if not isinstance(fm, dict):
+        raise FrontmatterError(
+            f"frontmatter 必须解析为 mapping（键值对），实得 {type(fm).__name__}", 2
+        )
+    return fm
+
+
+def _validate_required_fields(fm: dict) -> None:
+    if "name" not in fm:
+        raise FrontmatterError("缺少必填字段 name", None)
+    if not str(fm.get("name") or "").strip():
+        raise FrontmatterError("name 不能为空", None)
+
+    if "description" not in fm:
+        raise FrontmatterError("缺少必填字段 description", None)
+    desc = fm.get("description")
+    if not isinstance(desc, str):
+        raise FrontmatterError(
+            "description 必须是字符串；多行描述需用块标量 `|` 或加引号包裹"
+            f"（当前被 YAML 解析成 {type(desc).__name__}）",
+            None,
+        )
+    if not desc.strip():
+        raise FrontmatterError("description 不能为空字符串", None)
+
+
 def parse_strict(text: str) -> tuple[dict, str]:
     """Strictly parse a SKILL.md-style file into (frontmatter_dict, body_str).
 
@@ -63,64 +126,11 @@ def parse_strict(text: str) -> tuple[dict, str]:
     On success returns ``(fm, body)``; the lax :func:`parse` is left untouched
     for read paths that must tolerate legacy/partial files.
     """
-    if not text or not text.startswith("---"):
-        raise FrontmatterError(
-            "缺少开头的 `---` frontmatter 围栏（文件首行必须是 `---`）", 1
-        )
-
     lines = text.split("\n")
-    if lines[0].rstrip("\r").strip() != "---":
-        raise FrontmatterError("首行必须正好是 `---`（不能有多余字符）", 1)
-
-    closing_idx = -1
-    for i in range(1, len(lines)):
-        if lines[i].rstrip("\r").strip() == "---":
-            closing_idx = i
-            break
-    if closing_idx == -1:
-        raise FrontmatterError(
-            "缺少结尾的 `---` frontmatter 围栏（需要一行单独的 `---` 收尾）", None
-        )
-
-    yaml_block = "\n".join(lines[1:closing_idx])
-    body_lines = lines[closing_idx + 1:]
-    if body_lines and body_lines[0].strip() == "":
-        body_lines = body_lines[1:]
-    body = "\n".join(body_lines)
-
-    if not yaml_block.strip():
-        raise FrontmatterError("frontmatter 为空：必须包含 name 与 description", 2)
-
-    try:
-        fm = yaml.safe_load(yaml_block)
-    except yaml.YAMLError as exc:
-        # PyYAML 标 0-based 行号，且相对 yaml_block；+1 转 1-based，再 +1 跨过首行围栏
-        mark = getattr(exc, "problem_mark", None)
-        line = (mark.line + 2) if mark is not None else None
-        problem = getattr(exc, "problem", None) or str(exc).splitlines()[0]
-        raise FrontmatterError(f"frontmatter 不是合法 YAML：{problem}", line) from exc
-
-    if not isinstance(fm, dict):
-        raise FrontmatterError(
-            f"frontmatter 必须解析为 mapping（键值对），实得 {type(fm).__name__}", 2
-        )
-
-    if "name" not in fm:
-        raise FrontmatterError("缺少必填字段 name", None)
-    if not str(fm.get("name") or "").strip():
-        raise FrontmatterError("name 不能为空", None)
-
-    if "description" not in fm:
-        raise FrontmatterError("缺少必填字段 description", None)
-    desc = fm.get("description")
-    if not isinstance(desc, str):
-        raise FrontmatterError(
-            "description 必须是字符串；多行描述需用块标量 `|` 或加引号包裹"
-            f"（当前被 YAML 解析成 {type(desc).__name__}）",
-            None,
-        )
-    if not desc.strip():
-        raise FrontmatterError("description 不能为空字符串", None)
+    _require_opening_fence(text, lines)
+    yaml_block, body = _split_strict_parts(lines, _find_closing_fence(lines))
+    fm = _load_strict_yaml(yaml_block)
+    _validate_required_fields(fm)
 
     if not body.strip():
         raise FrontmatterError(

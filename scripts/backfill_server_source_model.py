@@ -66,45 +66,69 @@ def _ensure_column(reg: sqlite3.Connection) -> None:
         pass   # 列已存在
 
 
+def _open_registry(reg_path: Path, *, dry_run: bool) -> sqlite3.Connection | None:
+    reg = sqlite3.connect(reg_path) if reg_path.is_file() else None
+    if reg is not None and not dry_run:
+        _ensure_column(reg)
+    return reg
+
+
+def _apply_md(
+    md: Path,
+    mapping: dict[str, str],
+    *,
+    dry_run: bool,
+    reg: sqlite3.Connection | None,
+) -> tuple[int, int, int, int]:
+    model = mapping.get(md.stem)
+    if not model:
+        return 0, 1, 0, 0
+
+    jp = md.with_suffix(".json")
+    already = jp.is_file() and _json_model(jp) == model
+    if not dry_run and not already:
+        jp.write_text(json.dumps({"model": model}, ensure_ascii=False),
+                      encoding="utf-8")
+
+    updated = 0
+    if reg is not None and not dry_run:
+        cur = reg.execute(
+            "UPDATE trajectories SET source_model=? WHERE filename=?",
+            (model, md.name))
+        updated = cur.rowcount
+    return 1, 0, 0 if already else 1, updated
+
+
+def _print_apply_summary(tag: str, hit: int, miss: int, wrote_json: int,
+                         updated: int, *, dry_run: bool) -> None:
+    print(f"{tag} 命中 model 的 md={hit}  未命中(保持 unknown)={miss}")
+    if not dry_run:
+        print(f"{tag} 写/更新 json sidecar={wrote_json}  registry 行 UPDATE={updated}")
+    print(f"{tag} 注:未触发任何 reindex / 重处理(只动 source_model 列 + sidecar)")
+
+
 def cmd_apply(args: argparse.Namespace) -> int:
     """容器侧:写 json sidecar + 直接 UPDATE registry,零重建。"""
     mapping: dict[str, str] = json.loads(Path(args.map).read_text(encoding="utf-8"))
     traj_root = Path(args.traj_root)
     sessions = sorted(traj_root.glob("clients/*/sessions"))
     reg_path = Path(args.registry)
-    reg = sqlite3.connect(reg_path) if reg_path.is_file() else None
-    if reg is not None and not args.dry_run:
-        _ensure_column(reg)
+    reg = _open_registry(reg_path, dry_run=args.dry_run)
 
     hit = miss = wrote_json = updated = 0
     for sess in sessions:
         for md in sorted(sess.glob("traj_*.md")):
-            model = mapping.get(md.stem)
-            if not model:
-                miss += 1
-                continue
-            hit += 1
-            jp = md.with_suffix(".json")
-            already = jp.is_file() and _json_model(jp) == model
-            if not args.dry_run and not already:
-                jp.write_text(json.dumps({"model": model}, ensure_ascii=False),
-                              encoding="utf-8")
-            if not already:
-                wrote_json += 1
-            if reg is not None and not args.dry_run:
-                cur = reg.execute(
-                    "UPDATE trajectories SET source_model=? WHERE filename=?",
-                    (model, md.name))
-                updated += cur.rowcount
+            h, m, w, u = _apply_md(md, mapping, dry_run=args.dry_run, reg=reg)
+            hit += h
+            miss += m
+            wrote_json += w
+            updated += u
     if reg is not None and not args.dry_run:
         reg.commit()
         reg.close()
 
     tag = "[apply DRY-RUN]" if args.dry_run else "[apply]"
-    print(f"{tag} 命中 model 的 md={hit}  未命中(保持 unknown)={miss}")
-    if not args.dry_run:
-        print(f"{tag} 写/更新 json sidecar={wrote_json}  registry 行 UPDATE={updated}")
-    print(f"{tag} 注:未触发任何 reindex / 重处理(只动 source_model 列 + sidecar)")
+    _print_apply_summary(tag, hit, miss, wrote_json, updated, dry_run=args.dry_run)
     return 0
 
 

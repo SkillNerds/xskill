@@ -142,6 +142,41 @@ def _ref_for_branch(name: str) -> bytes:
     return f"refs/heads/{name}".encode("utf-8")
 
 
+def _resolve_parent_rev(repo: Repo, rev_b: bytes) -> bytes | None:
+    base, _, n_str = rev_b.partition(b"~")
+    n = int(n_str or b"1")
+    base_sha = _resolve_rev(repo, base.decode("utf-8") or "HEAD")
+    if base_sha is None:
+        return None
+    cur = base_sha
+    for _ in range(n):
+        try:
+            commit = repo[cur]
+        except KeyError:
+            return None
+        if not isinstance(commit, Commit) or not commit.parents:
+            return None
+        cur = commit.parents[0]
+    return cur
+
+
+def _resolve_ref_name(repo: Repo, rev_b: bytes) -> bytes | None:
+    for candidate in (rev_b, REFS_HEADS + rev_b, b"refs/tags/" + rev_b):
+        try:
+            return repo.refs[candidate]
+        except KeyError:
+            continue
+    return None
+
+
+def _resolve_commit_sha(repo: Repo, rev_b: bytes) -> bytes | None:
+    try:
+        obj = repo[rev_b]
+    except (KeyError, ValueError):
+        return None
+    return rev_b if isinstance(obj, Commit) else None
+
+
 def _resolve_rev(repo: Repo, rev: str) -> bytes | None:
     """解析任意 rev（branch / HEAD / sha / HEAD~1）为 commit sha bytes。
 
@@ -151,21 +186,7 @@ def _resolve_rev(repo: Repo, rev: str) -> bytes | None:
 
     # 形如 HEAD~N 走单独路径
     if b"~" in rev_b:
-        base, _, n_str = rev_b.partition(b"~")
-        n = int(n_str or b"1")
-        base_sha = _resolve_rev(repo, base.decode("utf-8") or "HEAD")
-        if base_sha is None:
-            return None
-        cur = base_sha
-        for _ in range(n):
-            try:
-                commit = repo[cur]
-                if not isinstance(commit, Commit) or not commit.parents:
-                    return None
-                cur = commit.parents[0]
-            except KeyError:
-                return None
-        return cur
+        return _resolve_parent_rev(repo, rev_b)
 
     # 显式 ref（不带 HEAD 兜底——HEAD 应该是 caller 显式传的，不能拿来当
     # "啥都解析不到的 fallback"，否则 rev-parse <不存在的 ref> 会错误地
@@ -175,21 +196,7 @@ def _resolve_rev(repo: Repo, rev: str) -> bytes | None:
             return repo.refs[b"HEAD"]
         except KeyError:
             return None
-    for candidate in (rev_b, REFS_HEADS + rev_b, b"refs/tags/" + rev_b):
-        try:
-            sha = repo.refs[candidate]
-            return sha
-        except KeyError:
-            continue
-
-    # 直接当 sha 试
-    try:
-        obj = repo[rev_b]
-        if isinstance(obj, Commit):
-            return rev_b
-    except (KeyError, ValueError):
-        pass
-    return None
+    return _resolve_ref_name(repo, rev_b) or _resolve_commit_sha(repo, rev_b)
 
 
 def _current_branch_name(repo: Repo) -> str:
@@ -309,6 +316,56 @@ def _is_ancestor(repo: Repo, ancestor: bytes, descendant: bytes) -> bool:
     return False
 
 
+def _decode_git_path(path: bytes | str) -> str:
+    return path.decode("utf-8") if isinstance(path, bytes) else path
+
+
+def _should_stage_path(root: Path, p: Path, ignore_patterns: list[str]) -> str | None:
+    if not p.is_file():
+        return None
+    try:
+        rel = p.relative_to(root)
+    except ValueError:
+        return None
+    parts = rel.parts
+    if not parts or parts[0] == ".git":
+        return None
+    # description 触发优化的实验留档 NEVER staged。新建仓库的 .gitignore
+    # 模板已含 .description_optimization/，但对**预先存在**的 skill 仓
+    # （.gitignore 可能没这条）这里硬编码兜底跳过，绝不版本化高频写入的
+    # 优化实验数据。
+    if ".description_optimization" in parts:
+        return None
+    rel_str = str(rel).replace(os.sep, "/")
+    return None if _is_ignored(rel_str, ignore_patterns) else rel_str
+
+
+def _stageable_paths(root: Path) -> list[str]:
+    ignore_patterns = _load_gitignore_patterns(root)
+    rel_paths: list[str] = []
+    for p in root.rglob("*"):
+        rel = _should_stage_path(root, p, ignore_patterns)
+        if rel is not None:
+            rel_paths.append(rel)
+    return rel_paths
+
+
+def _remove_deleted_from_index(repo: Repo, root: Path, workdir_paths: set[str]) -> bool:
+    index = repo.open_index()
+    deleted_any = False
+    for entry_path in list(index):
+        path_str = _decode_git_path(entry_path)
+        if path_str in workdir_paths:
+            continue
+        if (root / path_str).exists():
+            continue
+        del index[entry_path]
+        deleted_any = True
+    if deleted_any:
+        index.write()
+    return deleted_any
+
+
 def _stage_all(repo: Repo, root: Path) -> bool:
     """stage 所有非 .git / 非 gitignored 文件，返回是否有任何文件 staged。
 
@@ -317,48 +374,12 @@ def _stage_all(repo: Repo, root: Path) -> bool:
     dulwich.add 不处理 deletion；用 staged() 比对，把工作区不存在但 index 里有
     的路径 ``stage`` 为删除（直接 del index[name]）。
     """
-    import fnmatch
-
-    ignore_patterns = _load_gitignore_patterns(root)
-    rel_paths: list[str] = []
-    for p in root.rglob("*"):
-        if not p.is_file():
-            continue
-        try:
-            rel = p.relative_to(root)
-        except ValueError:
-            continue
-        parts = rel.parts
-        if not parts or parts[0] == ".git":
-            continue
-        # description 触发优化的实验留档 NEVER staged。新建仓库的 .gitignore
-        # 模板已含 .description_optimization/，但对**预先存在**的 skill 仓
-        # （.gitignore 可能没这条）这里硬编码兜底跳过，绝不版本化高频写入的
-        # 优化实验数据。
-        if ".description_optimization" in parts:
-            continue
-        rel_str = str(rel).replace(os.sep, "/")
-        if _is_ignored(rel_str, ignore_patterns):
-            continue
-        rel_paths.append(rel_str)
-
+    rel_paths = _stageable_paths(root)
     if rel_paths:
         porcelain.add(repo=repo, paths=rel_paths)
 
     # 处理 deletion: 看 index 里有但工作区没有的，从 index 删
-    index = repo.open_index()
-    deleted_any = False
-    workdir_set = set(rel_paths)
-    for entry_path in list(index):
-        path_str = entry_path.decode("utf-8") if isinstance(entry_path, bytes) else entry_path
-        if path_str not in workdir_set:
-            full = root / path_str
-            if not full.exists():
-                del index[entry_path]
-                deleted_any = True
-    if deleted_any:
-        index.write()
-
+    deleted_any = _remove_deleted_from_index(repo, root, set(rel_paths))
     return bool(rel_paths) or deleted_any
 
 
@@ -499,20 +520,74 @@ def _checkout_branch(
     return 0, ""
 
 
+def _commit_tree_for_ref(repo: Repo, ref: str) -> tuple[bytes | None, str]:
+    sha = _resolve_rev(repo, ref)
+    if sha is None:
+        return None, f"fatal: bad revision {ref}"
+    try:
+        commit = repo[sha]
+    except KeyError:
+        return None, f"fatal: bad object {ref}"
+    if not isinstance(commit, Commit):
+        return None, f"fatal: not a commit: {ref}"
+    return commit.tree, ""
+
+
+def _remove_pathspec_from_index(index, spec: str) -> bool:
+    any_changed = False
+    for entry_path in list(index):
+        p_str = _decode_git_path(entry_path)
+        if p_str == spec or p_str.startswith(spec + "/"):
+            del index[entry_path]
+            any_changed = True
+    return any_changed
+
+
+def _remove_pathspec_from_worktree_and_index(root: Path, index, spec: str) -> bool:
+    any_changed = False
+    target_dir = root / spec
+    if target_dir.is_dir():
+        import shutil
+        shutil.rmtree(target_dir)
+        any_changed = True
+    return _remove_pathspec_from_index(index, spec) or any_changed
+
+
+def _index_entry_for_file(full: Path, blob_sha: bytes, mode: int):
+    from dulwich.index import IndexEntry
+    st = full.stat()
+    return IndexEntry(
+        ctime=(int(st.st_ctime), 0),
+        mtime=(int(st.st_mtime), 0),
+        dev=st.st_dev,
+        ino=st.st_ino,
+        mode=mode,
+        uid=st.st_uid,
+        gid=st.st_gid,
+        size=st.st_size,
+        sha=blob_sha,
+        flags=0,
+        extended_flags=0,
+    )
+
+
+def _write_blob_to_worktree_and_index(
+    repo: Repo, root: Path, index, rel: str, blob_sha: bytes, mode: int,
+) -> None:
+    data = _read_blob(repo, blob_sha) or b""
+    full = root / rel
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_bytes(data)
+    index[rel.encode("utf-8")] = _index_entry_for_file(full, blob_sha, mode)
+
+
 def _checkout_paths_from_ref(repo: Repo, ref: str, paths: list[str]) -> tuple[int, str]:
     """``git checkout <ref> -- <paths>``：把 paths 在 ref 上的内容写回工作树
     + index。``paths`` 形如 ``["<dirname>/"]``——展开成该目录下所有文件。
     """
-    sha = _resolve_rev(repo, ref)
-    if sha is None:
-        return 128, f"fatal: bad revision {ref}"
-    try:
-        commit = repo[sha]
-    except KeyError:
-        return 128, f"fatal: bad object {ref}"
-    if not isinstance(commit, Commit):
-        return 128, f"fatal: not a commit: {ref}"
-    tree_sha = commit.tree
+    tree_sha, err = _commit_tree_for_ref(repo, ref)
+    if tree_sha is None:
+        return 128, err
 
     root = Path(repo.path)
     index = repo.open_index()
@@ -523,47 +598,63 @@ def _checkout_paths_from_ref(repo: Repo, ref: str, paths: list[str]) -> tuple[in
         blobs = _collect_blobs_under_path(repo, tree_sha, spec)
         if not blobs:
             # 路径在 ref 上不存在 → 工作区里要删
-            target_dir = root / spec
-            if target_dir.is_dir():
-                import shutil
-                shutil.rmtree(target_dir)
-                any_changed = True
-            # index 里删
-            for entry_path in list(index):
-                p_str = entry_path.decode("utf-8") if isinstance(entry_path, bytes) else entry_path
-                if p_str == spec or p_str.startswith(spec + "/"):
-                    del index[entry_path]
-                    any_changed = True
+            any_changed = _remove_pathspec_from_worktree_and_index(root, index, spec) or any_changed
             continue
         for rel, blob_sha, mode in blobs:
-            data = _read_blob(repo, blob_sha) or b""
-            full = root / rel
-            full.parent.mkdir(parents=True, exist_ok=True)
-            full.write_bytes(data)
-            # update index
-            st = full.stat()
-            try:
-                from dulwich.index import IndexEntry, _fs_to_tree_path
-            except ImportError:
-                from dulwich.index import IndexEntry  # type: ignore
-            entry = IndexEntry(
-                ctime=(int(st.st_ctime), 0),
-                mtime=(int(st.st_mtime), 0),
-                dev=st.st_dev,
-                ino=st.st_ino,
-                mode=mode,
-                uid=st.st_uid,
-                gid=st.st_gid,
-                size=st.st_size,
-                sha=blob_sha,
-                flags=0,
-                extended_flags=0,
-            )
-            index[rel.encode("utf-8")] = entry
+            _write_blob_to_worktree_and_index(repo, root, index, rel, blob_sha, mode)
             any_changed = True
     if any_changed:
         index.write()
     return 0, ""
+
+
+def _find_tree_entry(repo: Repo, tree_sha: bytes, part: str):
+    try:
+        cur = repo[tree_sha]
+    except KeyError:
+        return None
+    if not isinstance(cur, Tree):
+        return None
+    name_b = part.encode("utf-8")
+    for entry in cur.items():
+        if entry.path == name_b:
+            return entry
+    return None
+
+
+def _resolve_tree_path(
+    repo: Repo, tree_sha: bytes, parts: list[str],
+) -> tuple[str, bytes | None, list[tuple[str, bytes, int]] | None]:
+    cur_sha = tree_sha
+    cur_path = ""
+    for i, part in enumerate(parts):
+        target = _find_tree_entry(repo, cur_sha, part)
+        if target is None:
+            return "", None, []
+        if i == len(parts) - 1:
+            obj = repo[target.sha]
+            if isinstance(obj, Blob):
+                return "", None, [("/".join(parts), target.sha, target.mode)]
+        cur_sha = target.sha
+        cur_path = "/".join(parts[: i + 1])
+    return cur_path, cur_sha, None
+
+
+def _walk_blobs(repo: Repo, tree_sha: bytes, prefix: str, out: list[tuple[str, bytes, int]]) -> None:
+    try:
+        t = repo[tree_sha]
+    except KeyError:
+        return
+    if not isinstance(t, Tree):
+        return
+    for entry in t.items():
+        name = entry.path.decode("utf-8")
+        rel = f"{prefix}/{name}" if prefix else name
+        obj = repo[entry.sha]
+        if isinstance(obj, Tree):
+            _walk_blobs(repo, entry.sha, rel, out)
+        elif isinstance(obj, Blob):
+            out.append((rel, entry.sha, entry.mode))
 
 
 def _collect_blobs_under_path(
@@ -572,56 +663,37 @@ def _collect_blobs_under_path(
     """返回 [(relpath, blob_sha, mode)] 列表，path 可以是文件或目录。"""
     parts = path.strip("/").split("/") if path.strip("/") else []
     # 走到 path 对应的 tree/blob
-    cur_sha = tree_sha
-    cur_path = ""
-    for i, part in enumerate(parts):
-        try:
-            cur = repo[cur_sha]
-        except KeyError:
-            return []
-        if not isinstance(cur, Tree):
-            return []
-        target = None
-        for entry in cur.items():
-            if entry.path == part.encode("utf-8"):
-                target = entry
-                break
-        if target is None:
-            return []
-        if i == len(parts) - 1:
-            obj = repo[target.sha]
-            if isinstance(obj, Blob):
-                return [("/".join(parts), target.sha, target.mode)]
-            cur_sha = target.sha
-            cur_path = "/".join(parts)
-        else:
-            cur_sha = target.sha
-            cur_path = "/".join(parts[: i + 1])
-
-    if not parts:
-        cur_path = ""
+    cur_path, cur_sha, found_blobs = _resolve_tree_path(repo, tree_sha, parts)
+    if found_blobs is not None:
+        return found_blobs
+    if cur_sha is None:
+        return []
 
     # cur_sha 是个目录 tree → 递归列出所有 blob
     out: list[tuple[str, bytes, int]] = []
-
-    def _walk(tree_sha_: bytes, prefix: str) -> None:
-        try:
-            t = repo[tree_sha_]
-        except KeyError:
-            return
-        if not isinstance(t, Tree):
-            return
-        for entry in t.items():
-            name = entry.path.decode("utf-8")
-            rel = f"{prefix}/{name}" if prefix else name
-            obj = repo[entry.sha]
-            if isinstance(obj, Tree):
-                _walk(entry.sha, rel)
-            elif isinstance(obj, Blob):
-                out.append((rel, entry.sha, entry.mode))
-
-    _walk(cur_sha, cur_path)
+    _walk_blobs(repo, cur_sha, cur_path, out)
     return out
+
+
+def _staged_status_lines(staged: dict) -> list[str]:
+    lines: list[str] = []
+    for key, sym in (("add", "A"), ("modify", "M"), ("delete", "D")):
+        for path in staged.get(key, []):
+            lines.append(f"{sym}  {_decode_git_path(path)}")
+    return lines
+
+
+def _unstaged_status_lines(root: Path, paths: list[bytes | str]) -> list[str]:
+    lines: list[str] = []
+    for path in paths:
+        p = _decode_git_path(path)
+        sym = " D" if not (root / p).exists() else " M"
+        lines.append(f"{sym} {p}")
+    return lines
+
+
+def _untracked_status_lines(paths: list[bytes | str]) -> list[str]:
+    return [f"?? {_decode_git_path(path)}" for path in paths]
 
 
 def _status_porcelain(repo: Repo, root: Path) -> str:
@@ -638,25 +710,10 @@ def _status_porcelain(repo: Repo, root: Path) -> str:
     lines: list[str] = []
 
     # status 是 GitStatus(staged={'add'/'modify'/'delete': [...]}, unstaged=[...], untracked=[...])
-    staged = status.staged or {}
-    for key, sym in (("add", "A"), ("modify", "M"), ("delete", "D")):
-        for path in staged.get(key, []):
-            p = path.decode("utf-8") if isinstance(path, bytes) else path
-            lines.append(f"{sym}  {p}")
-
-    for path in status.unstaged or []:
-        p = path.decode("utf-8") if isinstance(path, bytes) else path
-        # 区分 modify vs delete
-        full = root / p
-        if not full.exists():
-            lines.append(f" D {p}")
-        else:
-            lines.append(f" M {p}")
-
-    for path in status.untracked or []:
-        p = path.decode("utf-8") if isinstance(path, bytes) else path
-        # 忽略 .gitignore 已忽略的（porcelain.status 默认会 filter，但保险起见跳过）
-        lines.append(f"?? {p}")
+    lines.extend(_staged_status_lines(status.staged or {}))
+    lines.extend(_unstaged_status_lines(root, status.unstaged or []))
+    # 忽略 .gitignore 已忽略的（porcelain.status 默认会 filter，但保险起见跳过）
+    lines.extend(_untracked_status_lines(status.untracked or []))
 
     return "\n".join(lines)
 
@@ -778,6 +835,83 @@ def _h_rev_parse(args: list[str], cwd: str) -> tuple[int, str, str]:
         return 0, sha.decode("ascii"), ""
 
 
+def _log_option(arg: str) -> tuple[str, int | str | bool | None]:
+    if arg == "--":
+        return "dashdash", None
+    if arg == "-1":
+        return "limit", 1
+    if arg.startswith("--format="):
+        return "format", arg.split("=", 1)[1]
+    if arg == "--oneline":
+        return "oneline", True
+    if arg == "--follow" or arg.startswith("--"):
+        return "ignore", None
+    if arg.startswith("-") and arg[1:].isdigit():
+        return "limit", int(arg[1:])
+    return "ref_or_path", None
+
+
+def _apply_log_option(
+    kind: str, value: int | str | bool | None, n_limit: int | None,
+    fmt: str | None, oneline: bool,
+) -> tuple[int | None, str | None, bool]:
+    if kind == "limit":
+        return int(value), fmt, oneline
+    if kind == "format":
+        return n_limit, str(value), oneline
+    if kind == "oneline":
+        return n_limit, fmt, bool(value)
+    return n_limit, fmt, oneline
+
+
+def _parse_log_args(args: list[str]) -> tuple[int | None, str | None, bool, str | None, list[str]]:
+    n_limit: int | None = None
+    fmt: str | None = None
+    oneline = False
+    paths: list[str] = []
+    ref: str | None = None
+    seen_dashdash = False
+    for a in args:
+        if seen_dashdash:
+            paths.append(a)
+            continue
+        kind, value = _log_option(a)
+        if kind == "dashdash":
+            seen_dashdash = True
+            continue
+        if kind == "ignore":
+            continue
+        if kind != "ref_or_path":
+            n_limit, fmt, oneline = _apply_log_option(kind, value, n_limit, fmt, oneline)
+            continue
+        if ref is None:
+            ref = a
+        else:
+            paths.append(a)
+    return n_limit, fmt, oneline, ref, paths
+
+
+def _format_single_commit(repo: Repo, target: bytes, fmt: str) -> tuple[int, str, str]:
+    if fmt == "%cI":
+        return 0, _commit_iso(repo, target), ""
+    if fmt == "%ct":
+        return 0, str(_commit_unix_ts(repo, target)), ""
+    if fmt == "%s":
+        return 0, _commit_subject(repo, target), ""
+    if fmt == "%H":
+        return 0, target.decode("ascii"), ""
+    return 0, "", f"unsupported format: {fmt}"
+
+
+def _format_oneline_history(repo: Repo, target: bytes, n_limit: int | None, paths: list[str]) -> str:
+    shas = _walk_history(repo, target, n_limit or 20, paths if paths else None)
+    lines = []
+    for s in shas:
+        subj = _commit_subject(repo, s)
+        lines.append(f"{s[:7].decode('ascii')} {subj}")
+    return "\n".join(lines)
+
+
 def _h_log(args: list[str], cwd: str) -> tuple[int, str, str]:
     """``git log -1 --format=%X <ref>`` 几个具体形态 + ``log --oneline -N --follow``。
 
@@ -789,39 +923,7 @@ def _h_log(args: list[str], cwd: str) -> tuple[int, str, str]:
       - log --oneline --follow -<N> -- <path>    （skill_log 用）
     """
     # 解析 -1 / --format=... / --oneline / --follow / -N / -- / path
-    n_limit: int | None = None
-    fmt: str | None = None
-    oneline = False
-    paths: list[str] = []
-    ref: str | None = None
-
-    it = iter(args)
-    seen_dashdash = False
-    for a in it:
-        if seen_dashdash:
-            paths.append(a)
-            continue
-        if a == "--":
-            seen_dashdash = True
-            continue
-        if a == "-1":
-            n_limit = 1
-        elif a.startswith("--format="):
-            fmt = a.split("=", 1)[1]
-        elif a == "--oneline":
-            oneline = True
-        elif a == "--follow":
-            continue
-        elif a.startswith("-") and a[1:].isdigit():
-            n_limit = int(a[1:])
-        elif a.startswith("--"):
-            continue
-        else:
-            if ref is None:
-                ref = a
-            else:
-                paths.append(a)
-
+    n_limit, fmt, oneline, ref, paths = _parse_log_args(args)
     with _open_repo(cwd) as repo:
         target = _resolve_rev(repo, ref or "HEAD")
         if target is None:
@@ -829,25 +931,11 @@ def _h_log(args: list[str], cwd: str) -> tuple[int, str, str]:
 
         # 单条 log -1 --format=...
         if n_limit == 1 and fmt is not None and not paths:
-            if fmt == "%cI":
-                return 0, _commit_iso(repo, target), ""
-            if fmt == "%ct":
-                return 0, str(_commit_unix_ts(repo, target)), ""
-            if fmt == "%s":
-                return 0, _commit_subject(repo, target), ""
-            if fmt == "%H":
-                return 0, target.decode("ascii"), ""
-            return 0, "", f"unsupported format: {fmt}"
+            return _format_single_commit(repo, target, fmt)
 
         # log --oneline --follow -N -- <path>: 列出 N 条 commit
         if oneline:
-            count_limit = n_limit or 20
-            shas = _walk_history(repo, target, count_limit, paths if paths else None)
-            lines = []
-            for s in shas:
-                subj = _commit_subject(repo, s)
-                lines.append(f"{s[:7].decode('ascii')} {subj}")
-            return 0, "\n".join(lines), ""
+            return 0, _format_oneline_history(repo, target, n_limit, paths), ""
 
         return 1, "", f"unsupported log args: {args}"
 
@@ -879,6 +967,23 @@ def _walk_history(
     return out
 
 
+def _path_matches_any(path: str, wanted_paths: list[str]) -> bool:
+    for want in wanted_paths:
+        if path == want or path.startswith(want + "/"):
+            return True
+    return False
+
+
+def _tree_change_touches_paths(change, wanted_paths: list[str]) -> bool:
+    for tp in (change.old, change.new):
+        if tp.path is None:
+            continue
+        tp_str = tp.path.decode("utf-8", errors="replace")
+        if _path_matches_any(tp_str, wanted_paths):
+            return True
+    return False
+
+
 def _commit_touches_paths(repo: Repo, commit: Commit, paths: list[str]) -> bool:
     """该 commit 与父 commit 的 tree diff 中是否有任一 path（prefix 匹配）。"""
     if not commit.parents:
@@ -892,20 +997,14 @@ def _commit_touches_paths(repo: Repo, commit: Commit, paths: list[str]) -> bool:
     try:
         from dulwich.diff_tree import tree_changes
         for change in tree_changes(repo.object_store, p_tree, c_tree):
-            for tp in (change.old, change.new):
-                if tp.path is None:
-                    continue
-                tp_str = tp.path.decode("utf-8", errors="replace")
-                for want in norm_paths:
-                    if tp_str == want or tp_str.startswith(want + "/"):
-                        return True
+            if _tree_change_touches_paths(change, norm_paths):
+                return True
     except Exception:
         return True
     return False
 
 
-def _h_rev_list(args: list[str], cwd: str) -> tuple[int, str, str]:
-    """``git rev-list --reverse <a>..<b>``"""
+def _parse_rev_list_args(args: list[str]) -> tuple[bool, str | None]:
     reverse = False
     range_arg: str | None = None
     for a in args:
@@ -915,6 +1014,40 @@ def _h_rev_list(args: list[str], cwd: str) -> tuple[int, str, str]:
             continue
         else:
             range_arg = a
+    return reverse, range_arg
+
+
+def _reachable_commits(repo: Repo, starts: list[bytes], stop_at: set[bytes] | None = None) -> list[bytes]:
+    out: list[bytes] = []
+    seen: set[bytes] = set()
+    blockers = stop_at or set()
+    stack = list(starts)
+    while stack:
+        cur = stack.pop()
+        if cur in seen or cur in blockers:
+            continue
+        seen.add(cur)
+        try:
+            commit = repo[cur]
+        except KeyError:
+            continue
+        if not isinstance(commit, Commit):
+            continue
+        out.append(cur)
+        stack.extend(commit.parents)
+    return out
+
+
+def _sort_rev_list(repo: Repo, shas: list[bytes], reverse: bool) -> list[bytes]:
+    shas.sort(key=lambda s: repo[s].commit_time)
+    if not reverse:
+        shas.reverse()
+    return shas
+
+
+def _h_rev_list(args: list[str], cwd: str) -> tuple[int, str, str]:
+    """``git rev-list --reverse <a>..<b>``"""
+    reverse, range_arg = _parse_rev_list_args(args)
     if range_arg is None or ".." not in range_arg:
         return 1, "", f"unsupported rev-list args: {args}"
     base, _, head = range_arg.partition("..")
@@ -924,40 +1057,10 @@ def _h_rev_list(args: list[str], cwd: str) -> tuple[int, str, str]:
         if head_sha is None:
             return 128, "", f"fatal: bad revision {head}"
         # 收集从 head_sha 出发的所有 reachable commit，剔除 base_sha 可达的
-        base_reachable: set[bytes] = set()
-        if base_sha is not None:
-            stack = [base_sha]
-            while stack:
-                cur = stack.pop()
-                if cur in base_reachable:
-                    continue
-                base_reachable.add(cur)
-                try:
-                    c = repo[cur]
-                except KeyError:
-                    continue
-                if isinstance(c, Commit):
-                    stack.extend(c.parents)
-        out: list[bytes] = []
-        seen: set[bytes] = set()
-        stack = [head_sha]
-        while stack:
-            cur = stack.pop()
-            if cur in seen or cur in base_reachable:
-                continue
-            seen.add(cur)
-            try:
-                c = repo[cur]
-            except KeyError:
-                continue
-            if not isinstance(c, Commit):
-                continue
-            out.append(cur)
-            stack.extend(c.parents)
+        base_reachable = set(_reachable_commits(repo, [base_sha])) if base_sha is not None else set()
+        out = _reachable_commits(repo, [head_sha], base_reachable)
         # 默认 newest first；--reverse → oldest first，按 commit_time 排
-        out.sort(key=lambda s: repo[s].commit_time)
-        if not reverse:
-            out.reverse()
+        _sort_rev_list(repo, out, reverse)
         return 0, "\n".join(s.decode("ascii") for s in out), ""
 
 
@@ -996,6 +1099,52 @@ def _h_commit(args: list[str], cwd: str) -> tuple[int, str, str]:
     return 0, f"[{sha[:7].decode('ascii')}] {msg}", ""
 
 
+def _branch_list_output(repo: Repo) -> str:
+    lines = []
+    cur = _current_branch_name(repo)
+    for b in _list_branches(repo):
+        mark = "*" if b == cur else " "
+        lines.append(f"{mark} {b}")
+    return "\n".join(lines)
+
+
+def _rename_branch(repo: Repo, old: str, new: str) -> tuple[int, str]:
+    old_ref = _ref_for_branch(old)
+    new_ref = _ref_for_branch(new)
+    if old_ref not in repo.refs:
+        return 128, f"fatal: branch {old} not found"
+    if new_ref in repo.refs:
+        return 128, f"fatal: branch {new} already exists"
+    repo.refs[new_ref] = repo.refs[old_ref]
+    del repo.refs[old_ref]
+    # 如果 HEAD 指向 old，更新 HEAD 指向 new
+    try:
+        head_target, _ = repo.refs.follow(b"HEAD")
+    except (KeyError, IndexError):
+        return 0, ""
+    if head_target and head_target[-1] == old_ref:
+        repo.refs.set_symbolic_ref(b"HEAD", new_ref)
+    return 0, ""
+
+
+def _force_branch(repo: Repo, name: str, target: str) -> tuple[int, str]:
+    sha = _resolve_rev(repo, target)
+    if sha is None:
+        return 128, f"fatal: bad revision {target}"
+    _branch_force_create(repo, name, sha)
+    return 0, ""
+
+
+def _create_branch_at(repo: Repo, name: str, target: str) -> tuple[int, str]:
+    if _has_branch(repo, name):
+        return 128, f"fatal: branch {name} already exists"
+    sha = _resolve_rev(repo, target)
+    if sha is None:
+        return 128, f"fatal: bad revision {target}"
+    repo.refs[_ref_for_branch(name)] = sha
+    return 0, ""
+
+
 def _h_branch(args: list[str], cwd: str) -> tuple[int, str, str]:
     """``git branch`` 各形态：
       - --list                            → 列分支
@@ -1008,21 +1157,11 @@ def _h_branch(args: list[str], cwd: str) -> tuple[int, str, str]:
     if not args:
         # 等同 --list
         with _open_repo(cwd) as repo:
-            lines = []
-            cur = _current_branch_name(repo)
-            for b in _list_branches(repo):
-                mark = "*" if b == cur else " "
-                lines.append(f"{mark} {b}")
-            return 0, "\n".join(lines), ""
+            return 0, _branch_list_output(repo), ""
 
     if args[0] == "--list":
         with _open_repo(cwd) as repo:
-            lines = []
-            cur = _current_branch_name(repo)
-            for b in _list_branches(repo):
-                mark = "*" if b == cur else " "
-                lines.append(f"{mark} {b}")
-            return 0, "\n".join(lines), ""
+            return 0, _branch_list_output(repo), ""
 
     if args[0] == "--show-current":
         with _open_repo(cwd) as repo:
@@ -1033,23 +1172,8 @@ def _h_branch(args: list[str], cwd: str) -> tuple[int, str, str]:
             return 1, "", "branch -m needs <old> <new>"
         old, new = args[1], args[2]
         with _open_repo(cwd) as repo:
-            old_ref = _ref_for_branch(old)
-            new_ref = _ref_for_branch(new)
-            if old_ref not in repo.refs:
-                return 128, "", f"fatal: branch {old} not found"
-            if new_ref in repo.refs:
-                return 128, "", f"fatal: branch {new} already exists"
-            sha = repo.refs[old_ref]
-            repo.refs[new_ref] = sha
-            del repo.refs[old_ref]
-            # 如果 HEAD 指向 old，更新 HEAD 指向 new
-            try:
-                head_target, _ = repo.refs.follow(b"HEAD")
-                if head_target and head_target[-1] == old_ref:
-                    repo.refs.set_symbolic_ref(b"HEAD", new_ref)
-            except (KeyError, IndexError):
-                pass
-        return 0, "", ""
+            code, err = _rename_branch(repo, old, new)
+        return code, "", err
 
     if args[0] == "-D":
         names = args[1:]
@@ -1064,25 +1188,104 @@ def _h_branch(args: list[str], cwd: str) -> tuple[int, str, str]:
             return 1, "", "branch -f needs <name> <sha>"
         name, target = args[1], args[2]
         with _open_repo(cwd) as repo:
-            sha = _resolve_rev(repo, target)
-            if sha is None:
-                return 128, "", f"fatal: bad revision {target}"
-            _branch_force_create(repo, name, sha)
-        return 0, "", ""
+            code, err = _force_branch(repo, name, target)
+        return code, "", err
 
     # branch <name> <sha>
     if len(args) == 2 and not args[0].startswith("-"):
         name, target = args[0], args[1]
         with _open_repo(cwd) as repo:
-            if _has_branch(repo, name):
-                return 128, "", f"fatal: branch {name} already exists"
-            sha = _resolve_rev(repo, target)
-            if sha is None:
-                return 128, "", f"fatal: bad revision {target}"
-            repo.refs[_ref_for_branch(name)] = sha
-        return 0, "", ""
+            code, err = _create_branch_at(repo, name, target)
+        return code, "", err
 
     return 1, "", f"unsupported branch args: {args}"
+
+
+def _checkout_ref_and_paths(args: list[str]) -> tuple[int, str, list[str], str]:
+    ddi = args.index("--")
+    head = args[:ddi]
+    paths = args[ddi + 1:]
+    # 若 head 为空，等价于 ``checkout -- <paths>``，用 HEAD 内容
+    if not head:
+        return 0, "HEAD", paths, ""
+    if len(head) == 1 and not head[0].startswith("-"):
+        return 0, head[0], paths, ""
+    return 1, "", [], f"unsupported checkout: {args}"
+
+
+def _checkout_paths_command(args: list[str], cwd: str) -> tuple[int, str, str]:
+    code, ref, paths, err = _checkout_ref_and_paths(args)
+    if code != 0:
+        return code, "", err
+    if paths == ["."]:
+        # 等价 reset --hard
+        with _open_repo(cwd) as repo:
+            try:
+                porcelain.reset(repo=repo, mode="hard", treeish=ref.encode("utf-8"))
+            except Exception as e:
+                return 1, "", f"reset failed: {e}"
+        return 0, "", ""
+    with _open_repo(cwd) as repo:
+        code, err = _checkout_paths_from_ref(repo, ref, paths)
+    return code, "", err
+
+
+def _checkout_arg_kind(arg: str) -> str:
+    if arg == "-b":
+        return "create"
+    if arg == "-B":
+        return "force_create"
+    if arg.startswith("-"):
+        return "unsupported"
+    return "target"
+
+
+def _assign_checkout_target(
+    arg: str, target: str | None, from_target: str | None, args: list[str],
+) -> tuple[int, str | None, str | None, str]:
+    if target is None:
+        return 0, arg, from_target, ""
+    if from_target is None:
+        return 0, target, arg, ""
+    return 1, target, from_target, f"unsupported checkout args: {args}"
+
+
+def _parse_checkout_branch_args(
+    args: list[str],
+) -> tuple[int, bool, bool, str | None, str | None, str]:
+    create = False
+    force = False
+    target: str | None = None
+    from_target: str | None = None
+    for a in args:
+        kind = _checkout_arg_kind(a)
+        if kind == "create":
+            create = True
+            continue
+        if kind == "force_create":
+            create = True
+            force = True
+            continue
+        if kind == "unsupported":
+            return 1, create, force, target, from_target, f"unsupported checkout flag: {a}"
+        code, target, from_target, err = _assign_checkout_target(a, target, from_target, args)
+        if code != 0:
+            return code, create, force, target, from_target, err
+    if target is None:
+        return 1, create, force, target, from_target, "checkout needs target"
+    return 0, create, force, target, from_target, ""
+
+
+def _checkout_branch_command(
+    repo: Repo, create: bool, force: bool, target: str, from_target: str | None,
+) -> tuple[int, str]:
+    from_sha = _resolve_rev(repo, from_target) if from_target else None
+    if create:
+        return _checkout_branch(repo, target, create=True, force_reset=force, from_sha=from_sha)
+    # 已存在 → switch；不存在 → fail
+    if not _has_branch(repo, target):
+        return 1, f"error: pathspec '{target}' did not match any file(s) known to git"
+    return _checkout_branch(repo, target, create=False)
 
 
 def _h_checkout(args: list[str], cwd: str) -> tuple[int, str, str]:
@@ -1095,66 +1298,14 @@ def _h_checkout(args: list[str], cwd: str) -> tuple[int, str, str]:
     """
     # checkout -- . / checkout -- <path>: 用 ref（默认 HEAD）的内容覆盖 working
     if "--" in args:
-        ddi = args.index("--")
-        head = args[:ddi]
-        paths = args[ddi + 1:]
-        # 若 head 为空，等价于 ``checkout -- <paths>``，用 HEAD 内容
-        if not head:
-            ref = "HEAD"
-        elif len(head) == 1 and not head[0].startswith("-"):
-            ref = head[0]
-        else:
-            return 1, "", f"unsupported checkout: {args}"
-        if paths == ["."]:
-            # 等价 reset --hard
-            with _open_repo(cwd) as repo:
-                try:
-                    porcelain.reset(repo=repo, mode="hard", treeish=ref.encode("utf-8"))
-                except Exception as e:
-                    return 1, "", f"reset failed: {e}"
-            return 0, "", ""
-        with _open_repo(cwd) as repo:
-            return _checkout_paths_from_ref(repo, ref, paths)
+        return _checkout_paths_command(args, cwd)
 
-    create = False
-    force = False
-    target: str | None = None
-    from_target: str | None = None
-
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a == "-b":
-            create = True
-        elif a == "-B":
-            create = True
-            force = True
-        elif a.startswith("-"):
-            return 1, "", f"unsupported checkout flag: {a}"
-        else:
-            if target is None:
-                target = a
-            elif from_target is None:
-                from_target = a
-            else:
-                return 1, "", f"unsupported checkout args: {args}"
-        i += 1
-
-    if target is None:
-        return 1, "", "checkout needs target"
-
-    with _open_repo(cwd) as repo:
-        from_sha = _resolve_rev(repo, from_target) if from_target else None
-        if create:
-            code, err = _checkout_branch(
-                repo, target, create=True, force_reset=force, from_sha=from_sha,
-            )
-        else:
-            # 已存在 → switch；不存在 → fail
-            if not _has_branch(repo, target):
-                return 1, "", f"error: pathspec '{target}' did not match any file(s) known to git"
-            code, err = _checkout_branch(repo, target, create=False)
+    code, create, force, target, from_target, err = _parse_checkout_branch_args(args)
+    if code != 0 or target is None:
         return code, "", err
+    with _open_repo(cwd) as repo:
+        code, err = _checkout_branch_command(repo, create, force, target, from_target)
+    return code, "", err
 
 
 def _h_reset(args: list[str], cwd: str) -> tuple[int, str, str]:
@@ -1236,6 +1387,50 @@ def _h_cat_file(args: list[str], cwd: str) -> tuple[int, str, str]:
         return 0, "", ""
 
 
+def _cached_diff_names(repo: Repo) -> str:
+    index = repo.open_index()
+    try:
+        head_sha = repo.refs[b"HEAD"]
+        head_tree_sha = repo[head_sha].tree
+    except KeyError:
+        head_tree_sha = None
+    index_tree_sha = index.commit(repo.object_store)
+    if head_tree_sha is None:
+        # 全部 staged 算 added
+        paths = sorted(_decode_git_path(p) for p in index)
+        return "\n".join(paths)
+    from dulwich.diff_tree import tree_changes
+    names: list[str] = []
+    for change in tree_changes(repo.object_store, head_tree_sha, index_tree_sha):
+        for tp in (change.new, change.old):
+            if tp.path:
+                names.append(tp.path.decode("utf-8"))
+                break
+    return "\n".join(sorted(set(names)))
+
+
+def _parse_diff_revs_paths(args: list[str]) -> tuple[list[str], list[str]]:
+    if "--" in args:
+        ddi = args.index("--")
+        return [a for a in args[:ddi] if not a.startswith("-")], args[ddi + 1:]
+    return [a for a in args if not a.startswith("-")], []
+
+
+def _diff_commits(repo: Repo, a: str, b: str) -> tuple[int, str, str]:
+    sha_a = _resolve_rev(repo, a)
+    sha_b = _resolve_rev(repo, b)
+    if sha_a is None or sha_b is None:
+        return 128, "", f"fatal: bad revision {a} or {b}"
+    ta = repo[sha_a].tree
+    tb = repo[sha_b].tree
+    buf = io.BytesIO()
+    try:
+        porcelain.diff_tree(repo, ta, tb, outstream=buf)
+    except TypeError:
+        porcelain.diff_tree(repo.path, ta, tb, outstream=buf)
+    return 0, buf.getvalue().decode("utf-8", errors="replace"), ""
+
+
 def _h_diff(args: list[str], cwd: str) -> tuple[int, str, str]:
     """``git diff`` 几种形态：
       - diff HEAD                 worktree vs HEAD
@@ -1249,25 +1444,7 @@ def _h_diff(args: list[str], cwd: str) -> tuple[int, str, str]:
     # --cached --name-only
     if "--cached" in args and "--name-only" in args:
         with _open_repo(cwd) as repo:
-            index = repo.open_index()
-            try:
-                head_sha = repo.refs[b"HEAD"]
-                head_tree_sha = repo[head_sha].tree
-            except KeyError:
-                head_tree_sha = None
-            index_tree_sha = index.commit(repo.object_store)
-            if head_tree_sha is None:
-                # 全部 staged 算 added
-                paths = sorted(p.decode("utf-8") if isinstance(p, bytes) else p for p in index)
-                return 0, "\n".join(paths), ""
-            from dulwich.diff_tree import tree_changes
-            names: list[str] = []
-            for change in tree_changes(repo.object_store, head_tree_sha, index_tree_sha):
-                for tp in (change.new, change.old):
-                    if tp.path:
-                        names.append(tp.path.decode("utf-8"))
-                        break
-            return 0, "\n".join(sorted(set(names))), ""
+            return 0, _cached_diff_names(repo), ""
 
     if args == ["HEAD"]:
         with _open_repo(cwd) as repo:
@@ -1276,34 +1453,16 @@ def _h_diff(args: list[str], cwd: str) -> tuple[int, str, str]:
 
     # diff <a> <b> [-- <path>]
     # 解析
-    paths: list[str] = []
-    revs: list[str] = []
-    if "--" in args:
-        ddi = args.index("--")
-        revs = [a for a in args[:ddi] if not a.startswith("-")]
-        paths = args[ddi + 1:]
-    else:
-        revs = [a for a in args if not a.startswith("-")]
+    revs, paths = _parse_diff_revs_paths(args)
     if len(revs) >= 2:
         a, b = revs[0], revs[1]
         with _open_repo(cwd) as repo:
-            sha_a = _resolve_rev(repo, a)
-            sha_b = _resolve_rev(repo, b)
-            if sha_a is None or sha_b is None:
-                return 128, "", f"fatal: bad revision {a} or {b}"
-            ta = repo[sha_a].tree
-            tb = repo[sha_b].tree
-            buf = io.BytesIO()
-            try:
-                porcelain.diff_tree(repo, ta, tb, outstream=buf)
-            except TypeError:
-                porcelain.diff_tree(repo.path, ta, tb, outstream=buf)
-            text = buf.getvalue().decode("utf-8", errors="replace")
+            code, text, err = _diff_commits(repo, a, b)
             if paths:
                 # 粗糙过滤：只保留 affecting paths 的 hunk header 段
                 # 简化：保留全部输出（下游 skill_diff 用作展示，不算严格契约）
                 pass
-            return 0, text, ""
+            return code, text, err
 
     return 1, "", f"unsupported diff args: {args}"
 
@@ -1327,14 +1486,7 @@ def _h_clean(args: list[str], cwd: str) -> tuple[int, str, str]:
     return 0, "", ""
 
 
-def _h_merge(args: list[str], cwd: str) -> tuple[int, str, str]:
-    """``git merge --ff/--no-ff <branch> -m <msg>``。
-
-    简化实现：
-      - 当前 HEAD = A, 目标 branch = B
-      - A 是 B 的 ancestor → fast-forward：把当前 branch 指向 B，重置工作区
-      - 否则 → 创建 merge commit（两 parents：A, B）
-    """
+def _parse_merge_args(args: list[str]) -> tuple[bool, str, str | None]:
     ff_only = "--ff" in args and "--no-ff" not in args
     msg = "merge"
     branch: str | None = None
@@ -1346,9 +1498,76 @@ def _h_merge(args: list[str], cwd: str) -> tuple[int, str, str]:
             continue
         elif a.startswith("-"):
             continue
-        else:
-            if branch is None:
-                branch = a
+        elif branch is None:
+            branch = a
+    return ff_only, msg, branch
+
+
+def _current_head_and_branch(repo: Repo) -> tuple[bytes | None, str, str]:
+    try:
+        head_sha = repo.refs[b"HEAD"]
+    except KeyError:
+        return None, "", "fatal: no HEAD"
+    cur = _current_branch_name(repo)
+    if not cur:
+        return None, "", "fatal: detached HEAD"
+    return head_sha, cur, ""
+
+
+def _fast_forward_merge(repo: Repo, branch: str, target_sha: bytes) -> tuple[int, str, str]:
+    repo.refs[_ref_for_branch(branch)] = target_sha
+    try:
+        porcelain.reset(repo=repo, mode="hard", treeish=target_sha)
+    except Exception as e:
+        return 1, "", f"reset failed: {e}"
+    return 0, f"Fast-forward to {target_sha[:7].decode('ascii')}", ""
+
+
+def _build_merge_commit(repo: Repo, head_sha: bytes, target_sha: bytes, msg: str) -> tuple[bytes | None, str]:
+    # 简单 strategy：用 target_sha 的 tree 作为 merge 结果（"theirs"），
+    # 在两条 traj2skill 历史里 staging 通常领先 main，结果应等于 staging 的 tree
+    target_commit = repo[target_sha]
+    if not isinstance(target_commit, Commit):
+        return None, "target is not commit"
+    new_commit = Commit()
+    new_commit.tree = target_commit.tree
+    new_commit.parents = [head_sha, target_sha]
+    new_commit.author = XSKILL_AUTHOR
+    new_commit.committer = XSKILL_AUTHOR
+    now = int(datetime.now(timezone.utc).timestamp())
+    new_commit.commit_time = now
+    new_commit.author_time = now
+    new_commit.commit_timezone = 0
+    new_commit.author_timezone = 0
+    new_commit.encoding = b"UTF-8"
+    new_commit.message = msg.encode("utf-8")
+    repo.object_store.add_object(new_commit)
+    return new_commit.id, ""
+
+
+def _non_ff_merge(
+    repo: Repo, branch: str, head_sha: bytes, target_sha: bytes, msg: str,
+) -> tuple[int, str, str]:
+    new_sha, err = _build_merge_commit(repo, head_sha, target_sha, msg)
+    if new_sha is None:
+        return 128, "", err
+    repo.refs[_ref_for_branch(branch)] = new_sha
+    try:
+        porcelain.reset(repo=repo, mode="hard", treeish=new_sha)
+    except Exception as e:
+        return 1, "", f"reset failed: {e}"
+    return 0, f"Merge made (sha={new_sha[:7].decode('ascii')})", ""
+
+
+def _h_merge(args: list[str], cwd: str) -> tuple[int, str, str]:
+    """``git merge --ff/--no-ff <branch> -m <msg>``。
+
+    简化实现：
+      - 当前 HEAD = A, 目标 branch = B
+      - A 是 B 的 ancestor → fast-forward：把当前 branch 指向 B，重置工作区
+      - 否则 → 创建 merge commit（两 parents：A, B）
+    """
+    ff_only, msg, branch = _parse_merge_args(args)
     if branch is None:
         return 1, "", "merge needs branch"
 
@@ -1356,55 +1575,23 @@ def _h_merge(args: list[str], cwd: str) -> tuple[int, str, str]:
         target_sha = _resolve_rev(repo, branch)
         if target_sha is None:
             return 128, "", f"fatal: bad branch {branch}"
-        try:
-            head_sha = repo.refs[b"HEAD"]
-        except KeyError:
-            return 128, "", "fatal: no HEAD"
 
-        cur = _current_branch_name(repo)
-        if not cur:
-            return 128, "", "fatal: detached HEAD"
+        head_sha, cur, err = _current_head_and_branch(repo)
+        if head_sha is None:
+            return 128, "", err
 
         if head_sha == target_sha:
             return 0, "Already up to date.", ""
 
         # fast-forward 可行？
         if _is_ancestor(repo, head_sha, target_sha):
-            repo.refs[_ref_for_branch(cur)] = target_sha
-            try:
-                porcelain.reset(repo=repo, mode="hard", treeish=target_sha)
-            except Exception as e:
-                return 1, "", f"reset failed: {e}"
-            return 0, f"Fast-forward to {target_sha[:7].decode('ascii')}", ""
+            return _fast_forward_merge(repo, cur, target_sha)
 
         if ff_only:
             return 1, "", "Not possible to fast-forward, aborting."
 
         # 非 ff merge：创建 merge commit
-        # 简单 strategy：用 target_sha 的 tree 作为 merge 结果（"theirs"），
-        # 在两条 traj2skill 历史里 staging 通常领先 main，结果应等于 staging 的 tree
-        target_commit = repo[target_sha]
-        if not isinstance(target_commit, Commit):
-            return 128, "", "target is not commit"
-        new_commit = Commit()
-        new_commit.tree = target_commit.tree
-        new_commit.parents = [head_sha, target_sha]
-        new_commit.author = XSKILL_AUTHOR
-        new_commit.committer = XSKILL_AUTHOR
-        now = int(datetime.now(timezone.utc).timestamp())
-        new_commit.commit_time = now
-        new_commit.author_time = now
-        new_commit.commit_timezone = 0
-        new_commit.author_timezone = 0
-        new_commit.encoding = b"UTF-8"
-        new_commit.message = msg.encode("utf-8")
-        repo.object_store.add_object(new_commit)
-        repo.refs[_ref_for_branch(cur)] = new_commit.id
-        try:
-            porcelain.reset(repo=repo, mode="hard", treeish=new_commit.id)
-        except Exception as e:
-            return 1, "", f"reset failed: {e}"
-        return 0, f"Merge made (sha={new_commit.id[:7].decode('ascii')})", ""
+        return _non_ff_merge(repo, cur, head_sha, target_sha, msg)
 
 
 _DISPATCH: dict[str, Callable[[list[str], str], tuple[int, str, str]]] = {
@@ -1588,50 +1775,72 @@ def commit_to_staging_branch(skill_dir: str, message: str) -> bool:
     return True
 
 
+def _rename_current_branch_to_main(repo: Repo) -> None:
+    cur = _current_branch_name(repo)
+    if cur and cur != "main":
+        repo.refs[_ref_for_branch("main")] = repo.refs[_ref_for_branch(cur)]
+        del repo.refs[_ref_for_branch(cur)]
+        repo.refs.set_symbolic_ref(b"HEAD", _ref_for_branch("main"))
+
+
+def _init_repo_on_main(p: Path) -> None:
+    repo = porcelain.init(str(p), bare=False)
+    try:
+        _write_repo_identity(repo)
+        (p / GITKEEP_FILENAME).touch()
+        (p / GITIGNORE_FILENAME).write_text(
+            "# canary runtime data — NOT versioned\n.ux_scores.jsonl\n.lock\n",
+            encoding="utf-8",
+        )
+        _stage_all(repo, p)
+        sha, _ = _do_commit(repo, "init skill repo")
+        if sha is not None:
+            # rename 默认分支 → main
+            _rename_current_branch_to_main(repo)
+    finally:
+        repo.close()
+
+
+def _ensure_main_branch_ref(repo: Repo) -> None:
+    if _has_branch(repo, "main"):
+        return
+    try:
+        head = repo.refs[b"HEAD"]
+    except KeyError:
+        return
+    repo.refs[_ref_for_branch("main")] = head
+
+
+def _reset_repo_to_main(repo: Repo) -> None:
+    repo.refs.set_symbolic_ref(b"HEAD", _ref_for_branch("main"))
+    try:
+        porcelain.reset(repo=repo, mode="hard", treeish=_ref_for_branch("main"))
+    except Exception:
+        pass
+
+
+def _repair_repo_on_main(skill_dir: str) -> None:
+    with _open_repo(skill_dir) as repo:
+        cur = _current_branch_name(repo)
+        if cur == "main":
+            return
+        # 切到 main；不存在就新建空 commit
+        _ensure_main_branch_ref(repo)
+        _reset_repo_to_main(repo)
+        if cur and _has_branch(repo, cur):
+            _branch_delete(repo, cur)
+        logger.info(f"🧹 修复: 回到 main，清理残留分支 {cur}")
+
+
 def ensure_repo(skill_dir: str):
     """确保 skill_dir 是一个 git 仓库，在 main 分支上。"""
     p = Path(skill_dir)
     p.mkdir(parents=True, exist_ok=True)
     if not (p / ".git").exists():
-        repo = porcelain.init(str(p), bare=False)
-        try:
-            _write_repo_identity(repo)
-            (p / GITKEEP_FILENAME).touch()
-            (p / GITIGNORE_FILENAME).write_text(
-                "# canary runtime data — NOT versioned\n.ux_scores.jsonl\n.lock\n",
-                encoding="utf-8",
-            )
-            _stage_all(repo, p)
-            sha, _ = _do_commit(repo, "init skill repo")
-            if sha is not None:
-                # rename 默认分支 → main
-                cur = _current_branch_name(repo)
-                if cur and cur != "main":
-                    repo.refs[_ref_for_branch("main")] = repo.refs[_ref_for_branch(cur)]
-                    del repo.refs[_ref_for_branch(cur)]
-                    repo.refs.set_symbolic_ref(b"HEAD", _ref_for_branch("main"))
-        finally:
-            repo.close()
+        _init_repo_on_main(p)
         logger.info(f"初始化 skill git 仓库: {skill_dir}")
     else:
-        with _open_repo(skill_dir) as repo:
-            cur = _current_branch_name(repo)
-            if cur != "main":
-                # 切到 main；不存在就新建空 commit
-                if not _has_branch(repo, "main"):
-                    try:
-                        head = repo.refs[b"HEAD"]
-                        repo.refs[_ref_for_branch("main")] = head
-                    except KeyError:
-                        pass
-                repo.refs.set_symbolic_ref(b"HEAD", _ref_for_branch("main"))
-                try:
-                    porcelain.reset(repo=repo, mode="hard", treeish=_ref_for_branch("main"))
-                except Exception:
-                    pass
-                if cur and _has_branch(repo, cur):
-                    _branch_delete(repo, cur)
-                logger.info(f"🧹 修复: 回到 main，清理残留分支 {cur}")
+        _repair_repo_on_main(skill_dir)
 
 
 def has_changes(skill_dir: str) -> bool:

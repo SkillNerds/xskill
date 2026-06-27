@@ -138,6 +138,34 @@ CURSOR_SPEC = EcosystemSpec(
 # ─────────────────────────────────────────────────────────────────
 
 
+def _cursor_text_chunks(parts: object, tool_names: list[str]) -> list[str]:
+    if not isinstance(parts, list):
+        return []
+    text_chunks: list[str] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        ptype = part.get("type")
+        if ptype == "text":
+            tx = part.get("text") or ""
+            if tx:
+                text_chunks.append(str(tx))
+        elif ptype == "tool_use":
+            name = part.get("name", "tool")
+            if name not in tool_names:
+                tool_names.append(name)
+            text_chunks.append(f"[tool_use: {name}]")
+    return text_chunks
+
+
+def _cursor_heading(role: object) -> str:
+    if role == "user":
+        return "## User"
+    if role == "assistant":
+        return "## Assistant"
+    return f"## {str(role).capitalize()}"
+
+
 def _adapt_cursor_transcripts_jsonl(content: str, metadata: dict) -> tuple[str, dict]:
     """Convert a Cursor agent-transcript JSONL (``~/.cursor/projects/<encoded-cwd>/
     agent-transcripts/<sid>.jsonl``) to markdown + metadata.
@@ -172,26 +200,7 @@ def _adapt_cursor_transcripts_jsonl(content: str, metadata: dict) -> tuple[str, 
 
         role = event.get("role", "unknown")
         msg = event.get("message") or {}
-        parts = msg.get("content") or []
-        if not isinstance(parts, list):
-            continue
-
-        text_chunks: list[str] = []
-        for part in parts:
-            if not isinstance(part, dict):
-                continue
-            ptype = part.get("type")
-            if ptype == "text":
-                tx = part.get("text") or ""
-                if tx:
-                    text_chunks.append(str(tx))
-            elif ptype == "tool_use":
-                name = part.get("name", "tool")
-                if name not in tool_names:
-                    tool_names.append(name)
-                text_chunks.append(f"[tool_use: {name}]")
-
-        body = "\n".join(text_chunks).strip()
+        body = "\n".join(_cursor_text_chunks(msg.get("content") or [], tool_names)).strip()
         if not body:
             continue
 
@@ -210,13 +219,7 @@ def _adapt_cursor_transcripts_jsonl(content: str, metadata: dict) -> tuple[str, 
         lines.append(first_user_query)
         lines.append("")
     for entry in timeline:
-        role = entry["role"]
-        if role == "user":
-            lines.append("## User")
-        elif role == "assistant":
-            lines.append("## Assistant")
-        else:
-            lines.append(f"## {str(role).capitalize()}")
+        lines.append(_cursor_heading(entry["role"]))
         lines.append("")
         lines.append(entry["content"])
         lines.append("")

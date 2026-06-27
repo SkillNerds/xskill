@@ -141,6 +141,127 @@ def col_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
 
 # ---------- 统计 ----------
 
+def _table_counts(conn: sqlite3.Connection) -> dict:
+    counts = {}
+    for t in ("session", "message", "part", "project", "workspace", "todo",
+              "event", "session_message", "session_share", "permission"):
+        if table_exists(conn, t):
+            counts[t] = conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+    return counts
+
+
+def _session_time_range(conn: sqlite3.Connection) -> dict:
+    row = conn.execute(
+        "SELECT min(time_created) AS first, max(time_created) AS last,"
+        "       max(time_updated) AS last_update FROM session"
+    ).fetchone()
+    return {
+        "first_created": fmt_ts(row["first"]),
+        "last_created": fmt_ts(row["last"]),
+        "last_updated": fmt_ts(row["last_update"]),
+    }
+
+
+def _session_totals(conn: sqlite3.Connection) -> dict | None:
+    agg_cols = []
+    for c in ("cost", "tokens_input", "tokens_output", "tokens_reasoning",
+              "tokens_cache_read", "tokens_cache_write"):
+        if col_exists(conn, "session", c):
+            agg_cols.append(c)
+    if not agg_cols:
+        return None
+    select = ", ".join(f"COALESCE(SUM({c}),0) AS {c}" for c in agg_cols)
+    row = conn.execute(f"SELECT {select} FROM session").fetchone()
+    return {c: row[c] for c in agg_cols}
+
+
+def _project_stats(conn: sqlite3.Connection) -> list[dict] | None:
+    if not table_exists(conn, "project"):
+        return None
+    name_expr = "p.name" if col_exists(conn, "project", "name") else "p.id"
+    if col_exists(conn, "project", "worktree"):
+        worktree_expr = "p.worktree"
+    elif col_exists(conn, "project", "directory"):
+        worktree_expr = "p.directory"
+    else:
+        worktree_expr = "''"
+    rows = conn.execute(
+        f"SELECT p.id, {name_expr} AS name, {worktree_expr} AS worktree, "
+        "count(s.id) AS n_sessions "
+        "FROM project p LEFT JOIN session s ON s.project_id = p.id "
+        "GROUP BY p.id ORDER BY n_sessions DESC"
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "name": r["name"] or "",
+            "worktree": r["worktree"],
+            "sessions": r["n_sessions"],
+        }
+        for r in rows
+    ]
+
+
+def _agent_model_stats(conn: sqlite3.Connection) -> tuple[list[dict] | None, list[dict] | None]:
+    by_agent = None
+    by_model = None
+    if col_exists(conn, "session", "agent"):
+        rows = conn.execute(
+            "SELECT COALESCE(agent,'(none)') AS k, count(*) AS n "
+            "FROM session GROUP BY agent ORDER BY n DESC"
+        ).fetchall()
+        by_agent = [{"agent": r["k"], "sessions": r["n"]} for r in rows]
+    if col_exists(conn, "session", "model"):
+        rows = conn.execute(
+            "SELECT model, count(*) AS n FROM session GROUP BY model ORDER BY n DESC"
+        ).fetchall()
+        by_model = [
+            {"model": _pretty_model(r["model"]), "sessions": r["n"]} for r in rows
+        ]
+    return by_agent, by_model
+
+
+def _messages_per_session(conn: sqlite3.Connection, counts: dict) -> dict | None:
+    if not table_exists(conn, "message"):
+        return None
+    rows = conn.execute(
+        "SELECT session_id, count(*) AS n FROM message GROUP BY session_id"
+    ).fetchall()
+    if not rows:
+        return None
+    ns = sorted(r["n"] for r in rows)
+    return {
+        "min": ns[0],
+        "median": ns[len(ns) // 2],
+        "max": ns[-1],
+        "avg": round(sum(ns) / len(ns), 2),
+        "sessions_with_messages": len(ns),
+        "empty_sessions": counts.get("session", 0) - len(ns),
+    }
+
+
+def _recent_sessions(conn: sqlite3.Connection, top: int) -> list[dict] | None:
+    if top <= 0:
+        return None
+    extra_cols = [c for c in ("agent", "model", "cost",
+                               "tokens_input", "tokens_output")
+                  if col_exists(conn, "session", c)]
+    sel = ["id", "title", "time_created", "time_updated", "project_id"] + extra_cols
+    rows = conn.execute(
+        f"SELECT {', '.join(sel)} FROM session "
+        f"ORDER BY time_updated DESC LIMIT ?",
+        (top,),
+    ).fetchall()
+    return [
+        {
+            **{k: r[k] for k in sel if k not in ("time_created", "time_updated")},
+            "time_created": fmt_ts(r["time_created"]),
+            "time_updated": fmt_ts(r["time_updated"]),
+        }
+        for r in rows
+    ]
+
+
 def collect_stats(db_path: Path, top: int) -> dict:
     size = db_path.stat().st_size
     info: dict = {
@@ -153,11 +274,7 @@ def collect_stats(db_path: Path, top: int) -> dict:
         conn.row_factory = sqlite3.Row
 
         # 总行数
-        counts = {}
-        for t in ("session", "message", "part", "project", "workspace", "todo",
-                  "event", "session_message", "session_share", "permission"):
-            if table_exists(conn, t):
-                counts[t] = conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+        counts = _table_counts(conn)
         info["counts"] = counts
 
         if not table_exists(conn, "session"):
@@ -165,108 +282,41 @@ def collect_stats(db_path: Path, top: int) -> dict:
             return info
 
         # 时间范围
-        row = conn.execute(
-            "SELECT min(time_created) AS first, max(time_created) AS last,"
-            "       max(time_updated) AS last_update FROM session"
-        ).fetchone()
-        info["session_time_range"] = {
-            "first_created": fmt_ts(row["first"]),
-            "last_created": fmt_ts(row["last"]),
-            "last_updated": fmt_ts(row["last_update"]),
-        }
+        info["session_time_range"] = _session_time_range(conn)
 
         # 聚合: token / cost
-        agg_cols = []
-        for c in ("cost", "tokens_input", "tokens_output", "tokens_reasoning",
-                  "tokens_cache_read", "tokens_cache_write"):
-            if col_exists(conn, "session", c):
-                agg_cols.append(c)
-        if agg_cols:
-            select = ", ".join(f"COALESCE(SUM({c}),0) AS {c}" for c in agg_cols)
-            row = conn.execute(f"SELECT {select} FROM session").fetchone()
-            info["totals"] = {c: row[c] for c in agg_cols}
+        totals = _session_totals(conn)
+        if totals is not None:
+            info["totals"] = totals
 
         # 每个 project 的 session 数
-        if table_exists(conn, "project"):
-            rows = conn.execute(
-                "SELECT p.id, p.name, p.worktree, count(s.id) AS n_sessions "
-                "FROM project p LEFT JOIN session s ON s.project_id = p.id "
-                "GROUP BY p.id ORDER BY n_sessions DESC"
-            ).fetchall()
-            info["projects"] = [
-                {
-                    "id": r["id"],
-                    "name": r["name"] or "",
-                    "worktree": r["worktree"],
-                    "sessions": r["n_sessions"],
-                }
-                for r in rows
-            ]
+        projects = _project_stats(conn)
+        if projects is not None:
+            info["projects"] = projects
 
         # agent / model 分布
-        if col_exists(conn, "session", "agent"):
-            rows = conn.execute(
-                "SELECT COALESCE(agent,'(none)') AS k, count(*) AS n "
-                "FROM session GROUP BY agent ORDER BY n DESC"
-            ).fetchall()
-            info["by_agent"] = [{"agent": r["k"], "sessions": r["n"]} for r in rows]
-        if col_exists(conn, "session", "model"):
-            rows = conn.execute(
-                "SELECT model, count(*) AS n FROM session GROUP BY model ORDER BY n DESC"
-            ).fetchall()
-            info["by_model"] = [
-                {"model": _pretty_model(r["model"]), "sessions": r["n"]} for r in rows
-            ]
+        by_agent, by_model = _agent_model_stats(conn)
+        if by_agent is not None:
+            info["by_agent"] = by_agent
+        if by_model is not None:
+            info["by_model"] = by_model
 
         # 每条 session 的 message 数 (平均/中位/最大)
-        if table_exists(conn, "message"):
-            rows = conn.execute(
-                "SELECT session_id, count(*) AS n FROM message GROUP BY session_id"
-            ).fetchall()
-            if rows:
-                ns = sorted(r["n"] for r in rows)
-                info["messages_per_session"] = {
-                    "min": ns[0],
-                    "median": ns[len(ns) // 2],
-                    "max": ns[-1],
-                    "avg": round(sum(ns) / len(ns), 2),
-                    "sessions_with_messages": len(ns),
-                    "empty_sessions": counts.get("session", 0) - len(ns),
-                }
+        messages = _messages_per_session(conn, counts)
+        if messages is not None:
+            info["messages_per_session"] = messages
 
         # 最近 N 条 session
-        if top > 0:
-            extra_cols = [c for c in ("agent", "model", "cost",
-                                       "tokens_input", "tokens_output")
-                          if col_exists(conn, "session", c)]
-            sel = ["id", "title", "time_created", "time_updated", "project_id"] + extra_cols
-            rows = conn.execute(
-                f"SELECT {', '.join(sel)} FROM session "
-                f"ORDER BY time_updated DESC LIMIT ?",
-                (top,),
-            ).fetchall()
-            info["recent_sessions"] = [
-                {
-                    **{k: r[k] for k in sel if k not in ("time_created", "time_updated")},
-                    "time_created": fmt_ts(r["time_created"]),
-                    "time_updated": fmt_ts(r["time_updated"]),
-                }
-                for r in rows
-            ]
+        recent = _recent_sessions(conn, top)
+        if recent is not None:
+            info["recent_sessions"] = recent
 
     return info
 
 
 # ---------- 输出 ----------
 
-def print_human(info: dict) -> None:
-    print(f"opencode DB : {info['db_path']}")
-    print(f"  size      : {info['db_size_human']} ({info['db_size_bytes']} bytes)")
-    if "warning" in info:
-        print(f"  ⚠ {info['warning']}")
-        return
-
-    c = info["counts"]
+def _print_basic_counts(c: dict) -> None:
     print()
     print(f"轨迹（session） : {c.get('session', 0)}")
     print(f"消息（message） : {c.get('message', 0)}")
@@ -277,67 +327,96 @@ def print_human(info: dict) -> None:
     if "todo" in c:
         print(f"todo           : {c['todo']}")
 
-    tr = info["session_time_range"]
+
+def _print_time_range(tr: dict) -> None:
     print()
     print("时间范围:")
     print(f"  最早 created : {tr['first_created']}")
     print(f"  最新 created : {tr['last_created']}")
     print(f"  最近 updated : {tr['last_updated']}")
 
+
+def _print_totals(t: dict) -> None:
+    print()
+    print("总用量:")
+    if "cost" in t:
+        print(f"  cost ($)             : {t['cost']:.4f}")
+    if "tokens_input" in t:
+        print(f"  tokens input         : {t['tokens_input']:,}")
+    if "tokens_output" in t:
+        print(f"  tokens output        : {t['tokens_output']:,}")
+    if "tokens_reasoning" in t:
+        print(f"  tokens reasoning     : {t['tokens_reasoning']:,}")
+    if "tokens_cache_read" in t:
+        print(f"  tokens cache read    : {t['tokens_cache_read']:,}")
+    if "tokens_cache_write" in t:
+        print(f"  tokens cache write   : {t['tokens_cache_write']:,}")
+
+
+def _print_messages_per_session(m: dict) -> None:
+    print()
+    print("每轨迹的 message 数:")
+    print(f"  min/median/max/avg = {m['min']}/{m['median']}/{m['max']}/{m['avg']}")
+    if m["empty_sessions"]:
+        print(f"  空轨迹（无 message）: {m['empty_sessions']}")
+
+
+def _print_projects(projects: list[dict]) -> None:
+    print()
+    print("项目分布:")
+    for p in projects:
+        name = p["name"] or "(unnamed)"
+        print(f"  [{p['sessions']:>4}] {name}  ({p['worktree']})")
+
+
+def _print_distribution(title: str, rows: list[dict], key: str) -> None:
+    print()
+    print(title)
+    for r in rows:
+        print(f"  [{r['sessions']:>4}] {r[key]}")
+
+
+def _print_recent_sessions(sessions: list[dict]) -> None:
+    print()
+    print(f"最近 {len(sessions)} 条轨迹:")
+    for s in sessions:
+        title = (s.get("title") or "").strip().replace("\n", " ")
+        if len(title) > 60:
+            title = title[:57] + "..."
+        agent = s.get("agent") or "-"
+        model = _pretty_model(s.get("model")) if s.get("model") else "-"
+        print(f"  {s['time_updated']}  [{agent} / {model}]  {title}")
+
+
+def print_human(info: dict) -> None:
+    print(f"opencode DB : {info['db_path']}")
+    print(f"  size      : {info['db_size_human']} ({info['db_size_bytes']} bytes)")
+    if "warning" in info:
+        print(f"  ⚠ {info['warning']}")
+        return
+
+    c = info["counts"]
+    _print_basic_counts(c)
+
+    _print_time_range(info["session_time_range"])
+
     if "totals" in info:
-        t = info["totals"]
-        print()
-        print("总用量:")
-        if "cost" in t:
-            print(f"  cost ($)             : {t['cost']:.4f}")
-        if "tokens_input" in t:
-            print(f"  tokens input         : {t['tokens_input']:,}")
-        if "tokens_output" in t:
-            print(f"  tokens output        : {t['tokens_output']:,}")
-        if "tokens_reasoning" in t:
-            print(f"  tokens reasoning     : {t['tokens_reasoning']:,}")
-        if "tokens_cache_read" in t:
-            print(f"  tokens cache read    : {t['tokens_cache_read']:,}")
-        if "tokens_cache_write" in t:
-            print(f"  tokens cache write   : {t['tokens_cache_write']:,}")
+        _print_totals(info["totals"])
 
     if "messages_per_session" in info:
-        m = info["messages_per_session"]
-        print()
-        print("每轨迹的 message 数:")
-        print(f"  min/median/max/avg = {m['min']}/{m['median']}/{m['max']}/{m['avg']}")
-        if m["empty_sessions"]:
-            print(f"  空轨迹（无 message）: {m['empty_sessions']}")
+        _print_messages_per_session(info["messages_per_session"])
 
     if info.get("projects"):
-        print()
-        print("项目分布:")
-        for p in info["projects"]:
-            name = p["name"] or "(unnamed)"
-            print(f"  [{p['sessions']:>4}] {name}  ({p['worktree']})")
+        _print_projects(info["projects"])
 
     if info.get("by_agent"):
-        print()
-        print("agent 分布:")
-        for r in info["by_agent"]:
-            print(f"  [{r['sessions']:>4}] {r['agent']}")
+        _print_distribution("agent 分布:", info["by_agent"], "agent")
 
     if info.get("by_model"):
-        print()
-        print("model 分布:")
-        for r in info["by_model"]:
-            print(f"  [{r['sessions']:>4}] {r['model']}")
+        _print_distribution("model 分布:", info["by_model"], "model")
 
     if info.get("recent_sessions"):
-        print()
-        print(f"最近 {len(info['recent_sessions'])} 条轨迹:")
-        for s in info["recent_sessions"]:
-            title = (s.get("title") or "").strip().replace("\n", " ")
-            if len(title) > 60:
-                title = title[:57] + "..."
-            agent = s.get("agent") or "-"
-            model = _pretty_model(s.get("model")) if s.get("model") else "-"
-            print(f"  {s['time_updated']}  [{agent} / {model}]  {title}")
+        _print_recent_sessions(info["recent_sessions"])
 
 
 def main() -> int:

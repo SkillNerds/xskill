@@ -74,53 +74,98 @@ def _oc_model_map() -> dict[str, str]:
     return out
 
 
-def main() -> int:
-    cc_idx = _cc_index()
-    oc_map = _oc_model_map()
+def _open_registry() -> sqlite3.Connection | None:
     reg = sqlite3.connect(REGISTRY_DB) if REGISTRY_DB.is_file() else None
-    if reg is not None:
-        try:
-            reg.execute("ALTER TABLE trajectories ADD COLUMN source_model TEXT")
-        except sqlite3.OperationalError:
-            pass   # 列已存在(get_connection 迁移过 / 本脚本重跑)
-    stats: dict[str, list[int]] = {}   # eco -> [filled, already, unknown]
+    if reg is None:
+        return None
+    try:
+        reg.execute("ALTER TABLE trajectories ADD COLUMN source_model TEXT")
+    except sqlite3.OperationalError:
+        pass   # 列已存在(get_connection 迁移过 / 本脚本重跑)
+    return reg
 
-    for eco in LIVE_DIRS:
-        d = XS / eco
-        if not d.is_dir():
-            continue
-        s = stats.setdefault(eco, [0, 0, 0])
-        for jf in sorted(d.glob("traj_*.json")):
-            try:
-                meta = json.loads(jf.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if meta.get("model"):
-                s[1] += 1
-                continue
-            sid = meta.get("session_id", "")
-            model = ""
-            if eco == "cc_sessions" and sid in cc_idx:
-                model = _cc_model(cc_idx[sid])
-            elif eco == "opencode_sessions":
-                model = oc_map.get(sid, "")
-            elif eco == "codex_sessions":
-                model = meta.get("model_provider", "")
-            if not model:
-                s[2] += 1
-                continue
-            meta["model"] = model
-            jf.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-            if reg is not None:
-                reg.execute("UPDATE trajectories SET source_model=? WHERE filename=?",
-                            (model, jf.with_suffix(".md").name))
-            s[0] += 1
-    if reg is not None:
-        reg.commit(); reg.close()
 
+def _model_for_meta(
+    eco: str,
+    meta: dict,
+    *,
+    cc_idx: dict[str, Path],
+    oc_map: dict[str, str],
+) -> str:
+    sid = meta.get("session_id", "")
+    if eco == "cc_sessions" and sid in cc_idx:
+        return _cc_model(cc_idx[sid])
+    if eco == "opencode_sessions":
+        return oc_map.get(sid, "")
+    if eco == "codex_sessions":
+        return meta.get("model_provider", "")
+    return ""
+
+
+def _process_sidecar(
+    jf: Path,
+    eco: str,
+    stats: list[int],
+    *,
+    cc_idx: dict[str, Path],
+    oc_map: dict[str, str],
+    reg: sqlite3.Connection | None,
+) -> None:
+    try:
+        meta = json.loads(jf.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if meta.get("model"):
+        stats[1] += 1
+        return
+
+    model = _model_for_meta(eco, meta, cc_idx=cc_idx, oc_map=oc_map)
+    if not model:
+        stats[2] += 1
+        return
+
+    meta["model"] = model
+    jf.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    if reg is not None:
+        reg.execute("UPDATE trajectories SET source_model=? WHERE filename=?",
+                    (model, jf.with_suffix(".md").name))
+    stats[0] += 1
+
+
+def _process_eco_dir(
+    eco: str,
+    stats: dict[str, list[int]],
+    *,
+    cc_idx: dict[str, Path],
+    oc_map: dict[str, str],
+    reg: sqlite3.Connection | None,
+) -> None:
+    d = XS / eco
+    if not d.is_dir():
+        return
+    s = stats.setdefault(eco, [0, 0, 0])
+    for jf in sorted(d.glob("traj_*.json")):
+        _process_sidecar(jf, eco, s, cc_idx=cc_idx, oc_map=oc_map, reg=reg)
+
+
+def _print_stats(stats: dict[str, list[int]]) -> None:
     print("=== 回填结果(filled / already / unknown) ===")
     for eco, (f, a, u) in stats.items():
         print(f"  {eco:<20} filled={f}  already={a}  unknown={u}")
+
+
+def main() -> int:
+    cc_idx = _cc_index()
+    oc_map = _oc_model_map()
+    reg = _open_registry()
+    stats: dict[str, list[int]] = {}   # eco -> [filled, already, unknown]
+
+    for eco in LIVE_DIRS:
+        _process_eco_dir(eco, stats, cc_idx=cc_idx, oc_map=oc_map, reg=reg)
+    if reg is not None:
+        reg.commit(); reg.close()
+
+    _print_stats(stats)
     return 0
 
 

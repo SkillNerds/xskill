@@ -67,6 +67,51 @@ def _branches(skill_path: Path) -> set[str]:
     return out
 
 
+def _skill_state(branches: set[str]) -> str:
+    if "staging" in branches:
+        return "staging"
+    if "main" in branches:
+        return "main"
+    if "baby" in branches:
+        return "baby"
+    return "unknown"
+
+
+def _skill_frontmatter_summary(skill_md: Path) -> tuple[str, int, int]:
+    if not skill_md.is_file():
+        return "", 0, 0
+    try:
+        from xskill.skill.frontmatter import parse as fm_parse
+        fm, _ = fm_parse(skill_md.read_text(encoding="utf-8"))
+        desc = (fm.get("description") or "").strip().replace("\n", " ")
+        meta = fm.get("metadata", {}) or {}
+        return desc, meta.get("version", 0), meta.get("use_count", 0)
+    except Exception:  # pylint: disable=broad-exception-caught
+        return "", 0, 0
+
+
+def _candidate_count(candidates_path: Path) -> int:
+    if not candidates_path.is_file():
+        return 0
+    try:
+        import yaml
+        data = yaml.safe_load(candidates_path.read_text(encoding="utf-8")) or {}
+        return len(data.get("candidates", []) or [])
+    except Exception:  # pylint: disable=broad-exception-caught
+        return 0
+
+
+def _catalog_entry(skill_path: Path) -> dict:
+    state = _skill_state(_branches(skill_path))
+    desc, version, use_count = _skill_frontmatter_summary(skill_path / "SKILL.md")
+    return {
+        "name": skill_path.name, "state": state,
+        "description": desc[:300], "version": version,
+        "use_count": use_count,
+        "candidates": _candidate_count(skill_path / ".candidates.yml"),
+    }
+
+
 def skills_catalog(skill_dir: Path) -> list[dict]:
     """列出 skill 库里的所有 skill —— 纯分析式(读目录 + SKILL.md + .candidates.yml)。
 
@@ -74,7 +119,6 @@ def skills_catalog(skill_dir: Path) -> list[dict]:
     name / state(baby|main|staging) / description / version / use_count / candidates。
     供"技能库"页直接展示库存,不再只靠空的触发率表。
     """
-    from xskill.skill.frontmatter import parse as fm_parse
     skill_dir = Path(skill_dir)
     if not skill_dir.is_dir():
         return []
@@ -82,44 +126,43 @@ def skills_catalog(skill_dir: Path) -> list[dict]:
     for d in sorted(skill_dir.iterdir()):
         if not d.is_dir() or d.name.startswith("."):
             continue
-        branches = _branches(d)
-        if "staging" in branches:
-            state = "staging"
-        elif "main" in branches:
-            state = "main"
-        elif "baby" in branches:
-            state = "baby"
-        else:
-            state = "unknown"
-        desc, version, use_count = "", 0, 0
-        smd = d / "SKILL.md"
-        if smd.is_file():
-            try:
-                fm, _ = fm_parse(smd.read_text(encoding="utf-8"))
-                desc = (fm.get("description") or "").strip().replace("\n", " ")
-                meta = fm.get("metadata", {}) or {}
-                version = meta.get("version", 0)
-                use_count = meta.get("use_count", 0)
-            except Exception:  # pylint: disable=broad-exception-caught
-                pass
-        n_cand = 0
-        cand = d / ".candidates.yml"
-        if cand.is_file():
-            try:
-                import yaml
-                data = yaml.safe_load(cand.read_text(encoding="utf-8")) or {}
-                n_cand = len(data.get("candidates", []) or [])
-            except Exception:  # pylint: disable=broad-exception-caught
-                pass
-        out.append({
-            "name": d.name, "state": state,
-            "description": desc[:300], "version": version,
-            "use_count": use_count, "candidates": n_cand,
-        })
+        out.append(_catalog_entry(d))
     # main/staging（已正式产出）排前,其次 baby,再按名字
     order = {"main": 0, "staging": 0, "baby": 1, "unknown": 2}
     out.sort(key=lambda s: (order.get(s["state"], 3), s["name"]))
     return out
+
+
+def _dashboard_watch_dirs(db_path: Optional[Path]) -> list[tuple[str, str, str]]:
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute("SELECT path, label, ecosystem FROM watch_dirs").fetchall()
+        return [(r["path"], r["label"], r["ecosystem"]) for r in rows]
+    finally:
+        conn.close()
+
+
+def _record_tag(tag, client: Optional[str], counter, tag_users: dict[str, set]):
+    normalized = str(tag).strip().lower()
+    if not normalized:
+        return
+    counter[normalized] += 1
+    if client:
+        tag_users[normalized].add(client)
+
+
+def _collect_atom_tags(root: Path, client: Optional[str], counter,
+                       tag_users: dict[str, set]):
+    from xskill.pipeline.atom import AtomTaskStore
+
+    try:
+        if not root.is_dir():
+            return
+        for atom in AtomTaskStore(root=root).all_atoms():
+            for tag in (atom.tags or []):
+                _record_tag(tag, client, counter, tag_users)
+    except OSError:
+        return
 
 
 class DashboardMetrics:
@@ -236,32 +279,14 @@ class DashboardMetrics:
         返回按出现次数降序的 ``[{tag, count, users}]`` 前 top_n。
         """
         from collections import Counter, defaultdict
-        from xskill.pipeline.atom import AtomTaskStore
         from xskill.config import get_registry_db_path
         db_dir = Path(self._db).parent if self._db else get_registry_db_path().parent
         counter: Counter = Counter()
         tag_users: dict[str, set] = defaultdict(set)
-        conn = get_connection(self._db)
-        try:
-            wds = [(r["path"], r["label"], r["ecosystem"]) for r in conn.execute(
-                "SELECT path, label, ecosystem FROM watch_dirs").fetchall()]
-        finally:
-            conn.close()
-        for wp, label, eco in wds:
+        for wp, label, eco in _dashboard_watch_dirs(self._db):
             root = _resolve_local_root(wp, db_dir)
             client = label if (eco == "team_client" and label) else None
-            try:
-                if not root.is_dir():
-                    continue
-                for atom in AtomTaskStore(root=root).all_atoms():
-                    for tag in (atom.tags or []):
-                        t = str(tag).strip().lower()
-                        if t:
-                            counter[t] += 1
-                            if client:
-                                tag_users[t].add(client)
-            except OSError:
-                continue  # 某个目录不可读/路径异常,跳过不阻断整体聚合
+            _collect_atom_tags(root, client, counter, tag_users)
         return [{"tag": t, "count": n, "users": sorted(tag_users.get(t, ()))}
                 for t, n in counter.most_common(top_n)]
 

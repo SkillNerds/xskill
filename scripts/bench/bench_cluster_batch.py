@@ -61,10 +61,47 @@ def _make_stub():
     return _Stub
 
 
+def _seed_trajectories(wd: Path, store, traj_atoms: dict[str, int]) -> None:
+    from xskill.pipeline.atom import AtomTask
+
+    for tid, n_atoms in traj_atoms.items():
+        stem = tid[:-3] if tid.endswith(".md") else tid
+        (wd / f"{stem}.md").write_text("placeholder\n", encoding="utf-8")
+        for i in range(n_atoms):
+            store.save(AtomTask(
+                atom_id=f"atom_{stem}_{i:04d}", traj_id=stem,
+                offset_start=1 + i * 10, offset_end=10 + i * 10,
+                intent=f"intent {i}", summary=f"summary for atom {i} of {stem}",
+                tags=["bench"], used_skills=[], ux_score=7,
+            ))
+
+
+def _mark_indexed(wd_id: int, traj_atoms: dict[str, int], db: Path) -> None:
+    from xskill.pipeline.registry import update_traj_status
+
+    for tid in traj_atoms:
+        stem = tid[:-3] if tid.endswith(".md") else tid
+        update_traj_status(wd_id, f"{stem}.md", "indexed", db_path=db)
+
+
+def _wait_for_cluster(watcher, wd_id: int, db: Path) -> None:
+    from xskill.pipeline.registry import get_trajs_by_status
+
+    for _ in range(2000):
+        watcher._scan_once()
+        for _ in range(200):
+            if not watcher._futures:
+                break
+            time.sleep(0.005)
+            watcher._harvest()
+        if not get_trajs_by_status(wd_id, "indexed", db_path=db):
+            break
+
+
 def _run(traj_atoms: dict[str, int], batch_size: int):
-    from xskill.pipeline.atom import AtomTask, AtomTaskStore
+    from xskill.pipeline.atom import AtomTaskStore
     from xskill.pipeline.registry import (
-        register_dir, discover_trajectories, update_traj_status,
+        register_dir, discover_trajectories,
         get_trajs_by_status,
     )
     from xskill.pipeline.runner import DirectoryWatcher
@@ -78,21 +115,10 @@ def _run(traj_atoms: dict[str, int], batch_size: int):
     db = tmp / "bench.db"
     store = AtomTaskStore(root=wd)
 
-    for tid, n_atoms in traj_atoms.items():
-        stem = tid[:-3] if tid.endswith(".md") else tid
-        (wd / f"{stem}.md").write_text("placeholder\n", encoding="utf-8")
-        for i in range(n_atoms):
-            store.save(AtomTask(
-                atom_id=f"atom_{stem}_{i:04d}", traj_id=stem,
-                offset_start=1 + i * 10, offset_end=10 + i * 10,
-                intent=f"intent {i}", summary=f"summary for atom {i} of {stem}",
-                tags=["bench"], used_skills=[], ux_score=7,
-            ))
+    _seed_trajectories(wd, store, traj_atoms)
     wd_id = register_dir(wd, db_path=db)
     discover_trajectories(wd_id, wd, db_path=db)
-    for tid in traj_atoms:
-        stem = tid[:-3] if tid.endswith(".md") else tid
-        update_traj_status(wd_id, f"{stem}.md", "indexed", db_path=db)
+    _mark_indexed(wd_id, traj_atoms, db)
 
     watcher = DirectoryWatcher(
         llm=None, embed_client=None,
@@ -108,15 +134,7 @@ def _run(traj_atoms: dict[str, int], batch_size: int):
     )
 
     t0 = time.monotonic()
-    for _ in range(2000):
-        watcher._scan_once()
-        for _ in range(200):
-            if not watcher._futures:
-                break
-            time.sleep(0.005)
-            watcher._harvest()
-        if not get_trajs_by_status(wd_id, "indexed", db_path=db):
-            break
+    _wait_for_cluster(watcher, wd_id, db)
     wall = time.monotonic() - t0
     done = len(get_trajs_by_status(wd_id, "done", db_path=db))
     watcher._pool.shutdown(wait=False)

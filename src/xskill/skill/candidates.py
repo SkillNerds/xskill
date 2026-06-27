@@ -19,6 +19,7 @@ Design notes
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import date, datetime
@@ -237,21 +238,33 @@ def find_atom_entry_in_any_skill(
 
     per-atom info 日志要打 ``ws=...``，需要这个 weightscore。
     """
-    if not skill_dir or not Path(skill_dir).is_dir():
+    if not skill_dir:
         return None
-    for skill_path in sorted(Path(skill_dir).iterdir()):
-        if not skill_path.is_dir() or skill_path.name.startswith("."):
-            continue
-        cand_yml = skill_path / CANDIDATES_FILENAME
-        if not cand_yml.is_file():
-            continue
-        try:
-            data = yaml.safe_load(cand_yml.read_text(encoding="utf-8")) or {}
-            for c in data.get("candidates", []) or []:
-                if c.get("atom_id") == atom_id:
-                    return (skill_path.name, int(c.get("weightscore", 0)))
-        except Exception:
-            continue
+    for skill_name, cand_yml in _iter_candidate_files(Path(skill_dir)):
+        weightscore = _find_atom_weightscore(cand_yml, atom_id)
+        if weightscore is not None:
+            return skill_name, weightscore
+    return None
+
+
+def _iter_candidate_files(skill_dir: Path):
+    if not skill_dir.is_dir():
+        return
+    for skill_path in sorted(skill_dir.iterdir()):
+        if skill_path.is_dir() and not skill_path.name.startswith("."):
+            cand_yml = skill_path / CANDIDATES_FILENAME
+            if cand_yml.is_file():
+                yield skill_path.name, cand_yml
+
+
+def _find_atom_weightscore(cand_yml: Path, atom_id: str) -> int | None:
+    try:
+        data = yaml.safe_load(cand_yml.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    for candidate in data.get("candidates", []) or []:
+        if candidate.get("atom_id") == atom_id:
+            return int(candidate.get("weightscore", 0))
     return None
 
 
@@ -495,12 +508,9 @@ def _run_skill_edit_agent(skill_dir: Path, candidates: list[dict],
         marks candidates done — observed practice).
       - ``read_file_max_bytes`` (default 15000) -- per-read truncation
     """
-    import json as _json
     import os
-    import threading
     from agno.agent import Agent
     from agno.models.openai.like import OpenAILike
-    from agno.tools import tool as _agno_tool
 
     llm_cfg = config.get("llm", {})
     if not llm_cfg.get("base_url") or not llm_cfg.get("model"):
@@ -511,7 +521,26 @@ def _run_skill_edit_agent(skill_dir: Path, candidates: list[dict],
     timeout_seconds = int(agent_cfg.get("timeout_seconds", 600))
     read_max_bytes = int(agent_cfg.get("read_file_max_bytes", 15000))
 
-    # ── Tools: full filesystem access within skill + data dirs ──
+    model = OpenAILike(
+        id=llm_cfg["model"],
+        api_key=llm_cfg.get("api_key") or os.environ.get("LLM_API_KEY", ""),
+        base_url=llm_cfg["base_url"],
+    )
+
+    agent = Agent(
+        model=model,
+        tools=_build_skill_edit_tools(skill_dir, read_max_bytes),
+        tool_call_limit=tool_call_limit,
+        markdown=True,
+    )
+    user_msg = _skill_edit_user_message(skill_dir, candidates)
+    completed = _run_agent_with_timeout(agent, user_msg, timeout_seconds, skill_dir)
+    if completed:
+        logger.info("skill edit agent completed for %s", skill_dir.name)
+
+
+def _build_skill_edit_tools(skill_dir: Path, read_max_bytes: int) -> list:
+    from agno.tools import tool as _agno_tool
 
     @_agno_tool(name="read_file", description="Read any file (trajectory, skill, script, etc).\nArgs:\n    path: file path")
     def _read_file(path: str) -> str:
@@ -526,7 +555,6 @@ def _run_skill_edit_agent(skill_dir: Path, candidates: list[dict],
     @_agno_tool(name="write_file", description="Write/overwrite a file in the skill directory.\nArgs:\n    path: file path\n    content: file content")
     def _write_file(path: str, content: str) -> str:
         p = Path(path)
-        # Security: only allow writes within the skill dir
         try:
             p.resolve().relative_to(skill_dir.resolve())
         except ValueError:
@@ -543,40 +571,20 @@ def _run_skill_edit_agent(skill_dir: Path, candidates: list[dict],
         entries = sorted(p.iterdir())
         return "\n".join(f"{'[dir] ' if e.is_dir() else ''}{e.name}" for e in entries) or "(empty)"
 
-    # ── Build user message with context ──
+    return [_read_file, _write_file, _list_files]
 
-    cand_info = []
-    for c in candidates:
-        cand_info.append({
-            "pattern": c.get("pattern", ""),
-            "type": c.get("type", "step"),
-            "attach_to": c.get("attach_to", ""),
-            "supporting_trajs": c.get("supporting_trajs", []),
-        })
 
-    # Find trajectory file paths — search across all registered watch dirs.
-    # Missing IDs are skipped (warning logged by helper); the promote agent
-    # then sees a partial map, which is better than the v1 reverse-derived
-    # `skill_dir.parent.parent / "data"` path that silently returned {} once
-    # trajectories moved out of the repo root.
-    from xskill.pipeline.registry import find_traj_file
-    traj_paths = {}
-    for c in candidates:
-        for tid in c.get("supporting_trajs", []):
-            if tid in traj_paths:
-                continue
-            p = find_traj_file(tid, ".md")
-            if p is not None:
-                traj_paths[tid] = str(p)
-
-    user_msg = f"""你是一个从 agent 执行轨迹中抽取复用模式的 Skill 编辑 Agent。
+def _skill_edit_user_message(skill_dir: Path, candidates: list[dict]) -> str:
+    cand_info = _skill_edit_candidate_info(candidates)
+    traj_paths = _skill_edit_traj_paths(candidates)
+    return f"""你是一个从 agent 执行轨迹中抽取复用模式的 Skill 编辑 Agent。
 
 已有一个 skill 目录在 `{skill_dir}`，其中的 `.candidates.yml` 记录了从多条轨迹中提取的候选 pattern（步骤、警告、决策分支等）。以下 candidates 已经积累了足够多的独立轨迹支持，说明它们是跨轨迹的共性模式，而非单次偶然：
 
-{_json.dumps(cand_info, ensure_ascii=False, indent=2)}
+{json.dumps(cand_info, ensure_ascii=False, indent=2)}
 
 这些 candidates 对应的源轨迹文件路径如下，你可以用 read_file 查看完整的执行过程和上下文：
-{_json.dumps(traj_paths, ensure_ascii=False, indent=2)}
+{json.dumps(traj_paths, ensure_ascii=False, indent=2)}
 
 你的目标是将这些共性模式合入到 skill 中，使其成为一份高质量的、可被其他 agent 直接加载使用的操作指南。具体来说：
 
@@ -588,22 +596,36 @@ def _run_skill_edit_agent(skill_dir: Path, candidates: list[dict],
 
 完成所有编辑后说 done。"""
 
-    model = OpenAILike(
-        id=llm_cfg["model"],
-        api_key=llm_cfg.get("api_key") or os.environ.get("LLM_API_KEY", ""),
-        base_url=llm_cfg["base_url"],
-    )
 
-    agent = Agent(
-        model=model,
-        tools=[_read_file, _write_file, _list_files],
-        tool_call_limit=tool_call_limit,
-        markdown=True,
-    )
+def _skill_edit_candidate_info(candidates: list[dict]) -> list[dict]:
+    return [
+        {
+            "pattern": c.get("pattern", ""),
+            "type": c.get("type", "step"),
+            "attach_to": c.get("attach_to", ""),
+            "supporting_trajs": c.get("supporting_trajs", []),
+        }
+        for c in candidates
+    ]
 
-    # Run inside a daemon thread with wall-clock timeout. agno's Agent.run is
-    # blocking and not cancellable, so on timeout we let the thread leak (it
-    # dies with the process) and keep whatever the agent already wrote.
+
+def _skill_edit_traj_paths(candidates: list[dict]) -> dict:
+    from xskill.pipeline.registry import find_traj_file
+
+    traj_paths = {}
+    for c in candidates:
+        for tid in c.get("supporting_trajs", []):
+            if tid not in traj_paths:
+                p = find_traj_file(tid, ".md")
+                if p is not None:
+                    traj_paths[tid] = str(p)
+    return traj_paths
+
+
+def _run_agent_with_timeout(agent, user_msg: str, timeout_seconds: int,
+                            skill_dir: Path) -> bool:
+    import threading
+
     err_box: dict = {"err": None}
 
     def _runner():
@@ -620,10 +642,10 @@ def _run_skill_edit_agent(skill_dir: Path, candidates: list[dict],
             "skill edit agent timed out after %ds for %s; keeping partial writes",
             timeout_seconds, skill_dir.name,
         )
-        return
+        return False
     if err_box["err"] is not None:
         raise err_box["err"]
-    logger.info("skill edit agent completed for %s", skill_dir.name)
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════

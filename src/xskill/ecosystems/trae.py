@@ -261,92 +261,128 @@ def _query_chat_blob(conn: sqlite3.Connection) -> tuple[dict | None, str]:
     return None, ""
 
 
+def _entries_from_mapping(raw: Any) -> dict[str, dict]:
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+
+
+def _entries_from_list(raw: Any) -> dict[str, dict]:
+    if not isinstance(raw, list):
+        return {}
+    return {str(i): x for i, x in enumerate(raw) if isinstance(x, dict)}
+
+
+def _entries_from_session_list(raw: Any) -> dict[str, dict]:
+    entries: dict[str, dict] = {}
+    if not isinstance(raw, list):
+        return entries
+    for i, item in enumerate(raw):
+        if isinstance(item, dict):
+            sid = item.get("sessionId") or item.get("id") or str(i)
+            entries[str(sid)] = item
+    return entries
+
+
+def _entries_from_collection(raw: Any) -> dict[str, dict]:
+    if isinstance(raw, dict):
+        return _entries_from_mapping(raw)
+    return _entries_from_list(raw)
+
+
+def _memento_entries(chat_data: dict) -> dict[str, dict]:
+    lst = chat_data.get("list")
+    if isinstance(lst, list):
+        return _entries_from_session_list(lst)
+    raw = (
+        chat_data.get("sessions")
+        or chat_data.get("conversations")
+        or chat_data.get("entries")
+    )
+    return _entries_from_mapping(raw)
+
+
 def _sessions_from_chat_blob(chat_data: dict, used_key: str) -> list[dict]:
     """把 chat store blob 规范成 session dict 列表。"""
-    entries: dict[str, Any] = {}
-
     if used_key == "memento/icube-ai-agent-storage":
-        lst = chat_data.get("list")
-        if isinstance(lst, list):
-            for i, item in enumerate(lst):
-                if not isinstance(item, dict):
-                    continue
-                sid = item.get("sessionId") or item.get("id") or str(i)
-                entries[str(sid)] = item
+        entries = _entries_from_session_list(chat_data.get("list"))
     elif used_key == "ChatStore":
-        raw = chat_data.get("sessions") or chat_data.get("entries")
-        if isinstance(raw, dict):
-            entries = {str(k): v for k, v in raw.items() if isinstance(v, dict)}
-        elif isinstance(raw, list):
-            entries = {str(i): x for i, x in enumerate(raw) if isinstance(x, dict)}
+        entries = _entries_from_collection(
+            chat_data.get("sessions") or chat_data.get("entries")
+        )
     elif "memento/icube-ai" in used_key:
-        lst = chat_data.get("list")
-        if isinstance(lst, list):
-            for i, item in enumerate(lst):
-                if isinstance(item, dict):
-                    sid = item.get("sessionId") or item.get("id") or str(i)
-                    entries[str(sid)] = item
-        else:
-            raw = (
-                chat_data.get("sessions")
-                or chat_data.get("conversations")
-                or chat_data.get("entries")
-            )
-            if isinstance(raw, dict):
-                entries = {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+        entries = _memento_entries(chat_data)
     else:
-        raw = chat_data.get("entries")
-        if isinstance(raw, dict):
-            entries = {str(k): v for k, v in raw.items() if isinstance(v, dict)}
-        elif isinstance(raw, list):
-            entries = {str(i): x for i, x in enumerate(raw) if isinstance(x, dict)}
+        entries = _entries_from_collection(chat_data.get("entries"))
+    return list(entries.values())
 
-    return [s for s in entries.values() if isinstance(s, dict)]
+
+def _message_dict_text(val: dict) -> str:
+    for sub in ("text", "content", "summary"):
+        text = val.get(sub)
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    data = val.get("data")
+    if isinstance(data, dict):
+        summary = data.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+    return ""
+
+
+def _message_list_text(val: list) -> str:
+    chunks: list[str] = []
+    for part in val:
+        if isinstance(part, dict) and part.get("text"):
+            chunks.append(str(part["text"]))
+    return "\n".join(chunks).strip()
+
+
+def _message_value_text(val: Any) -> str:
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val.strip()
+    if isinstance(val, dict):
+        return _message_dict_text(val)
+    if isinstance(val, list):
+        return _message_list_text(val)
+    return ""
 
 
 def _message_text(msg: dict) -> str:
     """从 Trae IDE 单条 message 对象抽取可读文本。"""
     for field in ("content", "text", "message", "body", "prompt"):
-        val = msg.get(field)
-        if val is None:
-            continue
-        if isinstance(val, str) and val.strip():
-            return val.strip()
-        if isinstance(val, dict):
-            for sub in ("text", "content", "summary"):
-                if isinstance(val.get(sub), str) and val[sub].strip():
-                    return val[sub].strip()
-            if isinstance(val.get("data"), dict):
-                summ = val["data"].get("summary")
-                if isinstance(summ, str) and summ.strip():
-                    return summ.strip()
-        if isinstance(val, list):
-            chunks: list[str] = []
-            for part in val:
-                    if isinstance(part, dict) and part.get("text"):
-                        chunks.append(str(part["text"]))
-            joined = "\n".join(chunks).strip()
-            if joined:
-                return joined
+        text = _message_value_text(msg.get(field))
+        if text:
+            return text
     return ""
+
+
+def _append_unique_name(names: list[str], value: Any) -> None:
+    if isinstance(value, str) and value and value not in names:
+        names.append(value)
+
+
+def _append_tool_call_names(names: list[str], tools: Any) -> None:
+    if not isinstance(tools, list):
+        return
+    for tool in tools:
+        if isinstance(tool, dict):
+            _append_unique_name(names, tool.get("name") or tool.get("toolName"))
+
+
+def _append_message_tool_names(names: list[str], msg: dict) -> None:
+    for key in ("toolName", "tool_name", "name"):
+        _append_unique_name(names, msg.get(key))
+    _append_tool_call_names(names, msg.get("tools") or msg.get("toolCalls") or [])
 
 
 def _collect_tool_names_from_session(session: dict) -> list[str]:
     names: list[str] = []
     for msg in session.get("messages") or []:
-        if not isinstance(msg, dict):
-            continue
-        for key in ("toolName", "tool_name", "name"):
-            n = msg.get(key)
-            if isinstance(n, str) and n and n not in names:
-                names.append(n)
-        tools = msg.get("tools") or msg.get("toolCalls") or []
-        if isinstance(tools, list):
-            for t in tools:
-                if isinstance(t, dict):
-                    tn = t.get("name") or t.get("toolName")
-                    if isinstance(tn, str) and tn and tn not in names:
-                        names.append(tn)
+        if isinstance(msg, dict):
+            _append_message_tool_names(names, msg)
     return names
 
 
@@ -355,21 +391,25 @@ def _collect_tool_names_from_session(session: dict) -> list[str]:
 # ─────────────────────────────────────────────────────────────────
 
 
-def _adapt_trae_ide_session_json(content: str, metadata: dict) -> tuple[str, dict]:
-    """单条 Trae IDE chat session（JSON 对象）→ markdown。"""
+def _load_trae_ide_session(content: str | dict) -> dict:
     session = json.loads(content) if isinstance(content, str) else content
     if not isinstance(session, dict):
         raise ValueError("trae IDE session must be a JSON object")
+    return session
 
-    workspace_folder = metadata.get("workspace_folder") or ""
-    title = (
+
+def _trae_ide_title(session: dict) -> Any:
+    return (
         session.get("title")
         or session.get("name")
         or session.get("sessionId")
         or "Trae chat"
     )
 
-    lines: list[str] = ["# Trae IDE Session", ""]
+
+def _append_trae_ide_header(
+    lines: list[str], workspace_folder: str, title: Any,
+) -> None:
     if workspace_folder:
         lines.append(f"**workspace**: `{workspace_folder}`")
         lines.append("")
@@ -377,45 +417,48 @@ def _adapt_trae_ide_session_json(content: str, metadata: dict) -> tuple[str, dic
         lines.append(f"**title**: {title}")
         lines.append("")
 
-    messages = session.get("messages") or []
+
+def _trae_message_entries(messages: Any) -> list[tuple[Any, str]]:
+    entries: list[tuple[Any, str]] = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        body = _message_text(msg)
+        if body:
+            entries.append((msg.get("role") or "unknown", body))
+    return entries
+
+
+def _timeline_from_entries(entries: list[tuple[Any, str]]) -> tuple[list[dict], str]:
     first_user = ""
     timeline: list[dict] = []
-    t = 0
-
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role") or "unknown"
-        body = _message_text(msg)
-        if not body:
-            continue
+    for role, body in entries:
         if role == "user" and not first_user:
             first_user = body[:500]
-        timeline.append({"t": t, "role": role, "content": body[:2000]})
-        t += 1
+        timeline.append({"t": len(timeline), "role": role, "content": body[:2000]})
+    return timeline, first_user
 
-    if first_user:
-        lines.extend(["## Initial Query", "", first_user, ""])
 
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role") or "unknown"
-        body = _message_text(msg)
-        if not body:
-            continue
-        if role == "user":
-            lines.append("## User")
-        elif role == "assistant":
-            lines.append("## Assistant")
-        else:
-            lines.append(f"## {str(role).capitalize()}")
+def _append_role_heading(lines: list[str], role: Any) -> None:
+    if role == "user":
+        lines.append("## User")
+    elif role == "assistant":
+        lines.append("## Assistant")
+    else:
+        lines.append(f"## {str(role).capitalize()}")
+
+
+def _append_message_sections(lines: list[str], entries: list[tuple[Any, str]]) -> None:
+    for role, body in entries:
+        _append_role_heading(lines, role)
         lines.append("")
         lines.append(body)
         lines.append("")
 
-    md = "\n".join(lines)
-    meta = dict(metadata)
+
+def _set_trae_ide_metadata(
+    meta: dict, session: dict, timeline: list[dict], first_user: str,
+) -> None:
     meta.setdefault("source", "trae_ide_session_json")
     meta.setdefault("category", "trae_ide_session")
     meta["timeline"] = timeline
@@ -426,66 +469,97 @@ def _adapt_trae_ide_session_json(content: str, metadata: dict) -> tuple[str, dic
     sid = session.get("sessionId") or session.get("id")
     if sid:
         meta.setdefault("session_id", str(sid))
+
+
+def _adapt_trae_ide_session_json(content: str, metadata: dict) -> tuple[str, dict]:
+    """单条 Trae IDE chat session（JSON 对象）→ markdown。"""
+    session = _load_trae_ide_session(content)
+    workspace_folder = metadata.get("workspace_folder") or ""
+
+    lines: list[str] = ["# Trae IDE Session", ""]
+    _append_trae_ide_header(lines, workspace_folder, _trae_ide_title(session))
+
+    entries = _trae_message_entries(session.get("messages") or [])
+    timeline, first_user = _timeline_from_entries(entries)
+    if first_user:
+        lines.extend(["## Initial Query", "", first_user, ""])
+
+    _append_message_sections(lines, entries)
+
+    md = "\n".join(lines)
+    meta = dict(metadata)
+    _set_trae_ide_metadata(meta, session, timeline, first_user)
     return md, meta
 
 
-def _adapt_trae_agent_trajectory_json(content: str, metadata: dict) -> tuple[str, dict]:
-    """Trae Agent CLI ``trajectory_*.json`` → markdown。"""
-    data = json.loads(content)
-    task = data.get("task") or ""
-    lines: list[str] = ["# Trae Agent Trajectory", ""]
+def _append_initial_query(lines: list[str], task: Any) -> None:
     if task:
         lines.append("## Initial Query")
         lines.append("")
         lines.append(str(task))
         lines.append("")
 
-    tool_names: list[str] = []
-    timeline: list[dict] = []
-    t = 0
 
-    for interaction in data.get("llm_interactions") or []:
-        if not isinstance(interaction, dict):
+def _append_timeline_turn(
+    lines: list[str], timeline: list[dict], role: Any, body: str,
+) -> None:
+    timeline.append({"t": len(timeline), "role": role, "content": body[:2000]})
+    _append_role_heading(lines, role)
+    lines.append("")
+    lines.append(body)
+    lines.append("")
+
+
+def _append_agent_input_messages(
+    lines: list[str], timeline: list[dict], messages: Any,
+) -> None:
+    for msg in messages or []:
+        if not isinstance(msg, dict):
             continue
-        for msg in interaction.get("input_messages") or []:
-            if not isinstance(msg, dict):
-                continue
-            role = msg.get("role", "unknown")
-            body = msg.get("content")
-            if isinstance(body, str) and body.strip():
-                timeline.append({"t": t, "role": role, "content": body[:2000]})
-                t += 1
-                lines.append(f"## {str(role).capitalize()}")
-                lines.append("")
-                lines.append(body)
-                lines.append("")
-        resp = interaction.get("response") or {}
-        if isinstance(resp, dict):
-            body = resp.get("content")
-            if isinstance(body, str) and body.strip():
-                timeline.append({"t": t, "role": "assistant", "content": body[:2000]})
-                t += 1
-                lines.append("## Assistant")
-                lines.append("")
-                lines.append(body)
-                lines.append("")
-            for tc in resp.get("tool_calls") or []:
-                if isinstance(tc, dict):
-                    name = tc.get("name")
-                    if isinstance(name, str) and name and name not in tool_names:
-                        tool_names.append(name)
+        body = msg.get("content")
+        if isinstance(body, str) and body.strip():
+            _append_timeline_turn(lines, timeline, msg.get("role", "unknown"), body)
 
-    for step in data.get("agent_steps") or []:
-        if not isinstance(step, dict):
-            continue
-        for tc in step.get("tool_calls") or []:
-            if isinstance(tc, dict):
-                name = tc.get("name")
-                if isinstance(name, str) and name and name not in tool_names:
-                    tool_names.append(name)
 
-    md = "\n".join(lines)
-    meta = dict(metadata)
+def _append_response_tool_names(tool_names: list[str], tool_calls: Any) -> None:
+    if not isinstance(tool_calls, list):
+        return
+    for tool_call in tool_calls:
+        if isinstance(tool_call, dict):
+            _append_unique_name(tool_names, tool_call.get("name"))
+
+
+def _append_agent_response(
+    lines: list[str], timeline: list[dict], tool_names: list[str], response: Any,
+) -> None:
+    if not isinstance(response, dict):
+        return
+    body = response.get("content")
+    if isinstance(body, str) and body.strip():
+        _append_timeline_turn(lines, timeline, "assistant", body)
+    _append_response_tool_names(tool_names, response.get("tool_calls") or [])
+
+
+def _append_agent_interaction(
+    lines: list[str], timeline: list[dict], tool_names: list[str], interaction: Any,
+) -> None:
+    if not isinstance(interaction, dict):
+        return
+    _append_agent_input_messages(lines, timeline, interaction.get("input_messages") or [])
+    _append_agent_response(
+        lines, timeline, tool_names, interaction.get("response") or {},
+    )
+
+
+def _append_agent_step_tool_names(tool_names: list[str], steps: Any) -> None:
+    for step in steps or []:
+        if isinstance(step, dict):
+            _append_response_tool_names(tool_names, step.get("tool_calls") or [])
+
+
+def _set_trae_agent_metadata(
+    meta: dict, data: dict, timeline: list[dict], tool_names: list[str], task: Any,
+) -> None:
     meta.setdefault("source", "trae_agent_trajectory_json")
     meta.setdefault("category", "trae_agent_session")
     meta["timeline"] = timeline
@@ -495,12 +569,90 @@ def _adapt_trae_agent_trajectory_json(content: str, metadata: dict) -> tuple[str
         meta.setdefault("query", str(task)[:500])
     if data.get("model"):
         meta.setdefault("model", data["model"])
+
+
+def _adapt_trae_agent_trajectory_json(content: str, metadata: dict) -> tuple[str, dict]:
+    """Trae Agent CLI ``trajectory_*.json`` → markdown。"""
+    data = json.loads(content)
+    task = data.get("task") or ""
+    lines: list[str] = ["# Trae Agent Trajectory", ""]
+    _append_initial_query(lines, task)
+
+    tool_names: list[str] = []
+    timeline: list[dict] = []
+
+    for interaction in data.get("llm_interactions") or []:
+        _append_agent_interaction(lines, timeline, tool_names, interaction)
+    _append_agent_step_tool_names(tool_names, data.get("agent_steps") or [])
+
+    md = "\n".join(lines)
+    meta = dict(metadata)
+    _set_trae_agent_metadata(meta, data, timeline, tool_names, task)
     return md, meta
 
 
 # ─────────────────────────────────────────────────────────────────
 # TraeIngester — workspaceStorage + CLI trajectories
 # ─────────────────────────────────────────────────────────────────
+
+
+def _iter_workspace_vscdbs(home: Path) -> Iterable[tuple[Path, Path]]:
+    for ws_root in _trae_workspace_storage_roots(home):
+        if not ws_root.is_dir():
+            continue
+        for ws_dir in sorted(ws_root.iterdir()):
+            db_path = ws_dir / "state.vscdb"
+            if ws_dir.is_dir() and db_path.is_file():
+                yield ws_dir, db_path
+
+
+def _read_chat_blob_from_db(db_path: Path) -> tuple[dict | None, str]:
+    try:
+        conn = _open_vscdb_readonly(db_path)
+    except sqlite3.Error:
+        logger.debug("cannot open %s", db_path, exc_info=True)
+        return None, ""
+    try:
+        return _query_chat_blob(conn)
+    finally:
+        conn.close()
+
+
+def _session_identifier(session: dict) -> Any:
+    return session.get("sessionId") or session.get("id") or session.get("title")
+
+
+def _ide_session_metadata(
+    ws_dir: Path, folder: str, db_path: Path, used_key: str, dedup_key: str,
+) -> dict:
+    return {
+        "workspace_id": ws_dir.name,
+        "workspace_folder": folder,
+        # Persist the full dedup key so _scan_seen_sessions can rebuild the same
+        # in-memory key after daemon restarts.
+        "session_id": dedup_key,
+        "source_vscdb": str(db_path),
+        "chat_store_key": used_key,
+    }
+
+
+def _iter_agent_trajectory_files(home: Path) -> Iterable[Path]:
+    for traj_dir in _trae_agent_trajectory_roots(home):
+        yield from sorted(traj_dir.glob("trajectory_*.json"))
+
+
+def _read_agent_trajectory(json_path: Path) -> tuple[str, dict] | None:
+    try:
+        content = json_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not content.strip():
+        return None
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    return content, data
 
 
 class TraeIngester:
@@ -586,103 +738,95 @@ class TraeIngester:
         self, target: Path, home: Path, seen: set[str],
     ) -> list[dict]:
         out: list[dict] = []
-        for ws_root in _trae_workspace_storage_roots(home):
-            if not ws_root.is_dir():
-                continue
-            for ws_dir in sorted(ws_root.iterdir()):
-                if not ws_dir.is_dir():
-                    continue
-                db_path = ws_dir / "state.vscdb"
-                if not db_path.is_file():
-                    continue
-                folder = _read_workspace_folder(ws_dir)
-                try:
-                    conn = _open_vscdb_readonly(db_path)
-                except sqlite3.Error:
-                    logger.debug("cannot open %s", db_path, exc_info=True)
-                    continue
-                try:
-                    blob, used_key = _query_chat_blob(conn)
-                finally:
-                    conn.close()
-                if not blob or not used_key:
-                    continue
-                for session in _sessions_from_chat_blob(blob, used_key):
-                    sid = (
-                        session.get("sessionId")
-                        or session.get("id")
-                        or session.get("title")
-                    )
-                    if not sid:
-                        continue
-                    dedup_key = f"ide:{ws_dir.name}:{sid}"
-                    if dedup_key in seen:
-                        continue
-                    messages = session.get("messages") or []
-                    if not messages:
-                        continue
-                    meta = {
-                        "workspace_id": ws_dir.name,
-                        "workspace_folder": folder,
-                        # 落盘 dedup_key（而非裸 sid），_scan_seen_sessions
-                        # 重启重建 seen 集时才能与下一轮 poll 的 key 对齐，
-                        # 否则每次重启首轮都会重桥同一 session、虚增计数。
-                        # 与 CLI 路径（_bridge_agent_trajectories）保持一致。
-                        "session_id": dedup_key,
-                        "source_vscdb": str(db_path),
-                        "chat_store_key": used_key,
-                    }
-                    traj_id = self._make_traj_id(folder, str(sid), prefix="traj_trae_")
-                    payload = json.dumps(session, ensure_ascii=False)
-                    result = submit_trajectory(
-                        content=payload,
-                        format="trae_ide_session_json",
-                        traj_id=traj_id,
-                        traj_dir=target,
-                        metadata=meta,
-                    )
-                    result["session_id"] = dedup_key
-                    result["ecosystem"] = "trae"
-                    out.append(result)
-                    seen.add(dedup_key)
+        for ws_dir, db_path in _iter_workspace_vscdbs(home):
+            out.extend(self._bridge_workspace_db(target, ws_dir, db_path, seen))
         return out
+
+    def _bridge_workspace_db(
+        self, target: Path, ws_dir: Path, db_path: Path, seen: set[str],
+    ) -> list[dict]:
+        folder = _read_workspace_folder(ws_dir)
+        blob, used_key = _read_chat_blob_from_db(db_path)
+        if not blob or not used_key:
+            return []
+
+        out: list[dict] = []
+        for session in _sessions_from_chat_blob(blob, used_key):
+            result = self._bridge_ide_session(
+                target, ws_dir, folder, db_path, used_key, session, seen,
+            )
+            if result:
+                out.append(result)
+        return out
+
+    def _bridge_ide_session(
+        self,
+        target: Path,
+        ws_dir: Path,
+        folder: str,
+        db_path: Path,
+        used_key: str,
+        session: dict,
+        seen: set[str],
+    ) -> dict | None:
+        sid = _session_identifier(session)
+        if not sid:
+            return None
+        dedup_key = f"ide:{ws_dir.name}:{sid}"
+        if dedup_key in seen or not (session.get("messages") or []):
+            return None
+
+        result = submit_trajectory(
+            content=json.dumps(session, ensure_ascii=False),
+            format="trae_ide_session_json",
+            traj_id=self._make_traj_id(folder, str(sid), prefix="traj_trae_"),
+            traj_dir=target,
+            metadata=_ide_session_metadata(
+                ws_dir, folder, db_path, used_key, dedup_key,
+            ),
+        )
+        result["session_id"] = dedup_key
+        result["ecosystem"] = "trae"
+        seen.add(dedup_key)
+        return result
 
     def _bridge_agent_trajectories(
         self, target: Path, home: Path, seen: set[str],
     ) -> list[dict]:
         out: list[dict] = []
-        for traj_dir in _trae_agent_trajectory_roots(home):
-            for json_path in sorted(traj_dir.glob("trajectory_*.json")):
-                dedup_key = f"cli:{json_path.resolve()}"
-                if dedup_key in seen:
-                    continue
-                try:
-                    content = json_path.read_text(encoding="utf-8")
-                except OSError:
-                    continue
-                if not content.strip():
-                    continue
-                try:
-                    data = json.loads(content)
-                except json.JSONDecodeError:
-                    continue
-                task = data.get("task") or json_path.stem
-                traj_id = self._make_traj_id(
-                    json_path.parent.name, _sanitize_for_filename(str(task), 16) or json_path.stem,
-                    prefix="traj_trae_cli_",
-                )
-                result = submit_trajectory(
-                    content=content,
-                    format="trae_agent_trajectory_json",
-                    traj_id=traj_id,
-                    traj_dir=target,
-                    metadata={"source_json": str(json_path), "session_id": dedup_key},
-                )
-                result["session_id"] = dedup_key
-                result["ecosystem"] = "trae"
+        for json_path in _iter_agent_trajectory_files(home):
+            result = self._bridge_agent_trajectory_file(target, json_path, seen)
+            if result:
                 out.append(result)
-                seen.add(dedup_key)
         return out
+
+    def _bridge_agent_trajectory_file(
+        self, target: Path, json_path: Path, seen: set[str],
+    ) -> dict | None:
+        dedup_key = f"cli:{json_path.resolve()}"
+        if dedup_key in seen:
+            return None
+        parsed = _read_agent_trajectory(json_path)
+        if parsed is None:
+            return None
+        content, data = parsed
+        task = data.get("task") or json_path.stem
+        traj_id = self._make_traj_id(
+            json_path.parent.name,
+            _sanitize_for_filename(str(task), 16) or json_path.stem,
+            prefix="traj_trae_cli_",
+        )
+        result = submit_trajectory(
+            content=content,
+            format="trae_agent_trajectory_json",
+            traj_id=traj_id,
+            traj_dir=target,
+            metadata={"source_json": str(json_path), "session_id": dedup_key},
+        )
+        result["session_id"] = dedup_key
+        result["ecosystem"] = "trae"
+        seen.add(dedup_key)
+        return result
 
     @staticmethod
     def _make_traj_id(folder: str, sid: str, *, prefix: str) -> str:

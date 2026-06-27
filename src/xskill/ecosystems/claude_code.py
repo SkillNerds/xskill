@@ -111,6 +111,30 @@ def install_all_to_claude_code(
 # ─────────────────────────────────────────────────────────────────
 
 
+def _json_line(raw_line: str) -> dict | None:
+    raw_line = raw_line.strip()
+    if not raw_line:
+        return None
+    try:
+        return json.loads(raw_line)
+    except json.JSONDecodeError:
+        return None
+
+
+def _cc_skill_tool_parts(event: dict) -> list[dict]:
+    if event.get("type") != "assistant":
+        return []
+    content = (event.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return []
+    return [
+        part for part in content
+        if isinstance(part, dict)
+        and part.get("type") == "tool_use"
+        and part.get("name") == "Skill"
+    ]
+
+
 def _session_used_skill(jsonl_path: Path, skill_name: str) -> bool:
     """扫 CC session JSONL，看模型是否真触发了 ``tool_use=Skill, input.skill==skill_name``。
 
@@ -123,29 +147,11 @@ def _session_used_skill(jsonl_path: Path, skill_name: str) -> bool:
     if not jsonl_path.is_file():
         return False
     for line in jsonl_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = line.strip()
-        if not line:
+        ev = _json_line(line)
+        if ev is None:
             continue
-        try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if ev.get("type") != "assistant":
-            continue
-        msg = ev.get("message") or {}
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if not isinstance(part, dict):
-                continue
-            if part.get("type") != "tool_use":
-                continue
-            if part.get("name") != "Skill":
-                continue
-            inp = part.get("input") or {}
-            # CC 的 Skill tool 入参 schema: {"skill": "<name>", "args": ...}
-            if inp.get("skill") == skill_name:
+        for part in _cc_skill_tool_parts(ev):
+            if (part.get("input") or {}).get("skill") == skill_name:
                 return True
     return False
 
@@ -270,6 +276,202 @@ CC_SPEC = EcosystemSpec(
 # ─────────────────────────────────────────────────────────────────
 
 
+def _cc_tool_result_text(result_content: object) -> str:
+    if not isinstance(result_content, list):
+        return str(result_content) if result_content else ""
+    parts_text = [
+        rp.get("text") or ""
+        for rp in result_content
+        if isinstance(rp, dict) and rp.get("type") == "text"
+    ]
+    return "\n".join(parts_text)
+
+
+def _cc_backfill_tool_output(tool_calls: list[dict], tc_id: str, output_text: str) -> None:
+    for entry in reversed(tool_calls):
+        if entry.get("_tc_id") == tc_id:
+            entry["output"] = output_text
+            entry["output_available"] = True
+            break
+
+
+def _iter_cc_session_events(content: str):
+    for raw_line in content.splitlines():
+        event = _json_line(raw_line)
+        if event is None:
+            continue
+        ev_type = event.get("type")
+        if ev_type in ("user", "assistant"):
+            yield ev_type, event.get("message") or {}, event
+
+
+def _append_cc_user_content(
+    msg_content: object,
+    timeline: list[dict],
+    tool_calls: list[dict],
+    pending_tool_by_id: dict[str, str],
+    first_user_query: str,
+    t: int,
+) -> tuple[str, int]:
+    if isinstance(msg_content, str):
+        if not first_user_query:
+            first_user_query = msg_content[:500]
+        timeline.append({"t": t, "role": "user", "content": msg_content[:2000]})
+        return first_user_query, t + 1
+
+    if not isinstance(msg_content, list):
+        return first_user_query, t
+
+    for part in msg_content:
+        if not isinstance(part, dict) or part.get("type") != "tool_result":
+            continue
+        tc_id = part.get("tool_use_id", "")
+        output_text = _cc_tool_result_text(part.get("content"))[:2000]
+        timeline.append({
+            "t": t,
+            "role": "tool_output",
+            "tool": pending_tool_by_id.get(tc_id, "unknown"),
+            "output": output_text,
+            "is_error": bool(part.get("is_error")),
+        })
+        _cc_backfill_tool_output(tool_calls, tc_id, output_text)
+        t += 1
+    return first_user_query, t
+
+
+def _append_cc_text_part(part: dict, timeline: list[dict], t: int) -> int:
+    text = (part.get("text") or "").strip()
+    if text:
+        timeline.append({"t": t, "role": "assistant", "content": text[:2000]})
+        return t + 1
+    return t
+
+
+def _append_cc_tool_use_part(
+    part: dict,
+    timeline: list[dict],
+    tool_calls: list[dict],
+    tool_names: list[str],
+    pending_tool_by_id: dict[str, str],
+    t: int,
+    step: int,
+) -> tuple[int, int]:
+    tc_id = part.get("id", "")
+    tool_name = part.get("name", "unknown")
+    tool_input = part.get("input") or {}
+    if tool_name not in tool_names:
+        tool_names.append(tool_name)
+    pending_tool_by_id[tc_id] = tool_name
+    timeline.append({"t": t, "role": "tool_call", "tool": tool_name, "input": tool_input})
+    tool_calls.append({
+        "step": step,
+        "tool": tool_name,
+        "input": tool_input,
+        "output": "",
+        "output_available": False,
+        "_tc_id": tc_id,
+    })
+    return t + 1, step + 1
+
+
+def _append_cc_assistant_content(
+    msg_content: object,
+    timeline: list[dict],
+    tool_calls: list[dict],
+    tool_names: list[str],
+    pending_tool_by_id: dict[str, str],
+    t: int,
+    step: int,
+) -> tuple[int, int]:
+    if not isinstance(msg_content, list):
+        return t, step
+    for part in msg_content:
+        if not isinstance(part, dict):
+            continue
+        ptype = part.get("type")
+        if ptype == "text":
+            t = _append_cc_text_part(part, timeline, t)
+        elif ptype == "tool_use":
+            t, step = _append_cc_tool_use_part(
+                part, timeline, tool_calls, tool_names, pending_tool_by_id, t, step,
+            )
+    return t, step
+
+
+def _append_cc_markdown_entry(lines: list[str], entry: dict) -> None:
+    role = entry["role"]
+    if role == "user":
+        lines.extend(["## User", "", entry["content"], ""])
+    elif role == "assistant":
+        lines.extend(["## Assistant", "", entry["content"], ""])
+    elif role == "tool_call":
+        lines.extend([
+            f"## Tool Call: {entry['tool']}",
+            "```json",
+            json.dumps(entry["input"], ensure_ascii=False)[:1000],
+            "```",
+            "",
+        ])
+    elif role == "tool_output":
+        err_tag = " (error)" if entry.get("is_error") else ""
+        lines.extend([f"## Tool Output: {entry['tool']}{err_tag}", "```", entry["output"], "```", ""])
+
+
+def _build_cc_markdown(
+    session_id: str,
+    cwd: str,
+    git_branch: str,
+    first_user_query: str,
+    timeline: list[dict],
+) -> str:
+    lines: list[str] = ["# Claude Code Session Trajectory", ""]
+    if session_id:
+        lines.append(f"**session_id**: {session_id}")
+    if cwd:
+        lines.append(f"**cwd**: {cwd}")
+    if git_branch:
+        lines.append(f"**git_branch**: {git_branch}")
+    lines.append("")
+    if first_user_query:
+        lines.extend(["## Initial Query", "", first_user_query, ""])
+    for entry in timeline:
+        _append_cc_markdown_entry(lines, entry)
+    return "\n".join(lines)
+
+
+def _cc_metadata(
+    metadata: dict,
+    *,
+    session_id: str,
+    model: str,
+    cwd: str,
+    git_branch: str,
+    timeline: list[dict],
+    tool_calls: list[dict],
+    tool_names: list[str],
+    first_user_query: str,
+) -> dict:
+    meta = dict(metadata)
+    meta.setdefault("source", "claude_code_session_jsonl")
+    meta.setdefault("category", "claude_code_session")
+    for key, value in (
+        ("session_id", session_id),
+        ("model", model),
+        ("cwd", cwd),
+        ("git_branch", git_branch),
+    ):
+        if value:
+            meta.setdefault(key, value)
+    meta["timeline"] = timeline
+    meta["tool_calls"] = tool_calls
+    meta["tool_names"] = tool_names
+    meta["total_tool_calls"] = len(tool_calls)
+    meta["total_turns"] = len(timeline)
+    if first_user_query:
+        meta.setdefault("query", first_user_query)
+    return meta
+
+
 def _adapt_claude_code_jsonl(content: str, metadata: dict) -> tuple[str, dict]:
     """Convert a Claude Code session JSONL (``~/.claude/projects/.../*.jsonl``) to
     markdown + metadata.
@@ -300,171 +502,41 @@ def _adapt_claude_code_jsonl(content: str, metadata: dict) -> tuple[str, dict]:
     step = 0
     pending_tool_by_id: dict[str, str] = {}
 
-    for raw_line in content.splitlines():
-        raw_line = raw_line.strip()
-        if not raw_line:
-            continue
-        try:
-            event = json.loads(raw_line)
-        except json.JSONDecodeError:
-            continue
-
-        ev_type = event.get("type")
-        if ev_type not in ("user", "assistant"):
-            continue
-
+    for ev_type, msg, event in _iter_cc_session_events(content):
         session_id = session_id or event.get("sessionId", "") or ""
         cwd = cwd or event.get("cwd", "") or ""
         git_branch = git_branch or event.get("gitBranch", "") or ""
 
-        msg = event.get("message") or {}
         if ev_type == "assistant" and not model:
             model = msg.get("model") or ""
         msg_content = msg.get("content")
 
         if ev_type == "user":
-            if isinstance(msg_content, str):
-                if not first_user_query:
-                    first_user_query = msg_content[:500]
-                timeline.append({
-                    "t": t, "role": "user",
-                    "content": msg_content[:2000],
-                })
-                t += 1
-            elif isinstance(msg_content, list):
-                for part in msg_content:
-                    if not isinstance(part, dict):
-                        continue
-                    if part.get("type") == "tool_result":
-                        tc_id = part.get("tool_use_id", "")
-                        tool_name = pending_tool_by_id.get(tc_id, "unknown")
-                        result_content = part.get("content")
-                        if isinstance(result_content, list):
-                            parts_text = []
-                            for rp in result_content:
-                                if isinstance(rp, dict) and rp.get("type") == "text":
-                                    parts_text.append(rp.get("text") or "")
-                            output_text = "\n".join(parts_text)
-                        else:
-                            output_text = str(result_content) if result_content else ""
-                        output_text = output_text[:2000]
-                        timeline.append({
-                            "t": t, "role": "tool_output",
-                            "tool": tool_name,
-                            "output": output_text,
-                            "is_error": bool(part.get("is_error")),
-                        })
-                        # Backfill the matching tool_calls entry
-                        for entry in reversed(tool_calls):
-                            if entry.get("_tc_id") == tc_id:
-                                entry["output"] = output_text
-                                entry["output_available"] = True
-                                break
-                        t += 1
+            first_user_query, t = _append_cc_user_content(
+                msg_content, timeline, tool_calls, pending_tool_by_id, first_user_query, t,
+            )
 
         else:  # assistant
-            if isinstance(msg_content, list):
-                for part in msg_content:
-                    if not isinstance(part, dict):
-                        continue
-                    ptype = part.get("type")
-                    if ptype == "text":
-                        text = (part.get("text") or "").strip()
-                        if text:
-                            timeline.append({
-                                "t": t, "role": "assistant",
-                                "content": text[:2000],
-                            })
-                            t += 1
-                    elif ptype == "tool_use":
-                        tc_id = part.get("id", "")
-                        tool_name = part.get("name", "unknown")
-                        tool_input = part.get("input") or {}
-                        if tool_name not in tool_names:
-                            tool_names.append(tool_name)
-                        pending_tool_by_id[tc_id] = tool_name
-                        timeline.append({
-                            "t": t, "role": "tool_call",
-                            "tool": tool_name,
-                            "input": tool_input,
-                        })
-                        tool_calls.append({
-                            "step": step,
-                            "tool": tool_name,
-                            "input": tool_input,
-                            "output": "",
-                            "output_available": False,
-                            "_tc_id": tc_id,
-                        })
-                        step += 1
-                        t += 1
-                    # `thinking` parts are intentionally skipped.
+            t, step = _append_cc_assistant_content(
+                msg_content, timeline, tool_calls, tool_names, pending_tool_by_id, t, step,
+            )
 
     # Strip internal _tc_id from tool_calls before returning
     for entry in tool_calls:
         entry.pop("_tc_id", None)
 
-    # Build markdown body
-    lines: list[str] = ["# Claude Code Session Trajectory", ""]
-    if session_id:
-        lines.append(f"**session_id**: {session_id}")
-    if cwd:
-        lines.append(f"**cwd**: {cwd}")
-    if git_branch:
-        lines.append(f"**git_branch**: {git_branch}")
-    lines.append("")
-    if first_user_query:
-        lines.append("## Initial Query")
-        lines.append("")
-        lines.append(first_user_query)
-        lines.append("")
-
-    for entry in timeline:
-        role = entry["role"]
-        if role == "user":
-            lines.append("## User")
-            lines.append("")
-            lines.append(entry["content"])
-            lines.append("")
-        elif role == "assistant":
-            lines.append("## Assistant")
-            lines.append("")
-            lines.append(entry["content"])
-            lines.append("")
-        elif role == "tool_call":
-            lines.append(f"## Tool Call: {entry['tool']}")
-            lines.append("```json")
-            lines.append(json.dumps(entry["input"], ensure_ascii=False)[:1000])
-            lines.append("```")
-            lines.append("")
-        elif role == "tool_output":
-            err_tag = " (error)" if entry.get("is_error") else ""
-            lines.append(f"## Tool Output: {entry['tool']}{err_tag}")
-            lines.append("```")
-            lines.append(entry["output"])
-            lines.append("```")
-            lines.append("")
-
-    md = "\n".join(lines)
-
-    meta = dict(metadata)
-    meta.setdefault("source", "claude_code_session_jsonl")
-    meta.setdefault("category", "claude_code_session")
-    if session_id:
-        meta.setdefault("session_id", session_id)
-    if model:
-        meta.setdefault("model", model)
-    if cwd:
-        meta.setdefault("cwd", cwd)
-    if git_branch:
-        meta.setdefault("git_branch", git_branch)
-    meta["timeline"] = timeline
-    meta["tool_calls"] = tool_calls
-    meta["tool_names"] = tool_names
-    meta["total_tool_calls"] = len(tool_calls)
-    meta["total_turns"] = len(timeline)
-    if first_user_query:
-        meta.setdefault("query", first_user_query)
+    md = _build_cc_markdown(session_id, cwd, git_branch, first_user_query, timeline)
+    meta = _cc_metadata(
+        metadata,
+        session_id=session_id,
+        model=model,
+        cwd=cwd,
+        git_branch=git_branch,
+        timeline=timeline,
+        tool_calls=tool_calls,
+        tool_names=tool_names,
+        first_user_query=first_user_query,
+    )
 
     return md, meta
 
@@ -653,51 +725,42 @@ class CCSessionIngester:
         canary_skill = staging_skills[0]
 
         for rec in submitted:
-            sid = rec.get("session_id")
-            start_t = rec.get("session_start_t")
-            jsonl_path = Path(rec.get("source_jsonl", ""))
-            if not sid or start_t is None or not jsonl_path.is_file():
-                continue
-
-            entry = self.history.lookup(start_t, skill=canary_skill)
-            if entry is None:
-                # session 早于 daemon 第一次 install——没法标 side
-                continue
-            side = entry.get("side") or "main"
-            sha = entry.get("sha") or ""
-
-            used = _session_used_skill(jsonl_path, canary_skill)
-
-            # 持久化 session→side 映射（不管 used 与否——查询需要）
-            if self.assignments is not None:
-                self.assignments.record(
-                    sid=sid, side=side, sha=sha, used_skill=used, t=start_t,
-                )
-
-            if not used:
-                # 模型这条 session 根本没 invoke 我们关心的 skill；不打
-                # header、不翻牌、不评分。透明放过。
-                self._stats["skipped_unused"] += 1
-                rec["xskill_used_skill"] = False
-                continue
-
-            # 真用了 → 打 header 让 watcher._score_new 触发 ux 评分员
-            traj_md = Path(rec["path"])
-            _prepend_xskill_header(traj_md, skill=canary_skill, side=side, sha=sha)
-            rec["xskill_used_skill"] = True
-            rec["xskill_side"] = side
-            rec["xskill_skill"] = canary_skill
-            self._stats["headers_injected"] += 1
-
-            # 翻牌：仅在 used_skill 时翻一次，让下个真用 skill 的 session
-            # 拿到对面 side。每个 used session 翻一次；多个 used session
-            # 在一个 poll 内被见到 → 翻多次（净 effect 视奇偶决定下次 side）。
-            # 续写重转换（rebridged）的 session 之前可能已经翻过——只补
-            # header（上面覆盖写 md 把旧 header 冲掉了），不再翻，免得同一
-            # session 重复消耗灰度配额、污染 A/B 分布。
-            if not rec.get("rebridged"):
-                self._flip(canary_skill)
+            self._process_canary_submission(rec, canary_skill)
         return submitted
+
+    def _process_canary_submission(self, rec: dict, canary_skill: str) -> None:
+        assert self.history is not None
+        sid = rec.get("session_id")
+        start_t = rec.get("session_start_t")
+        jsonl_path = Path(rec.get("source_jsonl", ""))
+        if not sid or start_t is None or not jsonl_path.is_file():
+            return
+
+        entry = self.history.lookup(start_t, skill=canary_skill)
+        if entry is None:
+            return
+        side = entry.get("side") or "main"
+        sha = entry.get("sha") or ""
+        used = _session_used_skill(jsonl_path, canary_skill)
+
+        if self.assignments is not None:
+            self.assignments.record(
+                sid=sid, side=side, sha=sha, used_skill=used, t=start_t,
+            )
+
+        if not used:
+            self._stats["skipped_unused"] += 1
+            rec["xskill_used_skill"] = False
+            return
+
+        _prepend_xskill_header(Path(rec["path"]), skill=canary_skill, side=side, sha=sha)
+        rec["xskill_used_skill"] = True
+        rec["xskill_side"] = side
+        rec["xskill_skill"] = canary_skill
+        self._stats["headers_injected"] += 1
+
+        if not rec.get("rebridged"):
+            self._flip(canary_skill)
 
     # ── flip helper ──────────────────────────────────────────────
 

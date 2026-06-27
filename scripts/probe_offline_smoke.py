@@ -111,39 +111,50 @@ def _words(text: str) -> set:
             if w not in _STOP and len(w) > 2}
 
 
+def _latest_user_query(messages) -> str:
+    for m in reversed(messages or []):
+        if getattr(m, "role", "") == "user":
+            return getattr(m, "content", "") or ""
+    return ""
+
+
+def _best_tool(query: str, tools) -> str | None:
+    best_name, best_score = None, 1   # 需要重叠 ≥2 才触发
+    qw = _words(query)
+    for t in tools or []:
+        fn = (t or {}).get("function", {}) if isinstance(t, dict) else {}
+        name = fn.get("name", "")
+        if not name.startswith("use_"):
+            continue
+        score = len(qw & _words(fn.get("description", "")))
+        if score > best_score:
+            best_name, best_score = name, score
+    return best_name
+
+
+def _set_assistant_response(assistant_message, *, content=None, tool_calls=None) -> None:
+    if assistant_message is None:
+        return
+    assistant_message.role = "assistant"
+    assistant_message.content = content
+    if tool_calls is not None:
+        assistant_message.tool_calls = tool_calls
+
+
 def _scripted_invoke_factory():
     """造 model.invoke 替身：从 messages 抠出 user query，与 tools 里各
     use_* 工具的 description 做词袋重叠，重叠 ≥2 调最高分工具。"""
     from agno.models.response import ModelResponse
 
     def invoke(messages=None, assistant_message=None, tools=None, **kw):  # noqa: ARG001
-        query = ""
-        for m in reversed(messages or []):
-            if getattr(m, "role", "") == "user":
-                query = getattr(m, "content", "") or ""
-                break
-        best_name, best_score = None, 1   # 需要重叠 ≥2 才触发
-        qw = _words(query)
-        for t in tools or []:
-            fn = (t or {}).get("function", {}) if isinstance(t, dict) else {}
-            name = fn.get("name", "")
-            if not name.startswith("use_"):
-                continue
-            score = len(qw & _words(fn.get("description", "")))
-            if score > best_score:
-                best_name, best_score = name, score
+        best_name = _best_tool(_latest_user_query(messages), tools)
         if best_name:
             tc = [{"id": "call_1", "type": "function",
                    "function": {"name": best_name,
                                 "arguments": json.dumps({"reason": "fits"})}}]
-            if assistant_message is not None:
-                assistant_message.role = "assistant"
-                assistant_message.content = None
-                assistant_message.tool_calls = tc
+            _set_assistant_response(assistant_message, tool_calls=tc)
             return ModelResponse(role="assistant", content=None, tool_calls=tc)
-        if assistant_message is not None:
-            assistant_message.role = "assistant"
-            assistant_message.content = "no skill fits"
+        _set_assistant_response(assistant_message, content="no skill fits")
         return ModelResponse(role="assistant", content="no skill fits")
 
     return invoke
@@ -218,20 +229,18 @@ def _arm_watchdog() -> None:
     t.start()
 
 
-def main() -> int:
-    import time as _time
-    t_start = _time.monotonic()
-    _arm_watchdog()
+def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--workdir", type=Path, default=None,
                     help="工作目录（缺省临时目录）；registry.db 也落这里，绝不碰 ~/.xskill")
     ap.add_argument("--skill-dir", type=Path, default=None,
                     help="现成 skill 目录（父目录视作 skill_root）；缺省自动生成演示 fixtures")
-    args = ap.parse_args()
+    return ap.parse_args()
 
+
+def _prepare_run(args: argparse.Namespace) -> tuple[Path, Path, Path]:
     logging.basicConfig(level=logging.INFO,
                         format="%(levelname)s %(name)s %(message)s")
-
     workdir = args.workdir or Path(tempfile.mkdtemp(prefix="probe_smoke_"))
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -246,15 +255,20 @@ def main() -> int:
         skill_root = workdir / "skill"
         target = build_fixtures(skill_root)
     print(f"skill_root = {skill_root}\ntarget     = {target.name}")
+    return workdir, skill_root, target
 
+
+def _remove_skill_index(skill_root: Path) -> None:
     # 故意删掉索引：验证"index 缺失 → 现场从 main 重建"这条必现路径
     idx = skill_root / ".skill_index.pkl"
     if idx.is_file():
         idx.unlink()
         print("已删除 .skill_index.pkl（模拟 rebuild --force 后状态）")
 
+
+def _run_optimization(target: Path, skill_root: Path) -> dict:
     from xskill.skill.description_opt import optimize_description
-    out = optimize_description(
+    return optimize_description(
         target,
         llm=ScriptedLLM(),
         config={"skill_opt": {"runs_per_case": 1, "max_iters": 1, "seed": 42}},
@@ -263,8 +277,9 @@ def main() -> int:
         skill_root=skill_root,
     )
 
+
+def _print_case_results(exp_dir: Path) -> None:
     # ── 逐 case 触发结果 ───────────────────────────────────────
-    exp_dir = Path(out["exp_dir"])
     print("\n══ 逐 case 触发结果（per-case 落盘 → 原样回放）══")
     for f in sorted(exp_dir.glob("*/*.json")):
         rec = json.loads(f.read_text(encoding="utf-8"))
@@ -274,6 +289,8 @@ def main() -> int:
               f"triggered={rec['triggered_skill']} "
               f"catalog={rec['catalog']}\n    query: {rec['query']}")
 
+
+def _print_optimization_result(out: dict) -> None:
     print("\n══ 选优结果 ══")
     print(f"best_description: {out['best_description']}")
     print(f"chosen_reason:    {out['chosen_reason']}")
@@ -283,11 +300,30 @@ def main() -> int:
         print(f"  iter {c['iter']}: train={c['train_score']} "
               f"test={c['test_score']} desc={c['description'][:70]!r}")
 
-    rows = REG.trigger_eval_for_skill(_TARGET[0] if not args.skill_dir
-                                      else target.name)
+
+def _print_registry_rows(target: Path, *, demo_fixtures: bool) -> list:
+    import xskill.pipeline.registry as REG
+
+    rows = REG.trigger_eval_for_skill(_TARGET[0] if demo_fixtures else target.name)
     print(f"\nregistry.skill_trigger_eval rows: {len(rows)}")
     for r in rows:
         print(f"  {r}")
+    return rows
+
+
+def main() -> int:
+    import time as _time
+    t_start = _time.monotonic()
+    _arm_watchdog()
+    args = _parse_args()
+    _workdir, skill_root, target = _prepare_run(args)
+    _remove_skill_index(skill_root)
+
+    out = _run_optimization(target, skill_root)
+    exp_dir = Path(out["exp_dir"])
+    _print_case_results(exp_dir)
+    _print_optimization_result(out)
+    rows = _print_registry_rows(target, demo_fixtures=not args.skill_dir)
 
     # 冒烟判定：有竞争 catalog、落库 1 条、逐 case 文件非空
     ok = (out["catalog_size"] > 0 and len(rows) == 1

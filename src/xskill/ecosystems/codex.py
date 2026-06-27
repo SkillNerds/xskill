@@ -176,6 +176,109 @@ CODEX_SPEC = EcosystemSpec(
 # ─────────────────────────────────────────────────────────────────
 
 
+def _new_codex_state() -> dict:
+    return {
+        "timeline": [],
+        "session_id": "",
+        "cwd": "",
+        "originator": "",
+        "cli_version": "",
+        "model_provider": "",
+        "first_user_query": "",
+        "t": 0,
+        "response_count": 0,
+    }
+
+
+def _update_codex_session_meta(state: dict, payload: dict) -> None:
+    state["session_id"] = state["session_id"] or str(payload.get("id") or "")
+    state["cwd"] = state["cwd"] or str(payload.get("cwd") or "")
+    state["originator"] = state["originator"] or str(payload.get("originator") or "")
+    state["cli_version"] = state["cli_version"] or str(payload.get("cli_version") or "")
+    if payload.get("model_provider"):
+        state["model_provider"] = state["model_provider"] or str(payload["model_provider"])
+
+
+def _append_codex_user_message(state: dict, payload: dict) -> None:
+    if payload.get("type") != "user_message":
+        return
+    msg = str(payload.get("message") or "")
+    if not msg:
+        return
+    if not state["first_user_query"]:
+        state["first_user_query"] = msg[:500]
+    state["timeline"].append({"t": state["t"], "role": "user", "content": msg[:2000]})
+    state["t"] += 1
+
+
+def _append_codex_response_item(state: dict, payload: dict) -> None:
+    state["response_count"] += 1
+    state["timeline"].append({
+        "t": state["t"],
+        "role": "assistant",
+        "content": f"[codex response_item #{payload.get('index', state['response_count'] - 1)}]",
+    })
+    state["t"] += 1
+
+
+def _update_codex_state(state: dict, event: dict) -> None:
+    ev_type = event.get("type")
+    payload = event.get("payload") or {}
+    if ev_type == "session_meta":
+        _update_codex_session_meta(state, payload)
+    elif ev_type == "event_msg":
+        _append_codex_user_message(state, payload)
+    elif ev_type == "response_item":
+        _append_codex_response_item(state, payload)
+    else:
+        state["timeline"].append({"t": state["t"], "role": "event", "kind": ev_type or "unknown"})
+        state["t"] += 1
+
+
+def _append_codex_markdown_entry(lines: list[str], entry: dict) -> None:
+    role = entry["role"]
+    if role == "user":
+        lines.extend(["## User", "", entry["content"], ""])
+    elif role == "assistant":
+        lines.extend(["## Assistant", "", entry["content"], ""])
+    elif role == "event":
+        lines.extend([f"## Event: {entry['kind']}", ""])
+
+
+def _build_codex_markdown(state: dict) -> str:
+    lines: list[str] = ["# Codex Rollout Trajectory", ""]
+    for key, label in (
+        ("session_id", "session_id"),
+        ("cwd", "cwd"),
+        ("originator", "originator"),
+        ("cli_version", "cli_version"),
+        ("model_provider", "model_provider"),
+    ):
+        if state[key]:
+            lines.append(f"**{label}**: {state[key]}")
+    lines.append("")
+    if state["first_user_query"]:
+        lines.extend(["## Initial Query", "", state["first_user_query"], ""])
+    for entry in state["timeline"]:
+        _append_codex_markdown_entry(lines, entry)
+    return "\n".join(lines)
+
+
+def _codex_metadata(metadata: dict, state: dict) -> dict:
+    meta = dict(metadata)
+    meta.setdefault("source", "codex_rollout_jsonl")
+    meta.setdefault("category", "codex_session")
+    for key in ("session_id", "cwd", "originator", "cli_version", "model_provider"):
+        if state[key]:
+            meta.setdefault(key, state[key])
+    meta["timeline"] = state["timeline"]
+    meta["total_turns"] = len(state["timeline"])
+    meta["response_items"] = state["response_count"]
+    if state["first_user_query"]:
+        meta.setdefault("query", state["first_user_query"])
+    return meta
+
+
 def _adapt_codex_rollout_jsonl(content: str, metadata: dict) -> tuple[str, dict]:
     """Convert a Codex CLI rollout JSONL (``~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl``)
     to markdown + metadata.
@@ -194,15 +297,7 @@ def _adapt_codex_rollout_jsonl(content: str, metadata: dict) -> tuple[str, dict]
     ``event_msg::user_message``（user query），其它行**透传到 timeline 但不深度解析**
     （codex 的 ``response_item`` 内部结构与 CC 不同，等 P4 再深化）。
     """
-    timeline: list[dict] = []
-    session_id = ""
-    cwd = ""
-    originator = ""
-    cli_version = ""
-    model_provider = ""
-    first_user_query = ""
-    t = 0
-    response_count = 0
+    state = _new_codex_state()
 
     for raw_line in content.splitlines():
         raw_line = raw_line.strip()
@@ -213,109 +308,9 @@ def _adapt_codex_rollout_jsonl(content: str, metadata: dict) -> tuple[str, dict]
         except json.JSONDecodeError:
             continue
 
-        ev_type = event.get("type")
-        payload = event.get("payload") or {}
+        _update_codex_state(state, event)
 
-        if ev_type == "session_meta":
-            session_id = session_id or str(payload.get("id") or "")
-            cwd = cwd or str(payload.get("cwd") or "")
-            originator = originator or str(payload.get("originator") or "")
-            cli_version = cli_version or str(payload.get("cli_version") or "")
-            mp = payload.get("model_provider")
-            if mp:
-                model_provider = model_provider or str(mp)
-            continue
-
-        if ev_type == "event_msg":
-            sub_type = payload.get("type")
-            if sub_type == "user_message":
-                msg = str(payload.get("message") or "")
-                if msg:
-                    if not first_user_query:
-                        first_user_query = msg[:500]
-                    timeline.append({
-                        "t": t, "role": "user",
-                        "content": msg[:2000],
-                    })
-                    t += 1
-            continue
-
-        if ev_type == "response_item":
-            # 占位：codex response_item 的内部 schema 复杂（含 message / tool_use /
-            # function_call_output 等），P2 不深化。这里只计数 + 透传一条 timeline
-            # 让下游能看到"这条 session 确实有 N 条响应"。
-            response_count += 1
-            timeline.append({
-                "t": t, "role": "assistant",
-                "content": f"[codex response_item #{payload.get('index', response_count - 1)}]",
-            })
-            t += 1
-            continue
-
-        # turn_context / compacted / 未来变体：透传，不深析
-        timeline.append({
-            "t": t, "role": "event",
-            "kind": ev_type or "unknown",
-        })
-        t += 1
-
-    # Build markdown
-    lines: list[str] = ["# Codex Rollout Trajectory", ""]
-    if session_id:
-        lines.append(f"**session_id**: {session_id}")
-    if cwd:
-        lines.append(f"**cwd**: {cwd}")
-    if originator:
-        lines.append(f"**originator**: {originator}")
-    if cli_version:
-        lines.append(f"**cli_version**: {cli_version}")
-    if model_provider:
-        lines.append(f"**model_provider**: {model_provider}")
-    lines.append("")
-    if first_user_query:
-        lines.append("## Initial Query")
-        lines.append("")
-        lines.append(first_user_query)
-        lines.append("")
-
-    for entry in timeline:
-        role = entry["role"]
-        if role == "user":
-            lines.append("## User")
-            lines.append("")
-            lines.append(entry["content"])
-            lines.append("")
-        elif role == "assistant":
-            lines.append("## Assistant")
-            lines.append("")
-            lines.append(entry["content"])
-            lines.append("")
-        elif role == "event":
-            lines.append(f"## Event: {entry['kind']}")
-            lines.append("")
-
-    md = "\n".join(lines)
-
-    meta = dict(metadata)
-    meta.setdefault("source", "codex_rollout_jsonl")
-    meta.setdefault("category", "codex_session")
-    if session_id:
-        meta.setdefault("session_id", session_id)
-    if cwd:
-        meta.setdefault("cwd", cwd)
-    if originator:
-        meta.setdefault("originator", originator)
-    if cli_version:
-        meta.setdefault("cli_version", cli_version)
-    if model_provider:
-        meta.setdefault("model_provider", model_provider)
-    meta["timeline"] = timeline
-    meta["total_turns"] = len(timeline)
-    meta["response_items"] = response_count
-    if first_user_query:
-        meta.setdefault("query", first_user_query)
-
-    return md, meta
+    return _build_codex_markdown(state), _codex_metadata(metadata, state)
 
 
 # ─────────────────────────────────────────────────────────────────
