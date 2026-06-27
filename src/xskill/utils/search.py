@@ -110,6 +110,8 @@ def search(
     ``success_filter`` 在 atom 层无意义（atom 没有 success 字段），保留参数
     位避免上层 import 时 TypeError。
     """
+    if success_filter != "all":
+        logger.debug("atom search ignores success_filter=%s", success_filter)
     embed = create_embed_client(config or load_config())
     store = AtomTaskStore(root=Path(dataset_dir))
     hits = HybridSearch(store, embed).search(query_text, top_k=top_k)

@@ -229,7 +229,7 @@ def c_single_atom() -> tuple[TrajBuilder, list[int]]:
     b.add_assistant("是,我加了 LRU 上限并定期清理。")
     b.add_user("再观察一晚?")
     b.add_assistant("已部署带监控,峰值稳定在 1.2G,泄漏解决。")
-    return b, starts  # 只有首个,boundaries=[]
+    return b, starts
 
 
 def c_rapid_debug() -> tuple[TrajBuilder, list[int]]:
@@ -247,7 +247,7 @@ def c_rapid_debug() -> tuple[TrajBuilder, list[int]]:
         b.add_assistant("[tool: bash] docker build .  → 调整中")
     b.add_user("好了!绿了。")
     b.add_assistant("是的,换成 slim 基础镜像 + 多阶段构建后通过了。")
-    return b, starts  # boundaries=[]
+    return b, starts
 
 
 def c_undo_revert() -> tuple[TrajBuilder, list[int]]:
@@ -262,7 +262,7 @@ def c_undo_revert() -> tuple[TrajBuilder, list[int]]:
     b.add_assistant("好,改成 #66bb6a 浅绿,已应用。")
     b.add_user("这个可以。")
     b.add_assistant("👍 已提交。")
-    return b, starts  # boundaries=[]
+    return b, starts
 
 
 def c_no_user_long_tail() -> tuple[TrajBuilder, list[int]]:
@@ -311,7 +311,7 @@ def c_topic_drift_same_intent() -> tuple[TrajBuilder, list[int]]:
     b.add_assistant("放 .env.staging,compose 里 env_file 引一下,我配好了。")
     b.add_user("本地能先验一下吗?")
     b.add_assistant("能,本地 compose 起来冒烟通过,再推 staging,已部署成功。")
-    return b, starts  # boundaries=[]
+    return b, starts
 
 
 def c_interleaved_two_intents() -> tuple[TrajBuilder, list[int]]:

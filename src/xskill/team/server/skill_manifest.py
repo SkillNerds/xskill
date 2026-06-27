@@ -121,6 +121,7 @@ def _pick_recommended(
     client 已用过的）。有画像 → 按质心 cosine 最近邻；无画像 / 非 team
     server 调用 → 退回 ux 排序往下接着取。
     """
+    _ = ranked
     if reco_slots <= 0:
         return []
 

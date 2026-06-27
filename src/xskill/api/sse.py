@@ -28,6 +28,7 @@ from xskill.config import load_config, get_skill_dir, get_traj_dir
 from xskill.utils.llm import create_llm_client, create_embed_client
 
 logger = logging.getLogger("xskill.tasks")
+SPLIT_ATOM_TASK_STEP = "拆分 AtomTask"
 
 # ---------------------------------------------------------------------------
 # Thread pool shared across all SSE endpoints
@@ -171,7 +172,7 @@ async def api_index(req: IndexRequest):
             md_files = [f for f in md_files if not f.name.endswith(".meta")]
             total = len(md_files)
             _push(queue, "progress", {
-                "step": "拆分 AtomTask",
+                "step": SPLIT_ATOM_TASK_STEP,
                 "current": 0,
                 "total": total,
                 "detail": f"{dataset_dir.name}, concurrency={req.concurrency}",
@@ -193,7 +194,7 @@ async def api_index(req: IndexRequest):
                         "step",
                     )
                     _push(queue, "progress", {
-                        "step": "拆分 AtomTask",
+                        "step": SPLIT_ATOM_TASK_STEP,
                         "current": idx,
                         "total": total,
                     })
@@ -204,7 +205,7 @@ async def api_index(req: IndexRequest):
                 except Exception as e:
                     log_fn(f"[{idx}/{total}] {md.name} 拆分失败: {e}", "error")
                 _push(queue, "progress", {
-                    "step": "拆分 AtomTask",
+                    "step": SPLIT_ATOM_TASK_STEP,
                     "current": idx,
                     "total": total,
                 })
@@ -280,13 +281,13 @@ async def api_process(req: ProcessRequest):
             embed = create_embed_client(config)
             store = AtomTaskStore(root=traj_path.parent)
 
-            _push(queue, "progress", {"step": "拆分 AtomTask", "current": 0, "total": 1})
+            _push(queue, "progress", {"step": SPLIT_ATOM_TASK_STEP, "current": 0, "total": 1})
             atoms = TaskAgent(
                 agno_agent_factory=make_default_factory(config),
                 store=store, traj_root=traj_path.parent, skill_dir=skill_dir,
             ).run(traj_id=traj_path.stem, traj_path=traj_path)
             log_fn(f"拆出 {len(atoms)} 个 atom", "step")
-            _push(queue, "progress", {"step": "拆分 AtomTask", "current": 1, "total": 1})
+            _push(queue, "progress", {"step": SPLIT_ATOM_TASK_STEP, "current": 1, "total": 1})
 
             store.rebuild_vector_index(embed)
             log_fn("AtomTask 向量索引已重建", "step")

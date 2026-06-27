@@ -203,9 +203,7 @@ class Skill:
         from xskill.pipeline.trajectory import Trajectory as _Traj
         out: list[_Traj] = []
         for traj_id in self.source_trajs:
-            # 在 registry 中按 filename 反查（traj_id 形如 "traj_0042"）
-            paths = self._registry.trajectories_using(self.name)  # 备选反查
-            # 直接按 filename 找
+            # 直接按 filename 找（traj_id 形如 "traj_0042"）
             from xskill.pipeline import registry as _r
             conn = _r.get_connection(self._registry._db_path)
             try:

@@ -198,7 +198,7 @@ class EmbedClient:
     base_url: str
     model: str
     api_key: str
-    dim: int = 0  # 0 = 未探测
+    dim: int = 0
     api_style: EmbedApiStyle = "openai"
     _client: object = field(default=None, repr=False)
 

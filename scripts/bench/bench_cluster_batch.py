@@ -36,7 +36,7 @@ def _make_stub():
             self.instructions = instructions
             self.tools = {getattr(t, "__name__", ""): t for t in tools}
 
-        def run(self, user_msg, **kw):
+        def run(self, user_msg, **_kw):
             head = (self.instructions[0] if self.instructions else "")[:80]
 
             class _R:

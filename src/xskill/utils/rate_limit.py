@@ -53,8 +53,12 @@ class TokenBucket:
         self.rpm = rpm
         self.tpm = tpm
         # burst 默认 = ceil(rate/6),约 10 秒预算的瞬时突发
-        self._rpm_burst = burst if burst is not None else (max(1, rpm // 6) if rpm else 0)
-        self._tpm_burst = burst if burst is not None else (max(1, tpm // 6) if tpm else 0)
+        if burst is not None:
+            self._rpm_burst = burst
+            self._tpm_burst = burst
+        else:
+            self._rpm_burst = max(1, rpm // 6) if rpm else 0
+            self._tpm_burst = max(1, tpm // 6) if tpm else 0
         self._clock = clock or time.monotonic
 
         self._rpm_tokens = float(self._rpm_burst)

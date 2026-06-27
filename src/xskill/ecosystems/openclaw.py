@@ -339,9 +339,8 @@ def _adapt_openclaw_trajectory_jsonl(content: str, metadata: dict) -> tuple[str,
                         nm = s.get("name") or s.get("id")
                         if nm and nm not in eligible_skills:
                             eligible_skills.append(str(nm))
-                    elif isinstance(s, str):
-                        if s not in eligible_skills:
-                            eligible_skills.append(s)
+                    elif isinstance(s, str) and s not in eligible_skills:
+                        eligible_skills.append(s)
 
         elif ev_type == "model.completed":
             snap = data.get("messagesSnapshot")

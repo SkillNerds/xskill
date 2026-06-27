@@ -12,7 +12,12 @@ function rows(bodyId, html) {
   if (tb) tb.innerHTML = html || '<tr><td colspan="6" class="text-secondary">暂无数据</td></tr>';
 }
 const money = n => '$' + (Number(n) || 0).toFixed(4);
-const tok = n => { n = Number(n) || 0; return n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : '' + n; };
+const tok = n => {
+  n = Number(n) || 0;
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return '' + n;
+};
 // 把任何要塞进 innerHTML 的值转义——否则 model 名如 `<synthetic>` 会被浏览器
 // 当作未知标签吞掉(整行变空白),也堵住注入风险。
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => (
@@ -241,24 +246,32 @@ async function loadSkillDetail(name) {
 // 离线探针触发率面板（描述质量信号；区别于上方"总触发"的线上真实使用率）
 function pctf(x) { return Math.round((Number(x) || 0) * 100) + '%'; }
 
-async function loadTriggerPanel(name) {
-  const el = document.getElementById('skill-trigger');
-  if (!el) return;
-  let hist = { history: [] }, cases = { cases: [], exp: null };
-  try { hist = await j('api/v1/dashboard/skill/' + encodeURIComponent(name) + '/trigger'); } catch (e) { /* 空 */ }
-  try { cases = await j('api/v1/dashboard/skill/' + encodeURIComponent(name) + '/trigger/cases'); } catch (e) { /* 空 */ }
-  const hrows = (hist.history || []).map(h =>
+function triggerHistoryRows(history) {
+  return (history || []).map(h =>
     `<tr><td><code>${esc((h.version_sha || '—').slice(0, 8))}</code></td><td class="text-end">${pctf(h.test_score)}</td>`
     + `<td class="text-end">${pctf(h.train_score)}</td><td class="text-end">${h.n_cases}</td>`
     + `<td class="text-end">${h.catalog_size}</td><td class="text-secondary">${esc((h.ts || '').slice(0, 16))}</td></tr>`).join('')
     || '<tr><td colspan="6" class="text-secondary">还没有离线触发评测</td></tr>';
-  const crows = (cases.cases || []).map(c =>
+}
+
+function triggerCaseRows(cases, name) {
+  return (cases || []).map(c =>
     `<tr><td>${esc(c.query)}</td><td class="text-center">${c.should_trigger ? '是' : '否'}</td>`
     + `<td class="text-center">${c.did_trigger ? '触发' : '未触发'}</td>`
     + `<td class="text-center">${c.passed ? '✓' : '✗'}</td>`
     + `<td class="text-secondary small">${esc((c.catalog || []).join(', '))}</td>`
     + `<td><button class="btn btn-sm btn-outline-primary trig-rerun" data-skill="${esc(name)}" data-query="${esc(c.query)}">重跑</button></td></tr>`).join('')
     || '<tr><td colspan="6" class="text-secondary">无 case（该 skill 还没跑过触发优化）</td></tr>';
+}
+
+async function loadTriggerPanel(name) {
+  const el = document.getElementById('skill-trigger');
+  if (!el) return;
+  let hist = { history: [] }, cases = { cases: [], exp: null };
+  try { hist = await j('api/v1/dashboard/skill/' + encodeURIComponent(name) + '/trigger'); } catch (e) { /* 空 */ }
+  try { cases = await j('api/v1/dashboard/skill/' + encodeURIComponent(name) + '/trigger/cases'); } catch (e) { /* 空 */ }
+  const hrows = triggerHistoryRows(hist.history);
+  const crows = triggerCaseRows(cases.cases, name);
   el.innerHTML = `<div class="subheader">离线探针触发率 <span class="text-secondary">（描述质量信号——真跑代理在语义相关技能清单里抢触发；区别于上方"总触发"的线上真实使用）</span></div>
     <table class="table table-sm"><thead><tr><th>版本</th><th class="text-end">test 触发率</th><th class="text-end">train</th><th class="text-end">cases</th><th class="text-end">诱饵数</th><th>时间</th></tr></thead><tbody>${hrows}</tbody></table>
     <div class="subheader mt-2">逐 case <span class="text-secondary">（实验 ${esc(cases.exp || '—')}；点"重跑"用当前描述真跑一轮探针）</span></div>
@@ -304,7 +317,6 @@ document.addEventListener('click', async e => {
       rb.textContent = '错误';
     }
     rb.disabled = false;
-    return;
   }
 });
 

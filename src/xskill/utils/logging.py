@@ -86,6 +86,8 @@ class StreamLog:
 #   - 真会写 INFO 的才单开：流水线(watcher) / server / 灰度(canary) / 生态
 #     (ecosystems) / SkillEdit(只在真出 edit 时写,事件型) 。
 #   - 非 xskill 命名空间的第三方（agno / httpx）单独隔离免污染。
+HTTP_CLIENT_LOG = "httpx.log"
+
 _PER_LOGGER_FILES: dict[str, str] = {
     "xskill":                    "xskill.log",        # 全 xskill.* 合并视图（兜底）
     "xskill.watcher":            "xskill.watcher.log",
@@ -95,9 +97,9 @@ _PER_LOGGER_FILES: dict[str, str] = {
     "xskill.ecosystems":         "xskill.ecosystems.log",
     "xskill.skill_edit_agent":   "xskill.skill_edit_agent.log",  # 事件型,出 edit 才写
     "agno":                      "agno.log",          # agno 内部，单独隔离免污染
-    "httpx":                     "httpx.log",
-    "httpcore":                  "httpx.log",
-    "openai":                    "httpx.log",
+    "httpx":                     HTTP_CLIENT_LOG,
+    "httpcore":                  HTTP_CLIENT_LOG,
+    "openai":                    HTTP_CLIENT_LOG,
 }
 
 # 日常 noisy 但不重要的 logger 默认 WARNING，避免 xskill.log 被淹

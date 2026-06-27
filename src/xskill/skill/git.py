@@ -486,13 +486,8 @@ def _checkout_branch(
     #     （git 行为：分支 ref 从 HEAD 派生，worktree 不动）
     #   - 普通 ``checkout <branch>`` 切到已存在分支 → 切换 worktree 内容到该
     #     分支的 tree（git 行为：worktree 内容更新到目标分支）
-    if explicit_from:
-        try:
-            porcelain.reset(repo=repo, mode="hard", treeish=ref)
-        except Exception as e:
-            return 1, f"reset failed: {e}"
-    elif not create:
-        # 普通 switch：切换工作区到目标分支内容
+    if explicit_from or not create:
+        # 显式起点或普通 switch：切换工作区到目标分支内容
         try:
             porcelain.reset(repo=repo, mode="hard", treeish=ref)
         except Exception as e:
@@ -761,11 +756,10 @@ def _h_config(args: list[str], cwd: str) -> tuple[int, str, str]:
 
 def _h_rev_parse(args: list[str], cwd: str) -> tuple[int, str, str]:
     """``git rev-parse [--verify] <ref>``。"""
-    verify_only = False
     refs: list[str] = []
     for a in args:
         if a == "--verify":
-            verify_only = True
+            continue
         elif a.startswith("--"):
             continue
         else:
@@ -794,7 +788,6 @@ def _h_log(args: list[str], cwd: str) -> tuple[int, str, str]:
     n_limit: int | None = None
     fmt: str | None = None
     oneline = False
-    follow = False
     paths: list[str] = []
     ref: str | None = None
 
@@ -814,7 +807,7 @@ def _h_log(args: list[str], cwd: str) -> tuple[int, str, str]:
         elif a == "--oneline":
             oneline = True
         elif a == "--follow":
-            follow = True
+            continue
         elif a.startswith("-") and a[1:].isdigit():
             n_limit = int(a[1:])
         elif a.startswith("--"):

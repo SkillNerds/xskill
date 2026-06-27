@@ -319,7 +319,7 @@ def cmd_search(args, xskill) -> int:
     return 1
 
 
-def cmd_read(args, xskill) -> int:
+def cmd_read(args, _xskill=None) -> int:
     """`xskill read <PATH> --eco ngagent` —— 批量把 db 文件桥接入库。"""
     from xskill.pipeline.db_ingest import read_db_files
     try:
@@ -341,7 +341,7 @@ def cmd_read(args, xskill) -> int:
     return 0
 
 
-def cmd_rebuild(args, xskill) -> int:
+def cmd_rebuild(args, _xskill=None) -> int:
     """`xskill rebuild [--force]` —— 用现有原始轨迹重跑蒸馏。
 
     默认：删除已拆 atom + index.pkl、轨迹状态翻回 discovered，让运行中的 watcher
@@ -559,9 +559,9 @@ def main() -> int:
     # read / rebuild 只动 registry + 文件，不需要 llm.api_key / facade——
     # 重跑由运行中的 watcher 完成，本命令只做"重置/桥接"。
     if args.command == "read":
-        return cmd_read(args, None)
+        return cmd_read(args)
     if args.command == "rebuild":
-        return cmd_rebuild(args, None)
+        return cmd_rebuild(args)
 
     # team 客户端的 `registry list`：本机是 client（有 team_client.json）且没有
     # standalone 数据（watch_dirs 为空）时，改走现算视图。放在 config/facade

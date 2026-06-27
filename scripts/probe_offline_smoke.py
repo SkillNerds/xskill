@@ -72,7 +72,7 @@ _IMPROVED = ("Use this skill to analyze and parse log files, error logs and "
 class ScriptedLLM:
     """case 生成 / improve / shorten 的 mock（绝不出网）。"""
 
-    def chat(self, prompt: str, system: str = "") -> str:  # noqa: ARG002
+    def chat(self, prompt: str, _system: str = "") -> str:
         if "generating evaluation queries" in prompt:
             return json.dumps(_CASES)
         if "write a new and improved description" in prompt:

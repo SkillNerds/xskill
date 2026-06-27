@@ -561,12 +561,12 @@ def ensure_gitignore(skill_dir: Path) -> None:
     p = Path(skill_dir) / ".gitignore"
     if p.exists():
         current = p.read_text(encoding="utf-8")
-        if ".ux_scores.jsonl" in current:
+        if UX_SCORES_FILENAME in current:
             return
         # 追加缺失条目
         added = []
-        if ".ux_scores.jsonl" not in current:
-            added.append(".ux_scores.jsonl")
+        if UX_SCORES_FILENAME not in current:
+            added.append(UX_SCORES_FILENAME)
         if ".lock" not in current:
             added.append(".lock")
         if added:

@@ -936,7 +936,7 @@ class DirectoryWatcher:
         )
         self._stats["atoms_extracted"] += n_atoms
 
-    def _on_embed_done(self, wd_id, fname, result, **kw):
+    def _on_embed_done(self, wd_id, _fname, result, **kw):
         _wd_id, filenames = result
         for f in filenames:
             update_traj_status(wd_id, f, "indexed", **kw)
@@ -1010,14 +1010,14 @@ class DirectoryWatcher:
     # ux_score
     # ───────────────────────────────────────────────────────────
 
-    def _score_new(self, wd_id, dir_path, filenames, **kw):
+    def _score_new(self, _wd_id, _dir_path, _filenames, **_kw):
         """v2: 不在发现新 traj 时打分（那时 atom 还没拆）。
 
         实际打分在 ``_sweep_done_trajs`` → ``_score_atoms_for_traj`` 触发。
         此方法保留 hook 兼容 ``_scan_dir`` 末尾的调用；只在 traj 没有
         ``xskill:`` header 时早返回，避免无谓 IO。
         """
-        return  # noop: 打分时机改到 cluster 完成后
+        # noop: 打分时机改到 cluster 完成后
 
     def _score_atoms_for_traj(self, wd_id, fname, **kw):
         """对一条已跑完 cluster 的 traj 扫所有 atom 打 ux_score。
@@ -1059,7 +1059,6 @@ class DirectoryWatcher:
         if not atoms:
             return
         ac = AtomCanary(skill_dir=skill_sub)
-        canary_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
         for atom in atoms:
             try:
                 result = score_atom(

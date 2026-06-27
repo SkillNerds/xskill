@@ -162,7 +162,7 @@ def _try_junction(src_dir: Path, dest: Path) -> bool:
             capture_output=True,
         )
         return True
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
+    except (subprocess.CalledProcessError, OSError) as e:
         logger.debug("junction failed for %s -> %s: %s", dest, src_dir, e)
         return False
 

@@ -193,6 +193,7 @@ class MessageResponse(BaseModel):
 # Router
 # ---------------------------------------------------------------------------
 router = APIRouter(prefix="/api/v1")
+STARTUP_ALL_SKILLS = "<startup_all>"
 
 
 # ---- Trajectories --------------------------------------------------------
@@ -401,7 +402,7 @@ async def api_export_skill(name: str):
     """Export a skill directory as a downloadable archive."""
     try:
         tmp_dir = Path(tempfile.mkdtemp())
-        exported = export_skill(_skill_dir, name, tmp_dir)
+        export_skill(_skill_dir, name, tmp_dir)
         # Tar it up for download
         import shutil
         archive_path = Path(tempfile.mkdtemp()) / f"{name}.tar.gz"
@@ -942,7 +943,7 @@ def create_app(home_root: Path | str | None = None,
                                 "startup install_all_to_claude_code failed", exc_info=True,
                             )
                             install_history.record_fail(
-                                skill="<startup_all>", agent="claude_code",
+                                skill=STARTUP_ALL_SKILLS, agent="claude_code",
                                 reason=str(e)[:200],
                             )
 
@@ -976,7 +977,7 @@ def create_app(home_root: Path | str | None = None,
                                 "startup install_all_to_codex failed", exc_info=True,
                             )
                             install_history.record_fail(
-                                skill="<startup_all>", agent="codex",
+                                skill=STARTUP_ALL_SKILLS, agent="codex",
                                 reason=str(e)[:200],
                             )
                         ingester = JsonlIngester(
@@ -1006,7 +1007,7 @@ def create_app(home_root: Path | str | None = None,
                                 "startup install_all_to_opencode failed", exc_info=True,
                             )
                             install_history.record_fail(
-                                skill="<startup_all>", agent="opencode",
+                                skill=STARTUP_ALL_SKILLS, agent="opencode",
                                 reason=str(e)[:200],
                             )
                         ingester = SqliteIngester(
@@ -1036,7 +1037,7 @@ def create_app(home_root: Path | str | None = None,
                                 "startup install_all_to_ngagent failed", exc_info=True,
                             )
                             install_history.record_fail(
-                                skill="<startup_all>", agent="ngagent",
+                                skill=STARTUP_ALL_SKILLS, agent="ngagent",
                                 reason=str(e)[:200],
                             )
                         ingester = SqliteIngester(
@@ -1070,7 +1071,7 @@ def create_app(home_root: Path | str | None = None,
                                 "startup install_all_to_openclaw failed", exc_info=True,
                             )
                             install_history.record_fail(
-                                skill="<startup_all>", agent="openclaw",
+                                skill=STARTUP_ALL_SKILLS, agent="openclaw",
                                 reason=str(e)[:200],
                             )
                         # canary flip hook：每轮 ingester 桥出新 session 后，
@@ -1115,7 +1116,7 @@ def create_app(home_root: Path | str | None = None,
                                 "startup install_all_to_cursor failed", exc_info=True,
                             )
                             install_history.record_fail(
-                                skill="<startup_all>", agent="cursor",
+                                skill=STARTUP_ALL_SKILLS, agent="cursor",
                                 reason=str(e)[:200],
                             )
                         ingester = JsonlIngester(
@@ -1148,7 +1149,7 @@ def create_app(home_root: Path | str | None = None,
                                 "startup install_all_to_trae failed", exc_info=True,
                             )
                             install_history.record_fail(
-                                skill="<startup_all>", agent="trae",
+                                skill=STARTUP_ALL_SKILLS, agent="trae",
                                 reason=str(e)[:200],
                             )
                         ingester = TraeIngester(

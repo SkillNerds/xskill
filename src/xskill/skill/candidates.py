@@ -609,7 +609,7 @@ def _run_skill_edit_agent(skill_dir: Path, candidates: list[dict],
     def _runner():
         try:
             agent.run(user_msg, stream=False)
-        except BaseException as exc:  # noqa: BLE001 — record everything
+        except Exception as exc:
             err_box["err"] = exc
 
     t = threading.Thread(target=_runner, daemon=True)

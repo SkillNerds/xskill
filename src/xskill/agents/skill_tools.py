@@ -21,6 +21,8 @@ from xskill.skill.frontmatter import (
 )
 
 logger = logging.getLogger("xskill.skill_tools")
+V2_CONTEXT_ERROR = "error: v2 context not initialized"
+COMMIT_MESSAGE_REQUIRED = "error: commit message 必填"
 
 # Global context — initialized by process.py / server.py / cli.py
 _ctx = {
@@ -579,7 +581,7 @@ def atom_task_read(atom_id: str) -> str:
     """
     store = _ctx_v2["store"]
     if store is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     try:
         return store.load(atom_id).to_json()
     except FileNotFoundError as e:
@@ -595,7 +597,7 @@ def atom_task_search(query: str, top_k: int = 5) -> str:
     store = _ctx_v2["store"]
     embed = _ctx_v2["embed_client"]
     if store is None or embed is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     hs = HybridSearch(store, embed)
     hits = hs.search(query, top_k=top_k)
     return json.dumps(hits, ensure_ascii=False, indent=2)
@@ -611,7 +613,7 @@ def read_traj(traj_id: str, offset_start: int, offset_end: int) -> str:
     """
     traj_root = _ctx_v2["traj_root"]
     if traj_root is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     p = traj_root / f"{traj_id}.md"
     if not p.is_file():
         return f"error: traj file not found: {p}"
@@ -641,7 +643,7 @@ def new_skill_folder(skill_name: str, description: str) -> str:
     """
     skill_dir = _ctx_v2["skill_dir"]
     if skill_dir is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     desc = (description or "").strip()
     if not desc:
         return ("error: description 必填——简述这个 skill 服务于什么类型的 atom "
@@ -660,7 +662,7 @@ def skill_read(skill_name: str) -> str:
     """读 skill 的 SKILL.md；没有则返回 placeholder 提示。"""
     skill_dir = _ctx_v2["skill_dir"]
     if skill_dir is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     slug = _slugify(skill_name)
     p = skill_dir / slug / "SKILL.md"
     if not p.is_file():
@@ -677,7 +679,7 @@ def add_task_to_skill(skill_name: str, atom_id: str, weightscore: int) -> str:
     from xskill.skill import candidates as C
     skill_dir = _ctx_v2["skill_dir"]
     if skill_dir is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     slug = _slugify(skill_name)
     target = skill_dir / slug
     if not target.is_dir():
@@ -701,7 +703,7 @@ def score_task(atom_id: str, score: int) -> str:
     """覆盖 AtomTask 的 ux_score（手动修正 / 灰度链路使用）。"""
     store = _ctx_v2["store"]
     if store is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     try:
         sc = int(score)
     except (TypeError, ValueError):
@@ -729,7 +731,7 @@ def add_task(
     from xskill.pipeline.atom import AtomTask
     store = _ctx_v2["store"]
     if store is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     atom = AtomTask(
         atom_id=atom_id, traj_id=traj_id,
         offset_start=int(offset_start), offset_end=int(offset_end),
@@ -821,7 +823,7 @@ def commit_baby_to_main(skill_name: str, message: str) -> str:
     from xskill.skill.git import commit_baby_to_main_branch
     skill_dir = _ctx_v2["skill_dir"]
     if skill_dir is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     slug = _slugify(skill_name)
     target = skill_dir / slug
     if not target.is_dir():
@@ -830,7 +832,7 @@ def commit_baby_to_main(skill_name: str, message: str) -> str:
         return f"error: skill {slug} 没 git 仓库（new_skill_folder 出问题？）"
     msg = (message or "").strip()
     if not msg:
-        return "error: commit message 必填"
+        return COMMIT_MESSAGE_REQUIRED
     # commit 前先跑 description 触发优化（best desc 写回 frontmatter），优化产物
     # 随 add . 一起进 commit。失败只 log，不阻断 commit。
     _run_description_optimization(target, slug)
@@ -859,7 +861,7 @@ def commit_to_staging(skill_name: str, message: str) -> str:
     from xskill.skill.git import commit_to_staging_branch
     skill_dir = _ctx_v2["skill_dir"]
     if skill_dir is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     slug = _slugify(skill_name)
     target = skill_dir / slug
     if not target.is_dir():
@@ -868,7 +870,7 @@ def commit_to_staging(skill_name: str, message: str) -> str:
         return f"error: skill {slug} 没 git 仓库"
     msg = (message or "").strip()
     if not msg:
-        return "error: commit message 必填"
+        return COMMIT_MESSAGE_REQUIRED
     # commit 前先跑 description 触发优化（best desc 写回 frontmatter）。失败只
     # log，不阻断 commit。
     _run_description_optimization(target, slug)
@@ -892,14 +894,14 @@ def absorb_user_edit_to_main(skill_name: str, message: str) -> str:
     )
     skill_dir = _ctx_v2["skill_dir"]
     if skill_dir is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     slug = _slugify(skill_name)
     target = skill_dir / slug
     if not target.is_dir() or not (target / ".git").is_dir():
         return f"error: skill {slug} 没 git 仓库"
     msg = (message or "").strip()
     if not msg:
-        return "error: commit message 必填"
+        return COMMIT_MESSAGE_REQUIRED
     # 确保 message 含 "absorb user edit" 标记便于回流检测
     if "absorb user edit" not in msg.lower():
         msg = f"absorb user edit: {msg}"
@@ -961,7 +963,7 @@ def rename_skill(old_name: str, new_name: str) -> str:
     from xskill.skill.git import current_branch, run_git
     skill_dir = _ctx_v2["skill_dir"]
     if skill_dir is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     old_slug = _slugify(old_name)
     new_slug = _slugify(new_name)
     if old_slug == new_slug:
@@ -1003,7 +1005,7 @@ def read_skill_tasks(skill_name: str) -> str:
     from xskill.skill import candidates as C
     skill_dir = _ctx_v2["skill_dir"]
     if skill_dir is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     slug = _slugify(skill_name)
     target = skill_dir / slug
     if not target.is_dir():
@@ -1035,7 +1037,7 @@ def move_task_to(skill_from: str, skill_to: str, atom_id: str) -> str:
     from xskill.skill import candidates as C
     skill_dir = _ctx_v2["skill_dir"]
     if skill_dir is None:
-        return "error: v2 context not initialized"
+        return V2_CONTEXT_ERROR
     from_slug = _slugify(skill_from)
     to_slug = _slugify(skill_to)
     if from_slug == to_slug:

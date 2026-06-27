@@ -264,7 +264,7 @@ def _read_install_meta_ts(dest_dir: Path) -> Optional[float]:
             continue
         try:
             data = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, ValueError):
+        except (OSError, json.JSONDecodeError):
             continue
         ts = data.get("installed_at")
         if isinstance(ts, (int, float)):

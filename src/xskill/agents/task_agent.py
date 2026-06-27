@@ -239,7 +239,7 @@ def _is_machine_noise_block(block_lines: list[str]) -> bool:
         try:
             json.loads(stripped)
             return True
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError:
             pass
     # 否则要求每一非空行都是机器签名
     for ln in nonblank:

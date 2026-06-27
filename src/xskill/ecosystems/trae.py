@@ -319,10 +319,7 @@ def _message_text(msg: dict) -> str:
         if isinstance(val, list):
             chunks: list[str] = []
             for part in val:
-                if isinstance(part, dict):
-                    if part.get("type") == "text" and part.get("text"):
-                        chunks.append(str(part["text"]))
-                    elif part.get("text"):
+                    if isinstance(part, dict) and part.get("text"):
                         chunks.append(str(part["text"]))
             joined = "\n".join(chunks).strip()
             if joined:

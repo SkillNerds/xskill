@@ -22,6 +22,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+OPENCODE_DB = "opencode.db"
+
 
 # ---------- 定位 opencode.db ----------
 
@@ -41,10 +43,10 @@ def candidate_paths() -> list[Path]:
     # 1) XDG_DATA_HOME（所有平台优先）
     xdg = os.environ.get("XDG_DATA_HOME")
     if xdg:
-        cands.append(Path(xdg) / "opencode" / "opencode.db")
+        cands.append(Path(xdg) / "opencode" / OPENCODE_DB)
 
     # 2) 平台默认
-    cands.append(home / ".local" / "share" / "opencode" / "opencode.db")
+    cands.append(home / ".local" / "share" / "opencode" / OPENCODE_DB)
 
     # 3) 兜底
     if sys.platform.startswith("win"):
@@ -52,11 +54,11 @@ def candidate_paths() -> list[Path]:
         for env in ("LOCALAPPDATA", "APPDATA"):
             v = os.environ.get(env)
             if v:
-                cands.append(Path(v) / "opencode" / "opencode.db")
+                cands.append(Path(v) / "opencode" / OPENCODE_DB)
     elif sys.platform == "darwin":
-        cands.append(home / "Library" / "Application Support" / "opencode" / "opencode.db")
+        cands.append(home / "Library" / "Application Support" / "opencode" / OPENCODE_DB)
 
-    cands.append(home / ".opencode" / "opencode.db")
+    cands.append(home / ".opencode" / OPENCODE_DB)
 
     # 去重保序
     seen: set[str] = set()
