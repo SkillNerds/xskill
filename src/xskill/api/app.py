@@ -1210,15 +1210,21 @@ def create_app(home_root: Path | str | None = None,
                 from xskill.team.server.state import ensure_join_token
                 from xskill.config import (
                     get_team_clients_db_path, get_team_server_state_path,
-                    get_team_trajectories_dir,
+                    XSKILL_HOME,
                 )
                 from xskill.pipeline.registry import register_dir as _register_dir
                 from xskill.canary import CanaryConfig
 
                 join_token = ensure_join_token(get_team_server_state_path())
                 client_registry = ClientRegistry(get_team_clients_db_path())
-                traj_root = get_team_trajectories_dir()
                 team_cfg = _config.get("team", {}).get("server", {})
+                traj_root = Path(
+                    str(
+                        team_cfg.get("traj_root")
+                        or XSKILL_HOME / "team_trajectories"
+                    )
+                ).expanduser()
+                traj_root.mkdir(parents=True, exist_ok=True)
                 canary_cfg = CanaryConfig.from_dict(_config.get("canary", {}))
 
                 def _team_register_dir(path, label):

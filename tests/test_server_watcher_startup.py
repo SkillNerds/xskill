@@ -114,3 +114,86 @@ def test_create_app_startup_passes_same_config_to_watcher(tmp_path, monkeypatch)
         srv._watcher_ref.clear()
         srv._config = None
         srv._skill_dir = None
+
+
+def test_team_server_startup_uses_runtime_config_for_traj_root(tmp_path, monkeypatch):
+    from starlette.testclient import TestClient
+    from xskill.api import app as srv
+
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    team_traj_root = tmp_path / "runtime-team-trajs"
+    config_object = XSkillConfig.from_dict({
+        "skill_dir": str(skill_dir),
+        "llm": {"base_url": "x", "model": "y", "api_key": "z"},
+        "embedding": {
+            "base_url": "embed",
+            "model": "vector",
+            "api_key": "key",
+        },
+        "team": {"server": {"traj_root": str(team_traj_root)}},
+        "watcher": {"poll_interval": 30},
+    })
+    captured_context = {}
+
+    class FakeDirectoryWatcher:
+        def __init__(self, **kwargs):
+            captured_context["watcher_config"] = kwargs["config"]
+
+        def start(self):
+            captured_context["watcher_started"] = True
+
+        def stop(self):
+            captured_context["watcher_stopped"] = True
+
+    class FakeClientRegistry:
+        def __init__(self, path):
+            captured_context["clients_db_path"] = path
+
+    def fail_get_config():
+        raise AssertionError("team startup should not read global config")
+
+    def fake_init_team_context(**kwargs):
+        captured_context.update(kwargs)
+
+    def fake_register_dir(path, label, ecosystem=None):
+        captured_context["registered_path"] = path
+        captured_context["registered_label"] = label
+        captured_context["registered_ecosystem"] = ecosystem
+
+    def fake_create_llm_client(runtime_config):
+        assert runtime_config is config_object
+        return object()
+
+    def fake_create_embed_client(runtime_config):
+        assert runtime_config is config_object
+        return object()
+
+    def fake_init_skill_authoring_tool_context(**kwargs):
+        assert kwargs["config"] is config_object
+
+    def fake_ensure_join_token(path):
+        captured_context["state_path"] = path
+        return "token"
+
+    srv._watcher_ref.clear()
+    try:
+        monkeypatch.setattr("xskill.config.get_config", fail_get_config)
+        monkeypatch.setattr(srv, "create_llm_client", fake_create_llm_client)
+        monkeypatch.setattr(srv, "create_embed_client", fake_create_embed_client)
+        monkeypatch.setattr(srv, "init_skill_authoring_tool_context", fake_init_skill_authoring_tool_context)
+        monkeypatch.setattr("xskill.team.server.state.ensure_join_token", fake_ensure_join_token)
+        monkeypatch.setattr("xskill.team.server.client_registry.ClientRegistry", FakeClientRegistry)
+        monkeypatch.setattr("xskill.team.server.api.init_team_context", fake_init_team_context)
+        monkeypatch.setattr("xskill.pipeline.registry.register_dir", fake_register_dir)
+        monkeypatch.setattr("xskill.pipeline.runner.DirectoryWatcher", FakeDirectoryWatcher)
+
+        app = srv.create_app(home_root=tmp_path, config=config_object, team_server=True)
+        with TestClient(app):
+            assert captured_context["traj_root"] == team_traj_root
+            assert captured_context["watcher_config"] is config_object
+            assert team_traj_root.is_dir()
+    finally:
+        srv._watcher_ref.clear()
+        srv._config = None
+        srv._skill_dir = None
