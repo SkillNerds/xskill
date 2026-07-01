@@ -107,7 +107,7 @@ def _write_changing(md: Path, body: str, clock: "_Clock"):
 
 
 class TestUploadThrottle:
-    """limit_rate：客户端按 hash-变更去抖,10 分钟内的连续增量必须被拦截,
+    """客户端按 hash-变更去抖,10 分钟内的连续增量必须被拦截,
     只有轨迹稳定满窗口后才作为一段完整轨迹放行。"""
 
     def test_rapid_changes_are_intercepted(self, tmp_path):

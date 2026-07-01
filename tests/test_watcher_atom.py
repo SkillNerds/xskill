@@ -491,7 +491,7 @@ class TestUxScoreAtomLevel:
 
 
 class TestContinuationResplit:
-    """fix-dicover 验收：同名轨迹追加内容后重传 → 出现新 atom（行号 ≥ 续接点、
+    """续写重拆验收：同名轨迹追加内容后重传 → 出现新 atom（行号 ≥ 续接点、
     不与旧 atom 重叠、旧 atom 不被重复生成）。"""
 
     def _drive_to_done(self, watcher, db, fname, rounds=25):

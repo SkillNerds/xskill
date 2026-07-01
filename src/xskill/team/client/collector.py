@@ -82,7 +82,7 @@ class TeamCollector:
     ):
         self.cursor_path = Path(cursor_path)
         self.quiet_seconds = quiet_seconds
-        # 上传频率拦截（limit_rate）：同一条 traj 的内容（hash）距上次变更必须
+        # 上传频率拦截：同一条 traj 的内容（hash）距上次变更必须
         # 静默 ≥ min_change_interval 秒才允许上传。用户代理工具调用会让轨迹文件
         # 每 ~30s 追加一次，若每次增量都上传，server 每次跑全量流水线，原子会被
         # 切碎、不成体系。这里按 hash-变更去抖（debounce）：内容只要还在变，计时
