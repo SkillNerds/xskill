@@ -38,7 +38,7 @@ class XSkillConfig(Mapping[str, Any]):
 
     @classmethod
     def from_yaml(
-        class_type,
+        cls,
         path: Optional[Path] = None,
         *,
         validate_required: bool = True,
@@ -52,7 +52,7 @@ class XSkillConfig(Mapping[str, Any]):
             )
         with open(config_path, encoding="utf-8") as config_file:
             loaded_data = yaml.safe_load(config_file) or {}
-        return class_type.from_dict(
+        return cls.from_dict(
             loaded_data,
             source_path=config_path,
             validate_required=validate_required,
@@ -60,14 +60,14 @@ class XSkillConfig(Mapping[str, Any]):
 
     @classmethod
     def from_dict(
-        class_type,
+        cls,
         values: Mapping[str, Any] | None,
         *,
         source_path: Optional[Path] = None,
         validate_required: bool = True,
     ) -> "XSkillConfig":
         config_data = deepcopy(dict(values or {}))
-        config_object = class_type(
+        config_object = cls(
             data=config_data,
             source_path=Path(source_path) if source_path else None,
         )
