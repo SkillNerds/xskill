@@ -20,6 +20,7 @@ pipeline/runner.py -- 流水线式目录监听器 + AtomTask 流水线核心入�
 v2 (AtomTask) 流水线下，对一个 atom 的"cluster → 触发 SkillEdit"是单一原子
 操作。``api/sse.py`` 与本模块的 ``DirectoryWatcher`` 都调它。
 """
+# ruff: noqa: BLE001
 
 from __future__ import annotations
 
@@ -27,9 +28,13 @@ import asyncio
 import logging
 import threading
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, Future, as_completed
 from pathlib import Path
+from typing import Any
 
+from xskill.config import XSkillConfig
+from xskill.container import XSkillContainer
 from xskill.pipeline.registry import (
     list_watch_dirs,
     discover_trajectories,
@@ -81,14 +86,30 @@ class DirectoryWatcher:
     """
 
     def __init__(self, *, llm=None, embed_client=None, config=None,
+                 container: XSkillContainer | None = None,
                  skill_dir=None, poll_interval=30.0, max_concurrent=30,
                  max_retries=3, db_path=None,
                  store=None, agno_agent_factory=None, home_root=None,
                  server_mode=False, install_history_path=None,
                  on_poll_hook=None, cluster_batch_size=8):
+        if container is not None:
+            container_config = container.config()
+            if config is None:
+                config = container_config
+            if skill_dir is None:
+                skill_dir = container_config.skill_dir
+            if llm is None:
+                llm = container.llm_client()
+            if embed_client is None:
+                embed_client = container.embed_client()
+            if agno_agent_factory is None:
+                agno_agent_factory = container.agno_agent_factory()
+        self.container = container
         self.llm = llm
         self.embed_client = embed_client
-        self.config = config or {}
+        self.config: Mapping[str, Any] | XSkillConfig = (
+            config if config is not None else {}
+        )
         self.skill_dir = Path(skill_dir) if skill_dir else None
         # home_root：install_to_claude_code 的 target root。生产 daemon 不
         # 传（None）→ 落到 server._home_root() (默认 Path.home())。测试

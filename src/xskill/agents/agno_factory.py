@@ -12,13 +12,16 @@
 ``(*, instructions, tools) -> agno.agent.Agent``。生产代码调用它把 cluster/edit
 agent 跑起来；测试代码注入 stub callable。
 """
+# ruff: noqa: BLE001,S110
 from __future__ import annotations
 
 import inspect
 import logging
 import os
+from collections.abc import Mapping
 from typing import Any, Callable
 
+from xskill.config import XSkillConfig
 from xskill.utils.logging import StreamLog
 from xskill.utils.llm import _ssl_verify
 
@@ -52,7 +55,7 @@ def _inject_verify_off_if_requested(model_cls, model_kwargs: dict,
             model_kwargs[name] = async_client
             injected.append(name)
             break
-    msg_log = log or (lambda *a, **kw: None)
+    msg_log = log or (lambda *_arguments, **_keywords: None)
     if injected:
         msg_log(f"T2S_SSL_VERIFY=false → {model_cls.__name__} 注入 "
                 f"{'+'.join(injected)} (verify=False)", "step")
@@ -61,7 +64,7 @@ def _inject_verify_off_if_requested(model_cls, model_kwargs: dict,
                 f"kwarg，改用 SSL_CERT_FILE=/path/to/ca.pem", "error")
 
 
-def _wrap_with_context_mgmt(model, llm_cfg: dict):
+def _wrap_with_context_mgmt(model, llm_cfg: Mapping[str, Any]):
     """把弃窗单趟的上下文自管理（spec §4.5）套到 model.invoke 外层。
 
     - max_context 配置优先,缺省 200K + warning（``resolve_max_context``）。
@@ -78,7 +81,7 @@ def _wrap_with_context_mgmt(model, llm_cfg: dict):
     return model
 
 
-def _wrap_with_rate_limit(model, llm_cfg: dict):
+def _wrap_with_rate_limit(model, llm_cfg: Mapping[str, Any]):
     """如果 llm_cfg['rate_limit'] 配置存在,monkey-patch model.invoke
     在调用 LLM 前先 acquire 共享桶。
 
@@ -135,7 +138,7 @@ def _wrap_with_rate_limit(model, llm_cfg: dict):
     return model
 
 
-def build_chat_model(llm_cfg: dict, log: StreamLog | None = None):
+def build_chat_model(llm_cfg: Mapping[str, Any], log: StreamLog | None = None):
     """根据 ``llm_cfg.base_url`` 路由到合适的 agno model 类。
 
     为什么不一律用 ``OpenAIChat``：DeepSeek 直连（``api.deepseek.com``）的
@@ -221,7 +224,7 @@ def _is_transient_error(exc: Exception) -> bool:
     return any(h in t for h in _TRANSIENT_HINTS)
 
 
-def _wrap_with_retry(model, llm_cfg: dict):
+def _wrap_with_retry(model, llm_cfg: Mapping[str, Any]):
     """对脆弱用户 API 做**强壮持续重试**：瞬时错误（429/5xx/超时/连接断）指数退避
     重试，次数/退避上限可配。
 
@@ -280,7 +283,9 @@ def _wrap_with_trace(model):
     return model
 
 
-def make_default_factory(config: dict) -> Callable[..., Any]:
+def make_default_factory(
+    config: Mapping[str, Any] | XSkillConfig,
+) -> Callable[..., Any]:
     """生产环境的 agno Agent 工厂。
 
     返回的 callable 签名 ``(*, instructions, tools) -> agno.agent.Agent``，
@@ -292,8 +297,12 @@ def make_default_factory(config: dict) -> Callable[..., Any]:
     """
     from agno.agent import Agent
 
-    base_cfg = config.get("llm", {}) or {}
-    override_cfg = config.get("llm_skill", {}) or {}
+    if isinstance(config, XSkillConfig):
+        base_cfg = config.llm_config
+        override_cfg = config.llm_skill_config
+    else:
+        base_cfg = config.get("llm", {}) or {}
+        override_cfg = config.get("llm_skill", {}) or {}
     llm_cfg = {**base_cfg, **{k: v for k, v in override_cfg.items() if v}}
 
     def factory(*, instructions, tools, **kwargs):

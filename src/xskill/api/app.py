@@ -7,6 +7,7 @@ Usage:
     from xskill.api.app import create_app
     app = create_app()
 """
+# ruff: noqa: BLE001
 
 from __future__ import annotations
 
@@ -20,15 +21,17 @@ except ImportError:
 
 import logging
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from xskill import __version__
-from xskill.config import load_config, get_skill_dir
+from xskill.config import XSkillConfig, load_config, get_skill_dir
+from xskill.container import XSkillContainer
 from xskill.utils.search import search as search_trajs, search_all as search_trajs_all
 from xskill.skill.repo import (
     import_skill,
@@ -65,7 +68,7 @@ logger = logging.getLogger("xskill.server")
 # server 启动路径首次调用时填充。endpoints 在 startup hook 之后才被 hit，
 # 拿到的就是非 None；测试如果只 import ``_exec_tool`` / 常量，模块加载阶段
 # 完全不读 config。
-_config: dict | None = None
+_config: Mapping[str, Any] | XSkillConfig | None = None
 _skill_dir: Path | None = None
 _watcher_ref: dict = {}  # {"instance": DirectoryWatcher} — set in create_app startup
 
@@ -774,7 +777,8 @@ async def api_reindex():
 # ---------------------------------------------------------------------------
 
 def create_app(home_root: Path | str | None = None,
-               *, team_server: bool = False) -> FastAPI:
+               *, team_server: bool = False,
+               container: XSkillContainer | None = None) -> FastAPI:
     """Build the FastAPI app. Calls ``_ensure_loaded`` first so all module-level
     config globals (``_config``/``_skill_dir``/...) are populated before any
     endpoint or startup hook reads them.
@@ -786,17 +790,25 @@ def create_app(home_root: Path | str | None = None,
         team_server: True = team server 模式。挂 /api/v1/team/* 路由、跳过
                    本机生态自动探测（纯 server 不采集自己的轨迹）、watcher
                    开 server_mode。
+        container: 可选运行时依赖入口。传入后 server / watcher / agent factory
+                   都沿用同一个 ``XSkillConfig`` 和 client provider。
     """
-    global _home_root_override
+    global _home_root_override, _config, _skill_dir
     if home_root is not None:
         _home_root_override = Path(home_root).expanduser().resolve()
-    _ensure_loaded()
+    if container is not None:
+        _config = container.config()
+        _skill_dir = _config.skill_dir
+    else:
+        _ensure_loaded()
     """Create and configure the FastAPI application."""
     app = FastAPI(
         title="xskill",
         description="Trajectory-to-Skill distillation API",
         version=__version__,
     )
+    app.state.xskill_container = container
+    app.state.xskill_config = _config
     app.include_router(router)
 
     # team server 模式：挂 /api/v1/team/* 路由
@@ -862,13 +874,19 @@ def create_app(home_root: Path | str | None = None,
         带 None client 带病跑（CLAUDE.md 第 1 条）。create_llm_client 内部仍可能
         返回 None（其它调用方依赖此语义），所以在 daemon startup 处显式断言。
         """
-        llm = create_llm_client(_config)
-        if llm is None:
+        if container is None:
+            llm_client = create_llm_client(_config)
+            embedding_client = create_embed_client(_config)
+            agent_factory = None
+        else:
+            llm_client = container.llm_client()
+            embedding_client = container.embed_client()
+            agent_factory = container.agno_agent_factory()
+        if llm_client is None:
             raise RuntimeError(
                 "LLM client could not be created — check ~/.xskill/config.yaml: "
                 "llm.base_url / llm.model / llm.api_key must all be valid"
             )
-        embed = create_embed_client(_config)
         # data_dir 在 server 端点路径上不被消费（trajectory 搜索走 Registry），
         # 传 _skill_dir 占位即可——同 core.py 的 tool context 初始化。
         init_skill_authoring_tool_context(
@@ -1227,8 +1245,10 @@ def create_app(home_root: Path | str | None = None,
             from xskill.pipeline.runner import DirectoryWatcher
             watcher_cfg = _config.get("watcher", {})
             watcher = DirectoryWatcher(
-                llm=llm, embed_client=embed, config=_config,
+                llm=llm_client, embed_client=embedding_client, config=_config,
+                container=container,
                 skill_dir=_skill_dir,
+                agno_agent_factory=agent_factory,
                 poll_interval=float(watcher_cfg.get("poll_interval", 30)),
                 max_concurrent=int(watcher_cfg.get("max_concurrent", 30)),
                 cluster_batch_size=int(watcher_cfg.get("cluster_batch_size", 8)),

@@ -8,15 +8,19 @@ read the current project/AtomTask dependencies through properties. LLM and
 embedding clients are intentionally not stored here; non-tool workflows create
 those from config at their own boundary.
 """
+# ruff: noqa: BLE001,S110
 
 from __future__ import annotations
 
 import json, logging
+from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 from agno.tools import tool
 
+from xskill.config import XSkillConfig
 from xskill.skill.frontmatter import (
     parse as fm_parse,
     parse_strict as fm_parse_strict,
@@ -33,7 +37,7 @@ class AgentToolConfig:
     def __init__(self):
         self._skill_dir: Path | None = None
         self._data_dir: Path | None = None
-        self._config: dict = {}
+        self._config: Mapping[str, Any] | XSkillConfig | None = None
         self._atom_skill_dir: Path | None = None
         self._atom_store = None
         self._default_traj_root: Path | None = None
@@ -43,7 +47,7 @@ class AgentToolConfig:
     ) -> None:
         self._skill_dir = Path(skill_dir)
         self._data_dir = Path(data_dir)
-        self._config = config or {}
+        self._config = config
 
     def configure_atom_task(
         self, *, skill_dir, atom_store, default_traj_root,
@@ -65,7 +69,7 @@ class AgentToolConfig:
     def restore(self, snapshot: dict) -> None:
         self._skill_dir = snapshot.get("skill_dir")
         self._data_dir = snapshot.get("data_dir")
-        self._config = snapshot.get("config") or {}
+        self._config = snapshot.get("config")
         self._atom_skill_dir = snapshot.get("atom_skill_dir")
         self._atom_store = snapshot.get("atom_store")
         self._default_traj_root = snapshot.get("default_traj_root")
@@ -84,7 +88,7 @@ class AgentToolConfig:
         return self._data_dir
 
     @property
-    def config(self) -> dict:
+    def config(self) -> Mapping[str, Any] | XSkillConfig:
         return self._config or {}
 
     @property
@@ -867,8 +871,10 @@ def _run_description_optimization(target: Path, slug: str) -> None:
     （退回 agent 写的 description 继续提交）。LLM/embed 客户端在这个确定性
     workflow 内从 config 创建，不从 agent tool context 借对象。
     """
-    from xskill.config import get_config
-    config = agent_tool_config.config or get_config()
+    config = agent_tool_config.config
+    if not config:
+        logger.warning("skip description_opt: skill authoring config not initialized")
+        return
     if not (config.get("skill_opt", {}) or {}).get("enabled", True):
         return
     from xskill.utils.llm import create_embed_client, create_llm_client
