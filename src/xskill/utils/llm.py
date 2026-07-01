@@ -18,11 +18,14 @@ LLM 和 Embedding 分别配置 base_url / model / api_key
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import os, json, logging, time
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import numpy as np
+
+from xskill.config import XSkillConfig
 
 EmbedApiStyle = Literal["multimodal", "openai"]
 
@@ -61,11 +64,11 @@ class LLMClient:
     _client: object = field(default=None, repr=False)
 
     @classmethod
-    def from_config(cls, cfg: dict) -> "LLMClient":
-        base_url = cfg.get("base_url", "").rstrip("/")
-        model = cfg.get("model", "")
+    def from_config(class_type, config_section: Mapping[str, Any]) -> "LLMClient":
+        base_url = config_section.get("base_url", "").rstrip("/")
+        model = config_section.get("model", "")
         api_key = (
-            cfg.get("api_key", "")
+            config_section.get("api_key", "")
             or os.environ.get("LLM_API_KEY", "")
             or os.environ.get("ANTHROPIC_API_KEY", "")
             or os.environ.get("OPENAI_API_KEY", "")
@@ -75,13 +78,13 @@ class LLMClient:
         kwargs = dict(base_url=base_url, model=model, api_key=api_key)
         # 允许 config 覆盖 max_tokens / temperature（缺省则用 dataclass 默认）。
         # 之前这里不读 max_tokens，导致 yaml 配了也不生效。
-        if "max_tokens" in cfg:
-            kwargs["max_tokens"] = int(cfg["max_tokens"])
-        if "temperature" in cfg:
-            kwargs["temperature"] = float(cfg["temperature"])
-        if "rate_limit" in cfg:
-            kwargs["rate_limit_cfg"] = cfg["rate_limit"]
-        return cls(**kwargs)
+        if "max_tokens" in config_section:
+            kwargs["max_tokens"] = int(config_section["max_tokens"])
+        if "temperature" in config_section:
+            kwargs["temperature"] = float(config_section["temperature"])
+        if "rate_limit" in config_section:
+            kwargs["rate_limit_cfg"] = config_section["rate_limit"]
+        return class_type(**kwargs)
 
     def _get_client(self):
         if self._client is None:
@@ -203,22 +206,22 @@ class EmbedClient:
     _client: object = field(default=None, repr=False)
 
     @classmethod
-    def from_config(cls, cfg: dict) -> "EmbedClient":
-        base_url = cfg.get("base_url", "").rstrip("/")
-        model = cfg.get("model", "")
+    def from_config(class_type, config_section: Mapping[str, Any]) -> "EmbedClient":
+        base_url = config_section.get("base_url", "").rstrip("/")
+        model = config_section.get("model", "")
         api_key = (
-            cfg.get("api_key", "")
+            config_section.get("api_key", "")
             or os.environ.get("EMBED_API_KEY", "")
             or os.environ.get("OPENAI_API_KEY", "")
         )
-        dim = cfg.get("dim", 0)
+        dim = config_section.get("dim", 0)
         if not base_url or not model:
             raise ValueError("embedding.base_url 和 embedding.model 必须配置")
-        api_style = _resolve_embed_api_style(cfg, model)
-        inst = cls(
+        api_style = _resolve_embed_api_style(config_section, model)
+        instance = class_type(
             base_url=base_url, model=model, api_key=api_key, dim=dim, api_style=api_style,
         )
-        return inst
+        return instance
 
     def _get_session(self):
         if self._client is None:
@@ -320,20 +323,26 @@ class EmbedClient:
 # 工厂函数
 # ═══════════════════════════════════════════════════════════════════
 
-def create_embed_client(config: dict) -> "EmbedClient":
+def create_embed_client(config: Mapping[str, Any] | XSkillConfig) -> "EmbedClient":
     """根据配置创建 embedding 客户端，未配置或不可用时直接报错"""
-    embed_cfg = config.get("embedding", {})
+    if isinstance(config, XSkillConfig):
+        embed_config = config.embedding_config
+    else:
+        embed_config = config.get("embedding", {}) or {}
 
-    if not embed_cfg.get("base_url") or not embed_cfg.get("model"):
+    if not embed_config.get("base_url") or not embed_config.get("model"):
         raise ValueError("embedding.base_url 和 embedding.model 必须配置")
 
-    client = EmbedClient.from_config(embed_cfg)
+    client = EmbedClient.from_config(embed_config)
     client.probe_dim()
     logger.info(f"Embedding: {client}")
     return client
 
 
-def create_llm_client(config: dict, role: str = "default") -> "LLMClient | None":
+def create_llm_client(
+    config: Mapping[str, Any] | XSkillConfig,
+    role: str = "default",
+) -> "LLMClient | None":
     """根据配置创建 LLM 客户端，未配置返回 None。
 
     role:
@@ -350,16 +359,25 @@ def create_llm_client(config: dict, role: str = "default") -> "LLMClient | None"
         model: "doubao-seed-2-0-pro-260215"    # agent + eval 换大模型
         # base_url / api_key 缺省 → 继承 llm.*
     """
-    base_cfg = config.get("llm", {}) or {}
-    if role in ("skill", "eval"):
-        override_cfg = config.get("llm_skill", {}) or {}
-        merged = {**base_cfg, **{k: v for k, v in override_cfg.items() if v}}
+    if isinstance(config, XSkillConfig):
+        base_config = config.llm_config
     else:
-        merged = base_cfg
+        base_config = config.get("llm", {}) or {}
+    if role in ("skill", "eval"):
+        if isinstance(config, XSkillConfig):
+            override_config = config.llm_skill_config
+        else:
+            override_config = config.get("llm_skill", {}) or {}
+        merged_config = {
+            **base_config,
+            **{key: value for key, value in override_config.items() if value},
+        }
+    else:
+        merged_config = base_config
 
-    if merged.get("base_url") and merged.get("model"):
+    if merged_config.get("base_url") and merged_config.get("model"):
         try:
-            client = LLMClient.from_config(merged)
+            client = LLMClient.from_config(merged_config)
             logger.info(f"LLM[{role}]: {client}")
             return client
         except Exception as e:

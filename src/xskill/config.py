@@ -7,9 +7,12 @@ config.py — 全局路径与配置加载
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
+from copy import deepcopy
+from dataclasses import dataclass, field
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 
@@ -22,8 +25,100 @@ REGISTRY_DB = XSKILL_HOME / "registry.db"
 CHAT_DB = XSKILL_HOME / "chat_sessions.db"
 LOGS_DIR = XSKILL_HOME / "logs"
 
-_config: dict = {}
+_config: "XSkillConfig | None" = None
 _overrides: dict = {}
+
+
+@dataclass
+class XSkillConfig(Mapping[str, Any]):
+    """Dict-compatible xskill configuration loaded from YAML."""
+
+    data: dict[str, Any] = field(default_factory=dict)
+    source_path: Path | None = None
+
+    @classmethod
+    def from_yaml(
+        class_type,
+        path: Optional[Path] = None,
+        *,
+        validate_required: bool = True,
+    ) -> "XSkillConfig":
+        config_path = Path(path) if path else CONFIG_PATH
+        if not config_path.exists():
+            raise FileNotFoundError(
+                f"xskill config not found: {config_path}\n"
+                f"Run `xskill serve` once to auto-create a template, "
+                f"or call config.ensure_config_exists()."
+            )
+        with open(config_path, encoding="utf-8") as config_file:
+            loaded_data = yaml.safe_load(config_file) or {}
+        return class_type.from_dict(
+            loaded_data,
+            source_path=config_path,
+            validate_required=validate_required,
+        )
+
+    @classmethod
+    def from_dict(
+        class_type,
+        values: Mapping[str, Any] | None,
+        *,
+        source_path: Optional[Path] = None,
+        validate_required: bool = True,
+    ) -> "XSkillConfig":
+        config_data = deepcopy(dict(values or {}))
+        config_object = class_type(
+            data=config_data,
+            source_path=Path(source_path) if source_path else None,
+        )
+        if validate_required:
+            config_object.validate_required()
+        return config_object
+
+    def __getitem__(self, key: str) -> Any:
+        return self.data[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.data)
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def as_dict(self) -> dict[str, Any]:
+        return deepcopy(self.data)
+
+    def section(self, section_name: str) -> dict[str, Any]:
+        section_value = self.data.get(section_name) or {}
+        if not isinstance(section_value, Mapping):
+            raise TypeError(
+                f"{section_name} config section must be a mapping, "
+                f"got {type(section_value).__name__}"
+            )
+        return dict(section_value)
+
+    @property
+    def llm_config(self) -> dict[str, Any]:
+        return self.section("llm")
+
+    @property
+    def llm_skill_config(self) -> dict[str, Any]:
+        return self.section("llm_skill")
+
+    @property
+    def embedding_config(self) -> dict[str, Any]:
+        return self.section("embedding")
+
+    @property
+    def skill_dir(self) -> Path:
+        configured_path = self.data.get("skill_dir") or str(XSKILL_HOME / "skill")
+        return Path(str(configured_path)).expanduser()
+
+    def validate_required(self) -> None:
+        location = self.source_path or "provided config"
+        if not self.llm_config.get("api_key"):
+            raise KeyError(f"llm.api_key missing in {location}")
+        if not self.embedding_config.get("api_key"):
+            raise KeyError(f"embedding.api_key missing in {location}")
 
 
 def set_overrides(**kwargs):
@@ -214,32 +309,20 @@ def ensure_config_exists(path: Optional[Path] = None) -> bool:
     return False
 
 
-def load_config(path: Optional[Path] = None) -> dict:
+def load_config(path: Optional[Path] = None) -> XSkillConfig:
     """加载 ~/.xskill/config.yaml；不存在直接抛 FileNotFoundError。
 
     正常路径下 CLI 会先调 ``ensure_config_exists`` auto-init，不会走到这个
     FileNotFoundError；保留它作为 SDK 直接调用时的 fail-loud 兜底。
     """
     global _config
-    cfg_path = Path(path) if path else CONFIG_PATH
-    if not cfg_path.exists():
-        raise FileNotFoundError(
-            f"xskill config not found: {cfg_path}\n"
-            f"Run `xskill serve` once to auto-create a template, "
-            f"or call config.ensure_config_exists()."
-        )
-    with open(cfg_path, encoding="utf-8") as f:
-        _config = yaml.safe_load(f) or {}
-    if not _config.get("llm", {}).get("api_key"):
-        raise KeyError(f"llm.api_key missing in {cfg_path}")
-    if not _config.get("embedding", {}).get("api_key"):
-        raise KeyError(f"embedding.api_key missing in {cfg_path}")
+    _config = XSkillConfig.from_yaml(path)
     return _config
 
 
-def get_config() -> dict:
-    if not _config:
-        load_config()
+def get_config() -> XSkillConfig:
+    if _config is None:
+        return load_config()
     return _config
 
 
@@ -334,9 +417,8 @@ def ingest_config(path: Optional[Path] = None) -> dict:
 
 def get_skill_dir() -> Path:
     """skill_dir: config.yaml 字段；默认 ~/.xskill/skill/"""
-    cfg = get_config()
-    raw = cfg.get("skill_dir") or str(XSKILL_HOME / "skill")
-    return Path(raw).expanduser()
+    config_object = get_config()
+    return config_object.skill_dir
 
 
 def get_logs_dir() -> Path:
