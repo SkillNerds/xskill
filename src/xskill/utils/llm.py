@@ -64,7 +64,7 @@ class LLMClient:
     _client: object = field(default=None, repr=False)
 
     @classmethod
-    def from_config(class_type, config_section: Mapping[str, Any]) -> "LLMClient":
+    def from_config(cls, config_section: Mapping[str, Any]) -> "LLMClient":
         base_url = config_section.get("base_url", "").rstrip("/")
         model = config_section.get("model", "")
         api_key = (
@@ -84,7 +84,7 @@ class LLMClient:
             kwargs["temperature"] = float(config_section["temperature"])
         if "rate_limit" in config_section:
             kwargs["rate_limit_cfg"] = config_section["rate_limit"]
-        return class_type(**kwargs)
+        return cls(**kwargs)
 
     def _get_client(self):
         if self._client is None:
@@ -206,7 +206,7 @@ class EmbedClient:
     _client: object = field(default=None, repr=False)
 
     @classmethod
-    def from_config(class_type, config_section: Mapping[str, Any]) -> "EmbedClient":
+    def from_config(cls, config_section: Mapping[str, Any]) -> "EmbedClient":
         base_url = config_section.get("base_url", "").rstrip("/")
         model = config_section.get("model", "")
         api_key = (
@@ -218,7 +218,7 @@ class EmbedClient:
         if not base_url or not model:
             raise ValueError("embedding.base_url 和 embedding.model 必须配置")
         api_style = _resolve_embed_api_style(config_section, model)
-        instance = class_type(
+        instance = cls(
             base_url=base_url, model=model, api_key=api_key, dim=dim, api_style=api_style,
         )
         return instance
