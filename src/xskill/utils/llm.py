@@ -19,7 +19,7 @@ LLM 和 Embedding 分别配置 base_url / model / api_key
 from __future__ import annotations
 
 from collections.abc import Mapping
-import os, json, logging, time
+import os, logging, time
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
@@ -380,7 +380,7 @@ def create_llm_client(
             client = LLMClient.from_config(merged_config)
             logger.info(f"LLM[{role}]: {client}")
             return client
-        except Exception as e:
-            logger.warning(f"LLM[{role}] 初始化失败: {e}")
+        except (KeyError, TypeError, ValueError) as error:
+            logger.warning(f"LLM[{role}] 初始化失败: {error}")
             return None
     return None
