@@ -1,0 +1,155 @@
+[
+ {
+  "id": 32438,
+  "instruction": "How can I format the cells in column J to only display the standard time in 00:00:00 and AM/PM from I2, which contains both the date and the time in the format 'DD/MM/YYYY 00:00:00'? Using the =RIGHT(I2,8) function returns the time as a string of 8 numbers without the desired time formatting (e.g., 00:00:00), even after attempting to apply time formatting to the cell.",
+  "spreadsheet_path": "spreadsheet/32438",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "J2:J4"
+ },
+ {
+  "id": "398-14",
+  "instruction": "I have data across multiple sheets where I need to match and sum values from columns that are repeated across these sheets. To do this, I need to insert a column called 'BALANCE' which subtracts the 'RET' value from the 'SALE' columns. Whenever I add new sheets that have the same structure, the macro should be able to adapt to include them. The results, along with headers, should be compiled in the 'collection' sheet. Reference the values and logic of the existing rows, then complete the table for any missing information from the other sheets by adding it to the bottom of the current table, but do not alter the order of the original rows.  Make sure that rows are aggregated across all sheets where “TY” and “OR” are the same.  Additionally, instead of showing a formula in column G, it should display the calculated value, and any empty cells should show a hyphen instead of a zero, and any negatives should have a text color hex code of #FF0000, and column headers should be un-bolded and left-side aligned.  All other formatting should remain unchanged, and any new data added should match. Columns A, E, F, and G now align right, while columns B, C, and D align left. Make all text unbold, and font Calibri 11pts.",
+  "spreadsheet_path": "spreadsheet/398-14",
+  "instruction_type": "Sheet-Level Manipulation",
+  "answer_position": "'COLLECTION'!A2:G9",
+  "answer_sheet": "COLLECTION",
+  "data_position": "A1:G9"
+ },
+ {
+  "id": 47766,
+  "instruction": "I am attempting to calculate my agent's yearly production which includes yearly bonuses that reset annually. In the Excel spreadsheet I attached, I have used SUMIF formulas to calculate their total production based on certain criteria, such as including \"*PE*\" in my searches: =SUMIF($H$8:$H$37,\"*PE*\",$C$8:$C$37), =SUMIF($H$41:$H$58,\"*PE*\",$C$41:$C$58), =SUMIF($H$62:$H$74,\"*PE*\",$C$62:$C$74). However, I am having trouble adapting these formulas to work with a date range for the start and end of the year, using closing dates that are found in Column F. I would like to find out how to modify these formulas or use a different approach to consider the date range for accurately calculating annual production. Please change the values in table J39:O53 to reflect the correct yearly totals.",
+  "spreadsheet_path": "spreadsheet/47766",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "K40"
+ },
+ {
+  "id": 48365,
+  "instruction": "How can I sum amounts from a data sheet using SUMIFS when a user can select up to 3 regions for a product, with an 'All' option that sums all amounts? I need a formula that can handle multiple region choices in one criteria using an 'OR' logic, or a more elegant alternative.SUMIFS(Data!$C:$C,Data!$A:$A,$C$2,Data!$B:$B,$C11)",
+  "spreadsheet_path": "spreadsheet/48365",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "'Dashboard'!C4"
+ },
+ {
+  "id": 32255,
+  "instruction": "I'm not an expert with spreadsheets, but I have a specific problem I can't figure out. I'm working on a spreadsheet and have run into an issue regarding how to ignore empty or blank cells in a formula I'm using. The formula needs to perform a certain action only on cells that contain data, and I need help adjusting it accordingly. An example of my problem should be evident in the attached spreadsheet I've provided. How can I modify my formula to ignore these empty or blank cells?\nA10 through A13 has no data entered, I need column D to ignore these cells (i.e., empty), until there is data entered.",
+  "spreadsheet_path": "spreadsheet/32255",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "D2:D13"
+ },
+ {
+  "id": 10747,
+  "instruction": "I've attached a file containing a basic table and another table showing only a portion of that basic data. I've also included a formula that is supposed to extract the desired part, but it isn't working, and I can't identify the mistake. Could you please help me understand where I've gone wrong with the formula?\nIF((@$A$3:$A$8=$I3)*(@$B$3:$B$8=$J3),C3,0). The correct formula should sum the net profit from the first table based on the year and share no values in cells I3 and J3. It should be placed into cell K6.",
+  "spreadsheet_path": "spreadsheet/10747",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "K6"
+ },
+ {
+  "id": 50916,
+  "instruction": "How can I create an Excel school calendar where typing a cycle day number into a column automatically populates the classes for that day across each row? My children's school operates on a seven-day cycle, and there's a double period that could complicate matters. I want to avoid manual copy/paste because of irregular 'off days' that require adjusting the cycle day and associated classes. I managed a formula that works in one cell but am struggling to copy it across other cells as shown by the problems in cells C12, E12:H12, and D13:D14.   IF(A$12=A$2,C$2,IF(A$12=A$3,C$3,IF(A$12=A$4,C$4,IF(A$12=A$5,C$5,IF(A$12=A$6,C$6,IF(A$12=A$7,C$7,IF(A$12=A$8,C$8)))))))",
+  "spreadsheet_path": "spreadsheet/50916",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "C12:H14"
+ },
+ {
+  "id": "577-40",
+  "instruction": "How can I delete entire rows in an Excel worksheet if both Column J and Column K are either blank or contain any of the following specific values: -, 0, $, $0, or $0.0? I need  solution other than formula or a VBA macro that performs this task without deleting rows where only one of the cells in Column J or K meets these criteria, as I need to retain rows where at least one of these columns contains actual data.",
+  "spreadsheet_path": "spreadsheet/577-40",
+  "instruction_type": "Sheet-Level Manipulation",
+  "answer_position": "'Sheet2'!A1:K54",
+  "answer_sheet": "Sheet2",
+  "data_position": "A1:K54"
+ },
+ {
+  "id": 35742,
+  "instruction": "I've created a spreadsheet to record the results of an upcoming horse show, which involves multiple sections and aggregate awards that need to be calculated. My IF functions seem to be working correctly, but I'm struggling to sum the scores at the end of the row. I've tried using the =VALUE, =SUM, and =SUMPRODUCT functions but haven't been successful. In my spreadsheet, I'm trying to add the results shown in the blue cells across to a green cell where I've manually entered the total. How can I correctly sum these values?",
+  "spreadsheet_path": "spreadsheet/35742",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "O4:O7"
+ },
+ {
+  "id": 46121,
+  "instruction": "How do I configure Excel to read a date (month) on column A of the 'Transactions' sheet and then place the total amount spent in that month under the corresponding month and category on the '2022' sheet? Specifically, I have set up an income and expense tracker for my farm business where I input transactions on one sheet and categorize them. While I can tally the transactions based on selected categories, I'm struggling to get Excel to correctly allocate these tallied sums into the appropriate monthly column on a second sheet. As an example, a payment made in April is incorrectly being included in the March column on the second sheet.\n   \nMy current formula is:\nIF(Transactions!D3=Transactions!D2,\"\",SUMIF(Transactions!D:D,Transactions!D3,Transactions!C:C))\n\nWrite a formula in the income section of the '2022' sheet. Apply Currency formatting.",
+  "spreadsheet_path": "spreadsheet/46121",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "'2022'!B5:M8"
+ },
+ {
+  "id": 51090,
+  "instruction": "How can I calculate the difference between the total cartons received as indicated in Column M and the errors present in Columns N to R, while filtering for a specific warehouse (e.g., warehouse 27), error codes (specifically for each of II, IR, IT, OV, PI with code II in column N), date, and users (e.g., CHROGIL1, CHDSPOLJ, CHSJEFFE, CHBTHOMA for each error code) across a data set? Additionally, for the IR error code listed in Column O, I only want to include positive numbers from the Errors Table. The goal is to simplify a formula that can achieve this, as my current one is too complex and not providing the correct value, such as the expected 699 for Q2.",
+  "spreadsheet_path": "spreadsheet/51090",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "Daily Numbers'!Q3:Q24"
+ },
+ {
+  "id": 51249,
+  "instruction": "How do I create an Excel formula that outputs different results based on the text values of two different cells. For example, in D1, if B1 contains 'Description A' and B2 is blank, then D1 should display 'Single A'; if B1 contains 'Description B' and B2 is blank, then D1 should display 'Single B'; and if B1 contains 'Description A' and B2 contains 'Description B', then D1 should display 'Multiple'? I have also provided a sample spreadsheet showing the input and desired result. Do this output for each cell in column D that next to a cell that says \"Result:\". Fill any cells in column D with content with RGB: 226-239-218",
+  "spreadsheet_path": "spreadsheet/51249",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "D1,D5,D9"
+ },
+ {
+  "id": "82-30",
+  "instruction": "How can I modify my VBA code to only copy and paste whole numbers from a range of columns (A to F) in the 'Raw Data' sheet, starting from row 1 and continuing across columns A to F in the 'Numbers' sheet, without including numbers with decimal points and ensuring a maximum of 6 numbers per row? You can refer to Manual Result sheet for outcome, and it should be in the exact same sorting order.",
+  "spreadsheet_path": "spreadsheet/82-30",
+  "instruction_type": "Sheet-Level Manipulation",
+  "answer_position": "'Numbers'!A1:F9",
+  "answer_sheet": "Numbers",
+  "data_position": "Raw Data!'A1:F18, 'Manual Result!'A1:F9"
+ },
+ {
+  "id": 56274,
+  "instruction": "I need an Excel formula that will automatically populate cells D9, D10, D11, and D12 with the Opening Balance, Debits, Credits, and Closing Balance respectively, based on the Fiscal Month in cell D7. The details and expected results are outlined in the attached excel sheet.",
+  "spreadsheet_path": "spreadsheet/56274",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "D9:D12",
+  "exclude": "golden has data validation dropdown set to a completely different value"
+ },
+ {
+  "id": 57445,
+  "instruction": "How can I create a formula in Column E on my Pricing Worksheet that will reference manually inputted data in Columns C and D and return the corresponding Cost data from a different worksheet named 'Package & Weight Data'? The table and necessary data are in an attached Excel file named 'Cost-Calculator.xlsx'.",
+  "spreadsheet_path": "spreadsheet/57445",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "'Pricing'!E2:E5"
+ },
+ {
+  "id": 46646,
+  "instruction": "How can I calculate the percentage of night shifts for a given month, considering a variable year range from 2010 to 2022. Take into account leap years and the specific days of the month. Please perform this task and fill out row 11 using the year value shown. Output the values in decimal format, such that a) a zero value has no decimal places, b) a value that only contains a single, non-zero decimal place has one decimal place, and c) all other values have nine decimal places.",
+  "spreadsheet_path": "spreadsheet/46646",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "B11:M11"
+ },
+ {
+  "id": "105-24",
+  "instruction": "In my Excel file, the 'Open' sheet contains IDs in Columns C and K. Find all these IDs and replace them with their respective Names. The corresponding Names for these IDs are located in Columns A and B of the 'Productivity' sheet. I require assistance with creating a macro or to automate this replacement process and also automatically consider any new additions to Columns A and B in the future for replacements. Do not create instructions, explanations, or a ID_Lookup_Helper tab. Do not create add data to any other columns other than C or K in the Open tab.  Do not hide any data.",
+  "spreadsheet_path": "spreadsheet/105-24",
+  "instruction_type": "Sheet-Level Manipulation",
+  "answer_position": "'Open'!C2:C23",
+  "answer_sheet": "Open",
+  "data_position": "Open!'B1:P23,'Productivity!'A1:E21'"
+ },
+ {
+  "id": 6239,
+  "instruction": "I'm creating an incentive program to reward my employees based on their performance and need help with setting it up in Excel. Employees have individual goals that range from any number between 0% to 100%. The 'Variance to Goal' is calculated as 1 - (Achieved/Goal), varying from - infinity to +infinity. Another parameter, 'Metric2', also ranges from - infinity to +infinity without a fixed goal. The incentive percentage is determined based on two filters: 'Goal' is divided into four buckets based on values ranging from 65% to 99%, and 'Variance to Goal' is noted within a range of 0% to more than 7% under each 'Goal' range. Then, 'Metric2' is divided into five buckets with values from -20% to +20%, and in each, the final incentive percentage an employee should receive is specified. For instance, if an employee has a 'Goal' between 65% to 74%, a 'Variance to Goal' between 0% to 3%, and a 'Metric2' between -20% to -10%, they should get a 3% incentive. If 'Metric2' was more than 20% under the same 'Goal' and 'Variance', they should get a 7% incentive. How can I set up Excel to calculate and output these incentive percentages based on the provided criteria and ranges?",
+  "spreadsheet_path": "spreadsheet/6239",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "G2:G19"
+ },
+ {
+  "id": "414-20",
+  "instruction": "Delete all rows above the first occurrence of the text “Invoice No.” in column A. The macro should search for the phrase (case-insensitive) and delete everything above it, leaving the “Invoice No.” row and all rows below untouched.",
+  "spreadsheet_path": "spreadsheet/414-20",
+  "instruction_type": "Sheet-Level Manipulation",
+  "answer_position": "'Sheet1'!A4:A18",
+  "answer_sheet": "Sheet1",
+  "data_position": "A4:A14"
+ },
+ {
+  "id": "165-23",
+  "instruction": "Here's what I need: For Sheet 1, using VBA or alternative, delete all rows where column C is not the #N/A error value (Do not change any formatting and let row 1 remain blank). Do not delete anything else\n\nI need assistance with a macro for Sheet1 in Excel. The macro, named delrow2, should delete rows where the cell in column C does not contain the #N/A error value. I've attempted to write these macros, but both are returning errors. Additionally, after receiving advice to use the IsError function or smarter methods like filter or Range.SpecialCells, I created two more macros, delrow3 and delrow4, which also failed to work correctly. At one point, I tried replacing .Value with .Text in the If codeline as suggested, which seemed to resolve the issue. However, I'm unsure if it is the most efficient solution. I have limited knowledge of macro coding, and my attempts are attached in a file for review.",
+  "spreadsheet_path": "spreadsheet/165-23",
+  "instruction_type": "Sheet-Level Manipulation",
+  "answer_position": "'Sheet1'!A2:N73",
+  "answer_sheet": "Sheet1",
+  "data_position": "Sheet1!'A2:N73,'Desired Sheet1 after delrow1!'A2:N69,'Desired Sheet1 after delrow2!'A2:N5'"
+ }
+]

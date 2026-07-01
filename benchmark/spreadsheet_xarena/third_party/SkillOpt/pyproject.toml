@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skillopt"
+version = "0.1.0"
+description = "SkillOpt: Agentic Skill Optimization via Reflective Training Loops"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "SkillOpt Team"},
+]
+keywords = ["agent", "prompt-optimization", "skill-learning", "LLM", "agentic"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "openai>=1.30.0",
+    "pyyaml>=6.0",
+    "numpy>=1.24.0",
+    "openpyxl>=3.1.0",
+    "azure-identity>=1.15.0",
+    "azure-core>=1.30.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+# Benchmark-specific dependencies
+alfworld = ["alfworld>=0.4.0", "gymnasium>=0.29.0"]
+# Claude model backend
+claude = ["claude-agent-sdk>=0.1.0"]
+# Qwen local model backend (via vLLM)
+qwen = ["vllm>=0.4.0"]
+# Documentation site
+docs = ["mkdocs-material>=9.5.0", "mkdocstrings[python]>=0.24.0"]
+# WebUI dashboard
+webui = ["gradio>=4.0.0"]
+# Development tools
+dev = ["ruff>=0.4.0", "pytest>=8.0.0"]
+# All optional dependencies (except docs/dev/webui)
+all = [
+    "alfworld>=0.4.0",
+    "gymnasium>=0.29.0",
+    "claude-agent-sdk>=0.1.0",
+]
+
+[project.scripts]
+skillopt-train = "scripts.train:main"
+skillopt-eval = "scripts.eval_only:main"
+
+[project.urls]
+Homepage = "https://github.com/microsoft/SkillOpt"
+Documentation = "https://microsoft.github.io/SkillOpt"
+Repository = "https://github.com/microsoft/SkillOpt"
+Issues = "https://github.com/microsoft/SkillOpt/issues"
+
+[tool.setuptools.packages.find]
+include = ["skillopt*", "scripts*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]

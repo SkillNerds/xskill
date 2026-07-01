@@ -1,0 +1,78 @@
+site_name: SkillOpt Documentation
+site_url: https://microsoft.github.io/SkillOpt
+site_description: "SkillOpt: Agentic Skill Optimization via Reflective Training Loops"
+repo_url: https://github.com/microsoft/SkillOpt
+repo_name: microsoft/SkillOpt
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.code.copy
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Inter
+    code: JetBrains Mono
+
+
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: guide/installation.md
+    - First Experiment: guide/first-experiment.md
+    - Configuration: guide/configuration.md
+  - Core Concepts:
+    - Training Loop: guide/training-loop.md
+    - Skill Document: guide/skill-document.md
+    - Deep Learning Analogy: guide/dl-analogy.md
+  - Extension Guides:
+    - Add a New Benchmark: guide/new-benchmark.md
+    - Local Environment Smoke Tests: guide/local-env-smoke.md
+    - Add a New Model Backend: guide/new-backend.md
+  - Reference:
+    - Configuration Reference: reference/config.md
+    - CLI Reference: reference/cli.md
+    - API Reference: reference/api.md
+  - Contributing: contributing.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+plugins:
+  - search

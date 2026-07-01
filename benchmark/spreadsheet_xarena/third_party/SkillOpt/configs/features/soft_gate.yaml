@@ -1,0 +1,47 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature: soft / mixed validation-gate metric (community-contributed, PR #25)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# This is NOT a default SkillOpt setting and was NOT used to produce the
+# numbers reported in the paper. It is provided as a reference for users
+# who encounter a specific scenario where the default `hard` gate is too
+# coarse to drive training.
+#
+# When to consider this:
+#   - You are running on a custom environment.
+#   - Your held-out *selection* split has very few items (e.g. ≤ ~10).
+#   - Your reward function is continuous / partial-credit (e.g. F1, BLEU,
+#     soft match) rather than purely binary 0/1.
+#
+# Symptom this addresses:
+#   With a small selection split + continuous rewards, candidate skills
+#   often improve per-item soft scores (e.g. 0.06 → 0.26 on one item) but
+#   never flip the discrete hard outcome. The default `hard` gate then
+#   rejects every candidate and training stalls. Switching the gate to
+#   `soft` or `mixed` lets these partial improvements be accepted.
+#
+# When NOT to use this:
+#   - When reproducing the paper. The paper-reported numbers were obtained
+#     under the default `hard` gate.
+#   - When your selection split is large (dozens+ items) and / or your
+#     reward is already binary — `hard` is the more conservative choice
+#     and matches the design described in the paper.
+#
+# To use: inherit your env config from this file, e.g.
+#   _base_: ../features/soft_gate.yaml
+# or copy the `evaluation:` block below into your config.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_base_: ../_base_/default.yaml
+
+evaluation:
+  # Three options:
+  #   'hard'  — default; exact-match accuracy. Use this to reproduce the paper.
+  #   'soft'  — per-item soft / partial-credit score (recommended for the
+  #             small-split + continuous-reward scenario described above).
+  #   'mixed' — weighted average: (1 - w) * hard + w * soft, with `w` set by
+  #             `gate_mixed_weight` below.
+  gate_metric: soft
+
+  # Only used when gate_metric == 'mixed'. Ignored otherwise.
+  gate_mixed_weight: 0.5
