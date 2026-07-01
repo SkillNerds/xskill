@@ -7,10 +7,11 @@ xskill.py — XSkill 顶层门面
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from xskill.config import load_config, get_skill_dir
+from xskill.config import XSkillConfig, load_config
 from xskill.pipeline.registry import Registry
 from xskill.skill.repo import SkillRepo
 from xskill.pipeline.trajectory import Trajectory
@@ -40,27 +41,38 @@ class XSkill:
         xskill.skill_repo["fix-foo"]
     """
 
-    def __init__(self, config_path: Optional[Path] = None):
-        self.config = load_config(config_path)
+    def __init__(
+        self,
+        config_path: Optional[Path] = None,
+        config: XSkillConfig | Mapping[str, Any] | None = None,
+    ):
+        if config_path is not None and config is not None:
+            raise ValueError("config_path and config cannot both be provided")
+        if config is None:
+            self.config = load_config(config_path)
+        elif isinstance(config, XSkillConfig):
+            self.config = config
+        else:
+            self.config = XSkillConfig.from_dict(config)
         self.registry = Registry()
-        self.skill_repo = SkillRepo(get_skill_dir(), registry=self.registry)
-        self._llm = None
-        self._embed = None
+        self.skill_repo = SkillRepo(self.config.skill_dir, registry=self.registry)
+        self._llm_client = None
+        self._embed_client = None
 
     # ─── lazy LLM / embed clients ──────────────────────────────
     @property
     def llm(self):
-        if self._llm is None:
+        if self._llm_client is None:
             from xskill.utils.llm import create_llm_client
-            self._llm = create_llm_client(self.config)
-        return self._llm
+            self._llm_client = create_llm_client(self.config)
+        return self._llm_client
 
     @property
     def embed(self):
-        if self._embed is None:
+        if self._embed_client is None:
             from xskill.utils.llm import create_embed_client
-            self._embed = create_embed_client(self.config)
-        return self._embed
+            self._embed_client = create_embed_client(self.config)
+        return self._embed_client
 
     # ─── 检索（跨所有 registry）─────────────────────────────────
     def search_trajectories(self, query: str, top_k: int = 5,

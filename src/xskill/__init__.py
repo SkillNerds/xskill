@@ -22,6 +22,7 @@ except ImportError:  # 未经 build 的源码树
 
 # 顶级公开面：3 个核心类
 from xskill.core import XSkill
+from xskill.config import XSkillConfig
 from xskill.skill.skill import Skill
 from xskill.pipeline.trajectory import Trajectory
 
@@ -30,6 +31,6 @@ from xskill.pipeline.registry import Registry
 from xskill.skill.repo import SkillRepo
 
 __all__ = [
-    "XSkill", "Skill", "Trajectory",
+    "XSkill", "XSkillConfig", "Skill", "Trajectory",
     "Registry", "SkillRepo",
 ]
