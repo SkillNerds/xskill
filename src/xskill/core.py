@@ -186,7 +186,11 @@ class XSkill:
         """
         import uvicorn
         from xskill.api import create_app
-        app = create_app(home_root=home_root, team_server=server_mode)
+        app = create_app(
+            home_root=home_root,
+            config=self.config,
+            team_server=server_mode,
+        )
         if server_mode:
             from xskill.team.server.state import ensure_join_token
             from xskill.config import get_team_server_state_path

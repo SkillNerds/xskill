@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -67,7 +68,11 @@ def test_xskill_accepts_config_object(tmp_path, monkeypatch):
     config_object = XSkillConfig.from_dict(_sample_config(tmp_path / "skill"))
     registry_path = tmp_path / "registry.db"
 
-    monkeypatch.setattr("xskill.pipeline.registry.REGISTRY_DB", registry_path)
+    monkeypatch.setattr(
+        "xskill.pipeline.registry.REGISTRY_DB",
+        registry_path,
+        raising=False,
+    )
 
     xskill_object = XSkill(config=config_object)
 
@@ -99,3 +104,81 @@ def test_embed_factory_accepts_config_class(tmp_path, monkeypatch):
 
     assert embed_client.model == "embedding-model"
     assert embed_client.dim == 3
+
+
+def test_xskill_serve_passes_same_config_to_create_app(tmp_path, monkeypatch):
+    config_object = XSkillConfig.from_dict(_sample_config(tmp_path / "skill"))
+    captured_kwargs = {}
+
+    def fake_create_app(**kwargs):
+        captured_kwargs.update(kwargs)
+        return MagicMock(name="fastapi-app")
+
+    def fake_uvicorn_run(application, **kwargs):
+        assert application is not None
+        assert kwargs["host"] == "127.0.0.1"
+        assert kwargs["port"] == 8765
+
+    monkeypatch.setattr("xskill.api.create_app", fake_create_app)
+    monkeypatch.setattr("uvicorn.run", fake_uvicorn_run)
+
+    XSkill(config=config_object).serve(host="127.0.0.1", port=8765)
+
+    assert captured_kwargs["config"] is config_object
+
+
+def test_agent_tools_description_opt_uses_injected_config(tmp_path, monkeypatch):
+    from xskill.agents import agent_tools
+
+    config_values = _sample_config(tmp_path / "skill")
+    config_values["skill_opt"] = {"enabled": True}
+    config_object = XSkillConfig.from_dict(config_values)
+    skill_dir = tmp_path / "skill"
+    target_dir = skill_dir / "demo"
+    target_dir.mkdir(parents=True)
+    captured_configs = []
+    saved_context = agent_tools.agent_tool_config.snapshot()
+
+    def fake_get_config():
+        raise AssertionError("agent_tools should not read global config")
+
+    def fake_create_llm_client(runtime_config):
+        captured_configs.append(runtime_config)
+        return object()
+
+    def fake_create_embed_client(runtime_config):
+        captured_configs.append(runtime_config)
+        return object()
+
+    def fake_make_default_factory(runtime_config):
+        captured_configs.append(runtime_config)
+        return object()
+
+    def fake_optimize_description(target, **kwargs):
+        assert target == target_dir
+        captured_configs.append(kwargs["config"])
+
+    try:
+        agent_tools.init_skill_authoring_tool_context(
+            skill_dir=skill_dir,
+            data_dir=skill_dir,
+            config=config_object,
+        )
+        monkeypatch.setattr("xskill.config.get_config", fake_get_config)
+        monkeypatch.setattr("xskill.utils.llm.create_llm_client", fake_create_llm_client)
+        monkeypatch.setattr("xskill.utils.llm.create_embed_client", fake_create_embed_client)
+        monkeypatch.setattr(
+            "xskill.agents.agno_factory.make_default_factory",
+            fake_make_default_factory,
+        )
+        monkeypatch.setattr(
+            "xskill.skill.description_opt.optimize_description",
+            fake_optimize_description,
+        )
+
+        agent_tools._run_description_optimization(target_dir, "demo")
+
+        assert captured_configs
+        assert all(runtime_config is config_object for runtime_config in captured_configs)
+    finally:
+        agent_tools.agent_tool_config.restore(saved_context)

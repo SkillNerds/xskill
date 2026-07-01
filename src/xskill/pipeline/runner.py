@@ -23,13 +23,18 @@ v2 (AtomTask) 流水线下，对一个 atom 的"cluster → 触发 SkillEdit"是
 
 from __future__ import annotations
 
+# ruff: noqa: BLE001
+
 import asyncio
 import logging
 import threading
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, Future, as_completed
 from pathlib import Path
+from typing import Any
 
+from xskill.config import XSkillConfig
 from xskill.pipeline.registry import (
     list_watch_dirs,
     discover_trajectories,
@@ -80,7 +85,8 @@ class DirectoryWatcher:
       skill 的 ``.candidates.yml`` 时才 done（文件系统即队列，天然去重+断点续传）。
     """
 
-    def __init__(self, *, llm=None, embed_client=None, config=None,
+    def __init__(self, *, llm=None, embed_client=None,
+                 config: XSkillConfig | Mapping[str, Any] | None = None,
                  skill_dir=None, poll_interval=30.0, max_concurrent=30,
                  max_retries=3, db_path=None,
                  store=None, agno_agent_factory=None, home_root=None,
@@ -88,8 +94,17 @@ class DirectoryWatcher:
                  on_poll_hook=None, cluster_batch_size=8):
         self.llm = llm
         self.embed_client = embed_client
-        self.config = config or {}
-        self.skill_dir = Path(skill_dir) if skill_dir else None
+        self.config: XSkillConfig | Mapping[str, Any] = (
+            config if config is not None else {}
+        )
+        if skill_dir is not None:
+            self.skill_dir = Path(skill_dir)
+        elif isinstance(self.config, XSkillConfig):
+            self.skill_dir = self.config.skill_dir
+        elif self.config.get("skill_dir"):
+            self.skill_dir = Path(str(self.config["skill_dir"])).expanduser()
+        else:
+            self.skill_dir = None
         # home_root：install_to_claude_code 的 target root。生产 daemon 不
         # 传（None）→ 落到 server._home_root() (默认 Path.home())。测试
         # 必须显式传 tmp_path 防止污染真实 ~/.claude/skills/。

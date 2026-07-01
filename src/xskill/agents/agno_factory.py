@@ -14,11 +14,15 @@ agent 跑起来；测试代码注入 stub callable。
 """
 from __future__ import annotations
 
+# ruff: noqa: BLE001,S110
+
 import inspect
 import logging
 import os
+from collections.abc import Mapping
 from typing import Any, Callable
 
+from xskill.config import XSkillConfig
 from xskill.utils.logging import StreamLog
 from xskill.utils.llm import _ssl_verify
 
@@ -52,12 +56,13 @@ def _inject_verify_off_if_requested(model_cls, model_kwargs: dict,
             model_kwargs[name] = async_client
             injected.append(name)
             break
-    msg_log = log or (lambda *a, **kw: None)
     if injected:
-        msg_log(f"T2S_SSL_VERIFY=false → {model_cls.__name__} 注入 "
+        if log:
+            log(f"T2S_SSL_VERIFY=false → {model_cls.__name__} 注入 "
                 f"{'+'.join(injected)} (verify=False)", "step")
     else:
-        msg_log(f"T2S_SSL_VERIFY=false 但 {model_cls.__name__} 不接受 http_client "
+        if log:
+            log(f"T2S_SSL_VERIFY=false 但 {model_cls.__name__} 不接受 http_client "
                 f"kwarg，改用 SSL_CERT_FILE=/path/to/ca.pem", "error")
 
 
@@ -135,7 +140,7 @@ def _wrap_with_rate_limit(model, llm_cfg: dict):
     return model
 
 
-def build_chat_model(llm_cfg: dict, log: StreamLog | None = None):
+def build_chat_model(llm_cfg: Mapping[str, Any], log: StreamLog | None = None):
     """根据 ``llm_cfg.base_url`` 路由到合适的 agno model 类。
 
     为什么不一律用 ``OpenAIChat``：DeepSeek 直连（``api.deepseek.com``）的
@@ -280,7 +285,9 @@ def _wrap_with_trace(model):
     return model
 
 
-def make_default_factory(config: dict) -> Callable[..., Any]:
+def make_default_factory(
+    config: XSkillConfig | Mapping[str, Any],
+) -> Callable[..., Any]:
     """生产环境的 agno Agent 工厂。
 
     返回的 callable 签名 ``(*, instructions, tools) -> agno.agent.Agent``，
@@ -292,9 +299,16 @@ def make_default_factory(config: dict) -> Callable[..., Any]:
     """
     from agno.agent import Agent
 
-    base_cfg = config.get("llm", {}) or {}
-    override_cfg = config.get("llm_skill", {}) or {}
-    llm_cfg = {**base_cfg, **{k: v for k, v in override_cfg.items() if v}}
+    if isinstance(config, XSkillConfig):
+        base_cfg = config.llm_config
+        override_cfg = config.llm_skill_config
+    else:
+        base_cfg = config.get("llm", {}) or {}
+        override_cfg = config.get("llm_skill", {}) or {}
+    llm_cfg = {
+        **base_cfg,
+        **{config_key: value for config_key, value in override_cfg.items() if value},
+    }
 
     def factory(*, instructions, tools, **kwargs):
         model = build_chat_model(llm_cfg)

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from xskill import XSkillConfig
+
 
 def test_watcher_starts_even_with_empty_registry(tmp_path):
     from xskill.api import app as srv
@@ -42,6 +44,73 @@ def test_watcher_starts_even_with_empty_registry(tmp_path):
         w = srv._watcher_ref.get("instance")
         if w is not None:
             w.stop()
+        srv._watcher_ref.clear()
+        srv._config = None
+        srv._skill_dir = None
+
+
+def test_create_app_startup_passes_same_config_to_watcher(tmp_path, monkeypatch):
+    from starlette.testclient import TestClient
+    from xskill.api import app as srv
+
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    config_object = XSkillConfig.from_dict({
+        "skill_dir": str(skill_dir),
+        "llm": {"base_url": "x", "model": "y", "api_key": "z"},
+        "embedding": {
+            "base_url": "embed",
+            "model": "vector",
+            "api_key": "key",
+        },
+        "watcher": {"poll_interval": 30},
+    })
+    captured_kwargs = {}
+
+    class FakeDirectoryWatcher:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            self.stopped = False
+
+        @property
+        def stats(self):
+            return {"running": True}
+
+        def start(self):
+            captured_kwargs["started"] = True
+
+        def stop(self):
+            self.stopped = True
+
+    srv._watcher_ref.clear()
+    try:
+        def fake_create_llm_client(runtime_config):
+            assert runtime_config is config_object
+            return object()
+
+        def fake_create_embed_client(runtime_config):
+            assert runtime_config is config_object
+            return object()
+
+        def fake_init_skill_authoring_tool_context(**kwargs):
+            assert kwargs["config"] is config_object
+
+        def fake_detect_known_ecosystems(home_root):
+            assert home_root == tmp_path.resolve()
+            return []
+
+        monkeypatch.setattr(srv, "create_llm_client", fake_create_llm_client)
+        monkeypatch.setattr(srv, "create_embed_client", fake_create_embed_client)
+        monkeypatch.setattr(srv, "init_skill_authoring_tool_context", fake_init_skill_authoring_tool_context)
+        monkeypatch.setattr("xskill.ecosystems.detect_known_ecosystems", fake_detect_known_ecosystems)
+        monkeypatch.setattr("xskill.pipeline.runner.DirectoryWatcher", FakeDirectoryWatcher)
+
+        app = srv.create_app(home_root=tmp_path, config=config_object)
+        with TestClient(app):
+            assert captured_kwargs["config"] is config_object
+            assert captured_kwargs["skill_dir"] == skill_dir
+            assert captured_kwargs["started"] is True
+    finally:
         srv._watcher_ref.clear()
         srv._config = None
         srv._skill_dir = None
