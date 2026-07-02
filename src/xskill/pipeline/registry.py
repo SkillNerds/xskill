@@ -19,6 +19,7 @@ import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +27,29 @@ from xskill.config import get_registry_db_path
 from xskill.types import WatchDir
 
 logger = logging.getLogger("xskill.registry")
+
+
+class TrajectoryStatus(str, Enum):
+    """Trajectory lifecycle values stored in ``trajectories.status``."""
+
+    DISCOVERED = "discovered"
+    UPDATED = "updated"
+    SPLITTING = "splitting"
+    SPLIT_DONE = "split_done"
+    INDEXED = "indexed"
+    DONE = "done"
+    FILTERED = "filtered"
+    ERROR = "error"
+    CLUSTERING = "clustering"
+    META_DONE = "meta_done"
+
+
+class ProcessAction(str, Enum):
+    """Process action values stored in ``trajectories.process_action``."""
+
+    CLUSTERED = "clustered"
+    NOT_FIT = "not_fit"
+
 
 # ---------------------------------------------------------------------------
 # Connection
@@ -49,6 +73,7 @@ CREATE TABLE IF NOT EXISTS trajectories (
     has_embedding INTEGER DEFAULT 0,
     status        TEXT DEFAULT 'discovered',
     process_action TEXT,
+    interest_fingerprint TEXT,
     skill_generated TEXT,
     skill_used    TEXT,
     canary_side   TEXT,
@@ -150,6 +175,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     migrations = [
         ("status", "TEXT DEFAULT 'discovered'"),
         ("process_action", "TEXT"),
+        ("interest_fingerprint", "TEXT"),
         ("skill_generated", "TEXT"),
         ("ux_score", "REAL"),
         ("error_msg", "TEXT"),
@@ -518,7 +544,7 @@ def discover_trajectories(
         existing = {
             row["filename"]: row
             for row in conn.execute(
-                "SELECT filename, status, file_mtime FROM trajectories"
+                "SELECT filename, status, process_action, file_mtime FROM trajectories"
                 " WHERE watch_dir_id=?",
                 (watch_dir_id,),
             ).fetchall()
@@ -551,6 +577,18 @@ def discover_trajectories(
             if status == "discovered":
                 # 还没开拆,后续 split 会读到最新内容（last_offset=0 全量拆）。
                 # 只更 mtime,不必翻 updated。
+                conn.execute(
+                    "UPDATE trajectories SET file_mtime=?"
+                    " WHERE watch_dir_id=? AND filename=?",
+                    (mtime, watch_dir_id, md.name),
+                )
+                continue
+            if (
+                status == TrajectoryStatus.FILTERED.value
+                and row["process_action"] == ProcessAction.NOT_FIT.value
+            ):
+                # 兴趣过滤是配置驱动终态；内容 mtime 变化不自动重拆。
+                # 只有 interests 指纹变化或显式 rebuild 会重新评估。
                 conn.execute(
                     "UPDATE trajectories SET file_mtime=?"
                     " WHERE watch_dir_id=? AND filename=?",
@@ -799,6 +837,87 @@ def update_traj_status(
         conn.close()
 
 
+def mark_not_fit(
+    watch_dir_id: int,
+    filename: str,
+    reason: str,
+    interest_fingerprint: str,
+    *,
+    db_path: Optional[Path] = None,
+) -> None:
+    """Mark a trajectory as terminally filtered by configured interests."""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "UPDATE trajectories SET status=?, process_action=?, error_msg=?,"
+            " interest_fingerprint=?, updated_at=datetime('now')"
+            " WHERE watch_dir_id=? AND filename=?",
+            (
+                TrajectoryStatus.FILTERED.value,
+                ProcessAction.NOT_FIT.value,
+                reason,
+                interest_fingerprint,
+                watch_dir_id,
+                filename,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reset_not_fit_for_interest_change(
+    *,
+    old_interest_fingerprint: str,
+    new_interest_fingerprint: str,
+    db_path: Optional[Path] = None,
+) -> int:
+    """Requeue only stale ``filtered + not_fit`` trajectories for re-evaluation."""
+    if old_interest_fingerprint == new_interest_fingerprint:
+        return 0
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT t.id, t.filename, w.path FROM trajectories t "
+            "JOIN watch_dirs w ON t.watch_dir_id = w.id "
+            "WHERE t.status=? AND t.process_action=? "
+            "AND (t.interest_fingerprint IS NULL OR t.interest_fingerprint != ?)",
+            (
+                TrajectoryStatus.FILTERED.value,
+                ProcessAction.NOT_FIT.value,
+                new_interest_fingerprint,
+            ),
+        ).fetchall()
+        directories_seen: set[str] = set()
+        for row in rows:
+            conn.execute(
+                "UPDATE trajectories SET status=?, process_action=NULL, "
+                "error_msg=NULL, interest_fingerprint=NULL, last_offset=0, "
+                "last_atom_id=NULL, tasks_extracted=0, has_meta=0, "
+                "has_embedding=0, indexed_at=NULL, updated_at=datetime('now') "
+                "WHERE id=?",
+                (TrajectoryStatus.DISCOVERED.value, row["id"]),
+            )
+            trajectory_stem = (
+                row["filename"][:-3]
+                if row["filename"].endswith(".md")
+                else row["filename"]
+            )
+            tasks_directory = Path(row["path"]) / trajectory_stem / "tasks"
+            if tasks_directory.is_dir():
+                for atom_file in tasks_directory.glob("atom_*.json"):
+                    atom_file.unlink()
+            directories_seen.add(row["path"])
+        conn.commit()
+        for directory_path in directories_seen:
+            index_path = Path(directory_path) / "index.pkl"
+            if index_path.is_file():
+                index_path.unlink()
+        return len(rows)
+    finally:
+        conn.close()
+
+
 def get_traj_retry_count(
     watch_dir_id: int, filename: str, *, db_path: Optional[Path] = None,
 ) -> int:
@@ -936,6 +1055,7 @@ def reset_trajectories(
                 "UPDATE trajectories SET status='discovered', last_offset=0, "
                 "last_atom_id=NULL, tasks_extracted=0, "
                 "has_meta=0, has_embedding=0, indexed_at=NULL, "
+                "process_action=NULL, error_msg=NULL, interest_fingerprint=NULL, "
                 "updated_at=datetime('now') WHERE id=?",
                 (r["id"],),
             )

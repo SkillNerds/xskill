@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from xskill.pipeline.atom import AtomTask, AtomTaskStore
+from xskill.pipeline.atom import AtomTaskStore
 from xskill.agents.task_agent import (
-    TaskAgent, _extract_user_queries, _is_machine_noise_block,
+    TaskAgent, TrajectoryNotFit, _extract_user_queries, _is_machine_noise_block,
 )
 
 
@@ -58,7 +58,7 @@ class _AutoSplitAgno:
         self.instructions = instructions
         self.tools = {getattr(t, "__name__", ""): t for t in tools}
 
-    def run(self, user_msg, **kw):
+    def run(self, user_msg, **_kwargs):
         autosplit_submit(user_msg, self.tools)
         return _RunResult()
 
@@ -77,7 +77,7 @@ def _scripted_factory(submit_calls, *, status=None):
         captured["tool_names"] = sorted(toolmap)
 
         class _A:
-            def run(self, user_msg, **kw):
+            def run(self, user_msg, **_kwargs):
                 captured["user_msg"] = user_msg
                 for c in submit_calls:
                     captured["results"].append(toolmap["submit_atom"](**c))
@@ -290,6 +290,133 @@ class TestFirstRunSinglePass:
             traj_id="traj_t", traj_path=traj_path)
         assert factory.captured["tool_names"] == [
             "context_budget", "look", "my_atoms", "submit_atom"]
+
+    def test_interests_add_mark_not_fit_tool_and_prompt(self, tmp_path):
+        traj_dir = tmp_path / "cc-sessions"
+        traj_dir.mkdir()
+        traj_path = traj_dir / "traj_interest.md"
+        traj_path.write_text(_TRAJ_MD, encoding="utf-8")
+        store = AtomTaskStore(root=traj_dir)
+        factory = _scripted_factory([
+            dict(start_line=5, intent="部署", summary="部署基础设施"),
+        ])
+
+        TaskAgent(
+            agno_agent_factory=factory,
+            store=store,
+            interests=[" 基础设施 ", "docker"],
+        ).run(traj_id="traj_interest", traj_path=traj_path)
+
+        assert factory.captured["tool_names"] == [
+            "context_budget", "look", "mark_not_fit", "my_atoms", "submit_atom"]
+        system_prompt = factory.captured["instructions"][0]
+        assert "兴趣过滤" in system_prompt
+        assert "- 基础设施" in system_prompt
+        assert "- docker" in system_prompt
+
+
+class TestInterestFilter:
+    def test_mark_not_fit_raises_and_writes_no_atoms(self, tmp_path):
+        traj_dir = tmp_path / "cc-sessions"
+        traj_dir.mkdir()
+        traj_path = traj_dir / "traj_not_fit.md"
+        traj_path.write_text(_TRAJ_MD, encoding="utf-8")
+        store = AtomTaskStore(root=traj_dir)
+        captured: dict = {}
+
+        def factory(*, instructions, tools):
+            captured["instructions_seen"] = bool(instructions)
+            toolmap = {getattr(tool, "__name__", ""): tool for tool in tools}
+
+            class _Agent:
+                def run(self, _user_msg, **_kwargs):
+                    captured["mark_result"] = toolmap["mark_not_fit"]("not infra")
+                    return _RunResult()
+
+            return _Agent()
+
+        with pytest.raises(TrajectoryNotFit, match="not infra") as raised_error:
+            TaskAgent(
+                agno_agent_factory=factory,
+                store=store,
+                interests=["infra"],
+            ).run(traj_id="traj_not_fit", traj_path=traj_path)
+
+        assert raised_error.value.reason == "not infra"
+        assert captured["mark_result"].startswith("ok:")
+        assert store.list_by_traj("traj_not_fit") == []
+        assert not (traj_dir / "traj_not_fit" / "tasks").exists()
+
+    def test_submit_atom_after_mark_not_fit_returns_error(self, tmp_path):
+        traj_dir = tmp_path / "cc-sessions"
+        traj_dir.mkdir()
+        traj_path = traj_dir / "traj_order.md"
+        traj_path.write_text(_TRAJ_MD, encoding="utf-8")
+        store = AtomTaskStore(root=traj_dir)
+        captured: dict = {}
+
+        def factory(*, instructions, tools):
+            captured["instructions_seen"] = bool(instructions)
+            toolmap = {getattr(tool, "__name__", ""): tool for tool in tools}
+
+            class _Agent:
+                def run(self, _user_msg, **_kwargs):
+                    captured["mark_result"] = toolmap["mark_not_fit"]("not infra")
+                    captured["submit_result"] = toolmap["submit_atom"](
+                        start_line=5,
+                        intent="部署",
+                        summary="部署服务",
+                    )
+                    return _RunResult()
+
+            return _Agent()
+
+        with pytest.raises(TrajectoryNotFit, match="not infra"):
+            TaskAgent(
+                agno_agent_factory=factory,
+                store=store,
+                interests=["infra"],
+            ).run(traj_id="traj_order", traj_path=traj_path)
+
+        assert captured["mark_result"].startswith("ok:")
+        assert captured["submit_result"].startswith("error:")
+        assert "mark_not_fit" in captured["submit_result"]
+        assert store.list_by_traj("traj_order") == []
+
+    def test_mark_not_fit_after_submit_atom_returns_error_and_keeps_atom(self, tmp_path):
+        traj_dir = tmp_path / "cc-sessions"
+        traj_dir.mkdir()
+        traj_path = traj_dir / "traj_partial.md"
+        traj_path.write_text(_TRAJ_MD, encoding="utf-8")
+        store = AtomTaskStore(root=traj_dir)
+        captured: dict = {}
+
+        def factory(*, instructions, tools):
+            captured["instructions_seen"] = bool(instructions)
+            toolmap = {getattr(tool, "__name__", ""): tool for tool in tools}
+
+            class _Agent:
+                def run(self, _user_msg, **_kwargs):
+                    captured["submit_result"] = toolmap["submit_atom"](
+                        start_line=5,
+                        intent="部署",
+                        summary="部署服务",
+                    )
+                    captured["mark_result"] = toolmap["mark_not_fit"]("not infra")
+                    return _RunResult()
+
+            return _Agent()
+
+        atoms = TaskAgent(
+            agno_agent_factory=factory,
+            store=store,
+            interests=["infra"],
+        ).run(traj_id="traj_partial", traj_path=traj_path)
+
+        assert captured["submit_result"].startswith("ok:")
+        assert captured["mark_result"].startswith("error:")
+        assert len(atoms) == 1
+        assert len(store.list_by_traj("traj_partial")) == 1
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -519,10 +646,11 @@ class TestLookTool:
         captured_look: dict = {}
 
         def factory(*, instructions, tools):
+            captured_look["instructions_seen"] = bool(instructions)
             toolmap = {getattr(t, "__name__", ""): t for t in tools}
 
             class _A:
-                def run(self, user_msg, **kw):
+                def run(self, _user_msg, **_kwargs):
                     # 用 look 读第 5 行（## User）附近,验证向前看包含 assistant
                     captured_look["out"] = toolmap["look"](
                         line=11, before=3, after=2)
@@ -548,10 +676,11 @@ class TestLookTool:
         captured_my: dict = {}
 
         def factory(*, instructions, tools):
+            captured_my["instructions_seen"] = bool(instructions)
             toolmap = {getattr(t, "__name__", ""): t for t in tools}
 
             class _A:
-                def run(self, user_msg, **kw):
+                def run(self, _user_msg, **_kwargs):
                     toolmap["submit_atom"](start_line=5, intent="i", summary="s")
                     toolmap["submit_atom"](
                         start_line=17, intent="i2", summary="s2")
@@ -658,7 +787,7 @@ class TestContextManager:
         ]
         sent = {}
 
-        def fake_invoke(msgs, **kw):
+        def fake_invoke(msgs, **_kwargs):
             sent["look_content"] = msgs[1].content
             return {"usage": {"prompt_tokens": 123}}
 
@@ -683,7 +812,7 @@ class TestContextManager:
         ]
         calls = {"n": 0}
 
-        def flaky_invoke(msgs, **kw):
+        def flaky_invoke(_messages, **_kwargs):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("maximum context length exceeded")
@@ -699,7 +828,7 @@ class TestContextManager:
         from xskill.agents.context_budget import ContextManager
         cm = ContextManager(max_context=100000)
 
-        def boom(msgs, **kw):
+        def boom(_messages, **_kwargs):
             raise ValueError("totally unrelated failure")
 
         with pytest.raises(ValueError, match="unrelated"):
@@ -710,7 +839,7 @@ class TestContextManager:
             ContextManager, get_used_tokens)
         cm = ContextManager(max_context=100000)
 
-        def ok_invoke(msgs, **kw):
+        def ok_invoke(_messages, **_kwargs):
             return {"usage": {"prompt_tokens": 777}}
 
         cm.wrap(ok_invoke)([])

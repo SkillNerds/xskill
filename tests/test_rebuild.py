@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
 import pytest
 
@@ -17,6 +16,8 @@ from xskill.pipeline.registry import (
     update_traj_status,
     update_traj_offset,
     get_trajs_by_status,
+    get_connection,
+    mark_not_fit,
     reset_trajectories,
 )
 from xskill.skill.repo import SkillRepo
@@ -102,6 +103,46 @@ def test_reset_deletes_stale_index_pkl(tmp_path, db_path):
     assert not idx.exists(), "reset 应删陈旧 index.pkl"
 
 
+def test_reset_requeues_not_fit_and_clears_interest_fields(tmp_path, db_path):
+    trajectory_directory = tmp_path / "ngagent_sessions"
+    trajectory_directory.mkdir()
+    (trajectory_directory / "traj_ng_x.md").write_text(
+        "# traj\n## User\nhi\n", encoding="utf-8",
+    )
+    watch_dir_id = register_dir(
+        trajectory_directory,
+        label="ngagent",
+        ecosystem="ngagent",
+        db_path=db_path,
+    )
+    discover_trajectories(watch_dir_id, trajectory_directory, db_path=db_path)
+    mark_not_fit(
+        watch_dir_id,
+        "traj_ng_x.md",
+        "not infra",
+        "old-interest",
+        db_path=db_path,
+    )
+
+    reset_count = reset_trajectories(eco="ngagent", db_path=db_path)
+
+    assert reset_count == 1
+    assert "traj_ng_x.md" in get_trajs_by_status(
+        watch_dir_id, "discovered", db_path=db_path,
+    )
+    connection = get_connection(db_path)
+    try:
+        row = connection.execute(
+            "SELECT process_action, interest_fingerprint, error_msg "
+            "FROM trajectories WHERE filename='traj_ng_x.md'"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row["process_action"] is None
+    assert row["interest_fingerprint"] is None
+    assert row["error_msg"] is None
+
+
 def test_wipe_all_skills_removes_skill_dirs_keeps_references(tmp_path):
     root = tmp_path / "skill"
     root.mkdir()
@@ -131,7 +172,7 @@ def test_rebuild_refuses_on_model_mismatch(monkeypatch, capsys):
                         lambda: {"llm_model": "new-model"})
     called = {"reset": False}
     monkeypatch.setattr("xskill.pipeline.registry.reset_trajectories",
-                        lambda **kw: called.__setitem__("reset", True))
+                        lambda **_kwargs: called.__setitem__("reset", True))
 
     rc = cmd_rebuild(_rebuild_args(), None)
 
@@ -147,7 +188,7 @@ def test_rebuild_proceeds_when_models_match(monkeypatch):
     monkeypatch.setattr("xskill.runtime.config_models",
                         lambda: {"llm_model": "m"})
     monkeypatch.setattr("xskill.pipeline.registry.reset_trajectories",
-                        lambda **kw: 0)
+                        lambda **_kwargs: 0)
 
     assert cmd_rebuild(_rebuild_args(), None) == 0
 
@@ -158,7 +199,7 @@ def test_rebuild_ignore_flag_bypasses_mismatch(monkeypatch):
     monkeypatch.setattr("xskill.runtime.config_models",
                         lambda: {"llm_model": "new"})
     monkeypatch.setattr("xskill.pipeline.registry.reset_trajectories",
-                        lambda **kw: 0)
+                        lambda **_kwargs: 0)
 
     assert cmd_rebuild(_rebuild_args(ignore_model_mismatch=True), None) == 0
 
@@ -170,6 +211,6 @@ def test_rebuild_no_guard_when_daemon_not_running(monkeypatch):
     monkeypatch.setattr("xskill.runtime.config_models",
                         lambda: {"llm_model": "new"})
     monkeypatch.setattr("xskill.pipeline.registry.reset_trajectories",
-                        lambda **kw: 0)
+                        lambda **_kwargs: 0)
 
     assert cmd_rebuild(_rebuild_args(), None) == 0

@@ -7,6 +7,8 @@ config.py — 全局路径与配置加载
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import Optional
@@ -43,6 +45,11 @@ CONFIG_TEMPLATE = """\
 
 # ===== Skill repository =====
 skill_dir: ~/.xskill/skill            # the single global skill repo
+
+# ===== Interest filter (optional) =====
+# Empty or missing = disabled. When non-empty, TaskAgent first judges whether
+# the whole trajectory is relevant to these interests before splitting.
+interests: []
 
 # ===== LLM (generation / scoring / chat) =====
 # Any OpenAI-compatible chat-completions endpoint works (DeepSeek, OpenAI,
@@ -326,6 +333,57 @@ def dashboard_attribution_defaults(path: Optional[Path] = None) -> dict:
         with open(cfg_path, encoding="utf-8") as f:
             section = (yaml.safe_load(f) or {}).get("dashboard") or {}
     return _resolve_attribution(section)
+
+
+def interests_config(config_data: Optional[dict] = None) -> list[str]:
+    """Return normalized top-level ``interests`` from config.
+
+    Missing / empty disables the filter. Items are stripped and blank strings
+    are removed. Non-list values and non-string list items fail loudly because
+    the prompt receives these values verbatim.
+    """
+    source_config = config_data if config_data is not None else get_config()
+    raw_interests = source_config.get("interests", [])
+    if raw_interests is None:
+        return []
+    if not isinstance(raw_interests, list):
+        raise ValueError(
+            f"interests 必须是字符串列表，got {type(raw_interests).__name__}"
+        )
+    normalized_interests: list[str] = []
+    for item_index, raw_interest in enumerate(raw_interests):
+        if not isinstance(raw_interest, str):
+            raise ValueError(
+                f"interests[{item_index}] 必须是字符串，"
+                f"got {type(raw_interest).__name__}"
+            )
+        normalized_interest = raw_interest.strip()
+        if normalized_interest:
+            normalized_interests.append(normalized_interest)
+    return normalized_interests
+
+
+def interests_fingerprint(interests: list[str]) -> str:
+    """Stable fingerprint for the normalized interest list."""
+    normalized_interests = interests_config({"interests": interests})
+    fingerprint_payload = json.dumps(
+        normalized_interests, ensure_ascii=False, separators=(",", ":")
+    )
+    return hashlib.sha256(fingerprint_payload.encode("utf-8")).hexdigest()
+
+
+def read_interests_config(path: Optional[Path] = None) -> list[str]:
+    """Read only config.yaml interests without validating LLM/embedding keys."""
+    config_path = Path(path) if path else CONFIG_PATH
+    if not config_path.exists():
+        return []
+    with open(config_path, encoding="utf-8") as config_file:
+        config_data = yaml.safe_load(config_file) or {}
+    if not isinstance(config_data, dict):
+        raise ValueError(
+            f"xskill config root must be a mapping, got {type(config_data).__name__}"
+        )
+    return interests_config(config_data)
 
 
 # ingest.settle_seconds 缺省值。区间权衡：真实用户 session 动辄几十分钟，

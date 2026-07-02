@@ -2,15 +2,13 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
-
-import pytest
 
 from xskill.pipeline.atom import AtomTaskStore
 from xskill.pipeline.registry import (
     register_dir, discover_trajectories, update_traj_status,
-    get_trajs_by_status, get_status_counts,
+    get_trajs_by_status, get_status_counts, get_connection, mark_not_fit,
 )
+from xskill.config import interests_fingerprint
 from xskill.pipeline.runner import DirectoryWatcher
 from tests.test_atom_task_store import _FakeEmbed
 from tests.test_task_agent import _TRAJ_MD, _AutoSplitLLM, autosplit_submit
@@ -28,7 +26,7 @@ class _StubAgno:
         self.instructions = instructions
         self.tools = {getattr(t, "__name__", ""): t for t in tools}
 
-    def run(self, user_msg, **kw):
+    def run(self, user_msg, **_kwargs):
         head = (self.instructions[0] if self.instructions else "")[:80]
         if "AtomTask 拆分员" in head:
             autosplit_submit(user_msg, self.tools)
@@ -150,6 +148,122 @@ class TestZombieCleanup:
                or len(watcher._futures) > 0
 
 
+class _NotFitAgno:
+    def __init__(self, *, instructions, tools):
+        self.instructions = instructions
+        self.tools = {getattr(tool, "__name__", ""): tool for tool in tools}
+
+    def run(self, _user_msg, **_kwargs):
+        if "mark_not_fit" in self.tools:
+            self.tools["mark_not_fit"]("not infra")
+        class _RunResult:
+            content = "not fit"
+        return _RunResult()
+
+
+class TestInterestFiltering:
+    def test_split_not_fit_marks_filtered_with_process_action(self, tmp_path):
+        db = tmp_path / "test.db"
+        watch_directory = tmp_path / "wd"
+        watch_directory.mkdir()
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        (watch_directory / "traj_interest.md").write_text(
+            _TRAJ_MD, encoding="utf-8",
+        )
+        watch_dir_id = register_dir(watch_directory, db_path=db)
+        discover_trajectories(watch_dir_id, watch_directory, db_path=db)
+        store = AtomTaskStore(root=watch_directory)
+        watcher = DirectoryWatcher(
+            llm=_AutoSplitLLM(),
+            embed_client=_FakeEmbed(),
+            config={"interests": ["infra"], "llm": {"api_key": "x"}},
+            skill_dir=skill_dir,
+            poll_interval=0.0,
+            max_concurrent=2,
+            db_path=db,
+            store=store,
+            agno_agent_factory=_NotFitAgno,
+            home_root=tmp_path,
+        )
+
+        split_result = watcher._do_split(watch_directory, "traj_interest.md")
+        watcher._on_split_done(
+            watch_dir_id,
+            "traj_interest.md",
+            split_result,
+            db_path=db,
+        )
+
+        connection = get_connection(db)
+        try:
+            row = connection.execute(
+                "SELECT status, process_action, error_msg, interest_fingerprint "
+                "FROM trajectories WHERE filename='traj_interest.md'"
+            ).fetchone()
+        finally:
+            connection.close()
+        assert row["status"] == "filtered"
+        assert row["process_action"] == "not_fit"
+        assert row["error_msg"] == "not infra"
+        assert row["interest_fingerprint"] == interests_fingerprint(["infra"])
+        assert store.list_by_traj("traj_interest") == []
+
+    def test_scan_hot_reload_resets_only_stale_not_fit(self, tmp_path, monkeypatch):
+        db = tmp_path / "test.db"
+        watch_directory = tmp_path / "wd"
+        watch_directory.mkdir()
+        for filename in ("traj_stale.md", "traj_current.md", "traj_done.md"):
+            (watch_directory / filename).write_text(_TRAJ_MD, encoding="utf-8")
+        watch_dir_id = register_dir(watch_directory, db_path=db)
+        discover_trajectories(watch_dir_id, watch_directory, db_path=db)
+        old_interest_fingerprint = interests_fingerprint(["old"])
+        new_interest_fingerprint = interests_fingerprint(["new"])
+        mark_not_fit(
+            watch_dir_id,
+            "traj_stale.md",
+            "old interests",
+            old_interest_fingerprint,
+            db_path=db,
+        )
+        mark_not_fit(
+            watch_dir_id,
+            "traj_current.md",
+            "new interests",
+            new_interest_fingerprint,
+            db_path=db,
+        )
+        update_traj_status(watch_dir_id, "traj_done.md", "done", db_path=db)
+        monkeypatch.setattr(
+            "xskill.pipeline.runner.read_interests_config",
+            lambda: ["new"],
+        )
+        watcher = DirectoryWatcher(
+            llm=None,
+            embed_client=None,
+            config={"interests": ["old"]},
+            skill_dir=None,
+            poll_interval=0.0,
+            max_concurrent=2,
+            db_path=db,
+            home_root=tmp_path,
+        )
+
+        watcher._scan_once()
+
+        assert "traj_stale.md" in get_trajs_by_status(
+            watch_dir_id, "discovered", db_path=db,
+        )
+        assert "traj_current.md" in get_trajs_by_status(
+            watch_dir_id, "filtered", db_path=db,
+        )
+        assert "traj_done.md" in get_trajs_by_status(
+            watch_dir_id, "done", db_path=db,
+        )
+        assert watcher.interests == ["new"]
+        assert watcher.interest_fingerprint == new_interest_fingerprint
+
+
 def _seed_indexed_with_atoms(wd, store, db, n_trajs, atoms_per_traj):
     """造 n_trajs 条 indexed 轨迹，每条若干真 atom（跳过 split/embed）。返回 wd_id。"""
     from xskill.pipeline.atom import AtomTask
@@ -177,7 +291,7 @@ class TestClusterSerial:
             def __init__(self, **kw):
                 pass
 
-            def run(self, msg, **kw):
+            def run(self, _message, **_kwargs):
                 import time
                 time.sleep(5)  # 模拟 cluster 长时间运行，让 future 留在飞
                 class _R: pass
@@ -191,7 +305,7 @@ class TestClusterSerial:
         store = AtomTaskStore(root=wd)
         # 4 条 indexed 轨迹 × 2 atom，batch_size=2 → 即便有 8 个待消费 atom、
         # 4 个批次的量，同 wd 也只起 1 个 batch future（串行）。
-        wd_id = _seed_indexed_with_atoms(wd, store, db, n_trajs=4, atoms_per_traj=2)
+        _seed_indexed_with_atoms(wd, store, db, n_trajs=4, atoms_per_traj=2)
 
         watcher = DirectoryWatcher(
             llm=_AutoSplitLLM(),
@@ -237,7 +351,7 @@ class TestClusterAllFailed:
             def __init__(self, *, instructions, tools):
                 self.instructions = instructions
                 self.tools = {getattr(t, "__name__", ""): t for t in tools}
-            def run(self, msg, **kw):
+            def run(self, msg, **_kwargs):
                 head = (self.instructions[0] or "")[:80]
                 if "AtomTask 拆分员" in head:
                     autosplit_submit(msg, self.tools)
@@ -310,7 +424,7 @@ class TestIndependentSkillEditScan:
             def __init__(self, *, instructions, tools):
                 self.instructions = instructions
                 self.tools = {getattr(t, "__name__", ""): t for t in tools}
-            def run(self, msg, **kw):
+            def run(self, msg, **_kwargs):
                 head = (self.instructions[0] if self.instructions else "")[:80]
                 if "AtomTask 拆分员" in head:
                     autosplit_submit(msg, self.tools)
@@ -479,8 +593,7 @@ class TestContinuationResplit:
     """fix-dicover 验收：同名轨迹追加内容后重传 → 出现新 atom（行号 ≥ 续接点、
     不与旧 atom 重叠、旧 atom 不被重复生成）。"""
 
-    def _drive_to_done(self, watcher, db, fname, rounds=25):
-        from xskill.pipeline.registry import register_dir as _reg
+    def _drive_to_done(self, watcher, db, _filename, rounds=25):
         for _ in range(rounds):
             watcher._scan_once()
             for _ in range(30):

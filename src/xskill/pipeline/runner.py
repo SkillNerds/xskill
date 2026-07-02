@@ -24,7 +24,6 @@ v2 (AtomTask) 流水线下，对一个 atom 的"cluster → 触发 SkillEdit"是
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 import time
@@ -32,13 +31,21 @@ from concurrent.futures import ThreadPoolExecutor, Future, as_completed
 from pathlib import Path
 
 from xskill.canary import CanaryConfig
+from xskill.config import (
+    interests_config,
+    interests_fingerprint,
+    read_interests_config,
+)
 from xskill.pipeline.registry import (
+    ProcessAction,
+    TrajectoryStatus,
     list_watch_dirs,
     discover_trajectories,
     get_trajs_by_status,
-    mark_meta_done,
     mark_indexed,
     mark_skill_used,
+    mark_not_fit,
+    reset_not_fit_for_interest_change,
     update_traj_status,
     increment_retry,
 )
@@ -140,6 +147,8 @@ class DirectoryWatcher:
             raise ValueError(
                 f"split_mode={split_mode!r} 非法，必须是 'agentic' 或 'whole'")
         self.split_mode = split_mode
+        self.interests = interests_config(self.config)
+        self.interest_fingerprint = interests_fingerprint(self.interests)
 
         # v2 注入：AtomTaskStore + agno agent 工厂
         # store None 时本 watcher 不能跑 splitting/clustering（仅 ux_score 还能跑）
@@ -209,6 +218,26 @@ class DirectoryWatcher:
     def _db_kw(self):
         return {"db_path": self.db_path} if self.db_path else {}
 
+    def _refresh_interests(self):
+        """Hot-reload top-level interests without rebuilding LLM/embed clients."""
+        current_interests = read_interests_config()
+        current_interest_fingerprint = interests_fingerprint(current_interests)
+        if current_interest_fingerprint == self.interest_fingerprint:
+            return
+        previous_interest_fingerprint = self.interest_fingerprint
+        self.interests = current_interests
+        self.interest_fingerprint = current_interest_fingerprint
+        reset_count = reset_not_fit_for_interest_change(
+            old_interest_fingerprint=previous_interest_fingerprint,
+            new_interest_fingerprint=current_interest_fingerprint,
+            **self._db_kw(),
+        )
+        logger.info(
+            "interests reloaded: %d active, %d stale not_fit trajectories reset",
+            len(current_interests),
+            reset_count,
+        )
+
     # ───────────────────────────────────────────────────────────
     # Main loop
     # ───────────────────────────────────────────────────────────
@@ -235,6 +264,7 @@ class DirectoryWatcher:
         self._last_poll = time.time()
         self._stats["polls"] += 1
         kw = self._db_kw()
+        self._refresh_interests()
 
         # ── Step 0: 收割已完成的 futures ──
         self._harvest()
@@ -881,7 +911,7 @@ class DirectoryWatcher:
         新增内容。
         """
         import time
-        from xskill.agents.task_agent import TaskAgent
+        from xskill.agents.task_agent import TaskAgent, TrajectoryNotFit
         md_path = dir_path / fname
         validation = validate_trajectory_source(md_path)
         if not validation.valid:
@@ -901,16 +931,38 @@ class DirectoryWatcher:
         logger.info("⟳ split 开始 %s（%d 行，mode=%s）", fname, n_lines,
                     self.split_mode)
         t0 = time.monotonic()
+        current_interests = list(self.interests)
+        current_interest_fingerprint = self.interest_fingerprint
         # whole 与 agentic 都走 TaskAgent（LLM）——只是把 split_mode 透传进去，
         # 让它选不同 system prompt（whole=整轨 1 atom / agentic=按意图切 0~N）。
         # whole 模式照常由 LLM 产出 used_skills / ux_score，CS 归因与在线进化不空转。
-        atoms = TaskAgent(
-            agno_agent_factory=self._factory(),
-            store=store,
-            traj_root=dir_path,
-            skill_dir=self.skill_dir,
-            split_mode=self.split_mode,
-        ).run(traj_id=traj_id, traj_path=md_path)
+        try:
+            atoms = TaskAgent(
+                agno_agent_factory=self._factory(),
+                store=store,
+                traj_root=dir_path,
+                skill_dir=self.skill_dir,
+                split_mode=self.split_mode,
+                interests=current_interests,
+            ).run(traj_id=traj_id, traj_path=md_path)
+        except TrajectoryNotFit as not_fit_error:
+            logger.info(
+                "⊘ split not_fit %s（interest_fingerprint=%s）: %s",
+                fname,
+                current_interest_fingerprint[:12],
+                not_fit_error.reason,
+            )
+            return (
+                fname,
+                0,
+                store.last_offset(traj_id),
+                store.last_atom_id(traj_id),
+                {
+                    "process_action": ProcessAction.NOT_FIT.value,
+                    "reason": not_fit_error.reason,
+                    "interest_fingerprint": current_interest_fingerprint,
+                },
+            )
         last_off = store.last_offset(traj_id)
         last_id = store.last_atom_id(traj_id)
         # 处理后：打一条"拆完"(带 atom 数 + 耗时),0 个也明确说明是"无可拆 User 回合"。
@@ -992,9 +1044,27 @@ class DirectoryWatcher:
         from xskill.pipeline.registry import update_traj_offset
         _fname, n_atoms, last_off, last_id, err = result
         if err is not None:
-            update_traj_status(wd_id, fname, "filtered", error_msg=err, **kw)
+            if (
+                isinstance(err, dict)
+                and err.get("process_action") == ProcessAction.NOT_FIT.value
+            ):
+                mark_not_fit(
+                    wd_id,
+                    fname,
+                    str(err.get("reason") or "not fit"),
+                    str(err.get("interest_fingerprint") or self.interest_fingerprint),
+                    **kw,
+                )
+                return
+            update_traj_status(
+                wd_id,
+                fname,
+                TrajectoryStatus.FILTERED.value,
+                error_msg=str(err),
+                **kw,
+            )
             return
-        update_traj_status(wd_id, fname, "split_done", **kw)
+        update_traj_status(wd_id, fname, TrajectoryStatus.SPLIT_DONE.value, **kw)
         update_traj_offset(
             wd_id, fname,
             last_offset=last_off, last_atom_id=last_id,
@@ -1002,7 +1072,7 @@ class DirectoryWatcher:
         )
         self._stats["atoms_extracted"] += n_atoms
 
-    def _on_embed_done(self, wd_id, fname, result, **kw):
+    def _on_embed_done(self, wd_id, _fname, result, **kw):
         _wd_id, filenames = result
         for f in filenames:
             update_traj_status(wd_id, f, "indexed", **kw)
@@ -1076,7 +1146,7 @@ class DirectoryWatcher:
     # ux_score
     # ───────────────────────────────────────────────────────────
 
-    def _score_new(self, wd_id, dir_path, filenames, **kw):
+    def _score_new(self, _watch_dir_id, _dir_path, _filenames, **_kwargs):
         """v2: 不在发现新 traj 时打分（那时 atom 还没拆）。
 
         实际打分在 ``_sweep_done_trajs`` → ``_score_atoms_for_traj`` 触发。
@@ -1125,7 +1195,6 @@ class DirectoryWatcher:
         if not atoms:
             return
         ac = AtomCanary(skill_dir=skill_sub)
-        canary_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
         for atom in atoms:
             try:
                 result = score_atom(

@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from xskill.config import interests_config
 from xskill.pipeline.atom import AtomTask, AtomTaskStore
 
 logger = logging.getLogger("xskill.task_agent")
@@ -60,6 +61,14 @@ def _sidecar_model(traj_path: Path) -> str:
         return str(json.loads(jp.read_text(encoding="utf-8")).get("model") or "")
     except (OSError, json.JSONDecodeError):
         return ""
+
+
+class TrajectoryNotFit(RuntimeError):
+    """Raised when TaskAgent marks a trajectory unrelated to configured interests."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
 
 
 SYSTEM_PROMPT = """你是 AtomTask 拆分员。给你一条 agent 与用户的对话轨迹（markdown）的
@@ -150,6 +159,21 @@ ux_score 严格分档表
 2. 拿不准某个回合是"新意图"还是"上一意图的追问/撤销"时,用 ``look`` 读那行附近
    的 assistant 原文再判。
 3. 对每个新 atom 调一次 submit_atom（提交即校验,error 就改了重提）。完成后结束。
+"""
+
+
+INTEREST_FILTER_SECTION_TEMPLATE = """\
+
+兴趣过滤（重要）
+================
+本次运行配置了兴趣列表：
+{interests_block}
+
+在拆分前先判断**整条轨迹**是否与这些兴趣相关。判断标准：
+- 只要轨迹中有一部分能为这些兴趣之一提供可复用经验，就继续正常 submit_atom。
+- 如果整条轨迹都无关，调用 ``mark_not_fit(reason)``，说明原因，然后结束。
+- 调用 ``mark_not_fit`` 后不要再调用 ``submit_atom``。
+- 已经调用过 ``submit_atom`` 后，不允许再调用 ``mark_not_fit``。
 """
 
 
@@ -365,6 +389,8 @@ class TaskAgent:
     # 新增轨迹并成恰好 1 个 atom）。两者都走本 agent（LLM），只是选不同 system
     # prompt——used_skills / ux_score 等字段一律照常由 LLM 产出。
     split_mode: str = "agentic"
+    # 顶层 config.interests 规范化后传入；空列表禁用兴趣过滤。
+    interests: list[str] | None = None
 
     def __post_init__(self) -> None:
         if self.traj_root is None:
@@ -377,11 +403,18 @@ class TaskAgent:
             raise ValueError(
                 f"TaskAgent.split_mode={self.split_mode!r} 非法，"
                 "必须是 'agentic' 或 'whole'")
+        self.interests = interests_config({"interests": self.interests or []})
 
     @property
     def _system_prompt(self) -> str:
         """按 split_mode 选 system prompt：whole → 整轨 1 atom，否则按意图切分。"""
-        return WHOLE_SYSTEM_PROMPT if self.split_mode == "whole" else SYSTEM_PROMPT
+        base_prompt = WHOLE_SYSTEM_PROMPT if self.split_mode == "whole" else SYSTEM_PROMPT
+        if not self.interests:
+            return base_prompt
+        interests_block = "\n".join(f"- {interest}" for interest in self.interests)
+        return base_prompt + INTEREST_FILTER_SECTION_TEMPLATE.format(
+            interests_block=interests_block
+        )
 
     # ── public API ────────────────────────────────────────────────
 
@@ -516,6 +549,7 @@ class TaskAgent:
         拆多条 traj 不串）。``agent.run()`` 后查 run_response.status,error 即抛。
         """
         submitted: list[dict] = []
+        not_fit_reason: str | None = None
         valid = set(valid_lines)
         ordered_valid = sorted(valid_lines)
 
@@ -533,6 +567,11 @@ class TaskAgent:
                 used_skills: agent 实际触发的 skill 名列表,没有传 []。
                 ux_score: 1~10 整数。
             """
+            if not_fit_reason is not None:
+                return (
+                    "error: 已调用 mark_not_fit，不能再调用 submit_atom；"
+                    "如果轨迹相关，请不要调用 mark_not_fit"
+                )
             try:
                 sl = int(start_line)
             except (TypeError, ValueError):
@@ -562,6 +601,24 @@ class TaskAgent:
                 and 1 <= ux_score <= 10 else None,
             })
             return f"ok: 已记录 atom #{len(submitted)} (start_line={sl})"
+
+        def mark_not_fit(reason: str) -> str:
+            """标记整条轨迹不符合配置的 interests，并结束拆分。
+
+            Args:
+                reason: 简短说明为什么整条轨迹与 interests 无关。
+            """
+            nonlocal not_fit_reason
+            if submitted:
+                return (
+                    "error: 已经提交过 submit_atom，不能再调用 mark_not_fit；"
+                    "部分相关的轨迹应继续正常拆分"
+                )
+            normalized_reason = str(reason or "").strip()
+            if not normalized_reason:
+                normalized_reason = "trajectory does not match configured interests"
+            not_fit_reason = normalized_reason
+            return f"ok: not_fit 已记录 ({normalized_reason})"
 
         def look(line: int, before: int = 40, after: int = 20) -> str:
             """读轨迹某行附近的原文（含向前看,判新意图 vs 追问的主力）。
@@ -619,9 +676,12 @@ class TaskAgent:
             resume_line=resume_line, prior_atoms=prior_atoms,
             total_lines=total_lines, queries=queries,
         )
+        agent_tools = [look, submit_atom, context_budget, my_atoms]
+        if self.interests:
+            agent_tools.append(mark_not_fit)
         agent = self.agno_agent_factory(
             instructions=[self._system_prompt],
-            tools=[look, submit_atom, context_budget, my_atoms],
+            tools=agent_tools,
         )
         # 把这次拆分的逐轮 CoT/工具调用流式写进 logs/agents/task_agents/<traj_id>.log
         from xskill.agents.agent_trace import trace_to
@@ -630,6 +690,8 @@ class TaskAgent:
         with trace_to(sink):
             run_response = agent.run(user_msg)
         self._check_run_status(traj_id, run_response)
+        if not_fit_reason is not None and not submitted:
+            raise TrajectoryNotFit(not_fit_reason)
         return submitted
 
     @staticmethod

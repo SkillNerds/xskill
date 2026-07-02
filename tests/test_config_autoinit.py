@@ -10,7 +10,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from xskill.config import CONFIG_TEMPLATE, ensure_config_exists, get_traj_dir
+from xskill.config import (
+    CONFIG_TEMPLATE,
+    ensure_config_exists,
+    get_traj_dir,
+    interests_config,
+    interests_fingerprint,
+    read_interests_config,
+)
 
 
 def test_creates_template_when_missing(tmp_path):
@@ -57,7 +64,46 @@ def test_template_top_level_keys_are_exactly_live_set():
         "skill_dir", "llm", "embedding", "canary", "watcher", "team", "dashboard",
         "skill_opt", "ingest",  # ingest 段由 config.ingest_config 消费（settle 屏障/去壳掩码）
         "atom",  # atom 段由 config.split_mode_config 消费（split_mode: agentic|whole）
+        "interests",  # 顶层兴趣过滤，空列表表示关闭
     }, f"模板顶层键漂移：{sorted(parsed.keys())}"
+
+
+class TestInterestsConfig:
+    def test_missing_interests_defaults_empty(self):
+        assert interests_config({}) == []
+
+    def test_empty_interests_disable_filter(self):
+        assert interests_config({"interests": []}) == []
+
+    def test_strips_and_removes_blank_items(self):
+        config_data = {"interests": [" infra ", "", "docker", "  中文兴趣  "]}
+        assert interests_config(config_data) == ["infra", "docker", "中文兴趣"]
+
+    def test_non_list_interests_raise(self):
+        with pytest.raises(ValueError, match="interests"):
+            interests_config({"interests": "infra"})
+
+    def test_non_string_interest_item_raises(self):
+        with pytest.raises(ValueError, match=r"interests\[0\]"):
+            interests_config({"interests": [123]})
+
+    def test_fingerprint_uses_normalized_ordered_list(self):
+        first_fingerprint = interests_fingerprint([" infra ", "", "docker"])
+        second_fingerprint = interests_fingerprint(["infra", "docker"])
+        reordered_fingerprint = interests_fingerprint(["docker", "infra"])
+        changed_fingerprint = interests_fingerprint(["infra", "kubernetes"])
+
+        assert first_fingerprint == second_fingerprint
+        assert first_fingerprint != reordered_fingerprint
+        assert first_fingerprint != changed_fingerprint
+
+    def test_read_interests_config_reads_only_interest_section(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "interests:\n  - 基础设施\n  - docker\n",
+            encoding="utf-8",
+        )
+        assert read_interests_config(config_path) == ["基础设施", "docker"]
 
 
 def test_get_traj_dir_returns_first_registered_watch_dir(monkeypatch):

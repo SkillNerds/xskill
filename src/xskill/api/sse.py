@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -24,7 +23,12 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from xskill.config import load_config, get_skill_dir, get_traj_dir
+from xskill.config import (
+    get_skill_dir,
+    get_traj_dir,
+    interests_config,
+    load_config,
+)
 from xskill.utils.llm import create_llm_client, create_embed_client
 
 logger = logging.getLogger("xskill.tasks")
@@ -144,7 +148,7 @@ async def api_index(req: IndexRequest):
     def run():
         try:
             from xskill.pipeline.atom import AtomTaskStore
-            from xskill.agents.task_agent import TaskAgent
+            from xskill.agents.task_agent import TaskAgent, TrajectoryNotFit
             from xskill.agents.agno_factory import make_default_factory
             from xskill.pipeline.trajectory import validate_trajectory_source
 
@@ -184,6 +188,7 @@ async def api_index(req: IndexRequest):
             agent = TaskAgent(
                 agno_agent_factory=make_default_factory(config),
                 store=store, traj_root=dataset_dir, skill_dir=get_skill_dir(),
+                interests=interests_config(config),
             )
             for idx, md in enumerate(md_files, 1):
                 validation = validate_trajectory_source(md)
@@ -201,6 +206,11 @@ async def api_index(req: IndexRequest):
                 try:
                     atoms = agent.run(traj_id=md.stem, traj_path=md)
                     log_fn(f"[{idx}/{total}] {md.name} -> {len(atoms)} atoms", "step")
+                except TrajectoryNotFit as not_fit_error:
+                    log_fn(
+                        f"[{idx}/{total}] {md.name} filtered: {not_fit_error.reason}",
+                        "step",
+                    )
                 except Exception as e:
                     log_fn(f"[{idx}/{total}] {md.name} 拆分失败: {e}", "error")
                 _push(queue, "progress", {
@@ -249,7 +259,7 @@ async def api_process(req: ProcessRequest):
     def run():
         try:
             from xskill.pipeline.atom import AtomTaskStore
-            from xskill.agents.task_agent import TaskAgent
+            from xskill.agents.task_agent import TaskAgent, TrajectoryNotFit
             from xskill.pipeline.runner import process_atom_task
             from xskill.pipeline.trajectory import validate_trajectory_source
             from xskill.agents.agno_factory import make_default_factory
@@ -281,10 +291,20 @@ async def api_process(req: ProcessRequest):
             store = AtomTaskStore(root=traj_path.parent)
 
             _push(queue, "progress", {"step": "拆分 AtomTask", "current": 0, "total": 1})
-            atoms = TaskAgent(
-                agno_agent_factory=make_default_factory(config),
-                store=store, traj_root=traj_path.parent, skill_dir=skill_dir,
-            ).run(traj_id=traj_path.stem, traj_path=traj_path)
+            try:
+                atoms = TaskAgent(
+                    agno_agent_factory=make_default_factory(config),
+                    store=store, traj_root=traj_path.parent, skill_dir=skill_dir,
+                    interests=interests_config(config),
+                ).run(traj_id=traj_path.stem, traj_path=traj_path)
+            except TrajectoryNotFit as not_fit_error:
+                _finish(queue, {
+                    "status": "filtered",
+                    "process_action": "not_fit",
+                    "traj": traj_path.name,
+                    "reason": not_fit_error.reason,
+                })
+                return
             log_fn(f"拆出 {len(atoms)} 个 atom", "step")
             _push(queue, "progress", {"step": "拆分 AtomTask", "current": 1, "total": 1})
 
@@ -346,7 +366,7 @@ async def api_batch(req: BatchRequest):
     def run():
         try:
             from xskill.pipeline.atom import AtomTaskStore
-            from xskill.agents.task_agent import TaskAgent
+            from xskill.agents.task_agent import TaskAgent, TrajectoryNotFit
             from xskill.pipeline.runner import process_atom_task
             from xskill.pipeline.trajectory import validate_trajectory_source
             from xskill.agents.agno_factory import make_default_factory
@@ -385,6 +405,7 @@ async def api_batch(req: BatchRequest):
             split_agent = TaskAgent(
                 agno_agent_factory=make_default_factory(config),
                 store=store, traj_root=dataset_dir, skill_dir=skill_dir,
+                interests=interests_config(config),
             )
 
             # Phase 1: 整批拆 atom + 重建索引
@@ -400,6 +421,11 @@ async def api_batch(req: BatchRequest):
                     atoms = split_agent.run(traj_id=md.stem, traj_path=md)
                     log_fn(f"[{idx}/{total}] split: {md.name} -> {len(atoms)} atoms",
                            "step")
+                except TrajectoryNotFit as not_fit_error:
+                    log_fn(
+                        f"[{idx}/{total}] filtered: {md.name}: {not_fit_error.reason}",
+                        "step",
+                    )
                 except Exception as e:
                     log_fn(f"[{idx}/{total}] split failed: {md.name}: {e}", "error")
             store.rebuild_vector_index(embed)
