@@ -89,6 +89,8 @@ class XSkill:
     def search_skills(self, query: str, top_k: int = 5) -> list[SkillHit]:
         """跨 skill_repo 搜索 skill。"""
         from xskill.skill.repo import search_skill_index
+        if not (self.skill_repo.root / ".skill_index.pkl").exists():
+            return []
         items = search_skill_index(
             skill_dir=self.skill_repo.root,
             query=query,

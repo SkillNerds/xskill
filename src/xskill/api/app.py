@@ -26,6 +26,7 @@ from typing import Optional
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from dulwich.errors import NotGitRepository
 
 from xskill import __version__
 from xskill.config import load_config, get_skill_dir
@@ -183,7 +184,7 @@ class HealthResponse(BaseModel):
 class StatusResponse(BaseModel):
     skill_dir: str
     skill_count: int
-    git_branch: str
+    git_branch: Optional[str] = None
 
 
 class InitRequest(BaseModel):
@@ -453,6 +454,8 @@ async def api_import_skill(req: ImportSkillRequest):
 async def api_search_skills(req: SkillSearchRequest):
     """Search existing skills by semantic similarity."""
     try:
+        if not (_skill_dir / ".skill_index.pkl").exists():
+            return []
         embedding_client = create_embed_client(_config)
         return search_skill_index(
             skill_dir=_skill_dir,
@@ -734,7 +737,10 @@ async def api_status():
     """Return system status: skill dir, skill count, git branch."""
     try:
         skills = list_skills(_skill_dir)
-        branch = current_branch(str(_skill_dir))
+        try:
+            branch = current_branch(str(_skill_dir))
+        except NotGitRepository:
+            branch = None
         return StatusResponse(
             skill_dir=str(_skill_dir),
             skill_count=len(skills),
