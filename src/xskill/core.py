@@ -2,7 +2,7 @@
 xskill.py — XSkill 顶层门面
 ═══════════════════════════════════════════════════════
 唯一对外入口。持 config + registry + skill_repo，
-提供 search / serve / score_trajectory_ux 三个动作方法。
+提供 search / serve / score_atoms_for_trajectory 三类动作方法。
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ class XSkill:
         # daemon
         xskill.serve(host="0.0.0.0", port=8000)
 
-        # 主动 UX 打分（维护性，watcher 会自动跑）
-        xskill.score_trajectory_ux(traj)
+        # 主动给轨迹内的 atom 补 UX 分（维护性，watcher 会自动跑）
+        xskill.score_atoms_for_trajectory(traj)
 
         # 子系统访问
         xskill.registry.list()
@@ -121,13 +121,13 @@ class XSkill:
             ))
         return out[:top_k]
 
-    # ─── UX 打分（主动；v2 atom 粒度）──────────────────────────
-    def score_trajectory_ux(self, traj: Trajectory) -> UxScoreResult:
-        """主动给一条 traj 的所有 atom 补 UX 分（幂等：已落盘的跳过）。
+    # ─── UX 打分（主动；atom 粒度）──────────────────────────
+    def score_atoms_for_trajectory(self, traj: Trajectory) -> UxScoreResult:
+        """主动给一条 traj 内的所有 atom 补 UX 分（幂等：已落盘的跳过）。
 
-        v2: 打分对象是 AtomTask，不是整条 traj。前置条件——该 traj 已被
-        watcher 走完 split 阶段（atoms 落在 ``<traj_dir>/<traj_id>/tasks/``）。
-        没拆过的 traj 调本方法 ``scored=0``，因为 store 里没东西。
+        打分对象是 AtomTask，不是整条 traj。前置条件：该 traj 已被
+        watcher 拆成 atoms，落在 ``<traj_dir>/<traj_id>/tasks/``。
+        没拆过的 traj 调本方法会返回 ``scored=False``，因为 store 里没 atom。
 
         watcher 自动跑；本方法用于 watcher 漏打 / 手动重打。
         """
@@ -164,13 +164,17 @@ class XSkill:
             commit_sha=header.get("sha", ""),
             canary_config=canary_cfg,
         )
-        # v2 返回 {scored: int, skipped: int, decision}；UxScoreResult.scored 是 bool
+        # 返回 {scored: int, skipped: int, decision}；UxScoreResult.scored 是 bool。
         return UxScoreResult(
             scored=bool(d.get("scored", 0) > 0),
             score=None,  # 多 atom 没有单一分数；调用方需读 .ux_scores.jsonl 细看
             reasons=f"scored={d.get('scored')}, skipped={d.get('skipped')}",
             decision=d.get("decision", {}),
         )
+
+    def score_trajectory_ux(self, traj: Trajectory) -> UxScoreResult:
+        """兼容旧 SDK 名称；实际仍按 atom 粒度打分。"""
+        return self.score_atoms_for_trajectory(traj)
 
     # ─── daemon ────────────────────────────────────────────────
     def serve(self, host: str = "0.0.0.0", port: int = 8000,

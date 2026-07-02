@@ -4,21 +4,21 @@ pipeline/runner.py -- 流水线式目录监听器 + AtomTask 流水线核心入�
 
 每条轨迹独立流转，不分批不阻塞：
 
-  discovered → meta_extracting → meta_done → indexed → processing → done
+  discovered → splitting → split_done → indexed → done
 
 每次扫描：
   1. 发现新文件
-  2. 对每条 discovered 提交 meta 提取任务（不等待）
-  3. 对每条 meta_done 提交 embedding 任务（不等待）
-  4. 对每条 indexed 提交 process_traj 任务（不等待）
+  2. 对每条 discovered 提交 atom 拆分任务（不等待）
+  3. 对每条 split_done 提交 atom 索引任务（不等待）
+  4. 对每条 indexed 提交 atom cluster 任务（不等待）
   5. 收割已完成的 futures，更新状态
-  6. 解析 xskill header → ux_score
+  6. cluster 完成后按 atom 写 ux_score
 
 所有耗时操作都在 ThreadPoolExecutor 中异步执行，扫描本身秒完。
 
-本模块还含 AtomTask 流水线核心入口 ``process_atom_task``（原 process.py）：
-v2 (AtomTask) 流水线下，对一个 atom 的"cluster → 触发 SkillEdit"是单一原子
-操作。``api/sse.py`` 与本模块的 ``DirectoryWatcher`` 都调它。
+本模块还含 AtomTask 流水线核心入口 ``process_atom_task``。每个 atom 的
+cluster 结果先进入 skill 的 candidates buffer，SkillEdit 由 watcher 每轮
+独立扫描触发。``api/sse.py`` 与本模块的 ``DirectoryWatcher`` 都调它。
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ import threading
 import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, Future, as_completed
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -49,33 +50,17 @@ from xskill.pipeline.trajectory import validate_trajectory_source
 
 logger = logging.getLogger("xskill.watcher")
 
-# v2 (AtomTask 流水线) 的 action → status 映射
-# splitting → split_done → indexed → clustering → done
-_ACTION_STATUS = {
-    "clustered": "done",
-    "skip": "indexed",
-    "error": "error",
-}
 
-def _install_thread_event_loop() -> None:
-    """给工作线程装一个事件循环（Python 3.9 兼容）。
-
-    Python 3.9 上，在没有事件循环的非主线程里构造 asyncio 对象（如
-    ``asyncio.Lock()``）会 ``raise RuntimeError``。``agno`` 在模块导入期就
-    构造了一个 ``asyncio.Lock()``，而 watcher 线程 / pool 工作线程会懒加载
-    agno —— 不显式给线程装循环,导入即崩。3.10+ 的 ``asyncio.Lock()`` 不在
-    构造期抓 loop,本函数对其无影响。
-    """
-    asyncio.set_event_loop(asyncio.new_event_loop())
+class AtomProcessAction(str, Enum):
+    CLUSTERED = "clustered"
 
 
 class DirectoryWatcher:
     """流水线式目录监听器。每条 traj 独立流转，不分批不阻塞。
 
-    v2 状态机：
+    状态机：
       discovered → splitting → split_done → indexed → done
 
-    与 v1 (meta-level) 的差异：
     - splitting 阶段调 TaskAgent 拆 AtomTask，落盘到 ``<traj_root>/<traj_id>/tasks/``
     - indexed 阶段以 AtomTask 为单位整批重建 ``<traj_root>/index.pkl``
     - cluster 阶段**跨轨迹池化**：把所有 indexed 轨迹里尚未落地的 atom 汇成一池，
@@ -84,6 +69,18 @@ class DirectoryWatcher:
     - indexed → done 由 ``_sweep_done_trajs`` 标：一条轨迹的 atom 全部落进某个
       skill 的 ``.candidates.yml`` 时才 done（文件系统即队列，天然去重+断点续传）。
     """
+
+    @staticmethod
+    def _install_thread_event_loop() -> None:
+        """给 watcher 线程和工作线程装一个事件循环（Python 3.9 兼容）。
+
+        Python 3.9 上，在没有事件循环的非主线程里构造 asyncio 对象（如
+        ``asyncio.Lock()``）会 ``raise RuntimeError``。``agno`` 在模块导入期就
+        构造了一个 ``asyncio.Lock()``，而 watcher 线程 / pool 工作线程会懒加载
+        agno —— 不显式给线程装循环，导入即崩。3.10+ 的 ``asyncio.Lock()`` 不在
+        构造期抓 loop，本方法对其无影响。
+        """
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
     def __init__(self, *, llm=None, embed_client=None,
                  config: XSkillConfig | Mapping[str, Any] | None = None,
@@ -105,9 +102,9 @@ class DirectoryWatcher:
             self.skill_dir = Path(str(self.config["skill_dir"])).expanduser()
         else:
             self.skill_dir = None
-        # home_root：install_to_claude_code 的 target root。生产 daemon 不
-        # 传（None）→ 落到 server._home_root() (默认 Path.home())。测试
-        # 必须显式传 tmp_path 防止污染真实 ~/.claude/skills/。
+        # home_root 是被扫描和安装的用户家目录，例如 /home/alice。
+        # 生产 daemon 留 None，运行时从 server._home_root() 取 Path.home()；
+        # 测试传 tmp_path，避免写入真实 ~/.claude/skills/、~/.codex/ 等目录。
         self.home_root = Path(home_root) if home_root else None
         # server_mode：team server 模式。server 是纯 server——不装 skill 到
         # 本机生态、不做单机灰度轮转、不做本地手改回流（手改走 client
@@ -141,7 +138,7 @@ class DirectoryWatcher:
         # future）。1 = 退回逐 atom 一次往返的旧行为。
         self.cluster_batch_size = max(1, int(cluster_batch_size))
 
-        # v2 注入：AtomTaskStore + agno agent 工厂
+        # AtomTaskStore + agno agent 工厂
         # store None 时本 watcher 不能跑 splitting/clustering（仅 ux_score 还能跑）
         self.store = store
         self.agno_agent_factory = agno_agent_factory
@@ -150,7 +147,9 @@ class DirectoryWatcher:
         self._pause = threading.Event()
         self._thread: threading.Thread | None = None
         self._pool = ThreadPoolExecutor(
-            max_workers=max_concurrent, initializer=_install_thread_event_loop)
+            max_workers=max_concurrent,
+            initializer=self._install_thread_event_loop,
+        )
         self._futures: dict[Future, dict] = {}
         self._last_poll: float | None = None
         # 单机 canary 轮转节流：上次真跑 _reconcile_skill_sides 的时间戳。
@@ -158,10 +157,10 @@ class DirectoryWatcher:
         self._last_rotate_ts: float | None = None
         self._stats = {
             "polls": 0, "new_trajs": 0,
-            "atoms_extracted": 0,    # v2: 累计 atom 数（替代 meta_extracted）
+            "atoms_extracted": 0,    # 累计 atom 数
             "indexed": 0,            # 仍记录索引重建次数
-            "atoms_clustered": 0,    # v2: 累计 cluster 调用次数
-            "skills_edited": 0,      # v2: 触发的 SkillEdit 次数
+            "atoms_clustered": 0,    # 累计 cluster 调用次数
+            "skills_edited": 0,      # 触发的 SkillEdit 次数
             "scores": 0, "errors": 0, "retries": 0,
         }
 
@@ -216,7 +215,7 @@ class DirectoryWatcher:
     def _loop(self):
         # watcher 线程内会懒加载 agno（导入期即构造 asyncio.Lock()）。
         # Python 3.9 非主线程无事件循环时构造会崩 —— 先给本线程装一个。
-        _install_thread_event_loop()
+        self._install_thread_event_loop()
         while not self._stop.is_set():
             if not self._pause.is_set():
                 if self.on_poll_hook is not None:
@@ -876,14 +875,14 @@ class DirectoryWatcher:
     # 任务执行函数（在线程池中运行）
     # ───────────────────────────────────────────────────────────
 
-    # v2 流水线任务：split / atom_index / cluster
+    # 流水线任务：split / atom_index / cluster
 
     def _do_split(self, dir_path, fname):
         """跑 TaskAgent 拆 AtomTask。返回 (fname, num_atoms_added, last_offset, last_atom_id, err)。
 
-        v2.3: TaskAgent 走 agentic 工具调用（submit_atom/readfile/grep），用
-        和 cluster/edit 同一个 agno 工厂。``updated`` 状态的续写轨迹和首次
-        ``discovered`` 走同一条路径——TaskAgent 内部用 last_offset 续接点只拆
+        TaskAgent 走 agentic 工具调用（submit_atom/readfile/grep），并和
+        cluster/edit 使用同一个 agno 工厂。``updated`` 状态的续写轨迹和首次
+        ``discovered`` 走同一条路径，TaskAgent 内部用 last_offset 续接点只拆
         新增内容。
         """
         import time
@@ -1021,7 +1020,10 @@ class DirectoryWatcher:
         in_skills = [r for r in results if r.get("skill_name")]
         dropped = [
             r for r in results
-            if r.get("action") == "clustered" and not r.get("skill_name")
+            if (
+                r.get("action") == AtomProcessAction.CLUSTERED.value
+                and not r.get("skill_name")
+            )
         ]
 
         _emit = logger.info if n_total > 0 else logger.debug
@@ -1065,7 +1067,9 @@ class DirectoryWatcher:
             if any(not self._atom_consumed(a) for a in atoms):
                 continue  # 还有未消费 atom → 等后续 batch 消费
             update_traj_status(
-                wd_id, fname, "done", process_action="clustered", **kw,
+                wd_id, fname, "done",
+                process_action=AtomProcessAction.CLUSTERED.value,
+                **kw,
             )
             # 该轨迹所有 atom 已落盘——ux_score 应当跑的时机。
             if self.server_mode:
@@ -1078,7 +1082,7 @@ class DirectoryWatcher:
     # ───────────────────────────────────────────────────────────
 
     def _score_new(self, _watch_dir_id, _dir_path, _filenames, **_kwargs):
-        """v2: 不在发现新 traj 时打分（那时 atom 还没拆）。
+        """不在发现新 traj 时打分（那时 atom 还没拆）。
 
         实际打分在 ``_sweep_done_trajs`` → ``_score_atoms_for_traj`` 触发。
         此方法保留 hook 兼容 ``_scan_dir`` 末尾的调用；只在 traj 没有
@@ -1223,11 +1227,11 @@ class DirectoryWatcher:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# AtomTask 流水线核心入口（原 process.py）
+# AtomTask 流水线核心入口
 # ═══════════════════════════════════════════════════════════════════
-# v2 (AtomTask) 流水线下，对一个 atom 的"cluster → 触发 SkillEdit"是单一原子
-# 操作；不存在"轨迹整篇喂 LLM"概念。api/sse.py / runner 的 DirectoryWatcher
-# 都调本函数，传入已 split + indexed 完毕的 atom_id。
+# 对一个 atom 的 cluster 操作只负责把候选落到 skill buffer；SkillEdit 由
+# watcher 独立扫描触发。api/sse.py / runner 的 DirectoryWatcher 都调本函数，
+# 传入已 split + indexed 完毕的 atom_id。
 
 _process_logger = logging.getLogger("xskill.process")
 
@@ -1308,7 +1312,7 @@ def process_atom_task(*, atom_id: str, config: dict, skill_dir: Path,
             logger.debug("atom adoption telemetry skipped", exc_info=True)
 
     return {
-        "action": "clustered",
+        "action": AtomProcessAction.CLUSTERED.value,
         "atom_id": atom_id,
         "skill_name": skill_name,
         "weightscore": weightscore,
@@ -1379,7 +1383,7 @@ def process_atom_batch(*, atom_ids: list[str], config: dict, skill_dir: Path,
             except Exception:  # pylint: disable=broad-exception-caught
                 logger.debug("atom adoption telemetry skipped", exc_info=True)
         results.append({
-            "action": "clustered",
+            "action": AtomProcessAction.CLUSTERED.value,
             "atom_id": aid,
             "skill_name": skill_name,
             "weightscore": weightscore,

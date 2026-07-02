@@ -162,21 +162,6 @@ def _sanitize_frontmatter_dates(fm: dict) -> dict:
     return fm
 
 
-def _read_skill_md(skill_path: Path) -> tuple[dict, str, Path]:
-    """Return (frontmatter_dict, body, path_of_SKILL.md). Supports legacy
-    lowercase `skill.md` as a fallback read path (writes always go to
-    SKILL.md)."""
-    upper = skill_path / "SKILL.md"
-    lower = skill_path / "skill.md"
-    if upper.exists():
-        fm, body = fm_parse(upper.read_text(encoding="utf-8"))
-        return fm, body, upper
-    if lower.exists():
-        fm, body = fm_parse(lower.read_text(encoding="utf-8"))
-        return fm, body, lower
-    return {}, "", upper
-
-
 # ═══════════════════════════════════════════════════════════════════
 # Read tools
 # ═══════════════════════════════════════════════════════════════════
@@ -273,7 +258,7 @@ evidence.)
 @tool(name="create_skill")
 def create_skill(skill_name: str) -> str:
     """
-    Scaffold a new skill directory in the v2 layout.
+    Scaffold a new skill directory.
 
     Creates:
         ./skill/<name>/SKILL.md          (stub frontmatter + placeholder body)
@@ -307,7 +292,7 @@ def create_skill(skill_name: str) -> str:
     logger.info(f"📁 created skill scaffold: {target}")
     return (f"created: {target}\n"
             f"files: SKILL.md (stub), scripts/.gitkeep, references/.gitkeep\n"
-            f"Next: overwrite {target}/SKILL.md with your full v2 content via write_file.")
+            f"Next: overwrite {target}/SKILL.md with full content via write_file.")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -409,9 +394,8 @@ def list_candidates(skill_name: str) -> str:
 def write_file(path: str, content: str) -> str:
     """Write or overwrite a file under ./skill/ only.
 
-    v2 行为：只做路径安全 + frontmatter 日期消毒。旧 v1 ``source_trajs ≥ 3``
-    gate 和 ``N/M 条轨迹`` warning 消毒已删——v2 用 ``source_atoms`` 引用 atom
-    而非 traj，且质量保障靠 candidates buffer 累计 weightscore ≥ 10 的硬门槛，
+    只做路径安全 + frontmatter 日期消毒。SKILL.md 用 ``source_atoms`` 引用
+    atom 而非 traj，且质量保障靠 candidates buffer 累计 weightscore ≥ 10 的硬门槛，
     不需要 SKILL.md 写入端再卡一道。
     """
     p = Path(path)
@@ -492,7 +476,15 @@ def update_frontmatter_metadata(skill_name: str, source_trajs: list[str] | None 
     if not target.exists():
         return f"error: skill directory not found ({skill_name})"
 
-    fm, body, path = _read_skill_md(target)
+    path = target / "SKILL.md"
+    lower_path = target / "skill.md"
+    if path.exists():
+        fm, body = fm_parse(path.read_text(encoding="utf-8"))
+    elif lower_path.exists():
+        path = lower_path
+        fm, body = fm_parse(path.read_text(encoding="utf-8"))
+    else:
+        fm, body = {}, ""
     meta = fm.setdefault("metadata", {})
 
     # source_trajs union
@@ -551,7 +543,7 @@ def update_frontmatter_metadata(skill_name: str, source_trajs: list[str] | None 
 
 
 # ═══════════════════════════════════════════════════════════════════
-# AtomTask-era tools (v2) — consumed by TaskClusterAgent / SkillEditAgent
+# AtomTask tools — consumed by TaskClusterAgent / SkillEditAgent
 # ═══════════════════════════════════════════════════════════════════
 
 @tool(name="atom_task_read")
@@ -612,7 +604,7 @@ def read_traj(traj_id: str, offset_start: int, offset_end: int) -> str:
 
 @tool(name="new_skill_folder")
 def new_skill_folder(skill_name: str, description: str) -> str:
-    """v2: 创建 skill 目录 → git init → checkout baby 分支 → 首次 commit
+    """创建 skill 目录 → git init → checkout baby 分支 → 首次 commit
     （含 stub SKILL.md + .gitignore）。
 
     description 必填，落到 stub SKILL.md 的 frontmatter 中。后续：
@@ -654,7 +646,7 @@ def skill_read(skill_name: str) -> str:
 
 @tool(name="add_task_to_skill")
 def add_task_to_skill(skill_name: str, atom_id: str, weightscore: int) -> str:
-    """v2.1: 把 atom 加进 skill 的 candidates buffer。
+    """把 atom 加进 skill 的 candidates buffer。
 
     同 atom 重复 add 时**覆盖**（不累加，cluster 可改主意）。返回末尾附该
     atom 的 weightscore + buffer 总分 / 10，让 agent 看到"还差多少到阈值"。
@@ -1056,7 +1048,7 @@ def absorb_user_edit_to_main(skill_name: str, message: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# v2.2 渐进收敛工具（ClusterAgent 用，处理近义 slug 整合）
+# 渐进收敛工具（ClusterAgent 用，处理近义 slug 整合）
 # ═══════════════════════════════════════════════════════════════════
 
 @tool(name="rename_skill")
