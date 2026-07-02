@@ -10,6 +10,8 @@ Usage:
 
 from __future__ import annotations
 
+# ruff: noqa: BLE001
+
 # Upgrade sqlite3 to support RETURNING clause (needed by Agno session DB)
 import sys as _sys
 try:
@@ -20,15 +22,16 @@ except ImportError:
 
 import logging
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from xskill import __version__
-from xskill.config import load_config, get_skill_dir
+from xskill.config import XSkillConfig, load_config
 from xskill.utils.search import search as search_trajs, search_all as search_trajs_all
 from xskill.skill.repo import (
     import_skill,
@@ -65,7 +68,7 @@ logger = logging.getLogger("xskill.server")
 # server 启动路径首次调用时填充。endpoints 在 startup hook 之后才被 hit，
 # 拿到的就是非 None；测试如果只 import ``_exec_tool`` / 常量，模块加载阶段
 # 完全不读 config。
-_config: dict | None = None
+_config: XSkillConfig | Mapping[str, Any] | None = None
 _skill_dir: Path | None = None
 _watcher_ref: dict = {}  # {"instance": DirectoryWatcher} — set in create_app startup
 
@@ -83,17 +86,35 @@ def _home_root() -> Path:
     return _home_root_override if _home_root_override is not None else Path.home()
 
 
-def _ensure_loaded() -> None:
+def _ensure_loaded(
+    config: XSkillConfig | Mapping[str, Any] | None = None,
+) -> None:
     """幂等：第一次调用时载入配置 + 解析关键目录，之后是 no-op。
 
     server 内部的 endpoint / startup / chat 等代码路径都通过模块级
     ``_config`` / ``_skill_dir`` 等访问，这里只负责把 None 占位填上。
     """
     global _config, _skill_dir
+    if config is not None:
+        _config = config
+        if isinstance(config, XSkillConfig):
+            _skill_dir = config.skill_dir
+        elif config.get("skill_dir"):
+            _skill_dir = Path(str(config["skill_dir"])).expanduser()
+        elif _skill_dir is None:
+            _skill_dir = Path("~/.xskill/skill").expanduser()
+        return
     if _config is not None:
+        if _skill_dir is None:
+            if isinstance(_config, XSkillConfig):
+                _skill_dir = _config.skill_dir
+            elif _config.get("skill_dir"):
+                _skill_dir = Path(str(_config["skill_dir"])).expanduser()
+            else:
+                _skill_dir = Path("~/.xskill/skill").expanduser()
         return
     _config = load_config()
-    _skill_dir = get_skill_dir()
+    _skill_dir = _config.skill_dir
 
 # ---------------------------------------------------------------------------
 # Pydantic request / response models
@@ -774,6 +795,7 @@ async def api_reindex():
 # ---------------------------------------------------------------------------
 
 def create_app(home_root: Path | str | None = None,
+               config: XSkillConfig | Mapping[str, Any] | None = None,
                *, team_server: bool = False) -> FastAPI:
     """Build the FastAPI app. Calls ``_ensure_loaded`` first so all module-level
     config globals (``_config``/``_skill_dir``/...) are populated before any
@@ -790,7 +812,7 @@ def create_app(home_root: Path | str | None = None,
     global _home_root_override
     if home_root is not None:
         _home_root_override = Path(home_root).expanduser().resolve()
-    _ensure_loaded()
+    _ensure_loaded(config)
     """Create and configure the FastAPI application."""
     app = FastAPI(
         title="xskill",
@@ -1188,15 +1210,21 @@ def create_app(home_root: Path | str | None = None,
                 from xskill.team.server.state import ensure_join_token
                 from xskill.config import (
                     get_team_clients_db_path, get_team_server_state_path,
-                    get_team_trajectories_dir,
+                    XSKILL_HOME,
                 )
                 from xskill.pipeline.registry import register_dir as _register_dir
                 from xskill.canary import CanaryConfig
 
                 join_token = ensure_join_token(get_team_server_state_path())
                 client_registry = ClientRegistry(get_team_clients_db_path())
-                traj_root = get_team_trajectories_dir()
                 team_cfg = _config.get("team", {}).get("server", {})
+                traj_root = Path(
+                    str(
+                        team_cfg.get("traj_root")
+                        or XSKILL_HOME / "team_trajectories"
+                    )
+                ).expanduser()
+                traj_root.mkdir(parents=True, exist_ok=True)
                 canary_cfg = CanaryConfig.from_dict(_config.get("canary", {}))
 
                 def _team_register_dir(path, label):
