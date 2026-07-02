@@ -209,6 +209,13 @@ canary:
                                 # and non-top-N traffic stays on main
   total_samples: 20             # model-scoped path: total UX scores needed on
                                 # each side before a weighted decision
+  jam_threshold: 50             # traj-jam breaker: while staging is open, gate-1
+                                # holds all SkillEdit; if pending candidates'
+                                # weightscore sums to >= this, declare a jam
+                                # (gray misaligned / no real traffic), bypass gray:
+                                # merge main+staging+candidates into a new main and
+                                # discard staging. Must exceed the graduation
+                                # threshold (10) so normal increments aren't misread.
 
 # ===== Skill description trigger optimization =====
 # Before each promotion commit (baby→main / main→staging) the daemon runs a

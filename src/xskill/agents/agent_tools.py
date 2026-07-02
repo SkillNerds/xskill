@@ -983,6 +983,34 @@ def commit_to_staging(skill_name: str, message: str) -> str:
     return f"committed to staging: {slug}"
 
 
+@tool(name="commit_update_main")
+def commit_update_main(skill_name: str, message: str) -> str:
+    """SkillEditAgent jam-merge 场景专用：把更新直接提交回 main。
+
+    前提：该 skill 当前在 main 分支。行为：跑 description 触发优化，然后
+    ``git add .`` + commit；不开 staging、不物化 canary。
+    """
+    from xskill.skill.git import commit_update_main_branch
+
+    skill_dir = agent_tool_config.atom_skill_dir
+    if skill_dir is None:
+        return "error: atom task tool context not initialized"
+    slug = _slugify(skill_name)
+    target = skill_dir / slug
+    if not target.is_dir():
+        return f"error: skill {slug} not found"
+    if not (target / ".git").is_dir():
+        return f"error: skill {slug} 没 git 仓库"
+    msg = (message or "").strip()
+    if not msg:
+        return "error: commit message 必填"
+    _run_description_optimization(target, slug)
+    ok = commit_update_main_branch(str(target), msg)
+    if not ok:
+        return "error: commit_update_main 失败（不在 main 分支 / 无改动可提交——看日志）"
+    return f"updated on main: {slug}"
+
+
 @tool(name="absorb_user_edit_to_main")
 def absorb_user_edit_to_main(skill_name: str, message: str) -> str:
     """UserEditAbsorbAgent 专用：把用户手改吸收为 main 分支一次 commit。

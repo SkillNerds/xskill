@@ -323,3 +323,11 @@ class TestMaterialize:
     # 提交里跟着一批未被任何路径调用的 helper 一起删了。当前 canary 模块的
     # 物化/丢弃语义由 ``materialize_staging`` + ``discard_staging`` 承担，
     # 在 TestMaterialize 上面已经覆盖。这里不再保留 orphan 测试。
+
+
+def test_jam_threshold_default_is_50():
+    assert canary.CanaryConfig.from_dict({}).jam_threshold == 50
+
+
+def test_jam_threshold_read_from_dict():
+    assert canary.CanaryConfig.from_dict({"jam_threshold": 30}).jam_threshold == 30

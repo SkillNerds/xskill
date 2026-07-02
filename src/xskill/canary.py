@@ -55,6 +55,12 @@ class CanaryConfig:
     # total_samples: 每侧（main/staging）判定所需的总样本数（跨所有参与模型）。
     scope_top_n: int = 2
     total_samples: int = 20
+    # ── 轨迹堰塞强砍阈值（jam_threshold）─────────────────────────────
+    # staging 存在期间闸门一本会无条件 hold 所有 SkillEdit；候选累计 weightscore
+    # 攒到 jam_threshold 仍未等到灰度裁决 → 判定堰塞（疑似灰度错位/无真实流量），
+    # 越过灰度合并 main+staging+候选出新 main 并删 staging。必须 > 正常毕业阈值
+    # (ATOM_PROMOTION_THRESHOLD=10)，否则正常增量就会被误判堰塞。默认 50。
+    jam_threshold: int = 50
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "CanaryConfig":
@@ -66,6 +72,7 @@ class CanaryConfig:
             rotate_interval=int(d.get("rotate_interval", 300)),
             scope_top_n=int(d.get("scope_top_n", 2)),
             total_samples=int(d.get("total_samples", 20)),
+            jam_threshold=int(d.get("jam_threshold", 50)),
         )
 
 
@@ -224,6 +231,10 @@ def discard_staging(skill_dir: Path) -> bool:
         if code != 0:
             logger.error(f"{skill_dir.name}: discard staging failed: {err}")
             return False
+    # 清理物化目录（materialize_staging 留下的 .canary/<name>/）
+    canary_copy = skill_dir.parent / ".canary" / skill_dir.name
+    if canary_copy.exists():
+        shutil.rmtree(canary_copy)
     logger.info(f"{skill_dir.name}: staging discarded")
     return True
 

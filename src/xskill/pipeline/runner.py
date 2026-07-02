@@ -332,6 +332,7 @@ class DirectoryWatcher:
         if self.skill_dir is None or not self.skill_dir.is_dir():
             return
         from xskill.agents.skill_edit_agent import SkillEditAgent
+        from xskill.canary import CanaryConfig
         factory = self._factory()
         # store 选哪个：edit agent 工具 (atom_task_read/read_traj) 需要 store +
         # traj_root 才能读到 atom 原文。单机只有一个 watch_dir（cc_sessions）。
@@ -339,7 +340,7 @@ class DirectoryWatcher:
         # label=client_id），某 skill 的 candidates 里的 atom 可能来自任意 client
         # 的 store——只绑第一个 wd 的 store，跨 client 的 atom 必然 not found。
         # 因此收集所有 wd 的 store：>1 个时包一层 MultiAtomTaskStore 做跨 store
-        # 路由；单个时直接用它（单机/cold_flush 行为零变化）。
+        # 路由；单个时直接用它（单机行为零变化）。
         stores = []
         for wd in list_watch_dirs(**self._db_kw()):
             try:
@@ -384,6 +385,9 @@ class DirectoryWatcher:
         if not skill_dirs:
             return
 
+        jam_threshold = CanaryConfig.from_dict(
+            self.config.get("canary", {})).jam_threshold
+
         def _run_one(d):
             """在 pool 工作线程里跑单个 skill 的 maybe_run；返回 (d, promoted)。
             异常吞在这里 log，不抛回 future 以免中断整批收集。"""
@@ -392,6 +396,7 @@ class DirectoryWatcher:
                 agno_agent_factory=factory,
                 llm_cfg=self.config.get("llm", {}),
                 traj_root=traj_root,
+                jam_threshold=jam_threshold,
                 **({} if threshold is None else {"threshold": threshold}),
             )
             try:

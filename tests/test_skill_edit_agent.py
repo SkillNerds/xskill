@@ -102,12 +102,25 @@ class _StagingStubAgno(_BabyStubAgno):
         return r
 
 
+class _InspectingStagingStubAgno(_StagingStubAgno):
+    """记录普通 main->staging 路径给 agent 的工具和启动场景。"""
+    tool_names: set[str] = set()
+
+    def __init__(self, *, instructions, tools):
+        super().__init__(instructions=instructions, tools=tools)
+        type(self).tool_names = set(self.tools)
+
+
 def _baby_factory(*, instructions, tools):
     return _BabyStubAgno(instructions=instructions, tools=tools)
 
 
 def _staging_factory(*, instructions, tools):
     return _StagingStubAgno(instructions=instructions, tools=tools)
+
+
+def _inspecting_staging_factory(*, instructions, tools):
+    return _InspectingStagingStubAgno(instructions=instructions, tools=tools)
 
 
 @pytest.fixture(autouse=True)
@@ -130,11 +143,12 @@ def _init_atom_task_tool_context(tmp_path):
     )
     yield
     agent_tools.agent_tool_config.restore(saved_context)
-    for cls in (_BabyStubAgno, _StagingStubAgno):
+    for cls in (_BabyStubAgno, _StagingStubAgno, _InspectingStagingStubAgno):
         cls.invoked = False
         cls.user_msg = ""
         cls.writes_skill_md_with = None
         cls.calls_commit = True
+    _InspectingStagingStubAgno.tool_names = set()
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -250,6 +264,33 @@ class TestMainNeedsUxScoreBeforeStaging:
         # candidates 清空
         data2 = C.load_candidates(skill_dir)
         assert data2["candidates"] == []
+
+    def test_regular_path_exposes_read_file_base_path_and_tree(self, tmp_path):
+        """普通 SkillEditAgent 更新路径应能读辅助文件，并在启动时看到 base path/tree。"""
+        skill_dir = _make_main_skill(tmp_path / "skill", "with-helper")
+        helper = skill_dir / "scripts" / "helper.py"
+        helper.write_text("print('helper')\n", encoding="utf-8")
+        run_git(["add", "-A"], cwd=str(skill_dir))
+        run_git(["commit", "-m", "add helper script"], cwd=str(skill_dir))
+        _add_ux_score(skill_dir)
+        data = {"candidates": []}
+        data, _ = C.add_atom_contribution(data, "atom_a", 10)
+        C.save_candidates(skill_dir, data)
+        _InspectingStagingStubAgno.writes_skill_md_with = (
+            "---\nname: with-helper\ndescription: updated\n"
+            "metadata:\n  version: 2\n---\n# body\n"
+        )
+
+        agent = SkillEditAgent(
+            skill_dir=skill_dir, store=None,
+            agno_agent_factory=_inspecting_staging_factory,
+            llm_cfg={}, traj_root=tmp_path,
+        )
+
+        assert agent.maybe_run() is True
+        assert "read_file" in _InspectingStagingStubAgno.tool_names
+        assert f"skill_base_path: {skill_dir}" in _InspectingStagingStubAgno.user_msg
+        assert "scripts/helper.py" in _InspectingStagingStubAgno.user_msg
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -421,3 +462,206 @@ class TestWritingDisciplineInPrompt:
         assert "commit_to_staging" in SYSTEM_PROMPT_TEMPLATE
         assert "隐私守护" in SYSTEM_PROMPT_TEMPLATE
         assert "AtomTaskRead" in SYSTEM_PROMPT_TEMPLATE
+
+
+# ────────────────────────────────────────────────────────────────────
+# jam-merge 场景：候选累计 ws ≥ jam_threshold 且 staging 存在 → 越过灰度强砍
+# ────────────────────────────────────────────────────────────────────
+
+from xskill.skill.git import commit_to_staging_branch, current_branch  # noqa: E402
+
+
+class _JamMergeStubAgno(_BabyStubAgno):
+    """模拟 jam-merge：读 scenario 里的 skill_name + 目标路径，写合并正文，
+    调 commit_update_main（而非 commit_to_staging）。"""
+    def run(self, user_msg, **kw):
+        type(self).invoked = True
+        type(self).user_msg = user_msg
+        import re
+        skill = re.search(r"skill_name:\s*([\w-]+)", user_msg).group(1)
+        target = re.search(r"目标 SKILL\.md 路径:\s*(\S+)", user_msg).group(1)
+        _call_tool(self.tools["write_file"], target, (
+            "---\nname: %s\ndescription: merged stub for jam\n"
+            "compatibility: test only; negative test only\n"
+            "metadata:\n  version: 2\n  source_atoms: [\"atom_x_0001\"]\n"
+            "---\n\n# merged\n\n## 核心原则\n- merged body\n"
+        ) % skill)
+        _call_tool(
+            self.tools["commit_update_main"],
+            skill,
+            "v2: jam-merge 合并 main+staging+候选",
+        )
+        class _R: pass
+        r = _R(); r.content = "done"; return r
+
+
+class _JamNoCommitStubAgno(_BabyStubAgno):
+    """模拟 agent 写了 SKILL.md 但没调用 commit_update_main。"""
+    def run(self, user_msg, **kw):
+        type(self).invoked = True
+        type(self).user_msg = user_msg
+        import re
+        skill = re.search(r"skill_name:\s*([\w-]+)", user_msg).group(1)
+        target = re.search(r"目标 SKILL\.md 路径:\s*(\S+)", user_msg).group(1)
+        _call_tool(self.tools["write_file"], target, (
+            "---\nname: %s\ndescription: uncommitted jam draft\n"
+            "compatibility: test only; negative test only\n"
+            "metadata:\n  version: 2\n  source_atoms: [\"atom_x_0001\"]\n"
+            "---\n\n# uncommitted\n\n## 核心原则\n- body changed without commit\n"
+        ) % skill)
+        class _R: pass
+        r = _R(); r.content = "done"; return r
+
+
+def _seed_candidates(skill_dir, total_ws):
+    """往 .candidates.yml 灌候选，使累计 weightscore = total_ws。"""
+    data = {"candidates": [{"atom_id": "atom_x_0001", "weightscore": total_ws}]}
+    C.save_candidates(skill_dir, data)
+
+def test_jam_merge_fires_above_threshold_and_discards_staging(tmp_path):
+    sd = _make_main_skill(tmp_path / "skill", "jam-skill")
+    # 写点东西并开 staging（灰度中）
+    (sd / "SKILL.md").write_text((sd / "SKILL.md").read_text() + "\n<!-- staging draft -->\n", encoding="utf-8")
+    assert commit_to_staging_branch(str(sd), "stub staging candidate") is True
+    assert (sd.parent / ".canary" / "jam-skill" / "SKILL.md").is_file()
+    # 候选攒到 60 ≥ jam_threshold(50)
+    _seed_candidates(sd, 60)
+
+    _, sha_before, _ = run_git(["rev-parse", "HEAD"], cwd=str(sd))
+    sha_before = sha_before.strip()
+
+    _JamMergeStubAgno.invoked = False
+    agent = SkillEditAgent(
+        skill_dir=sd, store=None, agno_agent_factory=_JamMergeStubAgno,
+        llm_cfg={}, traj_root=tmp_path, jam_threshold=50,
+    )
+    assert agent.maybe_run() is True
+    assert _JamMergeStubAgno.invoked is True
+    # staging 已被 discard
+    code, _, _ = run_git(["rev-parse", "--verify", "staging"], cwd=str(sd))
+    assert code != 0
+    assert not (sd.parent / ".canary" / "jam-skill").exists()
+    # 候选清空、HEAD 在 main、最新 commit 是合并
+    assert C.load_candidates(sd)["candidates"] == []
+    assert current_branch(str(sd)) == "main"
+    _, sha_after, _ = run_git(["rev-parse", "HEAD"], cwd=str(sd))
+    sha_after = sha_after.strip()
+    assert sha_after != sha_before, "main HEAD should have advanced after jam-merge"
+
+def test_no_jam_below_threshold_keeps_staging(tmp_path):
+    sd = _make_main_skill(tmp_path / "skill", "calm-skill")
+    (sd / "SKILL.md").write_text((sd / "SKILL.md").read_text() + "\n<!-- s -->\n", encoding="utf-8")
+    assert commit_to_staging_branch(str(sd), "stub staging") is True
+    _seed_candidates(sd, 40)  # < 50
+    _JamMergeStubAgno.invoked = False
+    agent = SkillEditAgent(
+        skill_dir=sd, store=None, agno_agent_factory=_JamMergeStubAgno,
+        llm_cfg={}, traj_root=tmp_path, jam_threshold=50,
+    )
+    assert agent.maybe_run() is False          # 维持 hold
+    assert _JamMergeStubAgno.invoked is False
+    code, _, _ = run_git(["rev-parse", "--verify", "staging"], cwd=str(sd))
+    assert code == 0                            # staging 仍在
+
+
+def test_jam_merge_without_main_commit_keeps_candidates_and_staging(tmp_path):
+    sd = _make_main_skill(tmp_path / "skill", "jam-no-commit")
+    (sd / "SKILL.md").write_text(
+        (sd / "SKILL.md").read_text() + "\n<!-- staging draft -->\n",
+        encoding="utf-8",
+    )
+    assert commit_to_staging_branch(str(sd), "stub staging") is True
+    _seed_candidates(sd, 60)
+
+    _JamNoCommitStubAgno.invoked = False
+    agent = SkillEditAgent(
+        skill_dir=sd, store=None, agno_agent_factory=_JamNoCommitStubAgno,
+        llm_cfg={}, traj_root=tmp_path, jam_threshold=50,
+    )
+
+    assert agent.maybe_run() is False
+    assert _JamNoCommitStubAgno.invoked is True
+    assert C.load_candidates(sd)["candidates"] != []
+    code, _, _ = run_git(["rev-parse", "--verify", "staging"], cwd=str(sd))
+    assert code == 0
+
+
+class _JamMergeRematerializeStubAgno(_BabyStubAgno):
+    """Fix 3 专用 stub：在 run() 里主动读 staging_body_path，断言其内容存在（非报错）。
+
+    staging_body_path 从 scenario user_msg 里解析
+    ``staging 正文路径（用 read_file 读）：<path>`` 这行。
+    """
+    staging_body_content_seen: str = ""
+
+    def run(self, user_msg, **kw):
+        type(self).invoked = True
+        type(self).user_msg = user_msg
+        import re
+        skill = re.search(r"skill_name:\s*([\w-]+)", user_msg).group(1)
+        target = re.search(r"目标 SKILL\.md 路径:\s*(\S+)", user_msg).group(1)
+        # 从 scenario 行解析 staging body 路径
+        m = re.search(r"staging 正文路径（用 read_file 读）：(\S+)", user_msg)
+        assert m, "scenario must contain staging body path line"
+        staging_path = m.group(1)
+        # 读 staging body（通过 read_file 工具）
+        content = _call_tool(self.tools["read_file"], staging_path)
+        type(self).staging_body_content_seen = content
+        # 写合并产物并 commit
+        _call_tool(self.tools["write_file"], target, (
+            "---\nname: %s\ndescription: merged after rematerialize\n"
+            "compatibility: test only; negative test only\n"
+            "metadata:\n  version: 2\n  source_atoms: [\"atom_x_0001\"]\n---\n\n"
+            "# merged\n\n## 核心原则\n- re-materialized merge\n" % skill
+        ))
+        _call_tool(
+            self.tools["commit_update_main"],
+            skill,
+            "v2: jam-merge 重物化后合并",
+        )
+        class _R: pass
+        r = _R(); r.content = "done"; return r
+
+
+def test_jam_merge_rematerializes_missing_staging_body(tmp_path):
+    """Fix 3: .canary/<name>/ 目录不存在时，jam 分支应从 staging 分支重新物化，
+    然后 agent 能正常读到 staging 内容（非报错字符串），合并成功，staging 被删除。"""
+    import shutil
+
+    sd = _make_main_skill(tmp_path / "skill", "rematerialize-skill")
+    # 写 staging 分支（包含可识别内容）
+    staging_content = (sd / "SKILL.md").read_text() + "\n<!-- unique staging marker -->\n"
+    (sd / "SKILL.md").write_text(staging_content, encoding="utf-8")
+    assert commit_to_staging_branch(str(sd), "stub staging candidate") is True
+    # 确认 .canary 已物化
+    canary_dir = sd.parent / ".canary" / "rematerialize-skill"
+    assert canary_dir.is_dir()
+    # 模拟 best-effort 物化失败：删除整个 .canary/<name>/ 目录
+    shutil.rmtree(canary_dir)
+    assert not canary_dir.exists()
+
+    # 候选超过 jam_threshold
+    _seed_candidates(sd, 60)
+
+    _JamMergeRematerializeStubAgno.invoked = False
+    _JamMergeRematerializeStubAgno.staging_body_content_seen = ""
+    agent = SkillEditAgent(
+        skill_dir=sd, store=None,
+        agno_agent_factory=lambda **kw: _JamMergeRematerializeStubAgno(**kw),
+        llm_cfg={}, traj_root=tmp_path, jam_threshold=50,
+    )
+    result = agent.maybe_run()
+    assert result is True, "jam-merge with re-materialization should succeed"
+    assert _JamMergeRematerializeStubAgno.invoked is True
+    # staging body が actually read as real content (not "file not found" / error)
+    seen = _JamMergeRematerializeStubAgno.staging_body_content_seen
+    assert seen and "not found" not in seen.lower() and "error" not in seen.lower(), (
+        f"expected staging content, got: {seen!r}")
+    assert "unique staging marker" in seen or "SKILL" in seen, (
+        f"expected staging SKILL.md content, got: {seen!r}")
+    # staging 已被 discard
+    code, _, _ = run_git(["rev-parse", "--verify", "staging"], cwd=str(sd))
+    assert code != 0, "staging branch should be deleted after jam-merge"
+    # candidates cleared
+    assert C.load_candidates(sd)["candidates"] == []
+    assert current_branch(str(sd)) == "main"

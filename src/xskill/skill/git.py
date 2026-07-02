@@ -1591,6 +1591,33 @@ def commit_to_staging_branch(skill_dir: str, message: str) -> bool:
     return True
 
 
+def commit_update_main_branch(skill_dir: str, message: str) -> bool:
+    """SkillEditAgent 调用：在 main 分支直接提交一次正文更新。
+
+    与 ``commit_to_staging_branch`` 的区别：不开 staging、不物化 canary，直接把
+    SkillEditAgent 写入工作区的 SKILL.md 提交到 main。
+    """
+    with skill_repo_lock(skill_dir):
+        with _open_repo(skill_dir) as repo:
+            cur = _current_branch_name(repo)
+            if cur != "main":
+                raise RuntimeError(
+                    f"commit_update_main_branch 要求当前在 main 分支，实际在 {cur!r}"
+                )
+            _stage_all(repo, Path(skill_dir))
+            sha, err = _do_commit(repo, message)
+            if sha is None:
+                if err == "nothing to commit":
+                    logger.warning(
+                        "commit_update_main_branch 无改动可提交: %s",
+                        Path(skill_dir).name,
+                    )
+                    return False
+                raise RuntimeError(f"commit_update_main_branch commit 失败: {err}")
+    logger.info("♻️ main direct update commit: %s: %s", Path(skill_dir).name, message)
+    return True
+
+
 def ensure_repo(skill_dir: str):
     """确保 skill_dir 是一个 git 仓库，在 main 分支上。"""
     p = Path(skill_dir)
