@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import time
 from pathlib import Path
 
+import xskill.team.client.collector as collector_mod
 from xskill.team.client.collector import TeamCollector
+from xskill.team.client.redact import redact_text
 
 
 def _bridge(home_root: Path) -> Path:
@@ -54,6 +58,110 @@ def test_mark_uploaded_excludes_next_time(tmp_path):
     md.write_text("# body changed", encoding="utf-8")
     os.utime(md, (old, old))
     assert len(col.pending()) == 1
+
+
+def test_uploaded_unchanged_file_skips_redaction(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    bridge = _bridge(home)
+    md = bridge / "traj_cc_x_001.md"
+    md.write_text("# body", encoding="utf-8")
+    old = time.time() - 600
+    os.utime(md, (old, old))
+
+    col = TeamCollector(cursor_path=tmp_path / "cursor.json",
+                        quiet_seconds=180, min_change_interval=0,
+                        home_root=home)
+    p = col.pending()[0]
+    col.mark_uploaded(p.traj_id, p.sha256)
+
+    def _redact_should_not_run(_text: str) -> str:
+        raise AssertionError("unchanged uploaded file should not be redacted")
+
+    monkeypatch.setattr(collector_mod, "redact_text", _redact_should_not_run)
+    assert col.pending() == []
+
+
+def test_same_content_after_mtime_change_skips_redaction(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    bridge = _bridge(home)
+    md = bridge / "traj_cc_x_001.md"
+    md.write_text("# body", encoding="utf-8")
+    old = time.time() - 600
+    os.utime(md, (old, old))
+
+    col = TeamCollector(cursor_path=tmp_path / "cursor.json",
+                        quiet_seconds=180, min_change_interval=0,
+                        home_root=home)
+    p = col.pending()[0]
+    col.mark_uploaded(p.traj_id, p.sha256)
+    os.utime(md, (old + 10, old + 10))
+
+    def _redact_should_not_run(_text: str) -> str:
+        raise AssertionError("same raw content should not be redacted")
+
+    monkeypatch.setattr(collector_mod, "redact_text", _redact_should_not_run)
+    assert col.pending() == []
+
+
+def test_changed_content_runs_redaction_again(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    bridge = _bridge(home)
+    md = bridge / "traj_cc_x_001.md"
+    md.write_text("# body", encoding="utf-8")
+    old = time.time() - 600
+    os.utime(md, (old, old))
+
+    col = TeamCollector(cursor_path=tmp_path / "cursor.json",
+                        quiet_seconds=180, min_change_interval=0,
+                        home_root=home)
+    p = col.pending()[0]
+    col.mark_uploaded(p.traj_id, p.sha256)
+
+    calls = {"count": 0}
+
+    def _counting_redact(text: str) -> str:
+        calls["count"] += 1
+        return text
+
+    monkeypatch.setattr(collector_mod, "redact_text", _counting_redact)
+    md.write_text("# body changed", encoding="utf-8")
+    os.utime(md, (old, old))
+    out = col.pending()
+    assert len(out) == 1
+    assert calls["count"] == 1
+
+
+def test_legacy_cursor_json_migrates_to_sqlite(tmp_path):
+    cursor = tmp_path / "cursor.json"
+    cursor.write_text(json.dumps({"traj_cc_x_001": "cleaned-hash"}),
+                      encoding="utf-8")
+
+    col = TeamCollector(cursor_path=cursor, quiet_seconds=0,
+                        min_change_interval=0, home_root=tmp_path / "home")
+    assert "traj_cc_x_001" in col._state_store.uploaded_trajectory_ids()
+
+
+def test_legacy_debounce_json_migrates_to_sqlite(tmp_path):
+    home = tmp_path / "home"
+    bridge = _bridge(home)
+    md = bridge / "traj_cc_x_001.md"
+    body = "# stable body"
+    md.write_text(body, encoding="utf-8")
+    old = time.time() - 600
+    os.utime(md, (old, old))
+
+    cursor = tmp_path / "cursor.json"
+    cleaned_hash = hashlib.sha256(redact_text(body).encode("utf-8")).hexdigest()
+    cursor.with_suffix(".debounce.json").write_text(
+        json.dumps({"traj_cc_x_001": {"sha": cleaned_hash, "since": old}}),
+        encoding="utf-8",
+    )
+
+    col = TeamCollector(cursor_path=cursor, quiet_seconds=0,
+                        min_change_interval=600, home_root=home)
+    out = col.pending()
+    assert len(out) == 1
+    assert out[0].traj_id == "traj_cc_x_001"
 
 
 def test_pending_carries_sidecar_model(tmp_path):

@@ -7,8 +7,9 @@
    （即 ``detect_known_ecosystems`` 返回的 ``bridge`` 路径——不另造一份
    平行 outbox）。这些 ingester 是纯镜像——不做 canary/header 注入。
 2. pending() —— 扫 ``~/.xskill/*_sessions/``，吐出"静默 ≥quiet_seconds 且
-   未上传过/内容已变"的 traj，content 已过脱敏 hook。游标落 cursor.json：
-   traj_id -> sha256。
+   未上传过/内容已变"的 traj，content 已过脱敏 hook。上传状态落
+   ``client_state.db``，旧 ``cursor.json`` / ``cursor.debounce.json`` 只作为
+   一次性迁移来源。
 
 静默窗口 = 设计里约定的上传时机点（与 xskill 既有的"用户手改静默 3min
 才吸收"同源），也天然是脱敏 hook 的插入位。
@@ -23,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from xskill.team.client.upload_state import TrajectoryUploadStateStore
 from xskill.team.client.redact import redact_text
 
 logger = logging.getLogger("xskill.team.client.collector")
@@ -79,6 +81,7 @@ class TeamCollector:
         home_root: Path | None = None,
         poll_interval: float = 10.0,
         time_fn: Callable[[], float] = time.time,
+        state_db_path: Path | None = None,
     ):
         self.cursor_path = Path(cursor_path)
         self.quiet_seconds = quiet_seconds
@@ -97,45 +100,20 @@ class TeamCollector:
         # 返回的 bridge 路径一致。
         self._bridge_root = self.home_root / ".xskill"
         self._ingesters: list = []
-        self._cursor: dict[str, str] = self._load_cursor()
-        # 去抖状态：traj_id -> {"sha": <当前未上传版本的 hash>, "since": <该 hash
-        # 首次出现的时间戳>}。落盘到 cursor 旁的 sidecar,重启后不丢去抖计时。
-        self._debounce_path = self.cursor_path.with_suffix(".debounce.json")
-        self._change_state: dict[str, dict] = self._load_change_state()
-
-    # ── 游标 ─────────────────────────────────────────────────────
-    def _load_cursor(self) -> dict[str, str]:
-        if not self.cursor_path.is_file():
-            return {}
-        try:
-            return json.loads(self.cursor_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return {}
-
-    def _save_cursor(self) -> None:
-        self.cursor_path.parent.mkdir(parents=True, exist_ok=True)
-        self.cursor_path.write_text(json.dumps(self._cursor), encoding="utf-8")
+        self.state_db_path = (
+            Path(state_db_path) if state_db_path
+            else self.cursor_path.with_name("client_state.db")
+        )
+        self._state_store = TrajectoryUploadStateStore(
+            db_path=self.state_db_path,
+            legacy_cursor_path=self.cursor_path,
+            home_root=self.home_root,
+            time_fn=self._now,
+        )
 
     def mark_uploaded(self, traj_id: str, sha256: str) -> None:
         """记录某 traj 的某版本已上传。同时清掉它的去抖状态（该版本已落地）。"""
-        self._cursor[traj_id] = sha256
-        self._save_cursor()
-        if self._change_state.pop(traj_id, None) is not None:
-            self._save_change_state()
-
-    # ── hash-变更去抖状态 ────────────────────────────────────────
-    def _load_change_state(self) -> dict[str, dict]:
-        if not self._debounce_path.is_file():
-            return {}
-        try:
-            return json.loads(self._debounce_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return {}
-
-    def _save_change_state(self) -> None:
-        self._debounce_path.parent.mkdir(parents=True, exist_ok=True)
-        self._debounce_path.write_text(
-            json.dumps(self._change_state), encoding="utf-8")
+        self._state_store.mark_uploaded(traj_id, sha256)
 
     # ── ingester 生命周期 ────────────────────────────────────────
     def start_ingesters(self) -> None:
@@ -202,39 +180,120 @@ class TeamCollector:
         now = self._now()
         out: list[PendingTrajectory] = []
         seen_ids: set[str] = set()
-        changed = False
         for md in sorted(self._bridge_root.glob("*_sessions/traj_*.md")):
             if not md.is_file():
                 continue
             traj_id = md.stem
             seen_ids.add(traj_id)
-            # 闸 1：mtime 静默窗口
-            if (now - md.stat().st_mtime) < self.quiet_seconds:
+            try:
+                stat = md.stat()
+            except OSError:
                 continue
-            raw = md.read_text(encoding="utf-8")
-            content = redact_text(raw)
-            sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
-            if self._cursor.get(traj_id) == sha:
-                # 这个版本已上传过——清掉残留去抖状态
-                if self._change_state.pop(traj_id, None) is not None:
-                    changed = True
+            # 闸 1：mtime 静默窗口
+            if (now - stat.st_mtime) < self.quiet_seconds:
+                continue
+            model_name = _sidecar_model(md)
+            harness_name = _harness_for(md)
+            state = self._state_store.get(traj_id)
+            metadata_same = (
+                state is not None
+                and state["file_size_bytes"] == stat.st_size
+                and state["file_modified_time_nanoseconds"] == stat.st_mtime_ns
+                and state["file_changed_time_nanoseconds"] == stat.st_ctime_ns
+            )
+            if metadata_same:
+                sha = state["cleaned_content_hash"]
+                if sha and state["uploaded_cleaned_content_hash"] == sha:
+                    if state["waiting_content_hash"] is not None:
+                        self._state_store.clear_waiting(traj_id)
+                    continue
+                if not sha:
+                    raw = md.read_text(encoding="utf-8")
+                    raw_sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+                    content = redact_text(raw)
+                    sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                    self._state_store.record_seen_file(
+                        trajectory_id=traj_id,
+                        file_path=str(md),
+                        harness_name=harness_name,
+                        model_name=model_name,
+                        file_size_bytes=stat.st_size,
+                        file_modified_time_nanoseconds=stat.st_mtime_ns,
+                        file_changed_time_nanoseconds=stat.st_ctime_ns,
+                        original_content_hash=raw_sha,
+                        cleaned_content_hash=sha,
+                    )
+                else:
+                    content = None
+            else:
+                raw = md.read_text(encoding="utf-8")
+                raw_sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+                if state is not None and state["original_content_hash"] == raw_sha:
+                    sha = state["cleaned_content_hash"]
+                    content = None
+                    self._state_store.record_seen_file(
+                        trajectory_id=traj_id,
+                        file_path=str(md),
+                        harness_name=harness_name,
+                        model_name=model_name,
+                        file_size_bytes=stat.st_size,
+                        file_modified_time_nanoseconds=stat.st_mtime_ns,
+                        file_changed_time_nanoseconds=stat.st_ctime_ns,
+                        original_content_hash=raw_sha,
+                    )
+                    refreshed = self._state_store.get(traj_id)
+                    if (
+                        sha
+                        and refreshed is not None
+                        and refreshed["uploaded_cleaned_content_hash"] == sha
+                    ):
+                        if refreshed["waiting_content_hash"] is not None:
+                            self._state_store.clear_waiting(traj_id)
+                        continue
+                else:
+                    content = redact_text(raw)
+                    sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                    self._state_store.record_seen_file(
+                        trajectory_id=traj_id,
+                        file_path=str(md),
+                        harness_name=harness_name,
+                        model_name=model_name,
+                        file_size_bytes=stat.st_size,
+                        file_modified_time_nanoseconds=stat.st_mtime_ns,
+                        file_changed_time_nanoseconds=stat.st_ctime_ns,
+                        original_content_hash=raw_sha,
+                        cleaned_content_hash=sha,
+                    )
+                    refreshed = self._state_store.get(traj_id)
+                    if (
+                        refreshed is not None
+                        and refreshed["uploaded_cleaned_content_hash"] == sha
+                    ):
+                        if refreshed["waiting_content_hash"] is not None:
+                            self._state_store.clear_waiting(traj_id)
+                        continue
+            if not sha:
                 continue
             # 闸 2：hash-变更去抖。内容（hash）每变一次就把 since 重置成此刻,
             # 必须自上次变更起稳定满 min_change_interval 秒才放行。
-            st = self._change_state.get(traj_id)
-            if st is None or st.get("sha") != sha:
-                st = {"sha": sha, "since": now}
-                self._change_state[traj_id] = st
-                changed = True
-            if (now - st["since"]) < self.min_change_interval:
+            state = self._state_store.get(traj_id)
+            if state is None or state["waiting_content_hash"] != sha:
+                self._state_store.set_waiting(
+                    trajectory_id=traj_id,
+                    waiting_content_hash=sha,
+                    waiting_started_at_seconds=now,
+                )
+                waiting_started_at = now
+            else:
+                waiting_started_at = float(state["waiting_started_at_seconds"] or now)
+            if (now - waiting_started_at) < self.min_change_interval:
                 continue  # 还没稳定满窗口,继续拦（min_change_interval<=0 时恒放行）
+            if content is None:
+                raw = md.read_text(encoding="utf-8")
+                content = redact_text(raw)
             out.append(PendingTrajectory(traj_id=traj_id, content=content,
-                                         sha256=sha, model=_sidecar_model(md),
-                                         harness=_harness_for(md)))
+                                         sha256=sha, model=model_name,
+                                         harness=harness_name))
         # 清理已消失的 traj 的去抖状态,避免无限增长
-        for gone in [k for k in self._change_state if k not in seen_ids]:
-            del self._change_state[gone]
-            changed = True
-        if changed:
-            self._save_change_state()
+        self._state_store.clear_waiting_for_missing(seen_ids)
         return out

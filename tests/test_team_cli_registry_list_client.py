@@ -22,8 +22,9 @@ def test_cmd_registry_list_client(tmp_path, monkeypatch, capsys):
         (bridge / tid).write_text("x", encoding="utf-8")        # 必须被忽略
     (bridge / "index.pkl").write_text("x", encoding="utf-8")     # 必须被忽略
 
-    # 客户端连接状态 + 按 server 分目录的游标（方案 A）：cmd_registry_list_client
-    # 先读 team_client.json 拿 server_url，再定位该 server 的 cursor.json。
+    # 客户端连接状态 + 按 server 分目录的旧游标（方案 A）：
+    # cmd_registry_list_client 先读 team_client.json 拿 server_url，再把
+    # 旧 cursor.json 迁移进 client_state.db。
     server_url = "http://7.220.144.233:9961"
     (xskill_home / "team_client.json").write_text(
         json.dumps({"server_url": server_url, "client_id": "cid", "join_token": "t"}),
@@ -47,7 +48,7 @@ def test_cmd_registry_list_client(tmp_path, monkeypatch, capsys):
     assert rc == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == "ECOSYSTEM\tCOLLECTED\tUPLOADED\tSOURCE"
-    row = next(l for l in lines if l.startswith("claude_code")).split("\t")
+    row = next(line for line in lines if line.startswith("claude_code")).split("\t")
     assert row == ["claude_code", "3", "2", str(src)]   # 采集3 / 上传2 / 真实源目录
 
 

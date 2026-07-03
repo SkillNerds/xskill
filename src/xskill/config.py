@@ -572,12 +572,17 @@ def get_team_client_dir(server_url: str) -> Path:
 
 
 def get_team_client_cursor_path(server_url: str) -> Path:
-    """client 端上传游标（traj_id -> 已上传内容 sha256），按 server 分目录。
+    """旧版 client 上传游标 JSON 路径，按 server 分目录。
 
-    去抖 sidecar 由 collector 从本路径派生（``cursor.debounce.json``），自动
-    同目录隔离。
+    新版运行时状态落 ``client_state.db``；本路径保留为旧
+    ``cursor.json`` / ``cursor.debounce.json`` 的一次性迁移来源。
     """
     return get_team_client_dir(server_url) / "cursor.json"
+
+
+def get_team_client_state_db_path(server_url: str) -> Path:
+    """client 端上传状态 SQLite，按 server 分目录。"""
+    return get_team_client_dir(server_url) / "client_state.db"
 
 
 def get_team_client_history_path(server_url: str) -> Path:

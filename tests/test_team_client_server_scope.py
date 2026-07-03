@@ -10,8 +10,6 @@ import os
 import time
 from pathlib import Path
 
-import pytest
-
 from xskill import config
 from xskill.team.client.collector import TeamCollector
 
@@ -22,8 +20,12 @@ def test_client_dir_is_under_clients_and_per_server(tmp_path, monkeypatch):
 
     a = config.get_team_client_cursor_path("http://1.1.1.1:8000")
     b = config.get_team_client_cursor_path("http://2.2.2.2:9961")
+    db_a = config.get_team_client_state_db_path("http://1.1.1.1:8000")
+    db_b = config.get_team_client_state_db_path("http://2.2.2.2:9961")
 
     assert a != b                              # 两个 server 互不污染
+    assert db_a != db_b
+    assert db_a.parent == a.parent
     assert a.parent.parent.name == "clients"   # ~/.xskill/clients/<id>/cursor.json
     assert a.parent.parent.parent == tmp_path / ".xskill"
 
@@ -43,7 +45,9 @@ def test_cursor_and_history_share_one_server_dir(tmp_path, monkeypatch):
     url = "http://7.220.144.233:9961"
     cur = config.get_team_client_cursor_path(url)
     hist = config.get_team_client_history_path(url)
+    db = config.get_team_client_state_db_path(url)
     assert cur.parent == hist.parent           # 同一个 <server_id> 目录
+    assert cur.parent == db.parent
 
 
 # ── 行为：换 server 后历史轨迹不再被上一个 server 的游标压制 ──────────

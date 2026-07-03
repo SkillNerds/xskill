@@ -120,35 +120,39 @@ def cmd_registry_list_client() -> int:
     """team 客户端模式的 ``registry list``。
 
     瘦客户端不写 ``watch_dirs`` / ``trajectories`` 表（那是 standalone/server
-    的存储），它靠实时 ``detect_known_ecosystems`` 采集 + ``team_client_cursor``
+    的存储），它靠实时 ``detect_known_ecosystems`` 采集 + client SQLite 状态
     记上传进度。所以这里**现算**视图：每个探测到的生态显示
 
         ECOSYSTEM  COLLECTED  UPLOADED  SOURCE
 
     - COLLECTED = 该生态 bridge 目录下 ``traj_*.json`` 数（已镜像采集的轨迹）
-    - UPLOADED  = 上述轨迹里已记入 cursor（已上传 server）的数
+    - UPLOADED  = 上述轨迹里已记入 client_state.db（已上传 server）的数
     - SOURCE    = 用户真实的原生目录（如 ~/.claude/projects），非内部 bridge
 
     不依赖 config.yaml / XSkill 门面——纯客户端机器也能直接看。
     """
-    import json
     from pathlib import Path
     from xskill.config import (
         XSKILL_HOME, get_team_client_state_path, get_team_client_cursor_path,
+        get_team_client_state_db_path,
     )
     from xskill.ecosystems import detect_known_ecosystems
     from xskill.team.client.state import load_client_state
+    from xskill.team.client.upload_state import TrajectoryUploadStateStore
 
     home = XSKILL_HOME.parent  # 与 XSKILL_HOME 同源,避免 home 解析漂移
-    # 游标按 server 分目录（方案 A）——先读连接状态拿 server_url 才能定位。
-    # 没连过 server（无 state）则没有任何上传游标，uploaded 全 0。
+    # 上传状态按 server 分目录（方案 A）——先读连接状态拿 server_url 才能定位。
+    # 没连过 server（无 state）则没有任何上传状态，uploaded 全 0。
     uploaded_ids: set[str] = set()
     state_path = get_team_client_state_path()
     if state_path.is_file():
-        cursor_path = get_team_client_cursor_path(
-            load_client_state(state_path).server_url)
-        if cursor_path.is_file():
-            uploaded_ids = set(json.loads(cursor_path.read_text(encoding="utf-8")))
+        state = load_client_state(state_path)
+        store = TrajectoryUploadStateStore(
+            db_path=get_team_client_state_db_path(state.server_url),
+            legacy_cursor_path=get_team_client_cursor_path(state.server_url),
+            home_root=home,
+        )
+        uploaded_ids = store.uploaded_trajectory_ids()
 
     dets = detect_known_ecosystems(home_root=home)
     if not dets:
