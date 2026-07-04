@@ -99,3 +99,18 @@ class ProfileStore:
             }
         finally:
             conn.close()
+
+    def all_means(self) -> list[tuple[str, "np.ndarray"]]:
+        """所有有画像用户的 ``(user_id, mean_tensor)``，供 find_friend 检索。"""
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT user_id, mean_tensor FROM client_interest WHERE mean_tensor IS NOT NULL"
+            ).fetchall()
+            out: list[tuple[str, np.ndarray]] = []
+            for r in rows:
+                if r["mean_tensor"]:
+                    out.append((r["user_id"], pickle.loads(r["mean_tensor"])))
+            return out
+        finally:
+            conn.close()

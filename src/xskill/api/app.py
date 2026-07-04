@@ -1187,6 +1187,7 @@ def create_app(home_root: Path | str | None = None,
                 from xskill.team.server.api import init_team_context
                 from xskill.team.server.state import ensure_join_token
                 from xskill.config import (
+                    allow_anonymous_user as _allow_anonymous,
                     get_team_clients_db_path, get_team_server_state_path,
                     get_team_trajectories_dir,
                 )
@@ -1203,6 +1204,19 @@ def create_app(home_root: Path | str | None = None,
                     # team_client 生态标签：watcher 的 CS 归因靠 wd.label 反查 client
                     _register_dir(path, label=label, ecosystem="team_client")
 
+                # §5 构造 SkillRecommendEngine 并注入 manifest（staging 优先达量 + 画像推荐）
+                from xskill.config import XSKILL_HOME as _xhome
+                from xskill.recommend.engine import SkillRecommendEngine
+                from xskill.team.server.skill_manifest import set_recommend_engine
+                _team_embed = create_embed_client(_config)
+                _engine = SkillRecommendEngine(
+                    config=_config, skill_dir=_skill_dir, traj_root=traj_root,
+                    embed_client=_team_embed,
+                    profile_db=_xhome / "team_profile.db",
+                    canary_config=canary_cfg,
+                )
+                set_recommend_engine(_engine)
+
                 init_team_context(
                     join_token=join_token,
                     client_registry=client_registry,
@@ -1212,6 +1226,7 @@ def create_app(home_root: Path | str | None = None,
                     ranked_slots=int(team_cfg.get("ranked_slots", 80)),
                     total_slots=int(team_cfg.get("skill_slots", 100)),
                     register_dir=_team_register_dir,
+                    allow_anonymous_user=_allow_anonymous(_config),
                 )
                 logger.info("team server context ready (traj_root=%s)", traj_root)
             except Exception:

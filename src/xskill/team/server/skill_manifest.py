@@ -25,6 +25,16 @@ from xskill.team.shared.protocol import SkillSlot, SyncResponse
 
 _logger = logging.getLogger("xskill.team.manifest")
 
+# §5 SkillRecommendEngine 单例（team server init 时 set_recommend_engine 注入）。
+# 为 None 时退回既有 pick_side + RECOMMENDER 画像路径（非 team / 测试场景）。
+_engine = None
+
+
+def set_recommend_engine(eng) -> None:
+    """team server 启动时注入 ``SkillRecommendEngine`` 单例。"""
+    global _engine
+    _engine = eng
+
 
 def _rank_key(skill: Skill) -> tuple[float, int]:
     """排序键：(main 侧近 30 天 ux 均分, use_count)，都缺则 (0.0, 0)。"""
@@ -35,7 +45,11 @@ def _rank_key(skill: Skill) -> tuple[float, int]:
 def _resolve_slot(skill: Skill, client_id: str, probability: float, bucket: str) -> SkillSlot:
     """对一个 skill 现算它对该 client 的 side + sha。"""
     if has_staging(skill.path):
-        side = pick_side(client_id, skill.name, probability)
+        if _engine is not None:
+            from xskill.recommend.client_user import ClientUser
+            side = _engine.resolve_side(skill, ClientUser(client_id))
+        else:
+            side = pick_side(client_id, skill.name, probability)
         sha = staging_sha(skill.path) if side == "staging" else main_sha(skill.path)
     else:
         side = "main"
@@ -127,6 +141,17 @@ def _pick_recommended(
     ux_tail = [s for s in ux_ordered if s.name not in ranked_names]
     if traj_root is None:
         return ux_tail[:reco_slots]  # 非 team server：无 traj_root，按 ux 取
+
+    # §5 优先走 SkillRecommendEngine（注入时）；否则退回既有 RECOMMENDER 画像路径。
+    if _engine is not None:
+        user = _engine.load_client_user(client_id)
+        if user.client_interest is not None and user.client_interest.feature_tensor is not None:
+            picked = _engine.get_skill_for_client(
+                user, reco_slots, exclude_names=ranked_names,
+            )
+            # get_skill_for_client 已记录推荐 + resolve side；只取 reco_slots 个
+            return picked[:reco_slots]
+        # 冷启动（无画像）→ ux_tail（与既有 RECOMMENDER 冷启动语义一致）
 
     # 延迟 import：profile_reco 依赖 numpy + atom store，非 team 路径不付代价。
     from xskill.team.server.profile_reco import RECOMMENDER
