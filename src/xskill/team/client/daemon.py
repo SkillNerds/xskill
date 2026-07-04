@@ -31,19 +31,26 @@ def register_with_server(
     http, *,
     token: str, label: str, hostname: str,
     existing_client_id: str | None = None,
+    user_name: str | None = None,
 ) -> str:
     """跟 server 握手注册，返回 server 分配（或续用）的 client_id。
 
     ``existing_client_id`` 用于重连保持身份：调用方（CLI）若发现本地 state
-    里已有 client_id，传过来；server 按 (claimed_client_id, fingerprint,
-    new uuid) 三级优先级判定（详见 ClientRegistry.register）。
+    里已有 client_id，传过来；server 按 (user_name, claimed_client_id,
+    fingerprint, new uuid) 四级优先级判定（详见 ClientRegistry.register）。
+
+    ``user_name`` 即 ``--name <userid>``：非空时 server 派生确定性 client_id
+    （跨设备同 name 共享画像），优先于 claimed/fingerprint。
     """
-    resp = http.post("/api/v1/team/register", json={
+    body = {
         "token": token,
         "client_label": label,
         "hostname": hostname,
         "claimed_client_id": existing_client_id,
-    })
+    }
+    if user_name:
+        body["user_name"] = user_name
+    resp = http.post("/api/v1/team/register", json=body)
     if resp.status_code != 200:
         raise RuntimeError(
             f"register failed: HTTP {resp.status_code} — {resp.text}"

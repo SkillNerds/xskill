@@ -41,6 +41,7 @@ class _Ctx:
     probability: float = 0.2
     ranked_slots: int = 80
     total_slots: int = 100
+    allow_anonymous_user: bool = True
     register_dir: Callable[[Path, str], None] | None = None
 
 
@@ -57,6 +58,7 @@ def init_team_context(
     ranked_slots: int,
     total_slots: int,
     register_dir: Callable[[Path, str], None],
+    allow_anonymous_user: bool = True,
 ) -> None:
     """create_app(team_server=True) 在 startup 时调用一次。"""
     _ctx.join_token = join_token
@@ -66,6 +68,7 @@ def init_team_context(
     _ctx.probability = probability
     _ctx.ranked_slots = ranked_slots
     _ctx.total_slots = total_slots
+    _ctx.allow_anonymous_user = allow_anonymous_user
     _ctx.register_dir = register_dir
 
 
@@ -87,12 +90,19 @@ async def team_register(req: RegisterRequest) -> RegisterResponse:
         raise HTTPException(status_code=503, detail="team context not initialized")
     if req.token != _ctx.join_token:
         raise HTTPException(status_code=401, detail="invalid join token")
+    user_name = (req.user_name or "").strip() or None
+    if not user_name and not _ctx.allow_anonymous_user:
+        raise HTTPException(
+            status_code=403, detail="anonymous users not allowed"
+        )
     client_id = _ctx.client_registry.register(
         label=req.client_label,
         hostname=req.hostname,
         claimed_client_id=req.claimed_client_id,
+        user_name=user_name,
     )
-    logger.info("team client registered: %s (label=%s)", client_id, req.client_label)
+    logger.info("team client registered: %s (label=%s, name=%s)",
+                client_id, req.client_label, user_name or "<anonymous>")
     return RegisterResponse(client_id=client_id)
 
 

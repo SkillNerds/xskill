@@ -9,10 +9,38 @@ pick_side）② 上传轨迹的落盘分桶（clients/<client_id>/sessions/）�
 """
 from __future__ import annotations
 
+import hashlib
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _normalize_user_name(name: str) -> str:
+    """规范化 user_name：去首尾空白、内部连续空白压一、转小写。
+
+    规范化保证 ``--name Alice`` / ``--name alice`` / ``--name "  alice  "`` 派生
+    出同一 client_id（跨设备/跨会话稳定身份）。空串抛 ValueError（fail-loud）。
+    """
+    if not isinstance(name, str):
+        raise ValueError(
+            f"user_name 必须是字符串，got {type(name).__name__}"
+        )
+    norm = re.sub(r"\s+", " ", name).strip().lower()
+    if not norm:
+        raise ValueError("user_name 不能为空")
+    return norm
+
+
+def client_id_from_name(name: str) -> str:
+    """从 user_name 派生确定性 client_id：``sha256("name:" + norm)[:16]``。
+
+    同 name（规范化后相同）→ 同 id；不发新 uuid。这是跨设备稳定身份的根基。
+    """
+    norm = _normalize_user_name(name)
+    return hashlib.sha256(("name:" + norm).encode("utf-8")).hexdigest()[:16]
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS clients (
@@ -55,31 +83,59 @@ class ClientRegistry:
         label: str = "",
         hostname: str = "",
         claimed_client_id: str | None = None,
+        user_name: str | None = None,
     ) -> str:
         """注册或续用 client_id。
 
-        三级优先级（显式判定，非 fallback）：
-          ① client 自报 ``claimed_client_id`` 且 server DB 里还认得 → 续用，
+        身份解析优先级（显式判定，非 fallback）：
+          ① ``user_name`` 非空 → 派生确定性 id（``client_id_from_name``），跨设备
+             同 name 续用同一身份、touch last_seen。``--name`` 是权威身份键，
+             **不**走 claimed/指纹路径。
+          ② client 自报 ``claimed_client_id`` 且 server DB 里还认得 → 续用，
              touch last_seen。覆盖 ``xskill connect <addr> --token`` 带参重连
              场景：本地 ``team_client.json`` 已存 client_id，不该换。
-          ② client 没自报 / 自报的 server 不认得，但 (hostname, label) 指纹
+          ③ client 没自报 / 自报的 server 不认得，但 (hostname, label) 指纹
              能查到唯一历史身份 → 续用。覆盖 state 文件丢失（重装、清家目录）
              但 server DB 还在的场景，让灰度/归属链路自愈。
-          ③ 以上都不行 → 发新 uuid 入库。
+          ④ 以上都不行 → 发新 uuid 入库（匿名 hashid，既有逻辑）。
 
         指纹查找仅在 hostname 或 label 至少一个非空时启用，防止匿名 client
         互相误匹配。
         """
-        # 优先级 ① — claimed_client_id 命中
+        # 优先级 ① — user_name 派生确定性 id（--name 权威身份）
+        if user_name:
+            client_id = client_id_from_name(user_name)
+            now = _now()
+            conn = self._conn()
+            try:
+                existing = conn.execute(
+                    "SELECT 1 FROM clients WHERE client_id=?", (client_id,)
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        "UPDATE clients SET last_seen=?, hostname=? WHERE client_id=?",
+                        (_now(), hostname or "", client_id),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO clients (client_id, label, hostname, joined_at, last_seen)"
+                        " VALUES (?, ?, ?, ?, ?)",
+                        (client_id, label or user_name, hostname or "", now, now),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+            return client_id
+        # 优先级 ② — claimed_client_id 命中
         if claimed_client_id and self.exists(claimed_client_id):
             self.touch(claimed_client_id)
             return claimed_client_id
-        # 优先级 ② — (hostname, label) 指纹回查
+        # 优先级 ③ — (hostname, label) 指纹回查
         existing = self._find_by_fingerprint(hostname=hostname, label=label)
         if existing:
             self.touch(existing)
             return existing
-        # 优先级 ③ — 发新 uuid
+        # 优先级 ④ — 发新 uuid
         client_id = uuid.uuid4().hex
         now = _now()
         conn = self._conn()

@@ -30,6 +30,10 @@ class RegisterRequest(BaseModel):
     # server 按优先级判定（详见 client_registry.register）；None = 客户端
     # 没有历史身份（首次连接或 state 丢失），server 自行新发或按指纹回查。
     claimed_client_id: str | None = None
+    # 显式身份键 ``--name <userid>``。非空时 server 派生确定性 client_id（跨设备
+    # 同 name 共享画像），优先于 claimed_client_id / 指纹回查。None = 匿名
+    # （回退 hashid/uuid 逻辑；受 server allow_anonymous_user 闸门）。
+    user_name: str | None = None
 
 
 class RegisterResponse(BaseModel):
