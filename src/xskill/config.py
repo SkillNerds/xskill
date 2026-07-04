@@ -196,6 +196,23 @@ team:
     traj_root:    ~/.xskill/team_trajectories  # 收下的客户端上传轨迹根目录
     skill_slots:  100   # 每个客户端 manifest 的技能槽位上限（ranked + recommended）
     ranked_slots: 80    # 其中按 UX 分排名占的槽位；剩余（100-80=20）留给向量推荐
+    allow_anonymous_user: true   # false 时拒绝不带 --name 的匿名 connect（403）；
+                                 # true（缺省）允许匿名，沿用既有 uuid/hashid 逻辑
+
+# ===== Skill recommend engine =====
+# 用户画像 + skill 特征 + 推荐引擎参数。仅 team server 端生效。
+recommend:
+  quality_ratio:   0.8   # 推荐位中按 ux 质量排序的占比；其余按向量相关性
+  cluster_centers: 5     # 用户兴趣聚类中心上限（≤5）；atom 少时自动降 k
+  last_n_atoms:    5     # skill.atom_feat 取最近 N 个被路由 atom 摘要的均值
+  # staging_need:   20   # 可选；缺省 None = 复用 canary.total_samples（不另造达量标准）
+
+# ===== SkillHub (optional third-party skill directory, CS mode) =====
+# 启用后扫描该目录下的三方 SKILL.md，按 description 向量化纳入推荐检索池
+# （仅进相关性位，不进质量位/灰度）。三方 skill 无 git 分支/灰度基础设施。
+skillhub:
+  enabled: false                      # 缺省关；true 才扫描
+  dir:     ~/.xskill/skillhub_skills  # 三方 skill 目录；启用时缺失会抛错（不静默跳过）
 
 # ===== Dashboard (the built-in web console served by `xskill serve`) =====
 dashboard:
@@ -387,6 +404,99 @@ def ingest_config(path: Optional[Path] = None) -> dict:
             ) from e
         patterns.append(p)
     return {"settle_seconds": float(settle), "mask_patterns": patterns}
+
+
+# ─── recommend / skillhub / allow_anonymous ──────────────────────
+# dict-based 读取（运行时拿已加载的 config dict），与 dashboard_config 同风格：
+# 显式默认、坏类型抛 ValueError（fail-loud，不静默兜底）。
+
+
+def recommend_config(cfg: Optional[dict] = None) -> dict:
+    """读 config 的 ``recommend`` 段，显式默认。
+
+    返回 ``{quality_ratio, cluster_centers, last_n_atoms, staging_need}``。
+    ``staging_need`` 缺省 None = 复用 ``canary.total_samples``（不另造达量标准）。
+    """
+    section = (cfg or {}).get("recommend") or {}
+    quality_ratio = section.get("quality_ratio", 0.8)
+    if not isinstance(quality_ratio, (int, float)) or isinstance(quality_ratio, bool):
+        raise ValueError(
+            f"recommend.quality_ratio 必须是数值，got {type(quality_ratio).__name__}"
+        )
+    quality_ratio = float(quality_ratio)
+    if not 0.0 <= quality_ratio <= 1.0:
+        raise ValueError(
+            f"recommend.quality_ratio 必须在 [0,1]，got {quality_ratio}"
+        )
+    cluster_centers = section.get("cluster_centers", 5)
+    if not isinstance(cluster_centers, int) or isinstance(cluster_centers, bool):
+        raise ValueError(
+            f"recommend.cluster_centers 必须是整数，got {type(cluster_centers).__name__}"
+        )
+    if cluster_centers < 1:
+        raise ValueError(
+            f"recommend.cluster_centers 必须 >= 1，got {cluster_centers}"
+        )
+    last_n_atoms = section.get("last_n_atoms", 5)
+    if not isinstance(last_n_atoms, int) or isinstance(last_n_atoms, bool):
+        raise ValueError(
+            f"recommend.last_n_atoms 必须是整数，got {type(last_n_atoms).__name__}"
+        )
+    if last_n_atoms < 1:
+        raise ValueError(
+            f"recommend.last_n_atoms 必须 >= 1，got {last_n_atoms}"
+        )
+    staging_need = section.get("staging_need")
+    if staging_need is not None:
+        if not isinstance(staging_need, int) or isinstance(staging_need, bool):
+            raise ValueError(
+                f"recommend.staging_need 必须是整数或 null，got {type(staging_need).__name__}"
+            )
+        if staging_need < 1:
+            raise ValueError(
+                f"recommend.staging_need 必须 >= 1，got {staging_need}"
+            )
+    return {
+        "quality_ratio": quality_ratio,
+        "cluster_centers": int(cluster_centers),
+        "last_n_atoms": int(last_n_atoms),
+        "staging_need": staging_need,
+    }
+
+
+def skillhub_config(cfg: Optional[dict] = None) -> dict:
+    """读 config 的 ``skillhub`` 段，显式默认。
+
+    返回 ``{enabled: bool, dir: Path}``。``dir`` 缺省 ``~/.xskill/skillhub_skills``。
+    目录是否存在不在此校验——由 ``SkillHub`` 初始化时按 no-fallback 抛错。
+    """
+    section = (cfg or {}).get("skillhub") or {}
+    enabled = section.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(
+            f"skillhub.enabled 必须是布尔，got {type(enabled).__name__}"
+        )
+    raw_dir = section.get("dir") or str(XSKILL_HOME / "skillhub_skills")
+    if not isinstance(raw_dir, str):
+        raise ValueError(
+            f"skillhub.dir 必须是字符串路径，got {type(raw_dir).__name__}"
+        )
+    return {"enabled": enabled, "dir": Path(raw_dir).expanduser()}
+
+
+def allow_anonymous_user(cfg: Optional[dict] = None) -> bool:
+    """读 ``team.server.allow_anonymous_user``，缺省 True（向后兼容）。
+
+    false 时 team server 拒绝不带 ``--name`` 的匿名注册。
+    """
+    section = (cfg or {}).get("team", {}).get("server", {}) or {}
+    val = section.get("allow_anonymous_user", True)
+    if not isinstance(val, bool):
+        raise ValueError(
+            "team.server.allow_anonymous_user 必须是布尔，"
+            f"got {type(val).__name__}"
+        )
+    return val
 
 
 def get_skill_dir() -> Path:
