@@ -155,11 +155,26 @@ def list_skills(skill_dir: Path) -> list[dict]:
     return results
 
 
-def rebuild_skill_index(*, skill_dir: Path, embed_client) -> None:
-    """Rebuild ``<skill_dir>/.skill_index.pkl`` for skill semantic search."""
+def rebuild_skill_index(
+    *,
+    skill_dir: Path,
+    embed_client,
+    atom_store_roots: list[Path] | None = None,
+    last_n_atoms: int = 5,
+) -> None:
+    """Rebuild ``<skill_dir>/.skill_index.pkl`` for skill semantic search.
+
+    主特征 ``embeddings`` = **description-only** 向量（L2 归一）——不融合 tags/summary。
+    辅助 ``atom_feats`` = 每个 skill 最近 ``last_n_atoms`` 个被路由 atom 摘要均值向量
+    （独立存 ``atom_feats`` 字段，不并入 ``embeddings``）；无 atom 的 skill 该行为零向量、
+    ``atom_feat_present`` 标 False。``atom_store_roots`` 给定时才算 atom_feat，否则全部
+    不存在（present=False）。
+    """
     skill_root = Path(skill_dir)
     if embed_client is None:
         raise RuntimeError("rebuild_skill_index: embed_client is required")
+
+    from xskill.recommend.skill_feature import last_n_atom_summaries
 
     entries = []
     for skill_path in sorted(skill_root.iterdir()):
@@ -168,27 +183,45 @@ def rebuild_skill_index(*, skill_dir: Path, embed_client) -> None:
         frontmatter, _body, _path = _load_skill(skill_path)
         if not frontmatter:
             continue
-        metadata = frontmatter.get("metadata", {}) or {}
         description = (frontmatter.get("description") or "").strip()
-        summary = (metadata.get("summary") or "").strip()
-        tags = metadata.get("tags", []) or []
-        text = f"{description} | tags: {', '.join(tags)} | {summary}".strip()
-        entries.append((skill_path.name, text))
+        entries.append((skill_path.name, description))
 
     if not entries:
         logger.info("no skills to index")
         return
 
-    skill_names, index_texts = zip(*entries)
-    embeddings = embed_client.encode_batch(list(index_texts))
+    skill_names, descriptions = zip(*entries)
+    descriptions = list(descriptions)
+
+    # 主特征：description-only 向量
+    embeddings = embed_client.encode_batch(descriptions)
+    embeddings = numpy.asarray(embeddings, dtype=float)
     norms = numpy.linalg.norm(embeddings, axis=1, keepdims=True)
     norms[norms == 0] = 1
     embeddings = embeddings / norms
 
+    # 辅助属性 atom_feat：每个 skill 最近 N atom 摘要均值（独立，不并入 embeddings）
+    dim = embeddings.shape[1]
+    atom_feats = numpy.zeros((len(skill_names), dim), dtype=float)
+    atom_present = [False] * len(skill_names)
+    for i, name in enumerate(skill_names):
+        summaries = last_n_atom_summaries(
+            name, atom_store_roots, n=last_n_atoms,
+        )
+        if not summaries:
+            continue
+        vecs = numpy.asarray(embed_client.encode_batch(summaries), dtype=float)
+        mean = vecs.mean(axis=0)
+        n = float(numpy.linalg.norm(mean))
+        atom_feats[i] = mean / n if n > 0 else mean
+        atom_present[i] = True
+
     index_data = {
         "skill_names": list(skill_names),
-        "texts": list(index_texts),
+        "texts": descriptions,
         "embeddings": embeddings,
+        "atom_feats": atom_feats,
+        "atom_feat_present": atom_present,
         "method": "api",
     }
 

@@ -133,6 +133,11 @@ class Skill:
         self._body_cache: Optional[str] = None
         self.candidates_buffer = CandidateBuffer(self.path)
         self.canary_ops = CanaryGitOps(self.path)
+        # §3 skill-feature：可选注入 embed_client / skill_index 供 SkillFeature 现算/读索引；
+        # 不注入时 SkillFeature 自行从 .skill_index.pkl 读、或用 get_config() 现算 vec。
+        self._embed_client = None
+        self._skill_index: Optional[dict] = None
+        self._feature_cache = None
 
     # ─── SKILL.md 访问 ───────────────────────────────────────────
     @property
@@ -193,6 +198,59 @@ class Skill:
         if not scores:
             return None
         return sum(scores) / len(scores)
+
+    # ─── §3 skill-feature：vec / atom_feat / skill_meta ──────────
+    @property
+    def feature(self):
+        """``SkillFeature`` 视图（主特征 vec + 辅助 atom_feat）。缓存在本实例。"""
+        if self._feature_cache is None:
+            from xskill.recommend.skill_feature import SkillFeature
+            self._feature_cache = SkillFeature(
+                self, embed_client=self._embed_client, skill_index=self._skill_index,
+            )
+        return self._feature_cache
+
+    @property
+    def vec(self):
+        """主特征向量 = description 向量（代理 ``feature.vec``）。"""
+        return self.feature.vec
+
+    @property
+    def atom_feat(self):
+        """辅助属性 = 最近 N atom 摘要均值（独立不并入 vec；无 atom 时 None）。"""
+        return self.feature.atom_feat
+
+    @property
+    def skill_meta(self) -> dict:
+        """版本视图：``{"main": {git_hash, used_ux_scores}, "staging": ...|None, "baby": ...|None}``。
+
+        对既有 git 状态 + ``.ux_scores.jsonl`` 的只读视图，不是独立持久化对象。
+        """
+        m_sha = self.canary_ops.main_sha()
+        main_block = {
+            "git_hash": m_sha or "",
+            "used_ux_scores": [
+                s.get("score") for s in self.recent_ux_scores(side="main", days=30)
+                if isinstance(s.get("score"), (int, float))
+            ],
+        }
+        staging_block = None
+        if self.canary_ops.has_staging():
+            s_sha = self.canary_ops.staging_sha()
+            staging_block = {
+                "git_hash": s_sha or "",
+                "used_ux_scores": [
+                    s.get("score") for s in self.recent_ux_scores(side="staging", days=30)
+                    if isinstance(s.get("score"), (int, float))
+                ],
+            }
+        baby_block = None
+        # baby 分支：CanaryGitOps 不直接暴露，用 git rev-parse 探测
+        from xskill.skill.git import run_git
+        code, out, _ = run_git(["rev-parse", "baby"], cwd=str(self.path))
+        if code == 0 and out.strip():
+            baby_block = out.strip()
+        return {"main": main_block, "staging": staging_block, "baby": baby_block}
 
     # ─── 反向关联 ────────────────────────────────────────────────
     def supporting_trajectories(self) -> list["Trajectory"]:
