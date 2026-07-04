@@ -3,9 +3,9 @@
 ### Requirement: SkillRecommendEngine 管理 user 与 skill 两套向量库
 
 `SkillRecommendEngine` SHALL 以 `XSkillConfig` 构造,并 SHALL 维护两套向量库:用户画像库
-(每用户的 `feature_tensor`/`mean_tensor`)与 skill 特征库(来自 `.skill_index.pkl` 的融合 skill
-向量,限定为可分发的 `main`+`staging` skill 加上已启用的 `SkillHub` 三方 skill)。`baby` 分支的
-skill SHALL NOT 进入检索池。
+(每用户的 `feature_tensor`/`mean_tensor`)与 skill 向量库(来自 `.skill_index.pkl` 的 skill
+description 向量 `Skill.vec`,限定为可分发的 `main`+`staging` skill 加上已启用的 `SkillHub` 三方
+skill)。`baby` 分支的 skill SHALL NOT 进入检索池。
 
 #### Scenario: baby skill 被排除在检索之外
 
@@ -28,9 +28,9 @@ skill SHALL NOT 进入检索池。
 
 `get_skill_for_client(ClientUser, skill_num) -> list[Skill]` SHALL 返回 `skill_num` 个 skill,由
 两部分组成:质量位 `ceil(skill_num * quality_ratio)` 个按 ux 分降序的 skill(缺省 `quality_ratio=0.8`),
-以及相关性位用各 `feature_tensor` 中心在 skill 特征库上做 KNN 向量检索(cosine,与质量位去重)填满
-其余。质量位不足其目标(skill 总数少)时,相关性位 SHALL 回填至 `skill_num`。该配比 SHALL 可通过
-`recommend.quality_ratio` 配置。
+以及相关性位用各 `feature_tensor` 中心在 skill 向量库(`Skill.vec` = description 向量)上做 KNN 检索
+(cosine,与质量位去重)填满其余。质量位不足其目标(skill 总数少)时,相关性位 SHALL 回填至
+`skill_num`。该配比 SHALL 可通过 `recommend.quality_ratio` 配置。
 
 #### Scenario: 标准 80/20 拆分
 
@@ -97,9 +97,10 @@ SHALL 被排除在查询与候选之外。
 
 ### Requirement: find_tag_for_user 与 find_tag_for_skill 走语义检索
 
-`SkillRecommendEngine.find_tag_for_user(ClientUser) -> list[str]` SHALL 针对用户兴趣,在 skill-atom
-tag 集上做语义向量检索返回相关 tag。`find_tag_for_skill(Skill) -> list[str]` SHALL 返回该 skill 最
-相关的 tag。两者都基于 tag embedding 索引的向量相似度。
+`SkillRecommendEngine.find_tag_for_user(ClientUser) -> list[str]` SHALL 针对用户兴趣,在
+`AtomTask.tags`(atom 级 tag,非 skill 级)的 tag embedding 索引上做语义向量检索返回相关 tag。
+`find_tag_for_skill(Skill) -> list[str]` SHALL 返回该 skill 被路由 atom 的 `AtomTask.tags` 中最
+相关的 tag。两者都基于 atom 级 tag embedding 索引的向量相似度。
 
 #### Scenario: find_tag_for_user 返回相关 tag
 

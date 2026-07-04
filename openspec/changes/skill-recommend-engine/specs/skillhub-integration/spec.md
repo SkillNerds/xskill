@@ -17,16 +17,17 @@ skill 目录(缺省 `~/.xskill/skillhub_skills/`)下的 `SKILL.md` 文件。禁�
 - **当** `config.yaml` 设置 `skillhub.enabled: true` 与 `skillhub.dir: ~/.xskill/skillhub_skills`
 - **那么** `SkillHub` SHALL 扫描该目录下的 `SKILL.md` 文件并索引
 
-### Requirement: 三方 skill 按 description + tags 向量化
+### Requirement: 三方 skill 按 description 向量化
 
-`SkillHub` SHALL 用与 `SkillFeature` 相同的融合方式对每个三方 skill 向量化(description + tags;
-三方 skill 在本仓无被路由 atom,故 last5-atom 来源按定义缺失)。结果向量 SHALL 做 L2 归一,并加入
-`SkillRecommendEngine` 检索池,与仓库自有的 `main`/`staging` skill 同池。
+`SkillHub` SHALL 用 SKILL.md `description` 的 embedding 对每个三方 skill 向量化（L2 归一）——三方
+skill 在本仓无被路由 atom，故无 `atom_feat`，仅以 description 向量参与检索。结果向量 SHALL 加入
+`SkillRecommendEngine` 检索池，与仓库自有的 `main`/`staging` skill 同池。SHALL NOT 引入 skill 级 tag
+概念。
 
 #### Scenario: 三方 skill 入检索池
 
 - **当** `skillhub.enabled` 为 true 且 `~/.xskill/skillhub_skills/foo/SKILL.md` 存在
-- **那么** `SkillHub` SHALL 为 "foo" 计算融合向量
+- **那么** `SkillHub` SHALL 为 "foo" 计算 description 向量（L2 归一）
 - **且** "foo" SHALL 可被 `get_skill_for_client` 的相关性 KNN 检索到
 
 ### Requirement: 三方 skill 仅参与相关性位

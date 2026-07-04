@@ -15,7 +15,8 @@ xskill team-CS 模式已有一套「manifest 投影 + 画像推荐」链路：
   不是稳定身份键。跨设备/重装后 uuid 变 → 画像丢失。
 - `skill/repo.py` `rebuild_skill_index` → `.skill_index.pkl = {skill_names, embeddings}`，embedding
   仅来自 description。
-- `pipeline/atom.py` `AtomTask`：已有 `used_skills`、`summary`、`intent`、`tags`、`source_model`。
+- `pipeline/atom.py` `AtomTask`：已有 `used_skills`、`summary`、`intent`、`tags`（atom 级）、`source_model`。
+  注：`tags` 是 **atom 级**（`AtomTask.tags`），**不存在 skill 级 tag**——`find_tag_*` 检索的是 atom 级 tag。
 
 当前痛点（用户原话归纳）：
 1. 用户身份是 uuid，无法跨设备追踪画像。
@@ -31,7 +32,8 @@ xskill team-CS 模式已有一套「manifest 投影 + 画像推荐」链路：
 
 **Goals:**
 - `xskill connect --name <userid>` 提供稳定跨设备身份；匿名回退 hashid；server 可禁匿名。
-- skill 向量特征从「description 单一」升级为「description + tags + last5 atom 摘要均值」融合。
+- skill 主特征 `Skill.vec` = description 向量（向量检索唯一主特征）；另开独立辅助属性 `Skill.atom_feat`
+  = 最近5 atom 摘要均值（不并入 `vec`）。不存在 skill 级 tag 概念。
 - 用户画像从「单质心」升级为「≤5 聚类中心」多兴趣锚点 + mean_tensor。
 - 推荐引擎 80% 质量 + 20% 相关性混合，相关性位用向量检索填补质量位缺口。
 - staging 优先达量灰度推送：推荐决策感知 staging 配额，staging 未达量时优先推 staging 给最可能
@@ -73,22 +75,24 @@ xskill team-CS 模式已有一套「manifest 投影 + 画像推荐」链路：
 **理由**：server 侧策略，应在 server 唯一入口 `/register` 拦截，不在 client 侧判断（client 不知道
 server 策略）。缺省 true 保证现有匿名部署不破。
 
-### D3: Skill 特征 = description + tags + last5 atom 摘要均值（融合）
+### D3: Skill 主特征 = description 向量；`atom_feat` 为独立辅助属性（不融合）
 
-**选择**：`SkillFeature.vec` = `normalize(embed(description) + mean(embed(tags)) + mean(embed(last5_atom_summaries)))`。
-三者都已有 embed client（`utils/llm.create_embed_client`）。last5 atom = 该 skill 的
-`.candidates.yml` / frontmatter `source_trajs` 反查出的最近 5 个 atom 的 `summary`。三者缺哪个
-跳过哪个（不 throw——特征缺失是正常冷启动情形，不是错误；但**不在代码里写 fallback 分支语义**，
-而是「特征向量构造」本身的定义就允许部分源缺失）。
+**选择**：`Skill.vec`（主特征，向量检索用）= `normalize(embed(description))`，仅此一源。另开独立属性
+`Skill.atom_feat` = `normalize(mean(embed(last5_atom_summaries)))`（最近5 atom 摘要均值），**不并入
+`vec`**；无 atom 时为 `None`。`rebuild_skill_index` 把 description 向量写入 `.skill_index.pkl["embeddings"]`
+（向后兼容既有 cosine 检索），把 `atom_feat` 单独写入 `.skill_index.pkl["atom_feats"]`。**不做任何融合**。
 
-**理由**：用户明确「description 作为特征过于稀疏，需围绕 skill 抽取特征」。tags 是离散语义、
-last5 atom 是真实使用上下文，三者互补。融合后单向量即可参与 KNN，不增加检索复杂度。
+**理由**：用户明确「skill 的唯一特征描述就应该只是 description vec」「不应该有融合 skill 向量这个说法」。
+description 是 skill 触发/检索的自然主特征（与 Anthropic skill 的"description 是唯一触发机制"一致）。
+`atom_feat` 作为独立属性保留「最近使用上下文」信息，供未来按需使用，但不污染主检索特征。不存在 skill
+级 tag（此前从未设计过），故不引入。
 
-**替代方案**：① 多向量分别检索再 fusion → 复杂度 ×3，收益不明确。② 只加 tags → atom 上下文
-（最能反映 skill 真实用途）丢失。选单向量融合。
+**替代方案**：① description + tags + atom 融合成单向量 → 被用户否决（不存在 skill 级 tag，且不要融合）。
+② 把 atom_feat 并入 vec → 改变了主特征语义，且 atom 缺失时主特征漂移，破坏检索稳定性。选 vec 纯
+description + atom_feat 独立。
 
-**注意（与 CLAUDE.md「不写 fallback」一致）**：特征源缺失时跳过该源是**特征定义的一部分**，不是
-运行时 fallback；构造逻辑显式枚举三源、缺则不并入，不静默兜底到某个魔术向量。
+**注意（与 CLAUDE.md「不写 fallback」一致）**：`atom_feat` 在无 atom 时为 `None` 是属性定义的一部分
+（冷启动语义），不是运行时 fallback；`vec` 始终由 description 决定，不存在「缺源退化」分支。
 
 ### D4: 聚类用 numpy-only k-means（≤5 中心），不引入 sklearn
 
@@ -138,7 +142,8 @@ staging 配额。把达量判定接进推荐决策，让 staging 优先被「最
 ### D7: SkillHub 选配，独立目录，无 git/灰度
 
 **选择**：`SkillHub`（`config.skillhub.enabled: false` 缺省关）。启用时扫描
-`~/.xskill/skillhub_skills/`，对每个三方 skill 的 SKILL.md description+tags 向量化，纳入
+`~/.xskill/skillhub_skills/`，对每个三方 skill 的 SKILL.md description 向量化（三方 skill 无被路由
+atom，故无 `atom_feat`），纳入
 `SkillRecommendEngine` 检索池。三方 skill **只参与相关性位**（无 uxscore → 不进质量位；无 git 分支
 → 不进灰度达量）。
 
@@ -172,8 +177,8 @@ used_skills JSON, updated_at`），tensor 用 `numpy.save` 序列化成 BLOB。`
 ## Migration Plan
 
 1. `--name` / `allow_anonymous_user`：纯新增 flag + 闸门，缺省行为不变（匿名仍走 uuid）。无需迁移。
-2. `SkillFeature` 融合：`rebuild_skill_index` 签名扩展但向后兼容（缺 tags/atom 时退化为 description-only
-   特征构造，这是特征定义允许的，非运行时 fallback）。需 `xskill rebuild --force` 一次重建索引。
+2. `SkillFeature`：`rebuild_skill_index` 扩展——description 向量写 `embeddings`（向后兼容），`atom_feat`
+   单独写 `atom_feats`。需 `xskill rebuild --force` 一次重建索引。无 atom 的 skill `atom_feat` 为 None。
 3. `SkillRecommendEngine` 取代 `ClientProfileRecommender`：`skill_manifest._pick_recommended` 改调
    引擎。旧 `RECOMMENDER` 单例保留一个版本以灰度切换，确认稳定后删（手动迁移，不做兼容层）。
 4. `client_interest` 表：server 启动时 `CREATE TABLE IF NOT EXISTS`，无数据时冷启动（无画像 → 退
