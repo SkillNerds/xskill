@@ -98,6 +98,12 @@ class SkillRecommendEngine:
         return names, embs, is_hub
 
     # ── skill 索引 / 池 ───────────────────────────────────────────
+    def invalidate_cache(self) -> None:
+        """失效 skill 索引 / skillhub 缓存。``/reindex`` 或 skill 增删后调用，
+        确保下次检索读最新 ``.skill_index.pkl`` 与三方 skill 目录。"""
+        self._skill_index_cache = None
+        self._skillhub_cache = None
+
     def _skill_index(self) -> dict:
         if self._skill_index_cache is None:
             import pickle

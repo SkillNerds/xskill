@@ -149,6 +149,10 @@ def _pick_recommended(
 
     # §5 优先走 SkillRecommendEngine（注入时）；否则退回既有 RECOMMENDER 画像路径。
     if _engine is not None:
+        # 索引缺失时（rebuild --force 后到 /reindex 前的窗口）不能进引擎——
+        # _combined_relevance 会 raise。退回 ux_tail（与既有 RECOMMENDER 守卫一致）。
+        if not (skill_dir / ".skill_index.pkl").is_file():
+            return ux_tail[:reco_slots]
         user = _engine.load_client_user(client_id)
         if user.client_interest is not None and user.client_interest.feature_tensor is not None:
             picked = _engine.get_skill_for_client(

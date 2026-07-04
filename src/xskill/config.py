@@ -416,7 +416,8 @@ def recommend_config(cfg: Optional[dict] = None) -> dict:
     """读 config 的 ``recommend`` 段，显式默认。
 
     返回 ``{quality_ratio, cluster_centers, last_n_atoms, staging_need}``。
-    ``staging_need`` 缺省 None = 复用 ``canary.total_samples``（不另造达量标准）。
+    ``staging_need`` 缺省 None = 复用 ``canary.min_samples``（推荐侧达量阈值，
+    比 total_samples 更适合小团队；引擎构造时解析）。
     """
     section = (cfg or {}).get("recommend") or {}
     quality_ratio = section.get("quality_ratio", 0.8)

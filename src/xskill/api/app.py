@@ -766,6 +766,14 @@ async def api_reindex():
             skill_dir=_skill_dir, embed_client=embedding_client,
             atom_store_roots=_team_atom_roots(),
         )
+        # 失效推荐引擎的 skill 索引 / skillhub 缓存，否则引擎仍服务旧 embedding
+        try:
+            from xskill.team.server.skill_manifest import get_recommend_engine
+            eng = get_recommend_engine()
+            if eng is not None:
+                eng.invalidate_cache()
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.debug("engine cache invalidation skipped", exc_info=True)
         return MessageResponse(message="Skill index rebuilt", ok=True)
     except Exception as e:
         logger.exception("reindex failed")
