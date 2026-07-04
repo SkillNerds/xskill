@@ -150,9 +150,9 @@ class SkillRecommendEngine:
     ) -> None:
         """atom 触发：重扫用户 atom 摘要 → 重新聚类 → upsert 画像。
 
-        ``task_atom`` 为触发事件（增量优化预留）；点集以 atom store 为单一真源重扫。
+        ``task_atom`` 为触发事件（增量优化预留，当前以 atom store 为单一真源重扫）。
         """
-        from xskill.recommend.client_interest import ClientInterest  # noqa: F401
+        # pylint: disable=unused-argument
         user_id = client_interest.user_id
         atoms = self._user_atoms(user_id)
         summaries = [a.summary for a in atoms if a.summary]
@@ -165,9 +165,7 @@ class SkillRecommendEngine:
         vecs = _normalize_rows(np.asarray(
             self.embed_client.encode_batch(summaries), dtype=float,
         ))
-        client_interest._points = vecs
-        client_interest._feature_tensor = None
-        client_interest._mean_tensor = None
+        client_interest.reset_points(vecs)
         ft = client_interest.feature_tensor
         mt = client_interest.mean_tensor
         self.profile_store.upsert(

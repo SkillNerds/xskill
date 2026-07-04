@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -23,15 +22,15 @@ def _normalize(v: np.ndarray) -> np.ndarray:
 class SkillHub:
     """三方 skill 扫描器。``enabled=False``（缺省）时为 no-op。"""
 
-    def __init__(self, *, enabled: bool, dir: Path | str, embed_client):
+    def __init__(self, *, enabled: bool, hub_dir: Path | str, embed_client):
         self.enabled = bool(enabled)
-        self.dir = Path(dir)
+        self.dir = Path(hub_dir)
         self.embed_client = embed_client
 
     @classmethod
     def from_config(cls, config: dict, embed_client) -> "SkillHub":
         cfg = skillhub_config(config)
-        return cls(enabled=cfg["enabled"], dir=cfg["dir"], embed_client=embed_client)
+        return cls(enabled=cfg["enabled"], hub_dir=cfg["dir"], embed_client=embed_client)
 
     def index(self) -> list[dict]:
         """返回 ``[{name, vec, description}]``。禁用 → 空 list；启用但目录缺失 → raise。"""

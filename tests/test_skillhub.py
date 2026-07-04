@@ -66,14 +66,14 @@ def _write_index(skill_dir: Path, names: list[str], dim: int):
 
 class TestSkillHub:
     def test_disabled_noop(self, tmp_path):
-        hub = SkillHub(enabled=False, dir=tmp_path / "hub", embed_client=FakeEmbed())
+        hub = SkillHub(enabled=False, hub_dir=tmp_path / "hub", embed_client=FakeEmbed())
         assert hub.index() == []
 
     def test_enabled_scans_and_vectorizes(self, tmp_path):
         hub_dir = tmp_path / "hub"
         _write_hub_skill(hub_dir, "foo", "django migration helper")
         _write_hub_skill(hub_dir, "bar", "react component gen")
-        hub = SkillHub(enabled=True, dir=hub_dir, embed_client=FakeEmbed(dim=4))
+        hub = SkillHub(enabled=True, hub_dir=hub_dir, embed_client=FakeEmbed(dim=4))
         entries = hub.index()
         names = {e["name"] for e in entries}
         assert names == {"foo", "bar"}
@@ -81,7 +81,7 @@ class TestSkillHub:
             assert abs(np.linalg.norm(e["vec"]) - 1.0) < 1e-6  # L2 归一
 
     def test_enabled_dir_missing_raises(self, tmp_path):
-        hub = SkillHub(enabled=True, dir=tmp_path / "nope", embed_client=FakeEmbed())
+        hub = SkillHub(enabled=True, hub_dir=tmp_path / "nope", embed_client=FakeEmbed())
         with pytest.raises(FileNotFoundError, match="skillhub"):
             hub.index()
 

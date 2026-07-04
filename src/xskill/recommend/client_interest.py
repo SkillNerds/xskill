@@ -106,3 +106,9 @@ class ClientInterest:
         nrm = float(np.linalg.norm(m))
         self._mean_tensor = m / nrm if nrm > 0 else m
         return self._mean_tensor
+
+    def reset_points(self, points: Optional[np.ndarray]) -> None:
+        """重置点集并清空缓存的 feature_tensor/mean_tensor，供引擎增量更新后重算。"""
+        self._points = None if points is None else np.asarray(points, dtype=float)
+        self._feature_tensor = None
+        self._mean_tensor = None
