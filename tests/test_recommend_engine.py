@@ -11,7 +11,6 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from xskill.canary import CanaryConfig, append_ux_score, main_sha, staging_sha
 from xskill.recommend.client_interest import ClientInterest
