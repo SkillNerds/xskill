@@ -23,6 +23,7 @@ from xskill.config import recommend_config
 from xskill.pipeline.atom import AtomTaskStore
 from xskill.recommend.profile_store import ProfileStore
 from xskill.recommend.reco_store import RecoStore
+from xskill.recommend.skillhub import SkillHub
 from xskill.skill.repo import SkillRepo
 
 if TYPE_CHECKING:
@@ -62,6 +63,38 @@ class SkillRecommendEngine:
         self.canary_cfg = canary_config or CanaryConfig.from_dict(config.get("canary", {}))
         self.staging_need = self.rcfg["staging_need"] or self.canary_cfg.total_samples
         self._skill_index_cache: Optional[dict] = None
+        self._skillhub_cache: Optional[list[dict]] = None
+        self.skillhub = SkillHub.from_config(config, embed_client)
+
+    # ─§6 三方 skill 检索池 ────────────────────────────────────────
+    def _skillhub_entries(self) -> list[dict]:
+        """三方 skill ``{name, vec}``（缓存）。禁用时为空。"""
+        if self._skillhub_cache is None:
+            self._skillhub_cache = self.skillhub.index()
+        return self._skillhub_cache
+
+    def _combined_relevance(self) -> tuple[list[str], np.ndarray, dict[str, bool]]:
+        """合并检索池：可分发 skill 的 desc 向量 + 三方 skill 向量。
+
+        返回 ``(names, embeddings, is_skillhub)``。三方 skill 标记 True（仅相关性位）。
+        """
+        idx = self._skill_index()
+        repo_names = list(idx.get("skill_names") or [])
+        repo_embs = np.asarray(idx["embeddings"], dtype=float)
+        distributable = {s.name for s in self._distributable_skills()}
+        # 仅保留可分发 skill（排除 baby / 已删）
+        keep = [i for i, n in enumerate(repo_names) if n in distributable]
+        names = [repo_names[i] for i in keep]
+        embs = repo_embs[keep] if keep else np.zeros((0, repo_embs.shape[1] if repo_embs.ndim == 2 else 0))
+        is_hub = {n: False for n in names}
+        for e in self._skillhub_entries():
+            if e["name"] in is_hub:
+                continue  # 自有 skill 同名优先
+            names.append(e["name"])
+            embs = np.vstack([embs, np.asarray(e["vec"], dtype=float)]) if len(embs) else \
+                np.asarray([e["vec"]], dtype=float)
+            is_hub[e["name"]] = True
+        return names, embs, is_hub
 
     # ── skill 索引 / 池 ───────────────────────────────────────────
     def _skill_index(self) -> dict:
@@ -169,20 +202,20 @@ class SkillRecommendEngine:
         relevance: list["Skill"] = []
         ci = client_user.client_interest
         if ci is not None and ci.feature_tensor is not None:
-            idx = self._skill_index()
-            names = idx.get("skill_names") or []
-            embs = np.asarray(idx["embeddings"], dtype=float)
-            pool_name_set = {s.name for s in pool}
-            by_name = {s.name: s for s in pool}
+            names, embs, _is_hub = self._combined_relevance()
+            by_name = {s.name: s for s in pool}  # pool 已排除 exclude_names
             picked = set(quality_names)
             for center in ci.feature_tensor:
                 if len(quality) + len(relevance) >= skill_num:
+                    break
+                if embs.shape[0] == 0:
                     break
                 sims = embs @ np.asarray(center, dtype=float)
                 order = np.argsort(-sims)
                 for i in order:
                     nm = names[i]
-                    if nm in pool_name_set and nm not in picked:
+                    # 仅返回可分发 skill（skillhub-only 无 git，不能作为 slot 分发）
+                    if nm in by_name and nm not in picked:
                         relevance.append(by_name[nm])
                         picked.add(nm)
                         if len(quality) + len(relevance) >= skill_num:
@@ -239,6 +272,15 @@ class SkillRecommendEngine:
         return pick_side(client_user.user_id, skill.name, self.canary_cfg.probability)
 
     # ── 5.6 find_friend ──────────────────────────────────────────
+    def relevance_search(self, query_vec, top_k: int = 5) -> list[tuple[str, bool]]:
+        """在合并检索池（可分发 + 三方 skill）做 KNN，返回 ``(name, is_skillhub)``。"""
+        names, embs, is_hub = self._combined_relevance()
+        if embs.shape[0] == 0:
+            return []
+        sims = embs @ np.asarray(query_vec, dtype=float)
+        order = np.argsort(-sims)[:top_k]
+        return [(names[i], is_hub.get(names[i], False)) for i in order]
+
     def load_client_user(self, user_id: str) -> "ClientUser":
         """从持久化加载 ``ClientUser``（画像 + used_skills + recommended_skills）。
 
