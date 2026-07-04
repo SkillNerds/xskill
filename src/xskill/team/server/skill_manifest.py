@@ -1,16 +1,19 @@
 """skill_manifest.py — 给一个 client 现算它该持有的 ≤100 个 skill slot（SP1）
 
-server 端**不存"账本表"**。manifest = ``pick_side`` 纯函数 + skill git
-状态（has_staging / main_sha / staging_sha）的实时投影，每次 sync 现算。
+server 端的 skill 槽位投影不存表：ranked/recommended 排序 + skill git 状态
+（has_staging / main_sha / staging_sha）每次 sync 现算。**唯一例外是灰度 side
+决策**——它由 ``CanaryRouter`` 有状态记账（见下），因为无状态哈希在 client 基数
+很小时会把 staging 饿死到 0。
 
 slot 结构 = 80 ranked + 20 recommended：
 - ranked      —— 按 ux_score（main 侧近 30 天均分）滑窗取高分。
 - recommended —— SP3 = 用户画像质心推荐位：基于该 client 用过的 skill 的质心，
-                 从候选里取 cosine 最近邻（``profile_reco.py``）。无画像
-                 （冷启动）或非 team server 调用 → 退回 ux 排序往下取。
+                  从候选里取 cosine 最近邻（``profile_reco.py``）。无画像
+                  （冷启动）或非 team server 调用 → 退回 ux 排序往下取。
 
-灰度归因：某 skill 有 staging 分支 → side = pick_side(client_id, name, p)，
-确定性伪随机，同 client 同 skill 在整轮灰度内 side 钉死。无 staging → main。
+灰度归因：某 skill 有 staging 分支 → side = CanaryRouter.assign(client_id,
+name, p)，按 client 随机分配并保证 staging 总量份额（同 client 同 staging
+版本内 side 钉死）。无 staging → main。
 """
 from __future__ import annotations
 
@@ -18,12 +21,17 @@ import logging
 import time
 from pathlib import Path
 
-from xskill.canary import has_staging, main_sha, pick_side, staging_sha
+from xskill.canary import CanaryRouter, has_staging, main_sha, staging_sha
 from xskill.skill.skill import Skill
 from xskill.skill.repo import SkillRepo
 from xskill.team.shared.protocol import SkillSlot, SyncResponse
 
 _logger = logging.getLogger("xskill.team.manifest")
+
+# team-CS manifest 路径的有状态灰度分流器：按 client 随机分配并保证 staging
+# 总量份额（见 CanaryRouter）。module 级单例——team server 单进程，跨 sync 持续
+# 记账；server 重启后账本清空、client 在下次 sync 重新均衡（可接受）。
+_ROUTER = CanaryRouter()
 
 
 def _rank_key(skill: Skill) -> tuple[float, int]:
@@ -35,8 +43,12 @@ def _rank_key(skill: Skill) -> tuple[float, int]:
 def _resolve_slot(skill: Skill, client_id: str, probability: float, bucket: str) -> SkillSlot:
     """对一个 skill 现算它对该 client 的 side + sha。"""
     if has_staging(skill.path):
-        side = pick_side(client_id, skill.name, probability)
-        sha = staging_sha(skill.path) if side == "staging" else main_sha(skill.path)
+        s_sha = staging_sha(skill.path)
+        side = _ROUTER.assign(
+            client_id=client_id, skill_name=skill.name,
+            probability=probability, staging_sha=s_sha,
+        )
+        sha = s_sha if side == "staging" else main_sha(skill.path)
     else:
         side = "main"
         sha = main_sha(skill.path)

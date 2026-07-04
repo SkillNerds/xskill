@@ -331,3 +331,84 @@ def test_jam_threshold_default_is_50():
 
 def test_jam_threshold_read_from_dict():
     assert canary.CanaryConfig.from_dict({"jam_threshold": 30}).jam_threshold == 30
+
+
+# ──────────────────────────────────────────────────────
+# CanaryRouter —— 有状态均衡随机分流
+# ──────────────────────────────────────────────────────
+
+def test_canary_router_locks_client_side():
+    """同 client 同 (staging_sha, probability) → 永远同一 side。"""
+    r = canary.CanaryRouter()
+    sides = {r.assign(client_id="c1", skill_name="s", probability=0.5,
+                      staging_sha="sha-X") for _ in range(10)}
+    assert len(sides) == 1            # 10 次调用 side 钉死
+
+
+def test_canary_router_probability_zero_all_main():
+    r = canary.CanaryRouter()
+    for i in range(10):
+        assert r.assign(client_id=f"c{i}", skill_name="s", probability=0.0,
+                        staging_sha="sha") == "main"
+
+
+def test_canary_router_probability_one_all_staging():
+    r = canary.CanaryRouter()
+    for i in range(10):
+        assert r.assign(client_id=f"c{i}", skill_name="s", probability=1.0,
+                        staging_sha="sha") == "staging"
+
+
+def test_canary_router_guarantees_staging_share_p05():
+    """p=0.5 + 3 client：staging 必拿到 1~2 个，永远不会被饿死到 0。
+
+    这是修复的核心：无状态 pick_side 在 3 client 下有 1/8 概率全 main。
+    """
+    for _ in range(200):              # 200 次独立试验（首个 client 随机）
+        r = canary.CanaryRouter()
+        sides = [r.assign(client_id=f"c{i}", skill_name="s", probability=0.5,
+                          staging_sha="sha") for i in range(3)]
+        n_staging = sides.count("staging")
+        assert 1 <= n_staging <= 2    # 份额被锁进总量，不会是 0 或 3
+
+
+def test_canary_router_guarantees_staging_share_p02():
+    """p=0.2 + 5 client：恰好 1 个 staging（≈ 20% 份额，确定性收敛）。"""
+    for _ in range(200):
+        r = canary.CanaryRouter()
+        sides = [r.assign(client_id=f"c{i}", skill_name="s", probability=0.2,
+                          staging_sha="sha") for i in range(5)]
+        assert sides.count("staging") == 1
+
+
+def test_canary_router_ratio_tracks_probability_many_clients():
+    """100 client 下运行比例贴近 probability（误差 ≤ 1 个）。"""
+    import random as _r
+    for p in (0.2, 0.3, 0.5, 0.7):
+        _r.seed(0)
+        r = canary.CanaryRouter()
+        sides = [r.assign(client_id=f"c{i}", skill_name="s", probability=p,
+                          staging_sha="sha") for i in range(100)]
+        ratio = sides.count("staging") / 100
+        assert abs(ratio - p) <= 0.02          # 误差 ≤ 2 个 client
+
+
+def test_canary_router_resets_on_staging_sha_change():
+    """staging sha 变了 → 账本重置，client 可被重新分配到对面。"""
+    r = canary.CanaryRouter()
+    first = r.assign(client_id="c1", skill_name="s", probability=1.0,
+                     staging_sha="sha-OLD")
+    assert first == "staging"
+    # 新 staging 版本 → 重置 → c1 重新分配；p=0 强制 main 验证确实重算了
+    second = r.assign(client_id="c1", skill_name="s", probability=0.0,
+                      staging_sha="sha-NEW")
+    assert second == "main"
+
+
+def test_canary_router_resets_on_probability_change():
+    """probability 变了 → 重算；p=1.0 即使该 client 之前被分到 main 也变 staging。"""
+    r = canary.CanaryRouter()
+    r.assign(client_id="c1", skill_name="s", probability=0.0, staging_sha="sha")
+    forced = r.assign(client_id="c1", skill_name="s", probability=1.0,
+                      staging_sha="sha")
+    assert forced == "staging"

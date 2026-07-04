@@ -8,7 +8,7 @@ import numpy as np
 
 from xskill.pipeline.atom import AtomTask, AtomTaskStore
 from xskill.team.server.profile_reco import ClientProfileRecommender
-from xskill.team.server.skill_manifest import build_manifest
+from xskill.team.server.skill_manifest import build_manifest, _ROUTER
 
 
 def _git(args, cwd):
@@ -108,6 +108,26 @@ def test_manifest_staging_side_is_deterministic_per_client(tmp_path):
     forced = build_manifest(client_id="cid-A", skill_dir=skill_dir,
                             probability=1.0, ranked_slots=80, total_slots=100).slots[0]
     assert forced.side == "staging"
+
+
+def test_manifest_guarantees_staging_traffic_with_few_clients(tmp_path):
+    """3 个 worker + 唯一 staging skill：至少 1 个 worker 拿到 staging。
+
+    这是 board6 灰度饿死 bug 的回归测试——旧的无状态 pick_side 会把 3 个
+    client 全哈希到 main，staging 流量为 0。CanaryRouter 把 staging 份额锁进
+    总量，保证 ≥1。
+    """
+    _ROUTER.reset()
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    _make_skill(skill_dir, "only-skill", with_staging=True)
+    sides = [
+        build_manifest(client_id=f"worker-{i}", skill_dir=skill_dir,
+                       probability=0.5, ranked_slots=80, total_slots=100).slots[0].side
+        for i in range(3)
+    ]
+    assert sides.count("staging") >= 1
+    _ROUTER.reset()
 
 
 # ═══════════════════════════════════════════════════════════════════

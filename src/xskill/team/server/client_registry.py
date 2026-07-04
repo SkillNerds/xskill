@@ -4,7 +4,7 @@ server 需要持久化的只有三样：client 注册表、skill git 仓、汇�
 ux_score 明细。这个文件是第一样。
 
 client_id 是 server 生成的 uuid——它同时是 ① canary 分桶 key（喂
-pick_side）② 上传轨迹的落盘分桶（clients/<client_id>/sessions/）③
+CanaryRouter.assign）② 上传轨迹的落盘分桶（clients/<client_id>/sessions/）③
 手改分支命名（user-staging/<client_id>）。
 """
 from __future__ import annotations

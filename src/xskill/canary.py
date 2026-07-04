@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
 import shutil
 import threading
 from dataclasses import dataclass
@@ -292,6 +293,105 @@ def pick_side_scoped(traj_id: str, skill_name: str, probability: float,
     if user_model not in eligible:
         return "main"
     return pick_side(traj_id, skill_name, probability)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 有状态分流：CanaryRouter —— 保证总量的均衡随机分配
+# ═══════════════════════════════════════════════════════════════════
+# pick_side 是无状态哈希：每次调用独立做一次伯努利试验。当分流 key 的
+# 基数很小（典型：team-CS 只有 3 个 worker），3 次 0.5 概率的独立试验完全
+# 可能全落到 main，staging 流量为 0，灰度永远拿不到样本。
+#
+# CanaryRouter 解决这个：按 (skill) 维护"已分配的 client→side"账本，新
+# client 进来时选让"当前 main/staging 比例最接近 probability"的那一侧（平
+# 局随机），从而把 staging 的份额"锁"进总量，而不是听天由命。同一 client
+# 在同一个 staging 版本内 side 钉死（轨迹一致性）；staging sha 或
+# probability 变了则重置账本、重新均衡。
+#
+# 只用在 team-CS manifest 路径（client 基数小）。高基数路径（traj_id /
+# window_id）继续用 pick_side——大数定律下无状态哈希天然均衡。
+
+
+class CanaryRouter:
+    """有状态灰度分流器：按 client 随机分配并保证 staging 总量份额。
+
+    与无状态 :func:`pick_side` 的区别：pick_side 每次调用独立哈希，client
+    很少时 staging 可能被饿死到 0。本路由器按 skill 记账，新 client 落到
+    "让运行比例最贴近 probability"的那一侧，staging 的份额被写进总量、不会
+    因为运气差而缺席。
+
+    - 同一 (client, skill, staging_sha, probability) → 同一 side（钉死，保证
+      轨迹一致性）。
+    - staging sha 变化（新候选 / 重建）或 probability 变化 → 该 skill 账本
+      清空、所有 client 重新均衡。
+    - 线程安全（team server 并发 sync）。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        # skill_name -> {"staging_sha", "probability", "sides": {client_id: side}}
+        self._skills: dict[str, dict] = {}
+
+    def assign(self, *, client_id: str, skill_name: str,
+               probability: float, staging_sha: str) -> str:
+        """返回 ``client_id`` 对 ``skill_name`` 应走的 side。
+
+        首次见到该 (skill, staging_sha, probability) 组合时按均衡随机落点并
+        记账；之后同 client 直接回查。staging_sha / probability 变了则重置
+        该 skill 的账本后重新分配。
+        """
+        with self._lock:
+            st = self._skills.get(skill_name)
+            if (st is None
+                    or st["staging_sha"] != staging_sha
+                    or st["probability"] != probability):
+                st = {
+                    "staging_sha": staging_sha,
+                    "probability": probability,
+                    "sides": {},
+                }
+                self._skills[skill_name] = st
+            sides = st["sides"]
+            cached = sides.get(client_id)
+            if cached is not None:
+                return cached
+            n_main = sum(1 for v in sides.values() if v == "main")
+            n_staging = sum(1 for v in sides.values() if v == "staging")
+            side = self._balanced_side(n_main, n_staging, probability)
+            sides[client_id] = side
+            return side
+
+    @staticmethod
+    def _balanced_side(n_main: int, n_staging: int,
+                       probability: float) -> str:
+        """选让"加入本 client 后 main/staging 比例最接近 probability"的 side。
+
+        - probability≤0 → main；≥1 → staging（与 pick_side 边界一致）。
+        - 首个 client（无历史）→ 纯随机按 probability 取，给后续均衡留种子。
+        - 否则比较"加 staging"与"加 main"后的比例误差，取误差小的；误差相等
+          （典型 probability=0.5 的奇数位）随机破平局。
+        """
+        if probability <= 0:
+            return "main"
+        if probability >= 1:
+            return "staging"
+        total = n_main + n_staging
+        if total == 0:
+            return "staging" if random.random() < probability else "main"
+        ratio_if_staging = (n_staging + 1) / (total + 1)
+        ratio_if_main = n_staging / (total + 1)
+        err_staging = abs(ratio_if_staging - probability)
+        err_main = abs(ratio_if_main - probability)
+        if err_staging < err_main:
+            return "staging"
+        if err_main < err_staging:
+            return "main"
+        return "staging" if random.random() < 0.5 else "main"
+
+    def reset(self) -> None:
+        """清空全部账本（测试 / 生命周期重置用）。"""
+        with self._lock:
+            self._skills.clear()
 
 
 def read_skill_on_branch(skill_dir: Path, branch: str) -> str | None:
