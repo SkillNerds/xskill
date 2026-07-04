@@ -36,6 +36,11 @@ def set_recommend_engine(eng) -> None:
     _engine = eng
 
 
+def get_recommend_engine():
+    """返回已注入的引擎（未注入时 None）。供 api 层在 /sync 刷新用户画像用。"""
+    return _engine
+
+
 def _rank_key(skill: Skill) -> tuple[float, int]:
     """排序键：(main 侧近 30 天 ux 均分, use_count)，都缺则 (0.0, 0)。"""
     avg = skill.ux_avg(side="main", days=30)

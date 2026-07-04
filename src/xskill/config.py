@@ -205,7 +205,8 @@ recommend:
   quality_ratio:   0.8   # 推荐位中按 ux 质量排序的占比；其余按向量相关性
   cluster_centers: 5     # 用户兴趣聚类中心上限（≤5）；atom 少时自动降 k
   last_n_atoms:    5     # skill.atom_feat 取最近 N 个被路由 atom 摘要的均值
-  # staging_need:   20   # 可选；缺省 None = 复用 canary.total_samples（不另造达量标准）
+  # staging_need:   5    # 可选；缺省 None = 复用 canary.min_samples（推荐侧达量阈值，
+                          # 比 total_samples 更适合小团队；显式配置可覆盖）
 
 # ===== SkillHub (optional third-party skill directory, CS mode) =====
 # 启用后扫描该目录下的三方 SKILL.md，按 description 向量化纳入推荐检索池

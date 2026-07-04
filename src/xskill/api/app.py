@@ -762,11 +762,31 @@ async def api_reindex():
     """Rebuild the skill vector index."""
     try:
         embedding_client = create_embed_client(_config)
-        rebuild_skill_index(skill_dir=_skill_dir, embed_client=embedding_client)
+        rebuild_skill_index(
+            skill_dir=_skill_dir, embed_client=embedding_client,
+            atom_store_roots=_team_atom_roots(),
+        )
         return MessageResponse(message="Skill index rebuilt", ok=True)
     except Exception as e:
         logger.exception("reindex failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+def _team_atom_roots() -> list[Path] | None:
+    """收集 team server 各 client 的 atom store 根（traj_root/clients/<c>/sessions）。
+
+    非 team / 无 client 时返回 None（atom_feats 不计算，standalone 场景）。
+    """
+    try:
+        from xskill.config import get_team_trajectories_dir
+        traj_root = get_team_trajectories_dir()
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None
+    clients = traj_root / "clients"
+    if not clients.is_dir():
+        return None
+    roots = [c / "sessions" for c in clients.iterdir() if (c / "sessions").is_dir()]
+    return roots or None
 
 
 # ---------------------------------------------------------------------------

@@ -92,7 +92,7 @@ class FakeEmbed:
 
 def _engine(tmp_path, skill_dir, traj_root, *, total_samples=3):
     return SkillRecommendEngine(
-        config={"recommend": {"quality_ratio": 0.8, "staging_need": None},
+        config={"recommend": {"quality_ratio": 0.8, "staging_need": total_samples},
                 "canary": {"total_samples": total_samples}},
         skill_dir=skill_dir, traj_root=traj_root,
         embed_client=FakeEmbed(dim=5), profile_db=tmp_path / "profile.db",

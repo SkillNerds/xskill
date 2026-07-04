@@ -140,14 +140,25 @@ class SkillFeature:
                     f"请跑 `xskill rebuild` 重建索引"
                 )
             if "atom_feats" not in idx:
-                raise RuntimeError(
-                    f"skill {self.skill.name!r}: 索引缺 atom_feats 字段；"
-                    f"请跑 `xskill rebuild` 重建索引"
-                )
-            present = idx.get("atom_feat_present") or []
-            if row < len(present) and present[row]:
-                self._atom_feat = np.asarray(idx["atom_feats"][row], dtype=float)
+                # 旧索引（无 schema_version）→ 视作无 atom_feat（None），不 crash 生产；
+                # 新索引（schema_version=2）缺 atom_feats → 视为损坏，raise。
+                if idx.get("schema_version") is None:
+                    import logging
+                    logging.getLogger("xskill.recommend").debug(
+                        "skill %s: 旧索引无 atom_feats，atom_feat=None（建议 xskill rebuild）",
+                        self.skill.name,
+                    )
+                    self._atom_feat = None
+                else:
+                    raise RuntimeError(
+                        f"skill {self.skill.name!r}: 索引缺 atom_feats 字段；"
+                        f"请跑 `xskill rebuild` 重建索引"
+                    )
             else:
-                self._atom_feat = None
+                present = idx.get("atom_feat_present") or []
+                if row < len(present) and present[row]:
+                    self._atom_feat = np.asarray(idx["atom_feats"][row], dtype=float)
+                else:
+                    self._atom_feat = None
             self._atom_feat_resolved = True
         return self._atom_feat

@@ -61,9 +61,10 @@ class SkillRecommendEngine:
         self.profile_store = ProfileStore(profile_db)
         self.reco_store = RecoStore(profile_db)
         self.canary_cfg = canary_config or CanaryConfig.from_dict(config.get("canary", {}))
-        self.staging_need = self.rcfg["staging_need"] or self.canary_cfg.total_samples
+        self.staging_need = self.rcfg["staging_need"] or self.canary_cfg.min_samples
         self._skill_index_cache: Optional[dict] = None
         self._skillhub_cache: Optional[list[dict]] = None
+        self._profile_fp_cache: dict[str, tuple] = {}  # user_id → 上次画像计算时的 atom 指纹
         self.skillhub = SkillHub.from_config(config, embed_client)
 
     # ─§6 三方 skill 检索池 ────────────────────────────────────────
@@ -145,15 +146,37 @@ class SkillRecommendEngine:
         return out
 
     # ── 5.2 update_user_interest ─────────────────────────────────
+    def _user_atom_fingerprint(self, user_id: str) -> tuple:
+        """用户 atom 集指纹：(traj_id, atom 文件数) 排序元组。变了才重算画像。"""
+        root = self._client_store_root(user_id)
+        if not root.is_dir():
+            return ()
+        parts: list[tuple[str, int]] = []
+        for traj_dir in sorted(root.iterdir()):
+            if not traj_dir.is_dir():
+                continue
+            tasks = traj_dir / "tasks"
+            if not tasks.is_dir():
+                continue
+            n = sum(1 for _ in tasks.glob("atom_*.json"))
+            parts.append((traj_dir.name, n))
+        return tuple(parts)
+
     def update_user_interest(
         self, client_interest: "ClientInterest", task_atom=None,
     ) -> None:
         """atom 触发：重扫用户 atom 摘要 → 重新聚类 → upsert 画像。
 
         ``task_atom`` 为触发事件（增量优化预留，当前以 atom store 为单一真源重扫）。
+        带**指纹缓存**：atom 集未变则跳过重算（避免每次 /sync 都重 embed）。
         """
         # pylint: disable=unused-argument
         user_id = client_interest.user_id
+        fp = self._user_atom_fingerprint(user_id)
+        if self._profile_fp_cache.get(user_id) == fp:
+            return  # atom 集未变，画像仍有效
+        self._profile_fp_cache[user_id] = fp
+
         atoms = self._user_atoms(user_id)
         summaries = [a.summary for a in atoms if a.summary]
         used_skills = self._user_used_skills(user_id)
@@ -256,6 +279,11 @@ class SkillRecommendEngine:
 
         双侧达量时用 ``pick_side(user_id, skill_name, probability)`` 做确定性分流
         （main 分支上的既有机制；``CanaryRouter`` 的有状态均衡在其合入后可替换此处）。
+
+        「最可能用该 skill 的用户」优先：staging 在推荐链路中只被分给**已被推荐该 skill**
+        的用户（``get_skill_for_client`` 按用户画像相关性 + ux 质量选出），即被推荐者本身
+        就是该 skill 的最可能用户——故 staging 未达量时直接给 staging 即满足 spec D6 的
+        「最可能用户优先消费 staging」。跨用户的显式时间序排序留作后续优化。
         """
         if not has_staging(skill.path):
             return "main"

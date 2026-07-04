@@ -138,14 +138,24 @@ class TestAtomFeat:
         sf = SkillFeature(Skill(skill_dir / "foo"), skill_index=idx)
         assert sf.atom_feat is None
 
-    def test_raises_when_index_lacks_atom_feats(self, tmp_path):
+    def test_raises_when_new_index_lacks_atom_feats(self, tmp_path):
         skill_dir = tmp_path / "skills"
         (skill_dir / "foo").mkdir(parents=True)
         (skill_dir / "foo" / "SKILL.md").write_text(_make_skill_md("foo", "d"), encoding="utf-8")
-        idx = {"skill_names": ["foo"], "embeddings": np.zeros((1, 4))}  # 无 atom_feats
+        # 新式索引（schema_version=2）缺 atom_feats → 视为损坏 → raise
+        idx = {"skill_names": ["foo"], "embeddings": np.zeros((1, 4)), "schema_version": 2}
         sf = SkillFeature(Skill(skill_dir / "foo"), skill_index=idx)
         with pytest.raises(RuntimeError, match="atom_feats"):
             _ = sf.atom_feat
+
+    def test_old_index_lacks_atom_feats_returns_none(self, tmp_path):
+        skill_dir = tmp_path / "skills"
+        (skill_dir / "foo").mkdir(parents=True)
+        (skill_dir / "foo" / "SKILL.md").write_text(_make_skill_md("foo", "d"), encoding="utf-8")
+        # 旧索引（无 schema_version）缺 atom_feats → None（不 crash 生产）
+        idx = {"skill_names": ["foo"], "embeddings": np.zeros((1, 4))}
+        sf = SkillFeature(Skill(skill_dir / "foo"), skill_index=idx)
+        assert sf.atom_feat is None
 
 
 # ── Skill.skill_meta ─────────────────────────────────────────────

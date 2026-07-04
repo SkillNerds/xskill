@@ -200,6 +200,20 @@ async def team_sync(
     x_xskill_client: str | None = Header(default=None),
 ):
     client_id = _auth(x_xskill_token, x_xskill_client)
+    # §5 sync 前刷新该 client 的用户画像（atom 集变化时重算，未变则指纹命中跳过）。
+    # 画像由 build_manifest → _pick_recommended → engine.get_skill_for_client 消费。
+    eng = None
+    try:
+        from xskill.team.server.skill_manifest import get_recommend_engine
+        eng = get_recommend_engine()
+    except Exception:  # pylint: disable=broad-exception-caught
+        eng = None
+    if eng is not None:
+        try:
+            from xskill.recommend.client_interest import ClientInterest
+            eng.update_user_interest(ClientInterest(client_id))
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.debug("profile refresh for %s skipped", client_id, exc_info=True)
     resp = build_manifest(
         client_id=client_id,
         skill_dir=_ctx.skill_dir,

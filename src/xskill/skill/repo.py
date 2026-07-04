@@ -76,17 +76,19 @@ class SkillRepo:
         return sum(1 for _ in self)
 
     # ─── 索引 ──────────────────────────────────────────────────
-    def rebuild_index(self) -> None:
+    def rebuild_index(self, *, atom_store_roots: list[Path] | None = None) -> None:
         """重建 .skill_index.pkl（向量检索用）。
 
-        显式给 ``rebuild_skill_index`` 传参，**不**走工具上下文初始化——后者
-        会要求 ``data_dir`` / ``llm_client`` 等本路径用不到的字段（早先版本
-        传 ``None`` 进去会触发 ``Path(None)`` TypeError，rebuild 直接挂）。
+        ``atom_store_roots``：可选的 AtomTaskStore 根目录列表，用于计算每个 skill 的
+        ``atom_feat``；为 None 时 ``atom_feats`` 全部 absent（standalone 场景）。
         """
         from xskill.config import get_config
         from xskill.utils.llm import create_embed_client
         embed_client = create_embed_client(get_config())
-        rebuild_skill_index(skill_dir=self.root, embed_client=embed_client)
+        rebuild_skill_index(
+            skill_dir=self.root, embed_client=embed_client,
+            atom_store_roots=atom_store_roots,
+        )
 
     # ─── 清空（rebuild --force 用）──────────────────────────────
     def wipe_all_skills(self) -> int:
@@ -222,6 +224,7 @@ def rebuild_skill_index(
         "embeddings": embeddings,
         "atom_feats": atom_feats,
         "atom_feat_present": atom_present,
+        "schema_version": 2,
         "method": "api",
     }
 

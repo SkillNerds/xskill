@@ -217,6 +217,7 @@ def cmd_connect(args) -> int:
                 label=args.label or _socket.gethostname(),
                 hostname=_socket.gethostname(),
                 existing_client_id=existing_client_id,
+                user_name=args.name,
             )
         except Exception as e:
             print(f"error: 注册失败: {e}", file=sys.stderr)
@@ -481,6 +482,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="join token（server 启动 `xskill serve --server` 时打印）")
     p_conn.add_argument("--label", default="",
                         help="本 client 的可读标签（默认主机名）")
+    p_conn.add_argument("--name", default=None,
+                        help="稳定用户身份（userid）。带此参数时跨设备/重连关联同一画像；"
+                             "省略则匿名（回退 hashid，受 server allow_anonymous_user 闸门）")
     p_conn.add_argument(
         "--use-proxy", action="store_true",
         help="经系统/环境代理连 server（默认直连，绕开公司 SWG 代理）。"

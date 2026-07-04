@@ -190,9 +190,12 @@ used_skills JSON, updated_at`），tensor 用 `numpy.save` 序列化成 BLOB。`
 
 ## Open Questions
 
-- `staging_need` 阈值是复用 `canary.total_samples`（每侧 20）还是单配 `recommend.staging_need`？
-  倾向复用 `total_samples` 避免两套达量标准，待审阅定。
+- ~~`staging_need` 阈值是复用 `canary.total_samples`（每侧 20）还是单配 `recommend.staging_need`？~~
+  **已决（按 review）**：缺省复用 `canary.min_samples`（5），而非 `total_samples`（20）——后者对小团队
+  不现实、会长期饿死 main。`recommend.staging_need` 显式配置可覆盖。
 - `find_friend` 的「其他用户 mean」检索范围：同 server 全量 client，还是限定 harness/model 同桶？
   倾向全量（用户原设计未限定），待审阅定。
 - `used_skills` 的「使用次数/评分」是否含 staging 侧打分？倾向含（atom 的 `used_skills` 不区分 side，
   评分取该 atom 对该 skill 的 ux_score），待审阅定。
+- 「最可能用该 skill 的用户」跨用户显式时间序排序：当前在推荐选择层（被推荐者即最可能用户）隐式
+  满足，跨用户排序留作后续优化（见 `engine.resolve_side` 注释）。
