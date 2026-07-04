@@ -1,120 +1,108 @@
 ## ADDED Requirements
 
-### Requirement: SkillRecommendEngine manages user and skill vector stores
+### Requirement: SkillRecommendEngine 管理 user 与 skill 两套向量库
 
-`SkillRecommendEngine` SHALL be constructed with the `XSkillConfig` and SHALL maintain two
-vector stores: the user-profile store (per-user `feature_tensor`/`mean_tensor`) and the
-skill-feature store (the fused skill vectors from `.skill_index.pkl`, restricted to
-distributable `main`+`staging` skills plus enabled `SkillHub` third-party skills). `baby`
--branch skills SHALL NOT be in the retrieval pool.
+`SkillRecommendEngine` SHALL 以 `XSkillConfig` 构造,并 SHALL 维护两套向量库:用户画像库
+(每用户的 `feature_tensor`/`mean_tensor`)与 skill 特征库(来自 `.skill_index.pkl` 的融合 skill
+向量,限定为可分发的 `main`+`staging` skill 加上已启用的 `SkillHub` 三方 skill)。`baby` 分支的
+skill SHALL NOT 进入检索池。
 
-#### Scenario: baby skills excluded from retrieval
+#### Scenario: baby skill 被排除在检索之外
 
-- **WHEN** the skill repo contains a skill that only has a `baby` branch (no `main`)
-- **THEN** that skill SHALL NOT appear in any `get_skill_for_client` result
+- **当** skill 仓中存在一个只有 `baby` 分支(无 `main`)的 skill
+- **那么** 该 skill SHALL NOT 出现在任何 `get_skill_for_client` 结果中
 
-### Requirement: update_user_interest incrementally updates the profile
+### Requirement: update_user_interest 增量更新画像
 
-`SkillRecommendEngine.update_user_interest(ClientInterest, TaskAtom)` SHALL, given a
-completed (vectorized) atom, update the user's profile store: append the atom's summary
-embedding to the user's point set, recompute `feature_tensor` (re-cluster, respecting the
-`k` cap), recompute `mean_tensor`, and persist to the `client_interest` table.
+`SkillRecommendEngine.update_user_interest(ClientInterest, TaskAtom)` SHALL 在收到一个已完成(已向量化)
+的 atom 时更新用户画像库:把该 atom 摘要 embedding 追加到用户点集,重新计算 `feature_tensor`
+(重新聚类,遵守 `k` 上限),重新计算 `mean_tensor`,并 upsert 到 `client_interest` 表。
 
-#### Scenario: Atom updates profile
+#### Scenario: atom 更新画像
 
-- **WHEN** `update_user_interest` is called with a new atom for a user
-- **THEN** the user's `feature_tensor` SHALL be recomputed from the updated atom set
-- **AND** the `client_interest` row SHALL be upserted with the new tensors
+- **当** `update_user_interest` 以一个新 atom 对某用户调用
+- **那么** 用户的 `feature_tensor` SHALL 基于更新后的 atom 集重新计算
+- **且** `client_interest` 行 SHALL 以新 tensor upsert
 
-### Requirement: get_skill_for_client mixes 80% quality + 20% relevance with backfill
+### Requirement: get_skill_for_client 以 80% 质量 + 20% 相关性混合并回填
 
-`get_skill_for_client(ClientUser, skill_num) -> list[Skill]` SHALL return `skill_num`
-skills composed of: a quality bucket of `ceil(skill_num * quality_ratio)` skills (default
-`quality_ratio=0.8`) ordered by ux score, and a relevance bucket filling the remainder via
-per-center KNN vector search over the skill-feature store (cosine, deduped against the
-quality bucket). When the quality bucket has fewer than its target (skill total is small),
-the relevance bucket SHALL backfill up to `skill_num`. The ratio SHALL be configurable via
-`recommend.quality_ratio`.
+`get_skill_for_client(ClientUser, skill_num) -> list[Skill]` SHALL 返回 `skill_num` 个 skill,由
+两部分组成:质量位 `ceil(skill_num * quality_ratio)` 个按 ux 分降序的 skill(缺省 `quality_ratio=0.8`),
+以及相关性位用各 `feature_tensor` 中心在 skill 特征库上做 KNN 向量检索(cosine,与质量位去重)填满
+其余。质量位不足其目标(skill 总数少)时,相关性位 SHALL 回填至 `skill_num`。该配比 SHALL 可通过
+`recommend.quality_ratio` 配置。
 
-#### Scenario: Standard 80/20 split
+#### Scenario: 标准 80/20 拆分
 
-- **WHEN** `skill_num=10`, `quality_ratio=0.8`, and the repo has 30 skills
-- **THEN** the result SHALL contain 8 quality-ordered skills + 2 relevance-ordered skills
+- **当** `skill_num=10`、`quality_ratio=0.8`,且仓里有 30 个 skill
+- **那么** 结果 SHALL 含 8 个质量位 skill + 2 个相关性位 skill
 
-#### Scenario: Relevance backfills when quality pool is small
+#### Scenario: 质量池不足时相关性回填
 
-- **WHEN** `skill_num=10` but only 4 skills have ux scores
-- **THEN** the result SHALL contain 4 quality skills + 6 relevance skills (backfilled)
+- **当** `skill_num=10` 但只有 4 个 skill 有 ux 分
+- **那么** 结果 SHALL 含 4 个质量位 skill + 6 个相关性位 skill(回填)
 
-### Requirement: Staging-priority达量 push fixes starvation
+### Requirement: staging 优先达量推送 修复饿死
 
-When `get_skill_for_client` selects a skill that has a `staging` branch, the engine SHALL
-apply staging-priority达量 logic before resolving the slot's side:
+当 `get_skill_for_client` 选中的 skill 存在 `staging` 分支时,引擎 SHALL 在 resolve slot 的 side
+之前施加 staging 优先达量逻辑:
 
-1. If the skill's staging side has fewer than `staging_need` UX scores
-   (`staging_need` = `canary.total_samples` by default), the engine SHALL assign the
-   `staging` side to the users most likely to use this skill (ordered by recency of this
-   skill in their `used_skills`), until staging reaches `staging_need`.
-2. Once staging is达量 but the current `main` hash is not, the engine SHALL assign the
-   `main` side until main also reaches `staging_need`.
-3. When both sides are达量, side resolution SHALL defer to `CanaryRouter.assign`
-   (existing per-client钉死 + balanced shunting).
+1. 若该 skill 的 staging 侧 UX 分数 < `staging_need`(`staging_need` 缺省 = `canary.total_samples`),
+   引擎 SHALL 把 `staging` 侧分配给最可能使用该 skill 的用户(按该 skill 在其 `used_skills` 中的
+   最近使用时间排序),直到 staging 达到 `staging_need`。
+2. staging 达量但当前 `main` hash 未达量时,引擎 SHALL 分配 `main` 侧,直到 main 也达到 `staging_need`。
+3. 双侧均达量时,side 解析 SHALL 交由 `CanaryRouter.assign`(既有 per-client 钉死 + 均衡分流)。
 
-This replaces the stateless `pick_side` starvation where small client bases leave staging
-with zero traffic.
+此替换了无状态 `pick_side` 在 client 基数小时把 staging 饿死到 0 的问题。
 
-#### Scenario: Staging prioritized when under quota
+#### Scenario: staging 未达配额时优先推 staging
 
-- **WHEN** a recommended skill has staging with 2 UX scores, `staging_need=5`
-- **AND** the most-likely user (most recent `used_skills` entry for this skill) is selected
-- **THEN** that user's slot for this skill SHALL resolve to `staging`
+- **当** 某被推荐 skill 的 staging 有 2 个 UX 分,`staging_need=5`
+- **且** 被选中的是最可能用该 skill 的用户(`used_skills` 中该 skill 最近使用)
+- **那么** 该用户对该 skill 的 slot SHALL resolve 为 `staging`
 
-#### Scenario: Main pushed after staging reaches quota
+#### Scenario: staging 达量后推 main
 
-- **WHEN** a recommended skill's staging side has 5 UX scores (`staging_need=5`,达量)
-- **AND** the current main hash has only 2 UX scores
-- **THEN** the next recommended user's slot for this skill SHALL resolve to `main`
+- **当** 某被推荐 skill 的 staging 侧有 5 个 UX 分(`staging_need=5`,达量)
+- **且** 当前 main hash 只有 2 个 UX 分
+- **那么** 下一个被推荐用户对该 skill 的 slot SHALL resolve 为 `main`
 
-#### Scenario: Both sides达量 defers to CanaryRouter
+#### Scenario: 双侧达量交由 CanaryRouter
 
-- **WHEN** both staging and main sides have ≥ `staging_need` UX scores
-- **THEN** side resolution SHALL defer to `CanaryRouter.assign` (existing behavior)
+- **当** staging 与 main 两侧都 ≥ `staging_need` 个 UX 分
+- **那么** side 解析 SHALL 交由 `CanaryRouter.assign`(既有行为)
 
-### Requirement: recommend_users and recommended_skills recorded bidirectionally
+### Requirement: recommend_users 与 recommended_skills 双向记录
 
-After `get_skill_for_client` resolves a slot, the engine SHALL record the assignment
-bidirectionally: `Skill.recommend_users[side]` SHALL include the `ClientUser`, and
-`ClientUser.recommended_skills` SHALL include `{skill, branch, hash}`. Both are views over
-the persisted recommendation records, not independent stores.
+`get_skill_for_client` resolve 一个 slot 后,引擎 SHALL 双向记录该分配:`Skill.recommend_users[side]`
+SHALL 含该 `ClientUser`,`ClientUser.recommended_skills` SHALL 含 `{skill, branch, hash}`。两者都是
+对持久化推荐记录的视图,不是独立存储。
 
-#### Scenario: Bidirectional recording
+#### Scenario: 双向记录
 
-- **WHEN** user alice is recommended skill "bar" on staging
-- **THEN** `Skill("bar").recommend_users["staging"]` SHALL contain alice
-- **AND** `alice.recommended_skills` SHALL contain `{"skill": "bar", "branch": "staging", "hash": <sha>}`
+- **当** 用户 alice 被推荐 skill "bar" 的 staging
+- **那么** `Skill("bar").recommend_users["staging"]` SHALL 含 alice
+- **且** `alice.recommended_skills` SHALL 含 `{"skill": "bar", "branch": "staging", "hash": <sha>}`
 
-### Requirement: find_friend returns users by mean_tensor similarity
+### Requirement: find_friend 按 mean_tensor 相似度返回用户
 
-`SkillRecommendEngine.find_friend(ClientUser) -> list[ClientUser]` SHALL compute the user's
-`mean_tensor` and perform a nearest-neighbor search over all other users' `mean_tensor`
-vectors, returning the closest matches. Users without a profile (cold start) SHALL be
-excluded from both query and candidates.
+`SkillRecommendEngine.find_friend(ClientUser) -> list[ClientUser]` SHALL 计算用户的 `mean_tensor`,
+在其他所有用户的 `mean_tensor` 向量上做最近邻检索,返回最接近的匹配。无画像(冷启动)的用户
+SHALL 被排除在查询与候选之外。
 
-#### Scenario: find_friend returns similar users
+#### Scenario: find_friend 返回相似用户
 
-- **WHEN** alice's `mean_tensor` is closest to bob's among all profiled users
-- **THEN** `find_friend(alice)` SHALL return bob (and other close matches) ordered by
-  cosine similarity
+- **当** alice 的 `mean_tensor` 在所有有画像用户中最接近 bob
+- **那么** `find_friend(alice)` SHALL 返回 bob(及其他接近者),按 cosine 相似度排序
 
-### Requirement: find_tag_for_user and find_tag_for_skill via semantic search
+### Requirement: find_tag_for_user 与 find_tag_for_skill 走语义检索
 
-`SkillRecommendEngine.find_tag_for_user(ClientUser) -> list[str]` SHALL semantically
-retrieve relevant tags from the skill-atom tag set for the user's interests.
-`find_tag_for_skill(Skill) -> list[str]` SHALL return the most relevant tags for that
-skill. Both use vector similarity over the tag embedding index.
+`SkillRecommendEngine.find_tag_for_user(ClientUser) -> list[str]` SHALL 针对用户兴趣,在 skill-atom
+tag 集上做语义向量检索返回相关 tag。`find_tag_for_skill(Skill) -> list[str]` SHALL 返回该 skill 最
+相关的 tag。两者都基于 tag embedding 索引的向量相似度。
 
-#### Scenario: find_tag_for_user returns relevant tags
+#### Scenario: find_tag_for_user 返回相关 tag
 
-- **WHEN** alice's interests cluster around "django migration" atoms
-- **THEN** `find_tag_for_user(alice)` SHALL return tags semantically close to that domain
-- **AND** the list SHALL be ordered by relevance
+- **当** alice 的兴趣聚类围绕 "django migration" 类 atom
+- **那么** `find_tag_for_user(alice)` SHALL 返回语义上接近该领域的 tag
+- **且** 列表 SHALL 按相关性排序

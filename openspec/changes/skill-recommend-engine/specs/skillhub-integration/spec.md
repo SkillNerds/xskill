@@ -1,65 +1,59 @@
 ## ADDED Requirements
 
-### Requirement: SkillHub is an optional CS-mode third-party skill scanner
+### Requirement: SkillHub 是可选的 CS 模式三方 skill 扫描器
 
-`SkillHub` SHALL be an optional component (gated by `config.skillhub.enabled`, default
-`false`) that scans the configured third-party skill directory (default
-`~/.xskill/skillhub_skills/`) for `SKILL.md` files. When disabled, `SkillHub` SHALL be a
-no-op and the recommend engine SHALL operate only on the repo's own skills.
+`SkillHub` SHALL 是一个可选组件(由 `config.skillhub.enabled` 闸门,缺省 `false`),扫描配置的三方
+skill 目录(缺省 `~/.xskill/skillhub_skills/`)下的 `SKILL.md` 文件。禁用时,`SkillHub` SHALL 是 no-op,
+推荐引擎 SHALL 仅在仓库自有 skill 上运作。
 
-#### Scenario: Disabled by default
+#### Scenario: 缺省禁用
 
-- **WHEN** `config.yaml` does not set `skillhub.enabled`
-- **THEN** `SkillHub` SHALL not scan any directory
-- **AND** third-party skills SHALL NOT appear in recommendations
+- **当** `config.yaml` 未设置 `skillhub.enabled`
+- **那么** `SkillHub` SHALL 不扫描任何目录
+- **且** 三方 skill SHALL NOT 出现在推荐中
 
-#### Scenario: Enabled scans configured dir
+#### Scenario: 启用时扫描配置目录
 
-- **WHEN** `config.yaml` has `skillhub.enabled: true` and `skillhub.dir: ~/.xskill/skillhub_skills`
-- **THEN** `SkillHub` SHALL scan that directory for `SKILL.md` files and index them
+- **当** `config.yaml` 设置 `skillhub.enabled: true` 与 `skillhub.dir: ~/.xskill/skillhub_skills`
+- **那么** `SkillHub` SHALL 扫描该目录下的 `SKILL.md` 文件并索引
 
-### Requirement: Third-party skills vectorized by description + tags
+### Requirement: 三方 skill 按 description + tags 向量化
 
-`SkillHub` SHALL vectorize each third-party skill using the same fusion as `SkillFeature`
-(description + tags; third-party skills have no routed atoms in this repo, so the last5-atom
-source is absent by definition). The resulting vectors SHALL be L2-normalized and added to
-the `SkillRecommendEngine` retrieval pool alongside the repo's own `main`/`staging` skills.
+`SkillHub` SHALL 用与 `SkillFeature` 相同的融合方式对每个三方 skill 向量化(description + tags;
+三方 skill 在本仓无被路由 atom,故 last5-atom 来源按定义缺失)。结果向量 SHALL 做 L2 归一,并加入
+`SkillRecommendEngine` 检索池,与仓库自有的 `main`/`staging` skill 同池。
 
-#### Scenario: Third-party skill indexed into pool
+#### Scenario: 三方 skill 入检索池
 
-- **WHEN** `skillhub.enabled` is true and `~/.xskill/skillhub_skills/foo/SKILL.md` exists
-- **THEN** `SkillHub` SHALL compute a fused vector for "foo"
-- **AND** "foo" SHALL be retrievable by `get_skill_for_client`'s relevance KNN
+- **当** `skillhub.enabled` 为 true 且 `~/.xskill/skillhub_skills/foo/SKILL.md` 存在
+- **那么** `SkillHub` SHALL 为 "foo" 计算融合向量
+- **且** "foo" SHALL 可被 `get_skill_for_client` 的相关性 KNN 检索到
 
-### Requirement: Third-party skills participate only in the relevance bucket
+### Requirement: 三方 skill 仅参与相关性位
 
-Third-party `SkillHub` skills SHALL participate ONLY in the relevance (20%) bucket of
-`get_skill_for_client`. They SHALL NOT appear in the quality (ux-score) bucket (they have
-no UX scores in this repo), and they SHALL NOT participate in staging-priority达量 logic
-(they have no git branches / canary). This keeps the staging达量 accounting clean for
-the repo's own skills.
+三方 `SkillHub` skill SHALL 仅参与 `get_skill_for_client` 的相关性(20%)位。它们 SHALL NOT 出现在
+质量(ux 分)位(在本仓无 UX 分),且 SHALL NOT 参与 staging 优先达量逻辑(无 git 分支/灰度)。这保证
+仓库自有 skill 的 staging 达量核算干净。
 
-#### Scenario: Third-party skill never in quality bucket
+#### Scenario: 三方 skill 永不进质量位
 
-- **WHEN** `get_skill_for_client` builds the quality bucket (ux-ordered)
-- **THEN** no third-party `SkillHub` skill SHALL appear in the quality bucket
+- **当** `get_skill_for_client` 构造质量位(ux 排序)
+- **那么** 质量位中 SHALL NOT 出现任何三方 `SkillHub` skill
 
-#### Scenario: Third-party skill never in staging达量 logic
+#### Scenario: 三方 skill 永不进 staging 达量逻辑
 
-- **WHEN** staging-priority达量 logic runs for a recommended skill
-- **THEN** third-party skills SHALL NOT be assigned a `staging` side
-- **AND** SHALL NOT count toward any `staging_need` quota
+- **当** 某被推荐 skill 走 staging 优先达量逻辑
+- **那么** 三方 skill SHALL NOT 被分配 `staging` 侧
+- **且** SHALL NOT 计入任何 `staging_need` 配额
 
-### Requirement: skillhub directory and enablement configurable
+### Requirement: skillhub 目录与启用可配置
 
-`config.yaml` SHALL add a `skillhub` section with `enabled` (bool, default `false`) and
-`dir` (path, default `~/.xskill/skillhub_skills`). The `CONFIG_TEMPLATE` SHALL document
-both fields. Missing directory when enabled SHALL raise a clear error (not silently skip),
-per the no-fallback code convention.
+`config.yaml` SHALL 新增 `skillhub` 段,含 `enabled`(bool,缺省 `false`)与 `dir`(路径,缺省
+`~/.xskill/skillhub_skills`)。`CONFIG_TEMPLATE` SHALL 文档化这两个字段。启用时目录缺失 SHALL 抛出
+明确错误(不静默跳过),遵循 no-fallback 代码约定。
 
-#### Scenario: Enabled but dir missing raises
+#### Scenario: 启用但目录缺失抛错
 
-- **WHEN** `skillhub.enabled: true` but `skillhub.dir` does not exist on disk
-- **THEN** `SkillHub` initialization SHALL raise a `FileNotFoundError` with a message
-  naming the missing directory
-- **AND** SHALL NOT silently skip indexing
+- **当** `skillhub.enabled: true` 但 `skillhub.dir` 在磁盘上不存在
+- **那么** `SkillHub` 初始化 SHALL 抛出 `FileNotFoundError`,信息指明缺失目录
+- **且** SHALL NOT 静默跳过索引

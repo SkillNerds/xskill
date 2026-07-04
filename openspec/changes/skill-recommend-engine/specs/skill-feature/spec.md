@@ -1,72 +1,65 @@
 ## ADDED Requirements
 
-### Requirement: SkillFeature fuses description + tags + last5 atom summaries
+### Requirement: SkillFeature 融合 description + tags + last5 atom 摘要
 
-A skill's vector feature SHALL be a single fused vector combining up to three sources:
-the SKILL.md `description` embedding, the mean of frontmatter `metadata.tags` embeddings,
-and the mean of the embeddings of the most recent N (default 5) trajectory-atom summaries
-that were routed to this skill. The fused vector SHALL be L2-normalized. When a source is
-absent (no tags, no atoms), that source SHALL be excluded from the fusion — this is part
-of the feature definition, not a runtime fallback.
+一个 skill 的向量特征 SHALL 是单一融合向量,融合至多三个来源:SKILL.md `description` 的 embedding、
+frontmatter `metadata.tags` 各 tag embedding 的均值、被路由到该 skill 的最近 N(缺省 5)个 trajectory
+atom 摘要 embedding 的均值。融合向量 SHALL 做 L2 归一。某来源缺失(无 tags、无 atom)时,该来源
+SHALL 被排除在融合之外——这是特征定义的一部分,不是运行时 fallback。
 
-#### Scenario: Full feature fusion
+#### Scenario: 完整三源融合
 
-- **WHEN** a skill has a description, two tags, and five recent atoms
-- **THEN** `Skill.feature.vec` SHALL be `normalize(embed(description) + mean(embed(tags)) + mean(embed(last5_atom_summaries)))`
+- **当** 一个 skill 有 description、两个 tag、五个最近 atom
+- **那么** `Skill.feature.vec` SHALL 为 `normalize(embed(description) + mean(embed(tags)) + mean(embed(last5_atom_summaries)))`
 
-#### Scenario: Cold-start skill with no atoms
+#### Scenario: 冷启动 skill(无 atom)
 
-- **WHEN** a skill has a description and tags but no routed atoms yet
-- **THEN** `Skill.feature.vec` SHALL be `normalize(embed(description) + mean(embed(tags)))`
-- **AND** SHALL NOT throw
+- **当** 一个 skill 有 description 和 tags 但尚无被路由的 atom
+- **那么** `Skill.feature.vec` SHALL 为 `normalize(embed(description) + mean(embed(tags)))`
+- **且** SHALL NOT 抛错
 
-#### Scenario: Skill with only description
+#### Scenario: 仅有 description 的 skill
 
-- **WHEN** a skill has only a description (no tags, no atoms)
-- **THEN** `Skill.feature.vec` SHALL equal `normalize(embed(description))`
+- **当** 一个 skill 只有 description(无 tags、无 atom)
+- **那么** `Skill.feature.vec` SHALL 等于 `normalize(embed(description))`
 
-### Requirement: `Skill.vec` property is lazy
+### Requirement: `Skill.vec` 属性懒加载
 
-`Skill` SHALL expose a `vec` property that lazily computes (or reads from
-`.skill_index.pkl`) the fused feature vector on first access and caches it on the instance.
-Accessing `vec` SHALL NOT trigger a full index rebuild.
+`Skill` SHALL 暴露 `vec` 属性:首次访问时懒计算(或从 `.skill_index.pkl` 读取)融合特征向量并缓存
+在实例上。访问 `vec` SHALL NOT 触发全量索引重建。
 
-#### Scenario: vec computed once and cached
+#### Scenario: vec 只计算一次并缓存
 
-- **WHEN** `Skill.vec` is accessed twice on the same instance
-- **THEN** the embedding SHALL be computed at most once
-- **AND** the second access SHALL return the cached vector
+- **当** 同一实例上访问两次 `Skill.vec`
+- **那么** embedding SHALL 最多计算一次
+- **且** 第二次访问 SHALL 返回缓存的向量
 
-### Requirement: `Skill.skill_meta` is a version view
+### Requirement: `Skill.skill_meta` 是版本视图
 
-`Skill` SHALL expose a `skill_meta` property returning a view
-`{"main": {"git_hash": str, "used_ux_scores": [int,...]}, "staging": {...} | None, "baby": "hash" | None}`.
-`used_ux_scores` SHALL be the recent UX scores for that side+sha. This is a read-only view
-over existing git state + `.ux_scores.jsonl`, not an independent persisted object.
+`Skill` SHALL 暴露 `skill_meta` 属性,返回视图
+`{"main": {"git_hash": str, "used_ux_scores": [int,...]}, "staging": {...} | None, "baby": "hash" | None}`。
+`used_ux_scores` SHALL 为该 side+sha 的近期 UX 分。这是对既有 git 状态 + `.ux_scores.jsonl` 的
+只读视图,不是独立持久化对象。
 
-#### Scenario: skill_meta reflects staging presence
+#### Scenario: skill_meta 反映 staging 存在
 
-- **WHEN** a skill has a `staging` branch
-- **THEN** `Skill.skill_meta["staging"]` SHALL be `{"git_hash": <staging_sha>, "used_ux_scores": [...]}`
-- **AND** `Skill.skill_meta["main"]` SHALL be `{"git_hash": <main_sha>, "used_ux_scores": [...]}`
+- **当** 一个 skill 有 `staging` 分支
+- **那么** `Skill.skill_meta["staging"]` SHALL 为 `{"git_hash": <staging_sha>, "used_ux_scores": [...]}`
+- **且** `Skill.skill_meta["main"]` SHALL 为 `{"git_hash": <main_sha>, "used_ux_scores": [...]}`
 
-#### Scenario: skill_meta staging None when no staging
+#### Scenario: 无 staging 时 skill_meta 的 staging 为 None
 
-- **WHEN** a skill has no `staging` branch
-- **THEN** `Skill.skill_meta["staging"]` SHALL be `None`
+- **当** 一个 skill 没有 `staging` 分支
+- **那么** `Skill.skill_meta["staging"]` SHALL 为 `None`
 
-### Requirement: rebuild_skill_index fuses full feature set
+### Requirement: rebuild_skill_index 融合完整特征集
 
-`rebuild_skill_index` SHALL, for each distributable skill, build the fused feature
-(description + tags + last5 atom summaries) and store the resulting matrix in
-`.skill_index.pkl` alongside `skill_names`. The index file schema SHALL remain
-`{"skill_names": [...], "embeddings": np.ndarray(N, D) L2-normalized, ...}` for backward
-compatibility with existing cosine retrieval.
+`rebuild_skill_index` SHALL 对每个可分发 skill 构造融合特征(description + tags + last5 atom 摘要),
+并将结果矩阵与 `skill_names` 一起写入 `.skill_index.pkl`。索引文件 schema SHALL 保持
+`{"skill_names": [...], "embeddings": np.ndarray(N, D) L2 归一, ...}` 以向后兼容既有 cosine 检索。
 
-#### Scenario: Rebuild produces fused embeddings
+#### Scenario: 重建产出融合 embedding
 
-- **WHEN** `rebuild_skill_index` runs on a skill repo where skills have descriptions, tags,
-  and routed atoms
-- **THEN** `.skill_index.pkl["embeddings"]` SHALL contain the fused (not description-only)
-  vectors
-- **AND** each row SHALL be L2-normalized
+- **当** `rebuild_skill_index` 在一个 skill 仓上运行,其中的 skill 有 description、tags 和被路由 atom
+- **那么** `.skill_index.pkl["embeddings"]` SHALL 含融合后(非 description-only)的向量
+- **且** 每一行 SHALL 已 L2 归一

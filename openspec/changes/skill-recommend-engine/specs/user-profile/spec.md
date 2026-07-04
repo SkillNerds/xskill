@@ -1,93 +1,85 @@
 ## ADDED Requirements
 
-### Requirement: ClientInterest.feature_tensor is ≤5 cluster centers
+### Requirement: ClientInterest.feature_tensor 为 ≤5 个聚类中心
 
-`ClientInterest` SHALL expose a `feature_tensor` property: the user's trajectory-atom
-summary embeddings clustered into at most 5 centers via a lightweight numpy-only k-means
-(no sklearn/scipy). The number of centers `k` SHALL be `min(5, max(1, n_atoms // 3))` so
-that users with few atoms produce fewer (but meaningful) centers rather than 5 noise
-centers. `feature_tensor` SHALL be a `(≤5, D)` array; it MAY contain fewer than 5 rows.
+`ClientInterest` SHALL 暴露 `feature_tensor` 属性:将用户 trajectory atom 摘要 embedding 用轻量
+纯 numpy k-means(不引入 sklearn/scipy)聚成至多 5 个中心。中心数 `k` SHALL 为
+`min(5, max(1, n_atoms // 3))`,使 atom 少的用户产出更少(但有意义)的中心,而非 5 个噪声中心。
+`feature_tensor` SHALL 是 `(≤5, D)` 数组;它可以少于 5 行。
 
-#### Scenario: User with many atoms gets 5 centers
+#### Scenario: atom 多的用户得到 5 个中心
 
-- **WHEN** a user has 60 atom summaries embedded
-- **THEN** `ClientInterest.feature_tensor` SHALL have shape `(5, D)`
-- **AND** the 5 rows SHALL be the k-means centers
+- **当** 一个用户有 60 个 atom 摘要已向量化
+- **那么** `ClientInterest.feature_tensor` SHALL 形状为 `(5, D)`
+- **且** 5 行 SHALL 为 k-means 中心
 
-#### Scenario: User with few atoms gets fewer centers
+#### Scenario: atom 少的用户得到更少中心
 
-- **WHEN** a user has 4 atom summaries embedded
-- **THEN** `k = min(5, max(1, 4//3)) = 1`
-- **AND** `ClientInterest.feature_tensor` SHALL have shape `(1, D)` (a single center)
+- **当** 一个用户有 4 个 atom 摘要已向量化
+- **那么** `k = min(5, max(1, 4//3)) = 1`
+- **且** `ClientInterest.feature_tensor` SHALL 形状为 `(1, D)`(单一中心)
 
-#### Scenario: Cold-start user has no feature_tensor
+#### Scenario: 冷启动用户无 feature_tensor
 
-- **WHEN** a user has zero atoms
-- **THEN** `ClientInterest.feature_tensor` SHALL be `None`
-- **AND** the user is considered to have no profile (cold start)
+- **当** 一个用户有 0 个 atom
+- **那么** `ClientInterest.feature_tensor` SHALL 为 `None`
+- **且** 该用户被视为无画像(冷启动)
 
-### Requirement: ClientInterest.mean_tensor is the center mean
+### Requirement: ClientInterest.mean_tensor 为中心均值
 
-`ClientInterest` SHALL expose a `mean_tensor` property: the mean of `feature_tensor` rows,
-L2-normalized. When `feature_tensor` is `None` (cold start), `mean_tensor` SHALL be `None`.
+`ClientInterest` SHALL 暴露 `mean_tensor` 属性:`feature_tensor` 各行的均值再做 L2 归一。
+`feature_tensor` 为 `None`(冷启动)时,`mean_tensor` SHALL 为 `None`。
 
-#### Scenario: mean_tensor from multiple centers
+#### Scenario: 多中心求 mean_tensor
 
-- **WHEN** `feature_tensor` has 5 rows
-- **THEN** `mean_tensor` SHALL be `normalize(mean(feature_tensor, axis=0))`
+- **当** `feature_tensor` 有 5 行
+- **那么** `mean_tensor` SHALL 为 `normalize(mean(feature_tensor, axis=0))`
 
-### Requirement: Clustering uses numpy-only k-means (no heavy deps)
+### Requirement: 聚类使用纯 numpy k-means(无重包依赖)
 
-The clustering implementation SHALL depend only on `numpy` (already a dependency). It SHALL
-NOT import `sklearn`, `scipy`, `torch`, or any other heavy ML package. The implementation
-SHALL be deterministic given the same input ordering with a fixed seed.
+聚类实现 SHALL 仅依赖 `numpy`(已是依赖)。SHALL NOT import `sklearn`、`scipy`、`torch` 或任何
+其他重 ML 包。实现 SHALL 在相同输入顺序与固定 seed 下确定性。
 
-#### Scenario: No sklearn import
+#### Scenario: 不引入 sklearn
 
-- **WHEN** the clustering module is imported
-- **THEN** it SHALL NOT transitively import `sklearn` or `scipy`
+- **当** 聚类模块被 import
+- **那么** 它 SHALL NOT 传递地 import `sklearn` 或 `scipy`
 
-### Requirement: ClientUser tracks used_skills as list-of-dict
+### Requirement: ClientUser 以 list-of-dict 追踪 used_skills
 
-`ClientUser` SHALL maintain `used_skills`: a list of dicts `{name, use_count, avg_score}`
-derived from the user's trajectory atoms' `used_skills` field and their UX scores. This
-SHALL be updated incrementally as atoms are processed.
+`ClientUser` SHALL 维护 `used_skills`:一个 dict 列表 `{name, use_count, avg_score}`,源自用户
+trajectory atom 的 `used_skills` 字段及其 UX 分。该列表 SHALL 随 atom 处理增量更新。
 
-#### Scenario: used_skills reflects atom history
+#### Scenario: used_skills 反映 atom 历史
 
-- **WHEN** a user's atoms reference skill "foo" 3 times with ux scores [8, 9, 7]
-- **THEN** `ClientUser.used_skills` SHALL contain `{"name": "foo", "use_count": 3, "avg_score": 8.0}`
+- **当** 一个用户的 atom 引用 skill "foo" 3 次,ux 分为 [8, 9, 7]
+- **那么** `ClientUser.used_skills` SHALL 含 `{"name": "foo", "use_count": 3, "avg_score": 8.0}`
 
-### Requirement: ClientUser.recommended_skills records pushed skills
+### Requirement: ClientUser.recommended_skills 记录被推送的 skill
 
-`ClientUser` SHALL maintain `recommended_skills`: a list of dicts
-`{skill, branch, hash}` recording which skills (and which version) have been recommended
-to this user by `SkillRecommendEngine`. This SHALL be persisted so recommendations are
-traceable across syncs.
+`ClientUser` SHALL 维护 `recommended_skills`:一个 dict 列表 `{skill, branch, hash}`,记录
+`SkillRecommendEngine` 向该用户推荐过哪些 skill(及其版本)。该列表 SHALL 持久化,使推荐可跨 sync 追溯。
 
-#### Scenario: recommended_skills recorded after push
+#### Scenario: 推送后记录 recommended_skills
 
-- **WHEN** `SkillRecommendEngine.get_skill_for_client` recommends skill "bar" on its
-  `staging` branch (sha `abc123`) to a user
-- **THEN** `ClientUser.recommended_skills` SHALL include `{"skill": "bar", "branch": "staging", "hash": "abc123"}`
+- **当** `SkillRecommendEngine.get_skill_for_client` 向某用户推荐 skill "bar" 的 `staging` 分支(sha `abc123`)
+- **那么** `ClientUser.recommended_skills` SHALL 含 `{"skill": "bar", "branch": "staging", "hash": "abc123"}`
 
-### Requirement: Profile persisted in server SQLite by user_id
+### Requirement: 画像按 user_id 持久化在 server 端 SQLite
 
-The team server SHALL persist each user's `ClientInterest` (feature_tensor, mean_tensor,
-used_skills) in a `client_interest` SQLite table keyed by `user_id` (= client_id). Tensors
-SHALL be serialized as BLOBs. The client (thin) SHALL NOT store profiles locally. On cold
-start (no row), the user SHALL have no profile and recommendations SHALL fall back to ux
-ordering — this is the correct definition of "no profile", not a fallback branch.
+team server SHALL 把每个用户的 `ClientInterest`(feature_tensor、mean_tensor、used_skills)持久化在
+以 `user_id`(= client_id)为主键的 `client_interest` SQLite 表中。tensor SHALL 序列化为 BLOB。
+client(瘦客户端)SHALL NOT 在本地存画像。冷启动(无行)时用户无画像,推荐 SHALL 回退 ux 排序——
+这是「无画像」的正确定义,不是 fallback 分支。
 
-#### Scenario: Profile survives server restart
+#### Scenario: 画像跨 server 重启存活
 
-- **WHEN** the server restarts and a user syncs again
-- **THEN** the user's `feature_tensor` and `used_skills` SHALL be loaded from the
-  `client_interest` table
-- **AND** recommendations SHALL use the persisted profile
+- **当** server 重启后某用户再次 sync
+- **那么** 用户的 `feature_tensor` 与 `used_skills` SHALL 从 `client_interest` 表加载
+- **且** 推荐 SHALL 使用持久化的画像
 
-#### Scenario: Cold start falls back to ux ordering
+#### Scenario: 冷启动回退 ux 排序
 
-- **WHEN** a user has no row in `client_interest` (no atoms yet)
-- **THEN** `get_skill_for_client` SHALL return skills ordered by ux score (quality path)
-- **AND** SHALL NOT throw
+- **当** 某用户在 `client_interest` 表中无行(尚无 atom)
+- **那么** `get_skill_for_client` SHALL 返回按 ux 分排序的 skill(质量路径)
+- **且** SHALL NOT 抛错

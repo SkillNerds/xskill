@@ -1,75 +1,67 @@
 ## ADDED Requirements
 
-### Requirement: `--name` flag provides stable cross-device user identity
+### Requirement: `--name` 提供稳定的跨设备用户身份
 
-The `xskill connect` command SHALL accept an optional `--name <userid>` flag. When provided,
-the team server SHALL derive a deterministic `client_id` from the normalized `user_name`
-(`sha256("name:" + norm_name)[:16]`) and use it as the user's stable identity — the same
-`--name` on different devices or after reinstall SHALL resolve to the same `client_id` and
-thus the same `ClientInterest`/profile. The server SHALL NOT issue a new uuid when
-`--name` is provided.
+`xskill connect` 命令 SHALL 接受可选的 `--name <userid>` flag。提供时,team server SHALL 从
+规范化的 `user_name` 派生确定性的 `client_id`(`sha256("name:" + norm_name)[:16]`)并以此作为
+用户的稳定身份——不同设备或重装后使用同一 `--name` SHALL 解析到同一 `client_id`,从而共享同一
+`ClientInterest`/画像。提供 `--name` 时 server SHALL NOT 另发新 uuid。
 
-The `--name` identity SHALL take precedence over the existing `claimed_client_id` /
-`(hostname, label)` fingerprint resolution: when `--name` is present, the server SHALL NOT
-run the fingerprint lookup path.
+`--name` 身份 SHALL 优先于既有的 `claimed_client_id` / `(hostname, label)` 指纹回查:当 `--name`
+存在时,server SHALL NOT 走指纹回查路径。
 
-#### Scenario: Connect with --name on two devices shares identity
+#### Scenario: 两设备用同一 --name 共享身份
 
-- **WHEN** user runs `xskill connect host:port --token T --name alice` on device A
-- **AND** user runs `xskill connect host:port --token T --name alice` on device B
-- **THEN** the server SHALL return the same `client_id` for both connections
-- **AND** both devices SHALL share the same `ClientInterest` profile history
+- **当** 用户在设备 A 上运行 `xskill connect host:port --token T --name alice`
+- **且** 用户在设备 B 上运行 `xskill connect host:port --token T --name alice`
+- **那么** server 对两次连接 SHALL 返回相同的 `client_id`
+- **且** 两台设备 SHALL 共享同一份 `ClientInterest` 画像历史
 
-#### Scenario: Connect with --name after reinstall keeps identity
+#### Scenario: 重装后用 --name 重连保留身份
 
-- **WHEN** user previously connected with `--name alice` and the local `team_client.json`
-  was deleted (reinstall)
-- **AND** user reconnects with `xskill connect host:port --token T --name alice`
-- **THEN** the server SHALL return the same `client_id` as before
-- **AND** the user's historical profile SHALL remain associated
+- **当** 用户此前用 `--name alice` 连接过,本地 `team_client.json` 已被删除(重装)
+- **且** 用户用 `xskill connect host:port --token T --name alice` 重连
+- **那么** server SHALL 返回与此前相同的 `client_id`
+- **且** 用户的历史画像 SHALL 仍然关联在该身份下
 
-#### Scenario: --name takes precedence over fingerprint resolution
+#### Scenario: --name 优先于指纹回查
 
-- **WHEN** a client sends `user_name="alice"` together with a stale `claimed_client_id`
-  that the server no longer recognizes
-- **THEN** the server SHALL resolve identity via the `--name` deterministic id
-- **AND** SHALL NOT fall back to `(hostname, label)` fingerprint lookup
+- **当** client 发送 `user_name="alice"` 的同时附带一个 server 已不认识的过期 `claimed_client_id`
+- **那么** server SHALL 通过 `--name` 派生 id 解析身份
+- **且** SHALL NOT 回退到 `(hostname, label)` 指纹回查
 
-### Requirement: Anonymous connect falls back to hashid (existing uuid logic)
+### Requirement: 匿名 connect 回退 hashid(既有 uuid 逻辑)
 
-When `--name` is omitted, the connect SHALL be anonymous and the server SHALL resolve
-`client_id` via the existing three-tier logic (`claimed_client_id` → `(hostname, label)`
-fingerprint → new uuid). Anonymous behavior SHALL be identical to before this change.
+未提供 `--name` 时,connect 即为匿名,server SHALL 沿既有三级逻辑(`claimed_client_id` →
+`(hostname, label)` 指纹 → 新 uuid)解析 `client_id`。匿名行为 SHALL 与本变更之前完全一致。
 
-#### Scenario: Connect without --name is anonymous
+#### Scenario: 不带 --name 即为匿名
 
-- **WHEN** user runs `xskill connect host:port --token T` (no `--name`)
-- **THEN** the server SHALL resolve `client_id` via the existing uuid/fingerprint logic
-- **AND** SHALL NOT derive a name-based id
+- **当** 用户运行 `xskill connect host:port --token T`(不带 `--name`)
+- **那么** server SHALL 沿既有 uuid/指纹逻辑解析 `client_id`
+- **且** SHALL NOT 派生 name-based id
 
-### Requirement: Server `allow_anonymous_user` gate at /register
+### Requirement: server 端 `allow_anonymous_user` 在 /register 闸门
 
-The team server SHALL read `team.server.allow_anonymous_user` from `config.yaml` (default
-`true`). When set to `false`, the `/api/v1/team/register` endpoint SHALL reject any
-`RegisterRequest` whose `user_name` is null/empty with HTTP 403
-`anonymous users not allowed`. When `true` (default), anonymous registration SHALL behave
-as before.
+team server SHALL 读取 `config.yaml` 的 `team.server.allow_anonymous_user`(缺省 `true`)。设为
+`false` 时,`/api/v1/team/register` 端点 SHALL 对任何 `user_name` 为空/null 的 `RegisterRequest`
+返回 HTTP 403 `anonymous users not allowed`。为 `true`(缺省)时,匿名注册行为 SHALL 与之前一致。
 
-#### Scenario: Anonymous rejected when allow_anonymous_user is false
+#### Scenario: allow_anonymous_user=false 时拒绝匿名
 
-- **WHEN** `config.yaml` has `team.server.allow_anonymous_user: false`
-- **AND** a client registers without `--name` (`user_name` is null)
-- **THEN** the server SHALL return HTTP 403 with detail `anonymous users not allowed`
-- **AND** no `client_id` SHALL be issued
+- **当** `config.yaml` 设置 `team.server.allow_anonymous_user: false`
+- **且** 一个不带 `--name`(`user_name` 为 null)的 client 发起注册
+- **那么** server SHALL 返回 HTTP 403,detail 为 `anonymous users not allowed`
+- **且** SHALL NOT 发放任何 `client_id`
 
-#### Scenario: Named connect allowed when allow_anonymous_user is false
+#### Scenario: allow_anonymous_user=false 时放行命名连接
 
-- **WHEN** `config.yaml` has `team.server.allow_anonymous_user: false`
-- **AND** a client registers with `--name alice`
-- **THEN** the server SHALL accept the registration and return the name-derived `client_id`
+- **当** `config.yaml` 设置 `team.server.allow_anonymous_user: false`
+- **且** 一个带 `--name alice` 的 client 发起注册
+- **那么** server SHALL 接受注册并返回 name 派生的 `client_id`
 
-#### Scenario: Default allows anonymous (backward compatible)
+#### Scenario: 缺省允许匿名(向后兼容)
 
-- **WHEN** `config.yaml` does not set `team.server.allow_anonymous_user`
-- **AND** a client registers without `--name`
-- **THEN** the server SHALL accept the anonymous registration (behavior identical to before)
+- **当** `config.yaml` 未设置 `team.server.allow_anonymous_user`
+- **且** 一个不带 `--name` 的 client 发起注册
+- **那么** server SHALL 接受匿名注册(行为与本变更之前一致)
