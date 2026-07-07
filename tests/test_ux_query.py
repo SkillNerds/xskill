@@ -24,6 +24,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from xskill.dashboard.router import build_dashboard_router
+import xskill.dashboard.router as _router_mod
 from xskill.recommend.skillhub import SkillHub
 from xskill.skill.skill import Skill
 
@@ -445,7 +446,7 @@ class TestHttpUxEndpoints:
         _write_atom(traj_root, "cid-1", "traj_t", "atom_t_0001",
                     summary="做 X", intent="想 X")
         # monkeypatch _resolve_traj_root 返回该 traj_root
-        import xskill.dashboard.router as router_mod
+        router_mod = _router_mod
         monkeypatch.setattr(router_mod, "_resolve_traj_root", lambda: traj_root)
         db = tmp_path / "registry.db"
         app = FastAPI()
@@ -516,7 +517,7 @@ class TestHttpUxEndpoints:
         monkeypatch.setattr(
             "xskill.config.get_config",
             lambda: {"skillhub": {"enabled": True, "dir": str(hub_dir)}})
-        import xskill.dashboard.router as router_mod
+        router_mod = _router_mod
         monkeypatch.setattr(router_mod, "_resolve_traj_root", lambda: traj_root)
         db = tmp_path / "registry.db"
         app = FastAPI()
