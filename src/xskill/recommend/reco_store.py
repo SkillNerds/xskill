@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from xskill.recommend._sqlite_base import _SqliteStore
 
-_SCHEMA = """
+RECO_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS recommendations (
     user_id     TEXT NOT NULL,
     skill_name  TEXT NOT NULL,
@@ -29,7 +29,7 @@ def _now() -> str:
 class RecoStore(_SqliteStore):
     """``recommendations`` 表读写。与 ProfileStore 共用同一 db 文件。"""
 
-    _SCHEMA = _SCHEMA
+    _SCHEMA = RECO_SCHEMA_SQL
 
     def record(self, *, user_id: str, skill_name: str, side: str, sha: str) -> None:
         """幂等 upsert 一条推荐记录。"""
