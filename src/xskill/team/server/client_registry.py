@@ -44,11 +44,12 @@ def client_id_from_name(name: str) -> str:
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS clients (
-    client_id  TEXT PRIMARY KEY,
-    label      TEXT DEFAULT '',
-    hostname   TEXT DEFAULT '',
-    joined_at  TEXT NOT NULL,
-    last_seen  TEXT NOT NULL
+    client_id   TEXT PRIMARY KEY,
+    label       TEXT DEFAULT '',
+    hostname    TEXT DEFAULT '',
+    user_name   TEXT DEFAULT '',
+    joined_at   TEXT NOT NULL,
+    last_seen   TEXT NOT NULL
 );
 """
 
@@ -74,6 +75,11 @@ class ClientRegistry:
         conn = self._conn()
         try:
             conn.executescript(_SCHEMA)
+            # 幂等迁移：CREATE TABLE IF NOT EXISTS 不会给已存在的表加列，
+            # 老 db 缺 user_name 列时显式 ALTER 补上。
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(clients)")}
+            if "user_name" not in cols:
+                conn.execute("ALTER TABLE clients ADD COLUMN user_name TEXT DEFAULT ''")
             conn.commit()
         finally:
             conn.close()
@@ -104,6 +110,7 @@ class ClientRegistry:
         """
         # 优先级 ① — user_name 派生确定性 id（--name 权威身份）
         if user_name:
+            norm = _normalize_user_name(user_name)
             client_id = client_id_from_name(user_name)
             now = _now()
             conn = self._conn()
@@ -113,14 +120,15 @@ class ClientRegistry:
                 ).fetchone()
                 if existing:
                     conn.execute(
-                        "UPDATE clients SET last_seen=?, hostname=? WHERE client_id=?",
-                        (_now(), hostname or "", client_id),
+                        "UPDATE clients SET last_seen=?, hostname=?, user_name=?"
+                        " WHERE client_id=?",
+                        (_now(), hostname or "", norm, client_id),
                     )
                 else:
                     conn.execute(
-                        "INSERT INTO clients (client_id, label, hostname, joined_at, last_seen)"
-                        " VALUES (?, ?, ?, ?, ?)",
-                        (client_id, label or user_name, hostname or "", now, now),
+                        "INSERT INTO clients (client_id, label, hostname, user_name,"
+                        " joined_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)",
+                        (client_id, label or norm, hostname or "", norm, now, now),
                     )
                 conn.commit()
             finally:
@@ -170,6 +178,25 @@ class ClientRegistry:
                 " WHERE hostname=? AND label=?"
                 " ORDER BY last_seen DESC LIMIT 1",
                 (hostname, label),
+            ).fetchone()
+            return row["client_id"] if row else None
+        finally:
+            conn.close()
+
+    def find_by_user_name(self, user_name: str) -> str | None:
+        """按明文 user_name 反查 client_id（"按名找人"）。
+
+        输入经 ``_normalize_user_name`` 规范化后精确匹配 ``user_name`` 列
+        （注册时存的就是规范化形式，与 ``client_id_from_name`` 同口径）。
+        命中多条 → 返回 last_seen 最新者；未命中 → None。空名抛 ValueError。
+        """
+        norm = _normalize_user_name(user_name)
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT client_id FROM clients WHERE user_name=?"
+                " ORDER BY last_seen DESC LIMIT 1",
+                (norm,),
             ).fetchone()
             return row["client_id"] if row else None
         finally:

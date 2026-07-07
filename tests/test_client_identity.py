@@ -5,6 +5,7 @@ TDD: 确定性 client_id、跨设备同名、--name 优先于指纹、匿名回�
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 
 import pytest
 from fastapi import FastAPI
@@ -134,3 +135,85 @@ class TestRegisterEndpoint:
         r = c.post("/api/v1/team/register",
                    json={"token": "wrong", "user_name": "alice"})
         assert r.status_code == 401
+
+
+# ── user_name 明文持久化 + find_by_user_name + 跨重启迁移 ──────────
+
+class TestUserNameColumn:
+    def test_user_name_persisted_in_get_and_list(self, tmp_path):
+        reg = ClientRegistry(tmp_path / "c.db")
+        cid = reg.register(user_name="alice", hostname="h")
+        row = reg.get(cid)
+        assert row is not None
+        assert row["user_name"] == "alice"
+        listed = reg.list()
+        assert len(listed) == 1
+        assert listed[0]["user_name"] == "alice"
+
+    def test_user_name_normalized_on_persist(self, tmp_path):
+        reg = ClientRegistry(tmp_path / "c.db")
+        cid = reg.register(user_name="  Alice  ", hostname="h")
+        assert reg.get(cid)["user_name"] == "alice"
+
+    def test_anonymous_register_has_empty_user_name(self, tmp_path):
+        reg = ClientRegistry(tmp_path / "c.db")
+        cid = reg.register(label="x", hostname="h")
+        assert reg.get(cid)["user_name"] == ""
+
+    def test_find_by_user_name_returns_client_id(self, tmp_path):
+        reg = ClientRegistry(tmp_path / "c.db")
+        cid = reg.register(user_name="alice", hostname="h")
+        assert reg.find_by_user_name("alice") == cid
+        # 规范化匹配：大小写/空白不影响反查
+        assert reg.find_by_user_name("  Alice  ") == cid
+
+    def test_find_by_user_name_none_when_absent(self, tmp_path):
+        reg = ClientRegistry(tmp_path / "c.db")
+        reg.register(user_name="alice", hostname="h")
+        assert reg.find_by_user_name("bob") is None
+
+    def test_find_by_user_name_rejects_empty(self, tmp_path):
+        reg = ClientRegistry(tmp_path / "c.db")
+        with pytest.raises(ValueError):
+            reg.find_by_user_name("")
+
+    def test_revisit_updates_user_name_column(self, tmp_path):
+        reg = ClientRegistry(tmp_path / "c.db")
+        cid = reg.register(user_name="alice", hostname="h1")
+        # 同名重连（不同 hostname）→ user_name 列仍持明文
+        reg.register(user_name="alice", hostname="h2")
+        assert reg.get(cid)["user_name"] == "alice"
+        assert reg.get(cid)["hostname"] == "h2"
+
+    def test_migration_adds_user_name_column_on_reopen(self, tmp_path):
+        """老 db（无 user_name 列）重开 ClientRegistry → 幂等 ALTER 补列。"""
+        db = tmp_path / "c.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE clients ("
+            " client_id TEXT PRIMARY KEY, label TEXT DEFAULT '',"
+            " hostname TEXT DEFAULT '', joined_at TEXT NOT NULL,"
+            " last_seen TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO clients (client_id, label, hostname, joined_at, last_seen)"
+            " VALUES ('oldhash', 'h', 'host',"
+            " '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00')"
+        )
+        conn.commit()
+        conn.close()
+
+        # 重开 → 迁移补 user_name 列，老行默认 ''
+        reg = ClientRegistry(db)
+        old_row = reg.get("oldhash")
+        assert old_row is not None
+        assert old_row["user_name"] == ""
+
+        # 迁移后再注册带 name 的 client 正常写入明文
+        cid = reg.register(user_name="alice", hostname="h")
+        assert reg.get(cid)["user_name"] == "alice"
+        assert reg.find_by_user_name("Alice") == cid
+
+        # 二次重开仍幂等（列已存在，ALTER 不再执行）
+        reg2 = ClientRegistry(db)
+        assert reg2.get(cid)["user_name"] == "alice"
