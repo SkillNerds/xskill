@@ -145,6 +145,89 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
         """某版本相对其父提交的 unified diff（前端渲染红绿）。"""
         return {"sha": sha, "diff": _git_show(_skill_path(skill_dir, name), sha)}
 
+    # ── UX 分查询：版本聚合 + atom 关联（自有 skill / 三方 skill 分端点）──
+
+    @router.get("/api/v1/dashboard/skill/{name}/ux")
+    def skill_ux(name: str, side: Optional[str] = None,
+                 days: int = 30) -> dict:
+        """自有 skill 的 ux 分按 commit_sha 分组聚合 + 当前版本 sha。
+
+        ``side`` 缺省 None 表示两侧合并（同 sha 上 main+staging 合到一组，
+        ``side`` 字段标 ``"mixed"``）。响应：
+        ``{"skill", "versions": [...], "current_version": {"main", "staging"|None}}``
+        """
+        from xskill.skill.skill import Skill
+        sp = _skill_path(skill_dir, name)
+        sk = Skill(sp)
+        versions = sk.ux_scores_by_version(side=side, days=days)
+        m_sha = sk.canary_ops.main_sha()
+        s_sha = (sk.canary_ops.staging_sha()
+                 if sk.canary_ops.has_staging() else None)
+        return {
+            "skill": name,
+            "versions": versions,
+            "current_version": {"main": m_sha, "staging": s_sha},
+        }
+
+    @router.get("/api/v1/dashboard/skill/{name}/ux/atoms")
+    def skill_ux_atoms(name: str, side: Optional[str] = None,
+                       commit_sha: Optional[str] = None,
+                       days: int = 30) -> dict:
+        """自有 skill 每条 ux 分关联其 atom 内容。
+
+        ``traj_root`` 由 :func:`_resolve_traj_root` best-effort 解析（仅 team
+        server 模式可解析到）；拿不到时 ``atom_lookup="unavailable"`` 且所有
+        ``atom=None``，不抛（dashboard 可能不在 team 模式）。
+        """
+        from xskill.skill.skill import Skill
+        sp = _skill_path(skill_dir, name)
+        sk = Skill(sp)
+        traj_root = _resolve_traj_root()
+        scores = sk.ux_scores_with_atoms(
+            side=side, commit_sha=commit_sha, days=days, traj_root=traj_root)
+        return {
+            "skill": name,
+            "atom_lookup": "ok" if traj_root is not None else "unavailable",
+            "scores": scores,
+        }
+
+    @router.get("/api/v1/dashboard/skillhub/{name}/ux")
+    def skillhub_ux(name: str, days: int = 30) -> dict:
+        """三方 skill 的 ux 分按 content_sha 分组聚合 + 当前版本 content_sha。
+
+        三方 skill 无 git / staging，side 恒 ``main``。skillhub 禁用或 skill
+        不存在 → 404。响应：
+        ``{"skill", "versions": [...], "current_version": {"content_sha"}}``
+        """
+        hub = _build_skillhub()
+        if hub is None:
+            raise HTTPException(status_code=404, detail="skillhub disabled")
+        _skillhub_path(hub.dir, name)  # 越权校验 + 存在校验
+        versions = hub.ux_scores_by_version(name, days=days)
+        return {
+            "skill": name,
+            "versions": versions,
+            "current_version": {"content_sha": hub.content_sha(name)},
+        }
+
+    @router.get("/api/v1/dashboard/skillhub/{name}/ux/atoms")
+    def skillhub_ux_atoms(name: str, commit_sha: Optional[str] = None,
+                          days: int = 30) -> dict:
+        """三方 skill 每条 ux 分关联其 atom 内容。同 :func:`skill_ux_atoms`
+        的 traj_root / atom_lookup 语义；skillhub 禁用或 skill 不存在 → 404。"""
+        hub = _build_skillhub()
+        if hub is None:
+            raise HTTPException(status_code=404, detail="skillhub disabled")
+        _skillhub_path(hub.dir, name)
+        traj_root = _resolve_traj_root()
+        scores = hub.ux_scores_with_atoms(
+            name, commit_sha=commit_sha, days=days, traj_root=traj_root)
+        return {
+            "skill": name,
+            "atom_lookup": "ok" if traj_root is not None else "unavailable",
+            "scores": scores,
+        }
+
     # ── 离线探针触发率（Phase 2）：历史 / 逐 case / 重跑 action ──────
 
     @router.get("/api/v1/dashboard/skill/{name}/trigger")
@@ -289,3 +372,53 @@ def _price_health() -> Optional[dict]:
         return prices.refresh_health()
     except Exception:  # pylint: disable=broad-exception-caught
         return None
+
+
+# ── UX 分查询端点用的 helpers ──────────────────────────────────────
+
+def _resolve_traj_root() -> Optional[Path]:
+    """best-effort 解析 team server 的 traj_root（供 ux/atoms 端点反查 atom）。
+
+    看板路由独立挂载，拿不到 team server 的 ``_ctx.traj_root`` 单例；直接读
+    config 的 ``team.server.traj_root``（缺省 ``~/.xskill/team_trajectories``），
+    要求该目录存在且含 ``clients/`` 子目录（确认是 team server 落盘的）才
+    返回；否则返回 None（端点据此标 ``atom_lookup="unavailable"``，不抛——
+    dashboard 可能不在 team 模式）。
+
+    不调用 :func:`xskill.config.get_team_trajectories_dir`——它会 mkdir 副作用，
+    不适合只读端点。
+    """
+    try:
+        from xskill.config import XSKILL_HOME, get_config
+        cfg = get_config()
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None
+    raw = (cfg.get("team", {}).get("server", {}).get("traj_root")
+           or str(XSKILL_HOME / "team_trajectories"))
+    p = Path(raw).expanduser()
+    if not p.is_dir() or not (p / "clients").is_dir():
+        return None
+    return p
+
+
+def _build_skillhub() -> Optional["object"]:
+    """从 config 构造 SkillHub；禁用 → None。
+
+    ux 查询路径不需要 embed_client（仅 ``index()`` 用），传 None。
+    """
+    from xskill.config import get_config
+    from xskill.recommend.skillhub import SkillHub
+    try:
+        cfg = get_config()
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None
+    hub = SkillHub.from_config(cfg, embed_client=None)
+    return hub if hub.enabled else None
+
+
+def _skillhub_path(hub_dir: Path, name: str) -> Path:
+    """解析并校验三方 skill 子目录，防 name 里塞 ``../`` 越权 + 不存在抛 404。"""
+    root = (Path(hub_dir) / name).resolve()
+    if root.parent != Path(hub_dir).resolve() or not root.is_dir():
+        raise HTTPException(status_code=404, detail=f"skill not found: {name!r}")
+    return root
