@@ -1161,6 +1161,11 @@ class DirectoryWatcher:
         在同 (skill, side) 上幂等：``AtomCanary.append`` 自带去重。
         所有 atom 处理完调一次 ``check_and_decide`` 让 staging 该升的升 /
         该弃的弃。
+
+        skill 定位走两步查找：先自有 ``skill_dir/<name>``（有 git / 灰度），
+        未命中再查三方 ``skillhub_dir/<name>``（无 git → side 恒 ``main``、
+        sha = ``SKILL.md`` 内容哈希前 16 位）。两处都无 → 该 skill 未装/未索引，
+        跳过（不报错）。
         """
         if self.llm is None or self.skill_dir is None:
             return
@@ -1181,25 +1186,26 @@ class DirectoryWatcher:
         if not header or not header.get("skill") or not header.get("side"):
             return
         skill_name = header["skill"]
-        skill_sub = self.skill_dir / skill_name
-        if not skill_sub.is_dir():
-            return
         traj_id = md_path.stem
         store = self._store_for(dir_path)
         atoms = store.list_by_traj(traj_id)
         if not atoms:
             return
+        skill_sub, side, commit_sha = self._resolve_skill_for_scoring(
+            skill_name, header)
+        if skill_sub is None:
+            return
         ac = AtomCanary(skill_dir=skill_sub)
         for atom in atoms:
             try:
                 result = score_atom(
-                    llm=self.llm, atom=atom, side=header["side"],
+                    llm=self.llm, atom=atom, side=side,
                 )
                 if result["score"] is None:
                     continue
                 ac.append(
                     atom_id=atom.atom_id, skill_name=skill_name,
-                    side=header["side"], commit_sha=header.get("sha", ""),
+                    side=side, commit_sha=commit_sha,
                     score=result["score"], reasons=result["reasons"],
                     user_model=atom.source_model,
                 )
@@ -1211,7 +1217,29 @@ class DirectoryWatcher:
         # check_and_decide 不再绑在打分链路里——移到 watcher 周期性
         # _check_canary_decisions() 独立轮询，保证灰度系统自治不依赖
         # traj 触发。这里只负责打分落盘。
-        mark_skill_used(wd_id, fname, skill_name, header["side"], **kw)
+        mark_skill_used(wd_id, fname, skill_name, side, **kw)
+
+    def _resolve_skill_for_scoring(
+        self, skill_name: str, header: dict,
+    ) -> tuple[Path | None, str, str]:
+        """两步定位打分目标 skill：先 ``skill_dir``（自有），后 ``skillhub_dir``（三方）。
+
+        返回 ``(skill_sub, side, commit_sha)``；两处都无 → ``(None, "", "")``，
+        调用方据此跳过（该 skill 未装/未索引，非错误）。
+
+        - 自有 skill：side/sha 取自 traj header（client 在推荐时写入）。
+        - 三方 skill：无 git/staging → side 恒 ``"main"``、sha = ``SKILL.md``
+          内容 sha256 前 16 位（``SkillHub.content_sha``）。
+        """
+        own = self.skill_dir / skill_name
+        if own.is_dir():
+            return own, header["side"], header.get("sha", "")
+        from xskill.recommend.skillhub import SkillHub
+        hub = SkillHub.from_config(self.config, self.embed_client)
+        hub_sub = hub.skill_path(skill_name)
+        if hub_sub is None:
+            return None, "", ""
+        return hub_sub, "main", hub.content_sha(skill_name) or ""
 
     def _score_atoms_for_traj_server(self, wd_id, fname, **kw):
         """CS 模式打分：遍历每个 atom 的 used_skills，对每个用到的 team skill
@@ -1221,16 +1249,18 @@ class DirectoryWatcher:
         - 不读 traj header（一条上传轨迹可能用多个 team skill）
         - client_id 从 watch_dir 的 label 取（upload 端点注册时 label=client_id）
         - side 由 pick_side 现算，不是 header 里写死的
+
+        skill 定位同样走两步查找：先自有 ``skill_dir/<name>``（有 git → 走灰度
+        路由），未命中再查三方 ``skillhub_dir/<name>``（无 git → side 恒 ``main``、
+        sha = 内容哈希）。两处都无 → 跳过该 skill（不报错）。
         """
         if self.llm is None or self.skill_dir is None:
             return
         from xskill.canary import AtomCanary
-        from xskill.canary import (
-            CanaryConfig, eligible_models, has_staging, main_sha,
-            pick_side_scoped, staging_sha,
-        )
+        from xskill.canary import CanaryConfig, eligible_models
         from xskill.pipeline.atom import score_atom
         from xskill.pipeline.registry import model_share
+        from xskill.recommend.skillhub import SkillHub
 
         # 找到该 wd 的 dir_path + client_id（label）
         client_id = None
@@ -1253,27 +1283,23 @@ class DirectoryWatcher:
         canary_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
         # 模型分桶路由:top-N 模型才可能进 staging,unknown/非 top-N 一律 main。
         eligible = eligible_models(model_share(**kw), canary_cfg.scope_top_n) or None
+        hub = SkillHub.from_config(self.config, self.embed_client)
         used_any = False
         for atom in atoms:
             for skill_name in (atom.used_skills or []):
-                skill_sub = self.skill_dir / skill_name
-                if not (skill_sub / ".git").is_dir():
+                skill_sub, side, sha = self._resolve_server_skill(
+                    skill_name, hub=hub, client_id=client_id,
+                    source_model=atom.source_model,
+                    canary_cfg=canary_cfg, eligible=eligible)
+                if skill_sub is None:
                     continue
-                if has_staging(skill_sub):
-                    side = pick_side_scoped(
-                        client_id, skill_name, canary_cfg.probability,
-                        user_model=atom.source_model, eligible=eligible)
-                    sha = staging_sha(skill_sub) if side == "staging" else main_sha(skill_sub)
-                else:
-                    side = "main"
-                    sha = main_sha(skill_sub)
                 try:
                     result = score_atom(llm=self.llm, atom=atom, side=side)
                     if result["score"] is None:
                         continue
                     AtomCanary(skill_dir=skill_sub).append(
                         atom_id=atom.atom_id, skill_name=skill_name,
-                        side=side, commit_sha=sha or "",
+                        side=side, commit_sha=sha,
                         score=result["score"], reasons=result["reasons"],
                         user_model=atom.source_model,
                     )
@@ -1284,6 +1310,35 @@ class DirectoryWatcher:
                                      fname, atom.atom_id, skill_name)
         if used_any:
             logger.info("CS attribution done: %s (client=%s)", fname, client_id)
+
+    def _resolve_server_skill(
+        self, skill_name: str, *, hub, client_id: str,
+        source_model: str, canary_cfg, eligible,
+    ) -> tuple[Path | None, str, str]:
+        """CS 模式两步定位打分目标 skill：先 ``skill_dir``（自有，走灰度路由），
+        后 ``skillhub_dir``（三方，side 恒 ``main``）。
+
+        返回 ``(skill_sub, side, sha)``；两处都无 → ``(None, "", "")``。
+        - 自有 skill：有 staging → ``pick_side_scoped`` 现算 side + 对应 sha；
+          无 staging → ``main`` + main_sha。
+        - 三方 skill：无 git/staging → ``main`` + ``SkillHub.content_sha``。
+        """
+        from xskill.canary import has_staging, main_sha, pick_side_scoped, staging_sha
+        own = self.skill_dir / skill_name
+        if (own / ".git").is_dir():
+            if has_staging(own):
+                side = pick_side_scoped(
+                    client_id, skill_name, canary_cfg.probability,
+                    user_model=source_model, eligible=eligible)
+                sha = staging_sha(own) if side == "staging" else main_sha(own)
+            else:
+                side = "main"
+                sha = main_sha(own)
+            return own, side, sha or ""
+        hub_sub = hub.skill_path(skill_name)
+        if hub_sub is None:
+            return None, "", ""
+        return hub_sub, "main", hub.content_sha(skill_name) or ""
 
 
 # ═══════════════════════════════════════════════════════════════════
