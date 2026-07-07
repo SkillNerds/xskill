@@ -192,12 +192,95 @@ class Skill:
                          days: int = 30) -> list[dict]:
         return self.canary_ops.ux_scores(side=side, days=days)
 
+    def _current_version_shas(self, side: Optional[str]) -> set[str]:
+        """按 side 选当前版本 sha 集合（main / staging / 两侧合并）。
+
+        - ``side="main"``    → ``{main_sha}`` 或空集（无 main）
+        - ``side="staging"`` → ``{staging_sha}`` 或空集（无 staging）
+        - ``side=None``      → ``{main_sha, staging_sha}`` 去空（两侧合并口径）
+        - 其它 side 值 → 抛 ``ValueError``（不做静默 fallback）
+        """
+        if side == "main":
+            m = self.canary_ops.main_sha()
+            return {m} if m else set()
+        if side == "staging":
+            s = self.canary_ops.staging_sha() if self.canary_ops.has_staging() else None
+            return {s} if s else set()
+        if side is None:
+            shas: set[str] = set()
+            m = self.canary_ops.main_sha()
+            if m:
+                shas.add(m)
+            if self.canary_ops.has_staging():
+                s = self.canary_ops.staging_sha()
+                if s:
+                    shas.add(s)
+            return shas
+        raise ValueError(f"unknown side: {side!r}")
+
     def ux_avg(self, side: Optional[str] = None, days: int = 30) -> Optional[float]:
-        scores = [s.get("score") for s in self.recent_ux_scores(side, days)
-                  if isinstance(s.get("score"), (int, float))]
+        """按**当前版本 sha**过滤后算均分；当前版本无分 → None。
+
+        版本演进时旧 commit_sha 的分留在 append-only ``.ux_scores.jsonl`` 里，
+        这里只取匹配当前 ``main_sha`` / ``staging_sha`` 的记录，避免新旧版本
+        分混算。``side=None`` 表示两侧合并（main+staging 当前版本分一起算）。
+        """
+        shas = self._current_version_shas(side)
+        if not shas:
+            return None
+        rows = self.recent_ux_scores(side=side, days=days)
+        scores = [r.get("score") for r in rows
+                  if r.get("commit_sha") in shas
+                  and isinstance(r.get("score"), (int, float))]
         if not scores:
             return None
         return sum(scores) / len(scores)
+
+    def ux_scores_by_version(self, side: Optional[str] = None,
+                             days: int = 30) -> list[dict]:
+        """按 ``commit_sha`` 分组聚合 ux 分。
+
+        每组返回 ``{"commit_sha", "side", "count", "avg", "first_scored_at",
+        "last_scored_at"}``；``side=None`` 表示两侧合并（同一 sha 上 main+staging
+        的分合到一组，``side`` 字段标 ``"mixed"``）。按 ``last_scored_at`` 降序
+        （最新版本在前）。无评分记录的 sha 不出组。
+        """
+        rows = self.recent_ux_scores(side=side, days=days)
+        return _canary.aggregate_ux_by_version(rows)
+
+    def ux_scores_with_atoms(self, side: Optional[str] = None,
+                             commit_sha: Optional[str] = None,
+                             days: int = 30,
+                             traj_root: Optional[Path] = None) -> list[dict]:
+        """每条 ux 分关联其 atom 内容。
+
+        返回 ``{"atom_id", "commit_sha", "side", "score", "reasons",
+        "scored_at", "user_model", "atom": {...} | None}``。``atom`` 为 None
+        表示该 atom 文件已不存在（rebuild 删了）或 ``traj_root`` 未给。
+        ``traj_root`` 给定时按 team server 落盘结构反查 atom；不给则 ``atom=None``。
+        """
+        from xskill.pipeline.atom import load_atom_by_id
+
+        rows = self.recent_ux_scores(side=side, days=days)
+        if commit_sha is not None:
+            rows = [r for r in rows if r.get("commit_sha") == commit_sha]
+        out: list[dict] = []
+        for r in rows:
+            atom_id = r.get("atom_id") or ""
+            atom = (load_atom_by_id(traj_root, atom_id)
+                    if traj_root is not None and atom_id else None)
+            out.append({
+                "atom_id": atom_id,
+                "commit_sha": r.get("commit_sha", ""),
+                "side": r.get("side", ""),
+                "score": r.get("score"),
+                "reasons": r.get("reasons", ""),
+                "scored_at": r.get("scored_at", ""),
+                "user_model": r.get("user_model", ""),
+                "atom": atom,
+            })
+        out.sort(key=lambda d: d["scored_at"], reverse=True)
+        return out
 
     # ─── §3 skill-feature：vec / atom_feat / skill_meta ──────────
     @property

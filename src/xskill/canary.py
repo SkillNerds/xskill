@@ -413,6 +413,39 @@ def recent_scores(
     return filtered[:n]
 
 
+def aggregate_ux_by_version(rows: list[dict]) -> list[dict]:
+    """按 ``commit_sha`` 分组聚合 ux 分记录（共享给 ``Skill`` / ``SkillHub``）。
+
+    每组返回 ``{"commit_sha", "side", "count", "avg", "first_scored_at",
+    "last_scored_at"}``。``side`` 字段：组内记录同侧 → 该 side 字符串；
+    多侧混在一起 → ``"mixed"``（即调用方传 ``side=None`` 两侧合并的口径）。
+    按 ``last_scored_at`` 降序（最新版本在前）。无评分记录的 sha 不出组。
+    """
+    by_sha: dict[str, list[dict]] = {}
+    for r in rows:
+        sha = r.get("commit_sha") or ""
+        by_sha.setdefault(sha, []).append(r)
+    out: list[dict] = []
+    for sha, items in by_sha.items():
+        scores = [r.get("score") for r in items
+                  if isinstance(r.get("score"), (int, float))]
+        if not scores:
+            continue
+        sides = {r.get("side") for r in items}
+        side_label = next(iter(sides)) if len(sides) == 1 else "mixed"
+        timestamps = [r.get("scored_at", "") for r in items]
+        out.append({
+            "commit_sha": sha,
+            "side": side_label,
+            "count": len(scores),
+            "avg": round(sum(scores) / len(scores), 4),
+            "first_scored_at": min(timestamps),
+            "last_scored_at": max(timestamps),
+        })
+    out.sort(key=lambda d: d["last_scored_at"], reverse=True)
+    return out
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Controller：事件触发判定
 # ═══════════════════════════════════════════════════════════════════

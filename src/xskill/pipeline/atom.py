@@ -481,3 +481,40 @@ def score_and_record_atoms(*, llm, skill_dir, store, traj_id, skill_name,
             skipped += 1
     decision = ac.check_and_decide(config=canary_config) if atoms else {}
     return {"scored": scored, "skipped": skipped, "decision": decision}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Atom 反查 helper —— 给 ux 分查询用，从 atom_id 反查回 atom 内容
+# ═══════════════════════════════════════════════════════════════════
+# ux 分落盘时只记 ``atom_id``（不内联 atom 内容，避免冗余 + 陈旧）；查询侧
+# 需要展示 atom 摘要/intent 时再按 id 反查。team server 落盘结构为
+# ``traj_root/clients/<client_id>/sessions/<traj_id>/tasks/<atom_id>.json``
+# （每个 client 一个独立 ``AtomTaskStore``，root = ``traj_root/clients/<cid>/sessions``）。
+# 本 helper 在 team server 的 traj_root 下 glob 跨 client 桶找 atom 文件，
+# 命中第一条即返回精简字段 dict；找不到（rebuild 已删 / atom_id 错）返回 None。
+
+def load_atom_by_id(traj_root: Path | str, atom_id: str) -> dict | None:
+    """按 atom_id 反查 atom 内容（team server 落盘结构）。
+
+    扫描 ``traj_root/clients/*/sessions/*/tasks/<atom_id>.json``，命中第一条
+    即返回 ``{"atom_id", "traj_id", "summary", "intent", "tags", "used_skills"}``；
+    找不到返回 None。JSON 反序列化失败抛 ``ValueError``（不静默吞 corrupt 文件）。
+    """
+    root = Path(traj_root)
+    if not root.is_dir() or not atom_id:
+        return None
+    pattern = f"clients/*/sessions/*/tasks/{atom_id}.json"
+    for p in root.glob(pattern):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"atom file corrupt: {p}: {e}") from e
+        return {
+            "atom_id": data.get("atom_id", atom_id),
+            "traj_id": data.get("traj_id", ""),
+            "summary": data.get("summary", ""),
+            "intent": data.get("intent", ""),
+            "tags": list(data.get("tags", []) or []),
+            "used_skills": list(data.get("used_skills", []) or []),
+        }
+    return None

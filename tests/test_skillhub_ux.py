@@ -56,13 +56,15 @@ class TestSkillHubUxQuery:
         hub_dir = tmp_path / "hub"
         sub = _write_hub_skill(hub_dir, "extfoo")
         hub = SkillHub(enabled=True, hub_dir=hub_dir, embed_client=None)
-        # 手写两条 ux 分
+        # 手写两条 ux 分；commit_sha 必须匹配当前 SKILL.md 内容哈希，
+        # 否则 ux_avg（按当前版本 content_sha 过滤）会返回 None。
+        sha = _expected_content_sha(sub / "SKILL.md")
         AtomCanary(skill_dir=sub).append(
             atom_id="a1", skill_name="extfoo", side="main",
-            commit_sha="deadbeef", score=8, reasons="ok")
+            commit_sha=sha, score=8, reasons="ok")
         AtomCanary(skill_dir=sub).append(
             atom_id="a2", skill_name="extfoo", side="main",
-            commit_sha="deadbeef", score=6, reasons="meh")
+            commit_sha=sha, score=6, reasons="meh")
         rows = hub.recent_ux_scores("extfoo", days=0)
         assert len(rows) == 2
         assert {r["atom_id"] for r in rows} == {"a1", "a2"}
@@ -74,6 +76,16 @@ class TestSkillHubUxQuery:
         hub = SkillHub(enabled=True, hub_dir=hub_dir, embed_client=None)
         assert hub.ux_avg("extfoo", days=0) is None
         assert hub.recent_ux_scores("extfoo", days=0) == []
+
+    def test_ux_avg_none_when_only_old_version_scores(self, tmp_path):
+        """旧版本（不匹配当前 content_sha）的分不应混进 ux_avg → None。"""
+        hub_dir = tmp_path / "hub"
+        sub = _write_hub_skill(hub_dir, "extfoo")
+        hub = SkillHub(enabled=True, hub_dir=hub_dir, embed_client=None)
+        AtomCanary(skill_dir=sub).append(
+            atom_id="a1", skill_name="extfoo", side="main",
+            commit_sha="old_version_sha", score=8, reasons="ok")
+        assert hub.ux_avg("extfoo", days=0) is None
 
     def test_skill_path_none_when_disabled(self, tmp_path):
         hub_dir = tmp_path / "hub"

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from xskill.canary import load_ux_scores
+from xskill.canary import aggregate_ux_by_version, load_ux_scores
 from xskill.config import skillhub_config
 from xskill.skill.frontmatter import parse as fm_parse
 
@@ -103,9 +103,67 @@ class SkillHub:
         return scores
 
     def ux_avg(self, name: str, days: int = 30) -> float | None:
-        """三方 skill 近期 ux 均分；无评分 → None。与 ``Skill.ux_avg`` 同口径。"""
-        scores = [s.get("score") for s in self.recent_ux_scores(name, days)
-                  if isinstance(s.get("score"), (int, float))]
+        """三方 skill 近期 ux 均分；无评分 → None。与 ``Skill.ux_avg`` 同口径。
+
+        按**当前版本 content_sha** 过滤（三方 skill 无 git，版本号 = SKILL.md
+        内容哈希前 16 位）；旧版本的分留在 append-only 文件里不再混算。
+        """
+        sha = self.content_sha(name)
+        if sha is None:
+            return None
+        rows = self.recent_ux_scores(name, days=days)
+        scores = [r.get("score") for r in rows
+                  if r.get("commit_sha") == sha
+                  and isinstance(r.get("score"), (int, float))]
         if not scores:
             return None
         return sum(scores) / len(scores)
+
+    def ux_scores_by_version(self, name: str, days: int = 30) -> list[dict]:
+        """按 ``commit_sha`` 分组聚合三方 skill ux 分（side 恒 ``main``）。
+
+        返回结构与 ``Skill.ux_scores_by_version`` 一致：
+        ``[{"commit_sha", "side", "count", "avg", "first_scored_at",
+        "last_scored_at"}]``，按 ``last_scored_at`` 降序。skill 不存在或无数据
+        → 空列表。
+        """
+        sub = self.skill_path(name)
+        if sub is None:
+            return []
+        rows = self.recent_ux_scores(name, days=days)
+        return aggregate_ux_by_version(rows)
+
+    def ux_scores_with_atoms(self, name: str, *,
+                             commit_sha: str | None = None,
+                             days: int = 30,
+                             traj_root: Path | None = None) -> list[dict]:
+        """每条 ux 分关联其 atom 内容（三方 skill 版本）。
+
+        与 ``Skill.ux_scores_with_atoms`` 同结构；``traj_root`` 给定时按 team
+        server 落盘结构反查 atom，不给则 ``atom=None``。skill 不存在 → 空列表。
+        """
+        from xskill.pipeline.atom import load_atom_by_id
+
+        sub = self.skill_path(name)
+        if sub is None:
+            return []
+        rows = self.recent_ux_scores(name, days=days)
+        if commit_sha is not None:
+            rows = [r for r in rows if r.get("commit_sha") == commit_sha]
+        out: list[dict] = []
+        for r in rows:
+            atom_id = r.get("atom_id") or ""
+            atom = (load_atom_by_id(traj_root, atom_id)
+                    if traj_root is not None and atom_id else None)
+            out.append({
+                "atom_id": atom_id,
+                "commit_sha": r.get("commit_sha", ""),
+                "side": r.get("side", ""),
+                "score": r.get("score"),
+                "reasons": r.get("reasons", ""),
+                "scored_at": r.get("scored_at", ""),
+                "user_model": r.get("user_model", ""),
+                "atom": atom,
+            })
+        out.sort(key=lambda d: d["scored_at"], reverse=True)
+        return out
