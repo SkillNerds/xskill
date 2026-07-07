@@ -207,7 +207,8 @@ def cmd_connect(args) -> int:
     # `xskill connect` 行为不变，仍可用自己的 init 系统托管 --foreground。
     if args.foreground or not backend.supported:
         print(f"reconnecting: client_id={state.client_id}  server={state.server_url}")
-        _run_team_client_forever(state, use_proxy=args.use_proxy)
+        _run_team_client_forever(state, use_proxy=args.use_proxy,
+                                 auto_update=not args.no_auto_update)
         return 0
 
     # 默认（有原生后端的平台，如 Windows）：交给操作系统守护设施后台拉起。
@@ -275,7 +276,8 @@ def _connect_handshake(args, state_path):
     return state
 
 
-def _run_team_client_forever(state, *, use_proxy: bool) -> None:
+def _run_team_client_forever(state, *, use_proxy: bool,
+                             auto_update: bool = True) -> None:
     """构造 TeamClient 并阻塞跑守护循环。"""
     import httpx
     from xskill.config import (
@@ -283,18 +285,14 @@ def _run_team_client_forever(state, *, use_proxy: bool) -> None:
     )
     from xskill.team.client.daemon import TeamClient
 
-    # 同握手：后台同步也默认直连，否则"注册过了同步全 504"。
     http = httpx.Client(base_url=state.server_url, timeout=30.0,
                         trust_env=use_proxy)
-    # skill working copies 复用标准 skill_dir（~/.xskill/skill/）——瘦客户端没有
-    # config.yaml，直接用默认路径，不走 get_skill_dir()（那会 load_config）。游标 /
-    # 去抖 / 安装历史按 server 分目录（方案 A）——换 server 不再被上一个 server 的
-    # "已上传"游标静默压制对新 server 的上传。
     client = TeamClient(
         state=state, http=http,
         skill_dir=XSKILL_HOME / "skill",
         cursor_path=get_team_client_cursor_path(state.server_url),
         history_path=get_team_client_history_path(state.server_url),
+        auto_update=auto_update,
     )
     client.run_forever()   # 阻塞
 
@@ -608,6 +606,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--foreground", action="store_true",
         help="前台阻塞运行守护循环（默认交给操作系统守护设施后台常驻）。"
              "常驻任务内部 execute 的就是这个形态；调试时也可手动用。",
+    )
+    p_conn.add_argument(
+        "--no-auto-update", action="store_true", dest="no_auto_update",
+        help="禁用自动更新检查（默认每小时查一次 PyPI，有新版则升级重启）。",
     )
 
     p_start = sub.add_parser(

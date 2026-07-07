@@ -73,6 +73,7 @@ class TeamClient:
         poll_interval: float = 30.0,
         quiet_seconds: int = 180,
         min_change_interval: int = 600,
+        auto_update: bool = True,
     ):
         self.state = state
         self.http = http
@@ -90,6 +91,7 @@ class TeamClient:
             min_change_interval=min_change_interval,
         )
         self._stop = threading.Event()
+        self.auto_update = auto_update
 
     # ── HTTP 鉴权头 ──────────────────────────────────────────────
     def _hdr(self, extra: dict | None = None) -> dict:
@@ -296,6 +298,10 @@ class TeamClient:
 
     def run_forever(self) -> None:
         """阻塞循环。先起 collector ingester，再每 poll_interval 跑一轮 _tick。"""
+        from xskill.team.client.updater import AutoUpdater
+        updater = AutoUpdater() if self.auto_update else None
+        if updater:
+            updater.start()
         self.collector.start_ingesters()
         logger.info("team client running: server=%s client_id=%s",
                     self.state.server_url, self.state.client_id)
@@ -304,6 +310,8 @@ class TeamClient:
                 self._tick()
                 self._stop.wait(self.poll_interval)
         finally:
+            if updater:
+                updater.stop()
             self.collector.stop_ingesters()
 
     def stop(self) -> None:
