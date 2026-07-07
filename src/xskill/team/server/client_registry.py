@@ -42,6 +42,30 @@ def client_id_from_name(name: str) -> str:
     return hashlib.sha256(("name:" + norm).encode("utf-8")).hexdigest()[:16]
 
 
+_SAFE_DIR_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def safe_dir_name(user_name: str | None, client_id: str) -> str:
+    """文件系统目录名：优先用 user_name 明文（安全转义），匿名用 client_id。
+
+    - 有 user_name：转义为 ``[A-Za-z0-9._-]`` 集合（其余替换 ``_``）；
+      转义后为空或含 ``..`` / 以 ``-`` 开头（git branch 非法）→ 抛 ValueError。
+      支持 ``m00947023`` / ``02020222`` / 简单用户名（字母数字直接通过）。
+    - 无 user_name（匿名）：返回 client_id（hex，天然安全）。
+
+    这只决定**文件系统路径**（clients/<dir>/sessions）；canary 分桶 key、
+    user-staging 分支名仍用 client_id（不可变哈希，不受 name 特殊字符影响）。
+    """
+    if not user_name:
+        return client_id
+    escaped = _SAFE_DIR_RE.sub("_", user_name.strip())
+    if not escaped or escaped == "." or escaped == ".." or escaped.startswith("-"):
+        raise ValueError(
+            f"user_name {user_name!r} 转义后 {escaped!r} 不是安全目录名"
+        )
+    return escaped
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS clients (
     client_id   TEXT PRIMARY KEY,
@@ -243,3 +267,13 @@ class ClientRegistry:
             return [dict(r) for r in rows]
         finally:
             conn.close()
+
+    def dir_name_for(self, client_id: str) -> str:
+        """该 client 的文件系统目录名：有 user_name → 转义明文；匿名 → client_id。
+
+        供 upload 落盘 / engine _client_store_root 用。client 不存在 → 抛 ValueError。
+        """
+        row = self.get(client_id)
+        if row is None:
+            raise ValueError(f"unknown client_id: {client_id}")
+        return safe_dir_name(row.get("user_name") or None, client_id)

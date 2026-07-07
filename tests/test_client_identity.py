@@ -217,3 +217,50 @@ class TestUserNameColumn:
         # 二次重开仍幂等（列已存在，ALTER 不再执行）
         reg2 = ClientRegistry(db)
         assert reg2.get(cid)["user_name"] == "alice"
+
+
+# ── safe_dir_name / dir_name_for ────────────────────────────────
+
+class TestSafeDirName:
+    def test_alphanumeric_passes_through(self):
+        from xskill.team.server.client_registry import safe_dir_name
+        assert safe_dir_name("m00947023", "abc") == "m00947023"
+        assert safe_dir_name("02020222", "abc") == "02020222"
+        assert safe_dir_name("alice", "abc") == "alice"
+
+    def test_special_chars_escaped(self):
+        from xskill.team.server.client_registry import safe_dir_name
+        assert safe_dir_name("alice/bob", "abc") == "alice_bob"
+        assert safe_dir_name("a b", "abc") == "a_b"
+
+    def test_anonymous_uses_client_id(self):
+        from xskill.team.server.client_registry import safe_dir_name
+        assert safe_dir_name(None, "7e8e2d7833a2eb0f") == "7e8e2d7833a2eb0f"
+        assert safe_dir_name("", "abc") == "abc"
+
+    def test_unsafe_rejected(self):
+        from xskill.team.server.client_registry import safe_dir_name
+        with pytest.raises(ValueError):
+            safe_dir_name("..", "abc")
+        with pytest.raises(ValueError):
+            safe_dir_name("   ", "abc")
+
+
+class TestDirNameFor:
+    def test_named_user_gets_user_name_dir(self, tmp_path):
+        from xskill.team.server.client_registry import ClientRegistry
+        r = ClientRegistry(tmp_path / "c.db")
+        cid = r.register(user_name="m00947023")
+        assert r.dir_name_for(cid) == "m00947023"
+
+    def test_anonymous_gets_client_id_dir(self, tmp_path):
+        from xskill.team.server.client_registry import ClientRegistry
+        r = ClientRegistry(tmp_path / "c.db")
+        cid = r.register(label="x", hostname="h")
+        assert r.dir_name_for(cid) == cid
+
+    def test_unknown_client_raises(self, tmp_path):
+        from xskill.team.server.client_registry import ClientRegistry
+        r = ClientRegistry(tmp_path / "c.db")
+        with pytest.raises(ValueError):
+            r.dir_name_for("nonexistent")

@@ -1242,6 +1242,7 @@ def create_app(home_root: Path | str | None = None,
                     embed_client=_team_embed,
                     profile_db=_xhome / "team_profile.db",
                     canary_config=canary_cfg,
+                    client_registry=client_registry,
                 )
                 set_recommend_engine(_engine)
 

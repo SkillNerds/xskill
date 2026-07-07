@@ -113,12 +113,16 @@ async def team_upload(
     x_xskill_client: str | None = Header(default=None),
 ) -> UploadResponse:
     client_id = _auth(x_xskill_token, x_xskill_client)
-    sessions_dir = _ctx.traj_root / "clients" / client_id / "sessions"
+    # 目录名优先用 user_name 明文（可读），匿名用 client_id；canary/git 分支仍用 client_id
+    from xskill.team.server.client_registry import safe_dir_name
+    _row = _ctx.client_registry.get(client_id)
+    _dir_name = safe_dir_name((_row or {}).get("user_name") or None, client_id)
+    sessions_dir = _ctx.traj_root / "clients" / _dir_name / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
-    # 该 client 桶首次出现 → 注册成 watch_dir，label=client_id 让 watcher
-    # 在 CS 归因时能反查 client。register_dir 幂等。
+    # 该 client 桶首次出现 → 注册成 watch_dir，label=dir_name 让 watcher
+    # 在 CS 归因时能反查 client（dir_name = user_name 明文或 client_id）。
     if _ctx.register_dir is not None:
-        _ctx.register_dir(sessions_dir, client_id)
+        _ctx.register_dir(sessions_dir, _dir_name)
 
     accepted: list[str] = []
     rejected: list[UploadRejection] = []
@@ -171,6 +175,10 @@ async def team_ingest_db(
 
     from xskill.config import get_uploads_dir
     from xskill.pipeline.db_ingest import read_db_files
+    from xskill.team.server.client_registry import safe_dir_name
+
+    _row = _ctx.client_registry.get(client_id)
+    _dir_name = safe_dir_name((_row or {}).get("user_name") or None, client_id)
 
     # 落盘：uploads/<eco>/<client_id>/<安全文件名>
     safe_name = Path(file.filename or "upload.db").name
@@ -179,11 +187,11 @@ async def team_ingest_db(
     dest = dest_dir / safe_name
     dest.write_bytes(await file.read())
 
-    # 桥接到该 client 的 sessions 桶，label=client_id（与 team_upload 一致）
-    sessions_dir = _ctx.traj_root / "clients" / client_id / "sessions"
+    # 桥接到该 client 的 sessions 桶，label=dir_name（与 team_upload 一致）
+    sessions_dir = _ctx.traj_root / "clients" / _dir_name / "sessions"
     try:
         summary = read_db_files(
-            dest, eco=eco, target_dir=sessions_dir, register_label=client_id,
+            dest, eco=eco, target_dir=sessions_dir, register_label=_dir_name,
         )
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

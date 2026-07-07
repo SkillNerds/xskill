@@ -52,6 +52,7 @@ class SkillRecommendEngine:
         embed_client,
         profile_db: Path | str,
         canary_config: Optional[CanaryConfig] = None,
+        client_registry=None,
     ):
         self.config = config
         self.skill_dir = Path(skill_dir)
@@ -66,6 +67,7 @@ class SkillRecommendEngine:
         self._skillhub_cache: Optional[list[dict]] = None
         self._profile_fp_cache: dict[str, tuple] = {}  # user_id → 上次画像计算时的 atom 指纹
         self.skillhub = SkillHub.from_config(config, embed_client)
+        self.client_registry = client_registry  # 用于 user_name → 目录名解析
 
     # ─§6 三方 skill 检索池 ────────────────────────────────────────
     def _skillhub_entries(self) -> list[dict]:
@@ -125,7 +127,15 @@ class SkillRecommendEngine:
 
     # ── 用户 atom 派生 ────────────────────────────────────────────
     def _client_store_root(self, user_id: str) -> Path:
-        return self.traj_root / "clients" / user_id / "sessions"
+        """该 client 的 atom store 根。目录名优先用 user_name 明文（可读），
+        匿名用 client_id。需 client_registry 解析；未注入时退回 client_id（hex）。"""
+        dir_name = user_id
+        if self.client_registry is not None:
+            try:
+                dir_name = self.client_registry.dir_name_for(user_id)
+            except Exception:  # pylint: disable=broad-exception-caught
+                dir_name = user_id
+        return self.traj_root / "clients" / dir_name / "sessions"
 
     def _user_atoms(self, user_id: str):
         root = self._client_store_root(user_id)
