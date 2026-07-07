@@ -6,10 +6,9 @@
 """
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 
+from xskill.recommend._sqlite_base import _SqliteStore
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS recommendations (
@@ -27,26 +26,10 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-class RecoStore:
+class RecoStore(_SqliteStore):
     """``recommendations`` 表读写。与 ProfileStore 共用同一 db 文件。"""
 
-    def __init__(self, db_path: Path | str):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_schema()
-
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), timeout=10)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _init_schema(self) -> None:
-        conn = self._conn()
-        try:
-            conn.executescript(_SCHEMA)
-            conn.commit()
-        finally:
-            conn.close()
+    _SCHEMA = _SCHEMA
 
     def record(self, *, user_id: str, skill_name: str, side: str, sha: str) -> None:
         """幂等 upsert 一条推荐记录。"""

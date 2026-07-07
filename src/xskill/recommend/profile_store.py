@@ -7,13 +7,12 @@ from __future__ import annotations
 
 import json
 import pickle
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
 
+from xskill.recommend._sqlite_base import _SqliteStore
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS client_interest (
@@ -30,26 +29,10 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-class ProfileStore:
-    """``client_interest`` 表的读写。每次操作开新连接（规模小，几十 client）。"""
+class ProfileStore(_SqliteStore):
+    """``client_interest`` 表的读写。"""
 
-    def __init__(self, db_path: Path | str):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_schema()
-
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), timeout=10)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _init_schema(self) -> None:
-        conn = self._conn()
-        try:
-            conn.executescript(_SCHEMA)
-            conn.commit()
-        finally:
-            conn.close()
+    _SCHEMA = _SCHEMA
 
     def upsert(
         self,

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from xskill.canary import CanaryConfig, append_ux_score, main_sha, staging_sha
+from xskill.canary import append_ux_score, main_sha, staging_sha
 from xskill.recommend.client_interest import ClientInterest
 from xskill.recommend.client_user import ClientUser
 from xskill.recommend.engine import SkillRecommendEngine

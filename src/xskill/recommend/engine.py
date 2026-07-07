@@ -6,7 +6,7 @@
 - ``update_user_interest``：atom 触发 → 重扫用户 atom 摘要 → 重新聚类 → upsert 画像。
 - ``get_skill_for_client``：80% 质量（ux）+ 20% 相关性（向量 KNN），质量不足相关性回填。
 - ``resolve_side``：staging 优先达量（未达量→staging；staging 达量 main 未达量→main；
-  双侧达量→``CanaryRouter.assign``），修复 pickside 饿死。记录双向推荐。
+  双侧达量→``pick_side`` 确定性分流），修复 pickside 饿死。记录双向推荐。
 - ``find_friend`` / ``find_tag_for_user`` / ``find_tag_for_skill``。
 """
 from __future__ import annotations
@@ -284,7 +284,7 @@ class SkillRecommendEngine:
         """staging 优先达量：未达量→staging；staging 达量 main 未达量→main；双侧达量→pick_side。
 
         双侧达量时用 ``pick_side(user_id, skill_name, probability)`` 做确定性分流
-        （main 分支上的既有机制；``CanaryRouter`` 的有状态均衡在其合入后可替换此处）。
+        （main 分支上的既有机制）。
 
         「最可能用该 skill 的用户」优先：staging 在推荐链路中只被分给**已被推荐该 skill**
         的用户（``get_skill_for_client`` 按用户画像相关性 + ux 质量选出），即被推荐者本身
@@ -393,11 +393,17 @@ class SkillRecommendEngine:
         return [t for t, _v in scored[:top_k]]
 
     def find_tag_for_skill(self, skill: "Skill", top_k: int = 10) -> list[str]:
-        """该 skill 被路由 atom 的 ``AtomTask.tags`` 去重（atom 级 tag）。"""
-        seen: set[str] = set()
+        """该 skill 被路由 atom 的 ``AtomTask.tags`` 按 tag embedding 与 skill 向量的
+        相似度排序（atom 级 tag 语义检索），返回最相关 top_k 个 tag。
+
+        与 ``find_tag_for_user`` 同走 tag embedding 索引，只是 query 向量换成 skill 的
+        ``vec``（description 向量）。
+        """
         clients_dir = self.traj_root / "clients"
         if not clients_dir.is_dir():
             return []
+        # 收集该 skill 被路由 atom 的全部 tag（去重）
+        seen: set[str] = set()
         for client_dir in sorted(clients_dir.iterdir()):
             if not client_dir.is_dir():
                 continue
@@ -408,4 +414,17 @@ class SkillRecommendEngine:
                 if skill.name in (atom.used_skills or []):
                     for t in (atom.tags or []):
                         seen.add(t)
-        return list(seen)[:top_k]
+        if not seen:
+            return []
+        # 按 tag embedding 与 skill vec 的 cosine 相似度排序
+        tags = list(seen)
+        try:
+            skill_vec = np.asarray(skill.vec, dtype=float)
+        except Exception:  # pylint: disable=broad-exception-caught
+            return tags[:top_k]  # 无 vec（如无 description）→ 退回集合截断
+        tag_vecs = _normalize_rows(np.asarray(
+            self.embed_client.encode_batch(tags), dtype=float,
+        ))
+        sims = tag_vecs @ skill_vec
+        order = np.argsort(-sims)
+        return [tags[i] for i in order[:top_k]]

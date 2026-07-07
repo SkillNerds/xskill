@@ -12,7 +12,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from xskill.canary import main_sha
 from xskill.recommend.engine import SkillRecommendEngine
 from xskill.recommend.skillhub import SkillHub
 

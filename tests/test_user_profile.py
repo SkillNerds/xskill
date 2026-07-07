@@ -8,7 +8,6 @@ import subprocess
 import sys
 
 import numpy as np
-import pytest
 
 from xskill.recommend.client_interest import (
     ClientInterest,
@@ -36,10 +35,12 @@ class TestKmeans:
         """聚类模块不引入 sklearn/scipy。"""
         out = subprocess.run(
             [sys.executable, "-c",
-             "import xskill.recommend.client_interest as m; "
-             "import sys; "
-             "assert 'sklearn' not in sys.modules, 'sklearn leaked'; "
-             "assert 'scipy' not in sys.modules, 'scipy leaked'"],
+             " ".join([
+                 "import xskill.recommend.client_interest as m;",
+                 "import sys;",
+                 "assert 'sklearn' not in sys.modules, 'sklearn leaked';",
+                 "assert 'scipy' not in sys.modules, 'scipy leaked'",
+             ])],
             capture_output=True, text=True,
         )
         assert out.returncode == 0, out.stderr

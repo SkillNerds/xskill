@@ -25,7 +25,7 @@ class ClientUser:
         self,
         user_id: str,
         *,
-        client_interest: "Optional[ClientInterest]" = None,
+        client_interest: Optional[ClientInterest] = None,
         used_skills: Optional[list[dict]] = None,
         user_skills: Optional[list[str]] = None,
         recommended_skills: Optional[list[dict]] = None,
