@@ -276,8 +276,10 @@ def _adapt_claude_code_jsonl(content: str, metadata: dict) -> tuple[str, dict]:
 
     Each line is one event. Recognised event types:
 
-    - ``user``: ``message.content`` may be a string (real user input) or a list
-      containing ``tool_result`` parts.
+    - ``user``: ``message.content`` may be a string (real user input) or a list.
+      List content is scanned for ``text`` parts (user-typed input, which CC
+      often wraps as ``[{"type":"text","text":...}]``) and ``tool_result``
+      parts (tool outputs returned to the model).
     - ``assistant``: ``message.content`` is a list of parts -- ``text``,
       ``tool_use``, ``thinking``.
     - Anything else (``permission-mode``, ``file-history-snapshot``,
@@ -335,7 +337,21 @@ def _adapt_claude_code_jsonl(content: str, metadata: dict) -> tuple[str, dict]:
                 for part in msg_content:
                     if not isinstance(part, dict):
                         continue
-                    if part.get("type") == "tool_result":
+                    ptype = part.get("type")
+                    if ptype == "text":
+                        # CC 常把用户键入的文本包成 list[{"type":"text"}]
+                        # （而非裸字符串）；必须抽出，否则 traj 无 ## User 段、
+                        # 被 validate_trajectory_source 判 no_user_intent 误杀。
+                        text = (part.get("text") or "").strip()
+                        if text:
+                            if not first_user_query:
+                                first_user_query = text[:500]
+                            timeline.append({
+                                "t": t, "role": "user",
+                                "content": text[:2000],
+                            })
+                            t += 1
+                    elif ptype == "tool_result":
                         tc_id = part.get("tool_use_id", "")
                         tool_name = pending_tool_by_id.get(tc_id, "unknown")
                         result_content = part.get("content")

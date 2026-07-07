@@ -69,6 +69,58 @@ CC_JSONL_SAMPLE = "\n".join([
 ])
 
 
+# CC session where every user turn ships content as a LIST of {"type":"text"}
+# parts (real CC format for typed input — not a bare string). Reproduces the
+# traj_cc_pyproject_ses-alic case that was wrongly filtered as no_user_intent.
+CC_JSONL_LIST_TEXT_USER = "\n".join([
+    json.dumps({"type": "permission-mode", "permissionMode": "default",
+                "sessionId": "ses-alic"}),
+    json.dumps({
+        "type": "user",
+        "message": {"role": "user", "content": [
+            {"type": "text", "text": "解释一下 Python 的列表推导式"},
+        ]},
+        "sessionId": "ses-alic", "cwd": "/home/alic/pyproject",
+        "gitBranch": "main",
+    }),
+    json.dumps({
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "列表推导式形如 [x*2 for x in range(10)]。"},
+        ]},
+        "sessionId": "ses-alic",
+    }),
+    json.dumps({
+        "type": "user",
+        "message": {"role": "user", "content": [
+            {"type": "text", "text": "Flask 里 *args 和 **kwargs 怎么用？"},
+        ]},
+        "sessionId": "ses-alic",
+    }),
+    json.dumps({
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "*args 收位置参数，**kwargs 收关键字参数。"},
+        ]},
+        "sessionId": "ses-alic",
+    }),
+    json.dumps({
+        "type": "user",
+        "message": {"role": "user", "content": [
+            {"type": "text", "text": "写个递归求阶乘，再用装饰器计时。"},
+        ]},
+        "sessionId": "ses-alic",
+    }),
+    json.dumps({
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "def fact(n): return 1 if n<2 else n*fact(n-1)"},
+        ]},
+        "sessionId": "ses-alic",
+    }),
+])
+
+
 # ──────────────────────────────────────────────────────
 # T1. CC JSONL → adapter
 # ──────────────────────────────────────────────────────
@@ -133,6 +185,69 @@ class TestClaudeCodeJsonlAdapter:
         assert meta["category"] == "claude_code_session"
         # 至少抽到一个 sessionId 或一些 timeline 事件之一
         assert meta.get("session_id") or meta["total_turns"] > 0
+
+
+# ──────────────────────────────────────────────────────
+# T1b. CC JSONL with list-form user text (no_user_intent regression)
+# ──────────────────────────────────────────────────────
+
+class TestClaudeCodeListTextUserContent:
+    """CC 把用户键入的文本包成 ``content: [{"type":"text","text":...}]``（list
+    形式，而非裸字符串）。adapter 必须抽出这些 text 作为用户意图，否则桥接出的
+    traj_*.md 没有 ``## User`` 段，会被 ``validate_trajectory_source`` 误判为
+    ``no_user_intent`` 在 TaskAgent 拆分前过滤掉（traj_cc_pyproject_ses-alic 案）。
+    """
+
+    def test_adapter_extracts_user_text_from_list_content(self):
+        md, meta = adapt_trajectory(CC_JSONL_LIST_TEXT_USER, "claude_code_jsonl")
+        user_turns = [e for e in meta["timeline"] if e["role"] == "user"]
+        assert len(user_turns) == 3
+        assert "列表推导式" in user_turns[0]["content"]
+        assert "Flask" in user_turns[1]["content"]
+        assert "递归" in user_turns[2]["content"]
+        # markdown 含 ## User 段 + ## Initial Query 预览
+        assert "## User" in md
+        assert "## Initial Query" in md
+
+    def test_bridged_list_text_traj_not_filtered_as_no_user_intent(self, tmp_path):
+        from xskill.pipeline.trajectory import validate_trajectory_source
+
+        md, _meta = adapt_trajectory(CC_JSONL_LIST_TEXT_USER, "claude_code_jsonl")
+        traj_path = tmp_path / "traj_cc_pyproject_ses-alic.md"
+        traj_path.write_text(md, encoding="utf-8")
+
+        v = validate_trajectory_source(traj_path)
+        assert v.valid, f"filtered: reason={v.reason} detail={v.detail}"
+        assert v.reason != "no_user_intent"
+        assert v.user_intent_count >= 1
+
+    def test_list_with_mixed_text_and_tool_result(self):
+        """同一 user 消息里既有 text 又有 tool_result 时两者都要保留。"""
+        sample = "\n".join([
+            json.dumps({
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "tu_1", "name": "Bash",
+                     "input": {"command": "echo hi"}},
+                ]},
+                "sessionId": "s",
+            }),
+            json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1",
+                     "content": "hi", "is_error": False},
+                    {"type": "text", "text": "现在改成输出 bye"},
+                ]},
+                "sessionId": "s",
+            }),
+        ])
+        _md, meta = adapt_trajectory(sample, "claude_code_jsonl")
+        roles = [e["role"] for e in meta["timeline"]]
+        assert "tool_output" in roles
+        assert "user" in roles
+        user_text = [e["content"] for e in meta["timeline"] if e["role"] == "user"]
+        assert any("bye" in c for c in user_text)
 
 
 # ──────────────────────────────────────────────────────
