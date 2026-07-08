@@ -66,6 +66,12 @@ llm:
                          # default (a warning is logged). Uncomment and set it
                          # to YOUR model's real context limit (e.g. 128000 for
                          # gpt-4o, 64000 for deepseek-chat).
+  # compact_token_limit: 120000  # optional; after trimming/spilling old tool
+                         # results, if the estimated history is still above this
+                         # limit, ask the same chat model to summarize old
+                         # SkillEditAgent memory. Leave commented to disable.
+  # compact_keep_recent_messages: 6 # optional; recent complete message blocks
+                         # kept verbatim after compact. Default 6.
   # temperature: 0.0     # optional; default 0 (deterministic)
   # request_timeout: 60  # optional; per-request wall-clock cap in seconds
                          # (default 60). Explicit so an unreachable endpoint

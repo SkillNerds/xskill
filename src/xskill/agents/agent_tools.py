@@ -11,7 +11,7 @@ those from config at their own boundary.
 
 from __future__ import annotations
 
-import json, logging
+import json, logging, tempfile
 from datetime import date, datetime
 from pathlib import Path
 
@@ -135,6 +135,15 @@ def _slugify(name: str) -> str:
     return name.strip().lower().replace("_", "-").replace(" ", "-")
 
 
+def _is_relative_to(path: Path, root: Path) -> bool:
+    """Python 3.9 compatible Path.is_relative_to."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def _sanitize_frontmatter_dates(fm: dict) -> dict:
     """不让 LLM 写的日期字段污染 frontmatter。
     - created: 必须是合法 ISO date 且 ≤ 今天；否则替换成今天（保留历史 created 优先）
@@ -216,23 +225,82 @@ def search_similar_trajs(query: str, top_k: int = 5, filter: str = "all") -> str
 
 
 @tool(name="read_file")
-def read_file(path: str) -> str:
-    """Read an arbitrary file under the project root."""
-    p = Path(path)
-    root = agent_tool_config.skill_dir.parent
-    try:
-        p.resolve().relative_to(root.resolve())
-    except ValueError:
-        return f"error: outside project root ({path})"
+def read_file(path: str, offset: int = 1, limit: int = 200) -> str:
+    """Read a file under the skill workspace or /tmp spill area.
 
-    if not p.exists():
+    SkillEditAgent may receive trimmed tool results that point at files under
+    /tmp/xskill/skilleditagent. Use read_file(spill_path, offset, limit) to
+    reload those raw tool results in line windows when the short placeholder is
+    insufficient.
+
+    Args:
+        path: File path under the skill workspace or /tmp.
+        offset: 1-based start line.
+        limit: Number of lines to read from offset.
+    """
+    try:
+        line_offset = int(offset)
+        line_limit = int(limit)
+    except (TypeError, ValueError):
+        return f"error: offset and limit must be integers (offset={offset!r}, limit={limit!r})"
+    if line_offset < 1:
+        return f"error: offset must be >= 1 (got {line_offset})"
+    if line_limit < 1:
+        return f"error: limit must be >= 1 (got {line_limit})"
+
+    p = Path(path)
+    configured_root = agent_tool_config.skill_dir or agent_tool_config.atom_skill_dir
+    roots: list[Path] = []
+    if configured_root is not None:
+        roots.append(Path(configured_root).parent.resolve())
+    roots.append(Path(tempfile.gettempdir()).resolve())
+    roots = list(dict.fromkeys(roots))
+    resolved = p.resolve()
+    try:
+        allowed = any(_is_relative_to(resolved, root) for root in roots)
+    except OSError as e:
+        return f"error: path resolution failed ({path}): {e}"
+    if not allowed:
+        allowed_block = "\n".join(f"- {root}" for root in roots)
+        return (
+            "error: outside allowed read roots\n"
+            f"source_path: {path}\n"
+            f"resolved_path: {resolved}\n"
+            f"allowed_roots:\n{allowed_block}"
+        )
+
+    if not resolved.exists():
         return f"error: file not found ({path})"
 
     try:
-        content = p.read_text(encoding="utf-8")
-        if len(content) > 10000:
-            return content[:10000] + f"\n\n... (truncated, full length {len(content)} chars)"
-        return content
+        content = resolved.read_text(encoding="utf-8")
+        lines = content.splitlines(keepends=True)
+        total_lines = len(lines)
+        if line_offset > total_lines + 1:
+            return (
+                "error: offset outside file\n"
+                f"source_path: {path}\n"
+                f"resolved_path: {resolved}\n"
+                f"line_offset: {line_offset}\n"
+                f"total_lines: {total_lines}"
+            )
+        start = line_offset - 1
+        selected_lines = lines[start:start + line_limit]
+        selected = "".join(selected_lines)
+        line_end_exclusive = line_offset + len(selected_lines)
+        header = (
+            f"source_path: {path}\n"
+            f"resolved_path: {resolved}\n"
+            f"line_range: [{line_offset}, {line_end_exclusive})\n"
+            "--- file content ---\n"
+        )
+        if len(selected) > 10000:
+            return (
+                header + selected[:10000]
+                + f"\n\n... (truncated, selected length {len(selected)} chars; "
+                f"full file length {len(content)} chars)"
+            )
+        return header + selected
     except Exception as e:
         return f"error: read failed ({e})"
 
@@ -862,7 +930,7 @@ def make_task_agent_tools(
 
 @tool(name="list_files")
 def list_files(path: str) -> str:
-    """列目录下的文件 / 子目录。
+    """列目录下的文件 / 子目录，返回可直接传给 read_file 的完整路径。
 
     给 SkillEditAgent 用来摸清当前 skill 已有什么文件（避免重复写、便于增量
     更新）。路径必须在 skill_dir 范围内；越界返回 error。
@@ -881,7 +949,8 @@ def list_files(path: str) -> str:
     if not entries:
         return "(empty)"
     return "\n".join(
-        f"{'[dir] ' if e.is_dir() else ''}{e.name}" for e in entries
+        f"{'[dir] ' if e.is_dir() else '[file] '}{e.resolve()}{'/' if e.is_dir() else ''}"
+        for e in entries
     )
 
 

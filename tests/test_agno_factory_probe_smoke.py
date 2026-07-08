@@ -106,6 +106,56 @@ def test_factory_builds_real_agno_agent():
     assert agent.model.timeout is not None
 
 
+def test_context_management_reads_compact_config_and_calls_compactor(tmp_path):
+    """生产包装从 llm_cfg 读取 compact 配置,并用原 model.invoke 做摘要请求。"""
+    from agno.models.response import ModelResponse
+    from xskill.agents.agno_factory import _wrap_with_context_mgmt
+
+    calls: list[dict] = []
+
+    class _FakeModel:
+        def invoke(self, messages, assistant_message=None, **_kwargs):
+            calls.append({
+                "messages": messages,
+                "assistant_message": assistant_message,
+            })
+            if len(calls) == 1:
+                assert len(messages) == 1
+                assert "SkillEditAgent working memory" in messages[0].content
+                if assistant_message is not None:
+                    assistant_message.role = "assistant"
+                    assistant_message.content = "COMPACT SUMMARY"
+                return ModelResponse(role="assistant", content="COMPACT SUMMARY")
+            return ModelResponse(role="assistant", content="final", input_tokens=10)
+
+    model = _wrap_with_context_mgmt(_FakeModel(), {
+        "max_context": 1000,
+        "compact_token_limit": 20,
+        "compact_keep_recent_messages": 2,
+        "spill_root": str(tmp_path / "spill"),
+    })
+    assistant_message = Message(role="assistant", content=None)
+    messages = [
+        Message(role="system", content="SkillEditAgent system prompt"),
+        Message(role="user", content="turn0 scenario"),
+        Message(role="assistant", content="old reasoning"),
+        Message(role="tool", content="OLD_ATOM_RESULT\n" + ("x" * 8000),
+                tool_name="atom_task_read", tool_call_id="call_old"),
+        Message(role="assistant", content="recent reasoning"),
+        Message(role="user", content="continue"),
+    ]
+
+    model.invoke(messages=messages, assistant_message=assistant_message)
+
+    assert len(calls) == 2
+    final_messages = calls[1]["messages"]
+    assert [m.role for m in final_messages] == [
+        "system", "user", "assistant", "assistant", "user",
+    ]
+    assert "COMPACT SUMMARY" in final_messages[2].content
+    assert "spill_path:" in calls[0]["messages"][0].content
+
+
 def _tarpit_server():
     """开一个本地"陷阱"端口：接受 TCP 连接但永不回包——模拟防火墙 DROP /
     黑洞路由式的不可达端点（连接成功但响应永远不来）。纯本机，零外网。"""

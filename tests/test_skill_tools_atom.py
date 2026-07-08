@@ -80,6 +80,61 @@ class TestReadTraj:
         assert out.startswith("error")
 
 
+class TestReadFile:
+    def test_reads_tmp_spill_file_with_path_context(self, tmp_path):
+        skill_dir, _ = _setup(tmp_path)
+        agent_tools.init_skill_authoring_tool_context(
+            skill_dir, skill_dir, {"skill_opt": {"enabled": False}},
+        )
+        spill = Path("/tmp/xskill/skilleditagent") / f"{tmp_path.name}-spill.txt"
+        spill.parent.mkdir(parents=True, exist_ok=True)
+        spill.write_text("spilled raw tool result\n", encoding="utf-8")
+
+        out = agent_tools.read_file.entrypoint(str(spill))
+
+        assert "source_path:" in out
+        assert "resolved_path:" in out
+        assert str(spill) in out
+        assert "spilled raw tool result" in out
+
+    def test_reads_line_window_with_offset_and_limit(self, tmp_path):
+        skill_dir, _ = _setup(tmp_path)
+        agent_tools.init_skill_authoring_tool_context(
+            skill_dir, skill_dir, {"skill_opt": {"enabled": False}},
+        )
+        spill = Path("/tmp/xskill/skilleditagent") / f"{tmp_path.name}-window.txt"
+        spill.parent.mkdir(parents=True, exist_ok=True)
+        spill.write_text("L1\nL2\nL3\nL4\n", encoding="utf-8")
+
+        out = agent_tools.read_file.entrypoint(str(spill), offset=2, limit=2)
+
+        assert "source_path:" in out
+        assert "resolved_path:" in out
+        assert "line_range: [2, 4)" in out
+        assert "line_offset:" not in out
+        assert "line_limit:" not in out
+        assert "total_lines:" not in out
+        assert "L2\nL3\n" in out
+        assert "L1\n" not in out
+        assert "L4\n" not in out
+
+
+class TestListFiles:
+    def test_returns_paths_read_file_can_use(self, tmp_path):
+        skill_dir, _ = _setup(tmp_path)
+        agent_tools.init_skill_authoring_tool_context(
+            skill_dir, skill_dir, {"skill_opt": {"enabled": False}},
+        )
+        note = skill_dir / "notes.md"
+        note.write_text("hello from listed file\n", encoding="utf-8")
+
+        listing = agent_tools.list_files.entrypoint(str(skill_dir))
+
+        assert str(note) in listing
+        out = agent_tools.read_file.entrypoint(str(note), offset=1, limit=20)
+        assert "hello from listed file" in out
+
+
 class TestNewSkillFolder:
     def test_creates_directory_with_skeleton(self, tmp_path):
         skill_dir, _ = _setup(tmp_path)
