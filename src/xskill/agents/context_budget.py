@@ -230,7 +230,7 @@ def build_compact_prompt(messages: list) -> str:
             title += f" tool={tool}"
         parts.append(title)
         parts.append(_msg_content_str(msg))
-    return COMPACT_PROMPT_TEMPLATE.format(history="\n\n".join(parts))
+    return COMPACT_PROMPT_TEMPLATE.replace("{history}", "\n\n".join(parts))
 
 
 def _safe_recent_tail(messages: list, keep_recent_messages: int) -> list:
@@ -263,6 +263,10 @@ def _safe_recent_tail(messages: list, keep_recent_messages: int) -> list:
                     break
             if not remaining and len(block) > 1:
                 blocks.append(block)
+            elif block:
+                # incomplete block: at minimum keep the assistant message
+                # so it isn't silently dropped from the compact tail
+                blocks.append([block[0]])
             i = max(j, i + 1)
             continue
         blocks.append([msg])
@@ -491,8 +495,7 @@ class ContextManager:
                     logger.info("上下文到 %d/%d token,主动剪裁 %d 条旧工具结果",
                                 est, self.max_context, trimmed)
             if (
-                trimmed
-                and self.compact_token_limit is not None
+                self.compact_token_limit is not None
                 and _estimate_history_tokens(messages) > self.compact_token_limit
             ):
                 compact_fn = self.compact_fn or _model_compact_fn(original_invoke)

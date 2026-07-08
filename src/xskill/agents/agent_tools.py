@@ -234,7 +234,7 @@ def read_file(path: str, offset: int = 1, limit: int = 200) -> str:
     insufficient.
 
     Args:
-        path: File path under the skill workspace or /tmp.
+        path: File path under the skill workspace or /tmp/xskill/skilleditagent (spill dir).
         offset: 1-based start line.
         limit: Number of lines to read from offset.
     """
@@ -253,7 +253,7 @@ def read_file(path: str, offset: int = 1, limit: int = 200) -> str:
     roots: list[Path] = []
     if configured_root is not None:
         roots.append(Path(configured_root).parent.resolve())
-    roots.append(Path(tempfile.gettempdir()).resolve())
+    roots.append((Path(tempfile.gettempdir()) / "xskill" / "skilleditagent").resolve())
     roots = list(dict.fromkeys(roots))
     resolved = p.resolve()
     try:
