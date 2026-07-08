@@ -294,6 +294,61 @@ class TestEngineSkillhubPool:
         assert slot.source_path == "hub-a/foo"
         assert slot.sha == entry["content_sha"]
 
+    def test_adding_skillhub_after_empty_scan_refreshes_recommendations(
+        self, tmp_path,
+    ):
+        skill_dir = tmp_path / "skills"
+        skill_dir.mkdir()
+        _write_index(skill_dir, [], dim=4)
+        hub_dir = tmp_path / "hub"
+        hub_dir.mkdir()
+        eng = SkillRecommendEngine(
+            config={
+                "recommend": {"quality_ratio": 0.0},
+                "skillhub": {"enabled": True, "dir": str(hub_dir)},
+            },
+            skill_dir=skill_dir,
+            traj_root=tmp_path / "traj",
+            embed_client=FakeEmbed(dim=4),
+            profile_db=tmp_path / "p.db",
+        )
+        q = FakeEmbed(dim=4).encode("django migration helper")
+        q = q / np.linalg.norm(q)
+        eng.profile_store.upsert(
+            "client-one",
+            feature_tensor=np.asarray([q]),
+            mean_tensor=q,
+            used_skills=[],
+        )
+        set_recommend_engine(eng)
+        try:
+            first = build_manifest(
+                client_id="client-one",
+                skill_dir=skill_dir,
+                probability=0.0,
+                ranked_slots=0,
+                total_slots=1,
+                traj_root=tmp_path / "traj",
+            )
+            assert first.slots == []
+
+            _write_hub_skill(
+                hub_dir, "hub-a/foo", "django migration helper", name="foo",
+            )
+            second = build_manifest(
+                client_id="client-one",
+                skill_dir=skill_dir,
+                probability=0.0,
+                ranked_slots=0,
+                total_slots=1,
+                traj_root=tmp_path / "traj",
+            )
+        finally:
+            set_recommend_engine(None)
+
+        assert len(second.slots) == 1
+        assert second.slots[0].source == "skillhub"
+
 
 # ── Team push path ───────────────────────────────────────────────
 

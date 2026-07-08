@@ -34,6 +34,7 @@ dependencies = [
     "tqdm",
     "httpx",
     "fastapi",
+    "python-multipart",
     "uvicorn",
     "sse-starlette",
     "rank-bm25>=0.2",

@@ -95,6 +95,16 @@ class SkillHub:
             entries.append(entry)
         return entries
 
+    def fingerprint(self) -> tuple[tuple[str, str, str], ...]:
+        """当前 skillhub 内容指纹，用于推荐引擎缓存自动失效。
+
+        只包含稳定身份、相对路径和内容版本；新增、删除、改内容都会改变该值。
+        """
+        return tuple(
+            (entry["skill_id"], entry["source_path"], entry["content_sha"])
+            for entry in self._entries(include_vec=False, require_description=True)
+        )
+
     def index(self) -> list[dict]:
         """返回三方 skill 索引。禁用 → 空 list；启用但目录缺失 → raise。
 

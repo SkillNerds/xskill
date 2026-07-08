@@ -64,17 +64,18 @@ class SkillRecommendEngine:
         self.canary_cfg = canary_config or CanaryConfig.from_dict(config.get("canary", {}))
         self.staging_need = self.rcfg["staging_need"] or self.canary_cfg.min_samples
         self._skill_index_cache: Optional[dict] = None
-        self._skillhub_cache: Optional[list[dict]] = None
+        self._skillhub_cache: Optional[tuple[tuple, list[dict]]] = None
         self._profile_fp_cache: dict[str, tuple] = {}  # user_id → 上次画像计算时的 atom 指纹
         self.skillhub = SkillHub.from_config(config, embed_client)
         self.client_registry = client_registry  # 用于 user_name → 目录名解析
 
     # ─§6 三方 skill 检索池 ────────────────────────────────────────
     def _skillhub_entries(self) -> list[dict]:
-        """三方 skill ``{name, vec}``（缓存）。禁用时为空。"""
-        if self._skillhub_cache is None:
-            self._skillhub_cache = self.skillhub.index()
-        return self._skillhub_cache
+        """三方 skill ``{name, vec}``（按内容指纹缓存）。禁用时为空。"""
+        fp = self.skillhub.fingerprint()
+        if self._skillhub_cache is None or self._skillhub_cache[0] != fp:
+            self._skillhub_cache = (fp, self.skillhub.index())
+        return self._skillhub_cache[1]
 
     def _combined_relevance(self) -> tuple[list[str], np.ndarray, dict[str, bool]]:
         """合并检索池：可分发 skill 的 desc 向量 + 三方 skill 向量。
