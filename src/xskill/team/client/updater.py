@@ -1,6 +1,8 @@
 """updater.py — xskill client 自动更新
 
 TeamClient 跑起来后每隔一段时间（默认 1 小时）查 PyPI，发现新版就升级并重启。
+如果 PyPI 查询或安装失败，且 client 已连接 team server，则读取 server 版本；
+server 版本高于本地版本时，下载 server 暴露的 wheel 并安装。
 
 重启机制
 ────────
@@ -11,20 +13,33 @@ TeamClient 跑起来后每隔一段时间（默认 1 小时）查 PyPI，发现�
 ────────
 - 包含预发版（a/b/rc），因为内部用 alpha 版本
 - 严格大于当前版本才升级，不降级
-- 网络/PyPI 故障直接跳过，不打断主循环
+- 网络/PyPI/server 故障不会打断主循环
 """
 from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import threading
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("xskill.team.client.updater")
 
 _PYPI_JSON_URL = "https://pypi.org/pypi/{package}/json"
+
+
+def _team_api_url(server_url: str, path: str) -> str:
+    return f"{server_url.rstrip('/')}/api/v1/team{path}"
+
+
+def _team_headers(join_token: str, client_id: str) -> dict[str, str]:
+    return {
+        "X-Xskill-Token": join_token,
+        "X-Xskill-Client": client_id,
+    }
 
 
 def _current_version(package: str) -> Optional[str]:
@@ -55,6 +70,59 @@ def _latest_pypi_version(package: str) -> Optional[str]:
         return str(max(all_versions))
     except Exception:
         logger.debug("updater: 查 PyPI 失败", exc_info=True)
+        return None
+
+
+def _server_version(
+    server_url: str,
+    join_token: str,
+    client_id: str,
+) -> dict[str, Any] | None:
+    """从 team server 读取版本信息。网络/鉴权失败返回 None。"""
+    import json
+    import urllib.request
+
+    req = urllib.request.Request(
+        _team_api_url(server_url, "/version"),
+        headers=_team_headers(join_token, client_id),
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except Exception:
+        logger.debug("updater: 查询 server 版本失败", exc_info=True)
+        return None
+
+
+def _download_server_wheel(
+    server_url: str,
+    join_token: str,
+    client_id: str,
+    dest_dir: Path,
+    filename: str | None,
+) -> Path | None:
+    """从 team server 下载 wheel 到临时目录。失败返回 None。"""
+    import urllib.request
+
+    safe_name = Path(filename or "xskill-server.whl").name
+    if not safe_name.endswith(".whl"):
+        safe_name = "xskill-server.whl"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / safe_name
+    req = urllib.request.Request(
+        _team_api_url(server_url, "/wheel"),
+        headers=_team_headers(join_token, client_id),
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = r.read()
+        if not data:
+            logger.warning("updater: server wheel 为空")
+            return None
+        dest.write_bytes(data)
+        return dest
+    except Exception:
+        logger.debug("updater: 下载 server wheel 失败", exc_info=True)
         return None
 
 
@@ -127,10 +195,16 @@ class AutoUpdater:
         package: str = "xskill",
         interval: float = 3600,       # 默认 1 小时
         pypi_url: str = "https://pypi.org/simple/",
+        server_url: str | None = None,
+        client_id: str | None = None,
+        join_token: str | None = None,
     ):
         self.package = package
         self.interval = interval
         self.pypi_url = pypi_url
+        self.server_url = server_url
+        self.client_id = client_id
+        self.join_token = join_token
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -161,14 +235,19 @@ class AutoUpdater:
         if not current_str:
             logger.debug("updater: 无法读取当前版本，跳过本次检查")
             return
-
-        latest_str = _latest_pypi_version(self.package)
-        if not latest_str:
-            return   # 网络问题，静默跳过
-
         try:
             from packaging.version import Version
             current = Version(current_str)
+        except Exception:
+            logger.debug("updater: 当前版本不可解析: %s", current_str, exc_info=True)
+            return
+
+        latest_str = _latest_pypi_version(self.package)
+        if not latest_str:
+            self._check_server_fallback(current_str, current, reason="pypi_query_failed")
+            return
+
+        try:
             latest = Version(latest_str)
         except Exception:
             return
@@ -182,6 +261,8 @@ class AutoUpdater:
         if self._install(latest_str):
             _restart()   # 升级成功后重启，不会走到这行之后的代码
             # （_restart 在 Windows 上 os._exit；Linux 上 execv）
+            return
+        self._check_server_fallback(current_str, current, reason="pypi_install_failed")
 
     def _install(self, target_version: str) -> bool:
         """用 pip 升级到指定版本。返回是否成功。"""
@@ -201,4 +282,66 @@ class AutoUpdater:
             return False
         except Exception:
             logger.warning("updater: 执行 pip 失败", exc_info=True)
+            return False
+
+    def _check_server_fallback(self, current_str: str, current, *, reason: str) -> None:
+        """PyPI 不可用时，从 team server 下载同版本 wheel 回退升级。"""
+        if not (self.server_url and self.client_id and self.join_token):
+            logger.debug("updater: 无 server 回退配置，跳过（%s）", reason)
+            return
+
+        info = _server_version(self.server_url, self.join_token, self.client_id)
+        if not info:
+            return
+
+        server_version_str = str(info.get("version") or "")
+        try:
+            from packaging.version import Version
+            server_version = Version(server_version_str)
+        except Exception:
+            logger.debug("updater: server 版本不可解析: %s",
+                         server_version_str, exc_info=True)
+            return
+
+        if server_version <= current:
+            logger.debug("updater: server 版本 %s 不高于当前版本 %s",
+                         server_version_str, current_str)
+            return
+        if not info.get("wheel_available"):
+            logger.warning("updater: server 版本 %s 可用，但未提供 wheel",
+                           server_version_str)
+            return
+
+        with tempfile.TemporaryDirectory(prefix="xskill-update-") as td:
+            wheel = _download_server_wheel(
+                self.server_url,
+                self.join_token,
+                self.client_id,
+                Path(td),
+                str(info.get("wheel_filename") or ""),
+            )
+            if wheel is None:
+                return
+            logger.info("updater: PyPI 不可用（%s），改用 server wheel 升级到 %s",
+                        reason, server_version_str)
+            if self._install_wheel(wheel):
+                _restart()
+
+    def _install_wheel(self, wheel_path: Path) -> bool:
+        """用 pip 安装 server 下载的 wheel。返回是否成功。"""
+        cmd = [
+            sys.executable, "-m", "pip", "install", "--upgrade",
+            str(wheel_path),
+            "-q",
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                logger.info("updater: 安装 server wheel 成功: %s", wheel_path.name)
+                return True
+            logger.warning("updater: server wheel 安装失败:\n%s",
+                           result.stderr.strip() or result.stdout.strip())
+            return False
+        except Exception:
+            logger.warning("updater: 执行 pip 安装 server wheel 失败", exc_info=True)
             return False

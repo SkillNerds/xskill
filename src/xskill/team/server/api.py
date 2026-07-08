@@ -17,8 +17,10 @@ from pathlib import Path
 from typing import Callable
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
+from xskill import __version__ as XSKILL_VERSION
+from xskill.config import get_team_server_whl_dir
 from xskill.team.server.client_registry import ClientRegistry
 from xskill.team.shared.git_bundle import fetch_branch_from_bundle, make_repo_bundle
 from xskill.team.server.skill_manifest import build_manifest
@@ -82,6 +84,64 @@ def _auth(token: str | None, client_id: str | None) -> str:
         raise HTTPException(status_code=403, detail="unknown client_id")
     _ctx.client_registry.touch(client_id)
     return client_id
+
+
+def _find_server_wheel(package: str = "xskill", version: str | None = None) -> Path | None:
+    """从 ~/.xskill/whls 中选择与 server 当前版本严格匹配的 wheel。"""
+    from packaging.utils import canonicalize_name, parse_wheel_filename
+    from packaging.version import Version
+
+    want_name = canonicalize_name(package)
+    version = version or XSKILL_VERSION
+    try:
+        want_version = Version(version)
+    except Exception:
+        logger.debug("invalid xskill version for wheel lookup: %s", version, exc_info=True)
+        return None
+
+    matches: list[Path] = []
+    for path in sorted(get_team_server_whl_dir().glob("*.whl")):
+        try:
+            name, wheel_version, _build, _tags = parse_wheel_filename(path.name)
+        except Exception:
+            logger.debug("skip invalid wheel filename: %s", path, exc_info=True)
+            continue
+        if canonicalize_name(str(name)) == want_name and wheel_version == want_version:
+            matches.append(path)
+    return matches[-1] if matches else None
+
+
+@router.get("/version")
+async def team_version(
+    x_xskill_token: str | None = Header(default=None),
+    x_xskill_client: str | None = Header(default=None),
+) -> dict:
+    """返回 server 当前 xskill 版本，以及同版本 wheel 是否可下载。"""
+    _auth(x_xskill_token, x_xskill_client)
+    wheel = _find_server_wheel()
+    return {
+        "package": "xskill",
+        "version": XSKILL_VERSION,
+        "wheel_available": wheel is not None,
+        "wheel_filename": wheel.name if wheel else None,
+    }
+
+
+@router.get("/wheel")
+async def team_wheel(
+    x_xskill_token: str | None = Header(default=None),
+    x_xskill_client: str | None = Header(default=None),
+) -> FileResponse:
+    """下载 server 当前版本对应的 xskill wheel。"""
+    _auth(x_xskill_token, x_xskill_client)
+    wheel = _find_server_wheel()
+    if wheel is None:
+        raise HTTPException(status_code=404, detail="xskill wheel not found")
+    return FileResponse(
+        wheel,
+        media_type="application/octet-stream",
+        filename=wheel.name,
+    )
 
 
 @router.post("/register", response_model=RegisterResponse)

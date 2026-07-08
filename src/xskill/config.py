@@ -568,6 +568,13 @@ def get_team_clients_db_path() -> Path:
     return XSKILL_HOME / "team_clients.db"
 
 
+def get_team_server_whl_dir() -> Path:
+    """server 端静默更新回退 wheel 目录（~/.xskill/whls）。"""
+    d = XSKILL_HOME / "whls"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def get_team_client_state_path() -> Path:
     """client 端连接信息（server_url / client_id / join_token）。"""
     return XSKILL_HOME / "team_client.json"

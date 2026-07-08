@@ -37,6 +37,7 @@ dependencies = [
     "python-multipart",
     "uvicorn",
     "sse-starlette",
+    "packaging>=23",
     "rank-bm25>=0.2",
     # team 模式上传前的轨迹脱敏（team/client/redact.py）。脱敏是上传链路的
     # 强制环节，故列为主依赖而非 optional extra——缺库就该 import 失败。

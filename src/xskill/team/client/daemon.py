@@ -300,7 +300,11 @@ class TeamClient:
     def run_forever(self) -> None:
         """阻塞循环。先起 collector ingester，再每 poll_interval 跑一轮 _tick。"""
         from xskill.team.client.updater import AutoUpdater
-        updater = AutoUpdater() if self.auto_update else None
+        updater = AutoUpdater(
+            server_url=self.state.server_url,
+            client_id=self.state.client_id,
+            join_token=self.state.join_token,
+        ) if self.auto_update else None
         if updater:
             updater.start()
         self.collector.start_ingesters()

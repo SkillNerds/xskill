@@ -60,6 +60,35 @@ jobs:
       - name: Build sdist and wheel
         run: python -m build
 
+      - name: Verify release wheel contains xskill package code
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          wheels = sorted(Path("dist").glob("xskill-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one xskill wheel, got {len(wheels)}: {wheels}")
+
+          with zipfile.ZipFile(wheels[0]) as zf:
+              names = set(zf.namelist())
+
+          required = {
+              "xskill/__init__.py",
+              "xskill/team/client/updater.py",
+              "xskill/team/server/api.py",
+          }
+          missing = sorted(required - names)
+          if missing:
+              raise SystemExit(f"wheel is missing required package files: {missing}")
+
+          package_py = [name for name in names if name.startswith("xskill/") and name.endswith(".py")]
+          if not package_py:
+              raise SystemExit("wheel does not contain xskill Python package code")
+
+          print(f"verified {wheels[0]} contains {len(package_py)} xskill Python files")
+          PY
+
       - name: Twine check
         run: twine check dist/*
 
