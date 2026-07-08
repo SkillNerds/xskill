@@ -66,6 +66,12 @@ llm:
                          # default (a warning is logged). Uncomment and set it
                          # to YOUR model's real context limit (e.g. 128000 for
                          # gpt-4o, 64000 for deepseek-chat).
+  # compact_token_limit: 120000  # optional; after trimming/spilling old tool
+                         # results, if the estimated history is still above this
+                         # limit, ask the same chat model to summarize old
+                         # SkillEditAgent memory. Leave commented to disable.
+  # compact_keep_recent_messages: 6 # optional; recent complete message blocks
+                         # kept verbatim after compact. Default 6.
   # temperature: 0.0     # optional; default 0 (deterministic)
   # request_timeout: 60  # optional; per-request wall-clock cap in seconds
                          # (default 60). Explicit so an unreachable endpoint
@@ -566,6 +572,13 @@ def get_team_server_state_path() -> Path:
 def get_team_clients_db_path() -> Path:
     """server 端 client 注册表 SQLite。"""
     return XSKILL_HOME / "team_clients.db"
+
+
+def get_team_server_whl_dir() -> Path:
+    """server 端静默更新回退 wheel 目录（~/.xskill/whls）。"""
+    d = XSKILL_HOME / "whls"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def get_team_client_state_path() -> Path:

@@ -7,6 +7,7 @@
   claude_code.py— Claude Code：_adapt_claude_code_jsonl + install_to_claude_code
                   + ingest_claude_code_sessions + CCSessionIngester
   codex.py      — Codex CLI：适配 + install/ingest
+  nga3.py       — nga3 / CodeAgent3：适配 + install/ingest
   cursor.py     — Cursor：适配 + install/ingest
   trae.py       — Trae IDE / Trae Agent：适配 + install/ingest
   openclaw.py   — OpenClaw：适配 + install/ingest + canary flip hook
@@ -57,6 +58,16 @@ from xskill.ecosystems.codex import (
     _codex_sessions_path,
     _codex_session_id_from_path,
     _read_cwd_from_codex_jsonl,
+)
+from xskill.ecosystems.nga3 import (
+    NGA3_SPEC,
+    install_to_nga3,
+    install_all_to_nga3,
+    ingest_nga3_sessions,
+    _nga3_projects_path,
+    _nga3_skills_path,
+    _nga3_session_id_from_path,
+    _read_cwd_from_nga3_jsonl_content,
 )
 from xskill.ecosystems.cursor import (
     CURSOR_SPEC,
@@ -112,20 +123,21 @@ SQLITE_SPEC_BY_ECO: dict = {
 
 __all__ = [
     "EcosystemSpec", "SqliteEcosystemSpec",
-    "CC_SPEC", "CODEX_SPEC", "OPENCLAW_SPEC", "CURSOR_SPEC", "OPENCODE_SPEC",
-    "NGAGENT_SPEC",
+    "CC_SPEC", "CODEX_SPEC", "NGA3_SPEC", "OPENCLAW_SPEC", "CURSOR_SPEC",
+    "OPENCODE_SPEC", "NGAGENT_SPEC",
     "SQLITE_SPEC_BY_ECO", "bridge_dir_for",
     "JsonlIngester", "SqliteIngester", "CCSessionIngester",
     "detect_known_ecosystems",
-    "install_to_claude_code", "install_to_codex", "install_to_cursor",
+    "install_to_claude_code", "install_to_codex", "install_to_nga3",
+    "install_to_cursor",
     "install_to_trae",
     "install_to_openclaw", "install_to_opencode", "install_to_ngagent",
     "install_all_to_claude_code", "install_all_to_codex",
-    "install_all_to_cursor", "install_all_to_trae",
+    "install_all_to_nga3", "install_all_to_cursor", "install_all_to_trae",
     "install_all_to_openclaw",
     "install_all_to_opencode", "install_all_to_ngagent",
     "ingest_claude_code_sessions", "ingest_codex_sessions",
-    "ingest_cursor_sessions", "ingest_trae_sessions",
+    "ingest_nga3_sessions", "ingest_cursor_sessions", "ingest_trae_sessions",
     "ingest_openclaw_sessions",
     "TraeIngester", "detect_trae_record",
     "make_openclaw_canary_flip_hook",

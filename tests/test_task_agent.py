@@ -851,6 +851,144 @@ class TestContextManager:
         # 旧 look 返回被剪成标记
         assert sent["look_content"] == _TRIM_MARK
 
+    def test_trim_spills_atom_task_read_result_with_metadata(self, tmp_path):
+        """SkillEditAgent 的旧 atom_task_read 结果应落临时文件,上下文只留摘要+路径。"""
+        import json
+        import re
+        from xskill.agents.context_budget import ContextManager
+
+        class _Msg:
+            def __init__(self, role, content, tool_name=None):
+                self.role = role
+                self.content = content
+                self.tool_name = tool_name
+
+        atom_payload = {
+            "atom_id": "atom_traj_demo_0001",
+            "traj_id": "traj_demo",
+            "offset_start": 10,
+            "offset_end": 30,
+            "intent": "修复 SkillEditAgent 上下文超限",
+            "summary": "读 atom 后 raw_segment 过大导致下一轮请求超窗",
+            "raw_segment": "RAW_SEGMENT_SHOULD_NOT_STAY_IN_CONTEXT\n" * 500,
+        }
+        original_tool_content = json.dumps(atom_payload, ensure_ascii=False)
+        messages = [
+            _Msg("user", "scenario"),
+            _Msg("tool", original_tool_content, "atom_task_read"),
+        ]
+        sent = {}
+
+        def fake_invoke(msgs, **_keyword_arguments):
+            sent["tool_content"] = msgs[1].content
+            return {"usage": {"prompt_tokens": 123}}
+
+        cm = ContextManager(max_context=1000, spill_root=tmp_path / "spill")
+        cm.wrap(fake_invoke)(messages)
+
+        content = sent["tool_content"]
+        assert "trimmed_tool_result" in content
+        assert "tool_name: atom_task_read" in content
+        assert "atom_id: atom_traj_demo_0001" in content
+        assert "intent: 修复 SkillEditAgent 上下文超限" in content
+        assert "summary: 读 atom 后 raw_segment 过大导致下一轮请求超窗" in content
+        assert "RAW_SEGMENT_SHOULD_NOT_STAY_IN_CONTEXT" not in content
+        spill_path = re.search(r"spill_path: (.+)", content).group(1).strip()
+        assert Path(spill_path).read_text(encoding="utf-8") == original_tool_content
+
+    def test_compact_runs_after_spill_when_history_still_exceeds_limit(self, tmp_path):
+        """spill 后仍超 compact_token_limit 时,应调用 compact_fn 并收敛历史。"""
+        from xskill.agents.context_budget import ContextManager
+
+        class _Msg:
+            def __init__(self, role, content, tool_name=None):
+                self.role = role
+                self.content = content
+                self.tool_name = tool_name
+
+        compact_calls: list[str] = []
+
+        def compact_fn(prompt: str) -> str:
+            compact_calls.append(prompt)
+            return "COMPACTED: keep atom evidence and pending edits"
+
+        messages = [
+            _Msg("system", "SkillEditAgent system prompt"),
+            _Msg("user", "turn0 scenario with target skill"),
+            _Msg("assistant", "I will inspect atoms"),
+            _Msg("tool", "OLD_ATOM_RESULT\n" + ("x" * 8000), "atom_task_read"),
+            _Msg("assistant", "recent reasoning"),
+            _Msg("user", "recent continuation"),
+        ]
+        seen = {}
+
+        def fake_invoke(msgs, **_keyword_arguments):
+            seen["messages"] = msgs
+            return {"usage": {"prompt_tokens": 100}}
+
+        cm = ContextManager(
+            max_context=1000,
+            spill_root=tmp_path / "spill",
+            compact_token_limit=20,
+            compact_keep_recent_messages=2,
+            compact_fn=compact_fn,
+        )
+        cm.wrap(fake_invoke)(messages)
+
+        assert len(compact_calls) == 1
+        assert "SkillEditAgent working memory" in compact_calls[0]
+        assert "spill_path:" in compact_calls[0]
+        compacted = seen["messages"]
+        assert [m.role for m in compacted] == [
+            "system", "user", "assistant", "assistant", "user",
+        ]
+        assert compacted[0].content == "SkillEditAgent system prompt"
+        assert compacted[1].content == "turn0 scenario with target skill"
+        assert "COMPACTED" in compacted[2].content
+        assert compacted[-2].content == "recent reasoning"
+        assert compacted[-1].content == "recent continuation"
+
+    def test_compact_recent_tail_does_not_keep_orphan_tool_message(self, tmp_path):
+        """compact 后不能留下没有对应 assistant tool_calls 的 tool 消息。"""
+        from xskill.agents.context_budget import ContextManager
+
+        class _Msg:
+            def __init__(self, role, content, tool_name=None, tool_call_id=None):
+                self.role = role
+                self.content = content
+                self.tool_name = tool_name
+                self.tool_call_id = tool_call_id
+
+        messages = [
+            _Msg("system", "SkillEditAgent system prompt"),
+            _Msg("user", "turn0 scenario"),
+            _Msg("assistant", "old reasoning"),
+            _Msg("tool", "OLD_ATOM_RESULT\n" + ("x" * 8000), "atom_task_read"),
+            _Msg("tool", "RECENT_TOOL_WITHOUT_ASSISTANT", "read_file", "call_recent"),
+            _Msg("user", "continue after tool"),
+        ]
+        seen = {}
+
+        def fake_invoke(msgs, **_keyword_arguments):
+            seen["messages"] = msgs
+            return {"usage": {"prompt_tokens": 100}}
+
+        cm = ContextManager(
+            max_context=1000,
+            spill_root=tmp_path / "spill",
+            compact_token_limit=20,
+            compact_keep_recent_messages=2,
+            compact_fn=lambda _prompt: "summary includes recent tool evidence",
+        )
+        cm.wrap(fake_invoke)(messages)
+
+        compacted = seen["messages"]
+        assert [m.role for m in compacted] == [
+            "system", "user", "assistant", "assistant", "user",
+        ]
+        assert all(m.content != "RECENT_TOOL_WITHOUT_ASSISTANT" for m in compacted)
+        assert compacted[-1].content == "continue after tool"
+
     def test_overlong_error_triggers_retrim_and_resend(self):
         from xskill.agents.context_budget import ContextManager, _TRIM_MARK
 

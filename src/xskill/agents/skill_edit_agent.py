@@ -197,8 +197,9 @@ commit message 写明本次基于哪些 atom_id 整理，例如：
 - AtomTaskRead(atom_id) — 读 atom JSON
 - ReadTraj(traj_id, offset_start, offset_end) — 按行号取轨迹原文（offset 即 1-based 行号）
 - SkillRead(skill_name) — 读现有 SKILL.md（更新场景用）
-- read_file(path) — 读取 skill_base_path 下任意已有文件内容（如 scripts/、references/）
-- list_files(path) — 列目录文件
+- read_file(path, offset=1, limit=200) — 按 1-based 行号窗口读取 skill workspace
+  或 /tmp 下的 spill 文件；trim 后的 ``spill_path`` 也用它分页回读
+- list_files(path) — 列目录文件，返回可直接传给 read_file 的完整路径
 - write_file(path, content) — 写任意文件到 skill_dir 下
 - commit_baby_to_main(skill_name, message) — 仅 baby 分支可用
 - commit_to_staging(skill_name, message) — 仅 main 分支可用

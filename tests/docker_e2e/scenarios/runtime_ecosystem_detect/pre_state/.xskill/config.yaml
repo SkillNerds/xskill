@@ -22,3 +22,5 @@ sandbox:
   trigger_threshold: 999
 canary:
   enabled: false
+ingest:
+  settle_seconds: 0   # e2e: fixture 文件刚写入，关掉入库等待屏障

@@ -47,8 +47,26 @@ def _rank_key(skill: Skill) -> tuple[float, int]:
     return (avg if avg is not None else 0.0, skill.use_count)
 
 
-def _resolve_slot(skill: Skill, client_id: str, probability: float, bucket: str) -> SkillSlot:
+def _resolve_slot(
+    skill: Skill | dict, client_id: str, probability: float, bucket: str,
+) -> SkillSlot | None:
     """对一个 skill 现算它对该 client 的 side + sha。"""
+    if isinstance(skill, dict) and skill.get("source") == "skillhub":
+        eng = get_recommend_engine()
+        if eng is None or eng.skillhub.skill_path(skill["skill_id"]) is None:
+            return None
+        current_sha = eng.skillhub.content_sha(skill["skill_id"])
+        if not current_sha:
+            return None
+        return SkillSlot(
+            skill_name=skill["skill_id"],
+            side="main",
+            sha=current_sha,
+            bucket=bucket,
+            source="skillhub",
+            display_name=skill.get("display_name"),
+            source_path=skill.get("source_path"),
+        )
     if has_staging(skill.path):
         if _engine is not None:
             from xskill.recommend.client_user import ClientUser
@@ -110,7 +128,9 @@ def build_manifest(
     slots: list[SkillSlot] = []
     for idx, skill in enumerate(chosen):
         bucket = "ranked" if idx < ranked_slots else "recommended"
-        slots.append(_resolve_slot(skill, client_id, probability, bucket))
+        slot = _resolve_slot(skill, client_id, probability, bucket)
+        if slot is not None:
+            slots.append(slot)
     # 埋点：只记画像推荐位(recommended bucket)——推荐触发率衡量的就是这部分命中。
     # best-effort，记录失败绝不阻断同步。
     try:
@@ -151,7 +171,7 @@ def _pick_recommended(
     if _engine is not None:
         # 索引缺失时（rebuild --force 后到 /reindex 前的窗口）不能进引擎——
         # _combined_relevance 会 raise。退回 ux_tail（与既有 RECOMMENDER 守卫一致）。
-        if not (skill_dir / ".skill_index.pkl").is_file():
+        if not (skill_dir / ".skill_index.pkl").is_file() and not _engine._skillhub_entries():
             return ux_tail[:reco_slots]
         user = _engine.load_client_user(client_id)
         if user.client_interest is not None and user.client_interest.feature_tensor is not None:

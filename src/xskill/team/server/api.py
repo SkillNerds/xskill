@@ -10,15 +10,23 @@ client 完全信任 server；token 只挡组织外随机接入。
 """
 from __future__ import annotations
 
+import base64
+import csv
 import hashlib
+import io
 import json
 import logging
 from pathlib import Path
+import tempfile
+import threading
 from typing import Callable
+import zipfile
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
+from xskill import __version__ as XSKILL_VERSION
+from xskill.config import get_team_server_whl_dir
 from xskill.team.server.client_registry import ClientRegistry
 from xskill.team.shared.git_bundle import fetch_branch_from_bundle, make_repo_bundle
 from xskill.team.server.skill_manifest import build_manifest
@@ -43,9 +51,11 @@ class _Ctx:
     total_slots: int = 100
     allow_anonymous_user: bool = True
     register_dir: Callable[[Path, str], None] | None = None
+    skillhub = None
 
 
 _ctx = _Ctx()
+_WHEEL_BUILD_LOCK = threading.Lock()
 
 
 def init_team_context(
@@ -59,6 +69,7 @@ def init_team_context(
     total_slots: int,
     register_dir: Callable[[Path, str], None],
     allow_anonymous_user: bool = True,
+    skillhub=None,
 ) -> None:
     """create_app(team_server=True) 在 startup 时调用一次。"""
     _ctx.join_token = join_token
@@ -70,6 +81,7 @@ def init_team_context(
     _ctx.total_slots = total_slots
     _ctx.allow_anonymous_user = allow_anonymous_user
     _ctx.register_dir = register_dir
+    _ctx.skillhub = skillhub
 
 
 def _auth(token: str | None, client_id: str | None) -> str:
@@ -82,6 +94,255 @@ def _auth(token: str | None, client_id: str | None) -> str:
         raise HTTPException(status_code=403, detail="unknown client_id")
     _ctx.client_registry.touch(client_id)
     return client_id
+
+
+def _find_server_wheel(package: str = "xskill", version: str | None = None) -> Path | None:
+    """从 ~/.xskill/whls 中选择与 server 当前版本严格匹配的 wheel。"""
+    from packaging.utils import canonicalize_name, parse_wheel_filename
+    from packaging.version import Version
+
+    want_name = canonicalize_name(package)
+    version = version or XSKILL_VERSION
+    try:
+        want_version = Version(version)
+    except Exception:
+        logger.debug("invalid xskill version for wheel lookup: %s", version, exc_info=True)
+        return None
+
+    matches: list[Path] = []
+    for path in sorted(get_team_server_whl_dir().glob("*.whl")):
+        try:
+            name, wheel_version, _build, _tags = parse_wheel_filename(path.name)
+        except Exception:
+            logger.debug("skip invalid wheel filename: %s", path, exc_info=True)
+            continue
+        if canonicalize_name(str(name)) == want_name and wheel_version == want_version:
+            matches.append(path)
+    return matches[-1] if matches else None
+
+
+def _ensure_server_wheel(package: str = "xskill", version: str | None = None) -> Path | None:
+    """返回 server wheel；缓存缺失时从当前已安装 distribution 懒生成。"""
+    version = version or XSKILL_VERSION
+    wheel = _find_server_wheel(package=package, version=version)
+    if wheel is not None:
+        return wheel
+    with _WHEEL_BUILD_LOCK:
+        wheel = _find_server_wheel(package=package, version=version)
+        if wheel is not None:
+            return wheel
+        try:
+            return _build_installed_distribution_wheel(package, version)
+        except Exception:
+            logger.warning("failed to build server wheel for %s==%s",
+                           package, version, exc_info=True)
+            return None
+
+
+def _build_installed_distribution_wheel(package: str, version: str) -> Path | None:
+    """把当前环境中已安装的 package 重组为 wheel，并缓存到 ~/.xskill/whls。
+
+    这里不依赖源码 checkout，也不运行 ``python -m build``；只读取已安装
+    distribution 的 package 文件和 dist-info 元数据，重写 wheel 的 RECORD。
+    """
+    from importlib.metadata import PackageNotFoundError, distribution
+    from packaging.utils import canonicalize_name
+    from packaging.version import Version
+
+    try:
+        dist = distribution(package)
+    except PackageNotFoundError:
+        logger.warning("cannot build server wheel: distribution not found: %s", package)
+        return None
+
+    try:
+        if Version(dist.version) != Version(version):
+            logger.warning("cannot build server wheel: installed %s==%s, server version=%s",
+                           package, dist.version, version)
+            return None
+    except Exception:
+        logger.warning("cannot build server wheel: invalid version (%s, %s)",
+                       dist.version, version, exc_info=True)
+        return None
+
+    files = list(dist.files or [])
+    if not files:
+        logger.warning("cannot build server wheel: distribution file list unavailable")
+        return None
+
+    dist_info_dir = _distribution_dist_info_dir(files)
+    if not dist_info_dir:
+        logger.warning("cannot build server wheel: dist-info directory not found")
+        return None
+    if _distribution_is_editable(dist, files, dist_info_dir):
+        logger.warning("cannot build server wheel from editable install: %s", package)
+        return None
+
+    package_root = canonicalize_name(package).replace("-", "_")
+    entries = _distribution_wheel_entries(dist, files, dist_info_dir, package_root)
+    names = {name for name, _path in entries}
+    required = {f"{dist_info_dir}/METADATA", f"{dist_info_dir}/WHEEL"}
+    missing = sorted(required - names)
+    if missing:
+        logger.warning("cannot build server wheel: missing metadata files: %s", missing)
+        return None
+    if not any(name.startswith(f"{package_root}/") for name in names):
+        logger.warning("cannot build server wheel: package files not found: %s",
+                       package_root)
+        return None
+
+    tags = _distribution_wheel_tags(dist, dist_info_dir)
+    wheel_name = _wheel_filename(package, version, tags)
+    wheel_dir = get_team_server_whl_dir()
+    wheel_dir.mkdir(parents=True, exist_ok=True)
+    dest = wheel_dir / wheel_name
+    tmp = tempfile.NamedTemporaryFile(
+        prefix=f".{wheel_name}.", suffix=".tmp", dir=wheel_dir, delete=False,
+    )
+    tmp_path = Path(tmp.name)
+    tmp.close()
+    try:
+        _write_wheel_zip(entries, dist_info_dir, tmp_path)
+        tmp_path.replace(dest)
+        logger.info("generated server wheel: %s", dest)
+        return dest
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _distribution_dist_info_dir(files) -> str | None:
+    for file in files:
+        rel = _dist_file_rel(file)
+        first = rel.split("/", 1)[0]
+        if first.endswith(".dist-info"):
+            return first
+    return None
+
+
+def _distribution_is_editable(dist, files, dist_info_dir: str) -> bool:
+    direct_url = f"{dist_info_dir}/direct_url.json"
+    for file in files:
+        if _dist_file_rel(file) != direct_url:
+            continue
+        path = Path(dist.locate_file(file))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        return bool(data.get("dir_info", {}).get("editable"))
+    return False
+
+
+def _distribution_wheel_entries(
+    dist,
+    files,
+    dist_info_dir: str,
+    package_root: str,
+) -> list[tuple[str, Path]]:
+    skip_dist_info = {"RECORD", "INSTALLER", "REQUESTED", "direct_url.json"}
+    entries: dict[str, Path] = {}
+    for file in files:
+        rel = _dist_file_rel(file)
+        if not rel or rel.startswith("../") or rel.startswith("/"):
+            continue
+        parts = rel.split("/")
+        if "__pycache__" in parts or rel.endswith(".pyc"):
+            continue
+        if parts[0] == package_root:
+            pass
+        elif parts[0] == dist_info_dir:
+            if parts[-1] in skip_dist_info:
+                continue
+        else:
+            continue
+        path = Path(dist.locate_file(file))
+        if path.is_file():
+            entries[rel] = path
+    return sorted(entries.items())
+
+
+def _distribution_wheel_tags(dist, dist_info_dir: str) -> str:
+    wheel_file = Path(dist.locate_file(f"{dist_info_dir}/WHEEL"))
+    try:
+        text = wheel_file.read_text(encoding="utf-8")
+    except Exception:
+        return "py3-none-any"
+    tags = [
+        line.split(":", 1)[1].strip()
+        for line in text.splitlines()
+        if line.lower().startswith("tag:")
+    ]
+    return ".".join(tags) if tags else "py3-none-any"
+
+
+def _wheel_filename(package: str, version: str, tags: str) -> str:
+    from packaging.utils import canonicalize_name
+
+    name = canonicalize_name(package).replace("-", "_")
+    safe_version = str(version).replace("-", "_")
+    return f"{name}-{safe_version}-{tags}.whl"
+
+
+def _dist_file_rel(file) -> str:
+    return str(file).replace("\\", "/")
+
+
+def _write_wheel_zip(
+    entries: list[tuple[str, Path]],
+    dist_info_dir: str,
+    dest: Path,
+) -> None:
+    records: list[tuple[str, str, str]] = []
+    with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for rel, path in entries:
+            data = path.read_bytes()
+            zf.writestr(rel, data)
+            digest = base64.urlsafe_b64encode(
+                hashlib.sha256(data).digest(),
+            ).rstrip(b"=").decode("ascii")
+            records.append((rel, f"sha256={digest}", str(len(data))))
+
+        record_rel = f"{dist_info_dir}/RECORD"
+        buf = io.StringIO()
+        writer = csv.writer(buf, lineterminator="\n")
+        for row in records:
+            writer.writerow(row)
+        writer.writerow((record_rel, "", ""))
+        zf.writestr(record_rel, buf.getvalue().encode("utf-8"))
+
+
+@router.get("/version")
+async def team_version(
+    x_xskill_token: str | None = Header(default=None),
+    x_xskill_client: str | None = Header(default=None),
+) -> dict:
+    """返回 server 当前 xskill 版本，以及同版本 wheel 是否可下载。"""
+    _auth(x_xskill_token, x_xskill_client)
+    wheel = _ensure_server_wheel()
+    return {
+        "package": "xskill",
+        "version": XSKILL_VERSION,
+        "wheel_available": wheel is not None,
+        "wheel_filename": wheel.name if wheel else None,
+    }
+
+
+@router.get("/wheel")
+async def team_wheel(
+    x_xskill_token: str | None = Header(default=None),
+    x_xskill_client: str | None = Header(default=None),
+) -> FileResponse:
+    """下载 server 当前版本对应的 xskill wheel。"""
+    _auth(x_xskill_token, x_xskill_client)
+    wheel = _ensure_server_wheel()
+    if wheel is None:
+        raise HTTPException(status_code=404, detail="xskill wheel not found")
+    return FileResponse(
+        wheel,
+        media_type="application/octet-stream",
+        filename=wheel.name,
+    )
 
 
 @router.post("/register", response_model=RegisterResponse)
@@ -242,9 +503,27 @@ async def team_skill_bundle(
     _auth(x_xskill_token, x_xskill_client)
     repo_dir = _ctx.skill_dir / name
     if not (repo_dir / ".git").is_dir():
-        raise HTTPException(status_code=404, detail=f"skill not found: {name}")
+        hub = _ctx.skillhub
+        if hub is None:
+            raise HTTPException(status_code=404, detail=f"skill not found: {name}")
+        hub_dir = hub.skill_path(name)
+        if hub_dir is None:
+            raise HTTPException(status_code=404, detail=f"skill not found: {name}")
+        archive = _make_skillhub_archive(hub_dir)
+        return Response(content=archive, media_type="application/zip")
     bundle = make_repo_bundle(repo_dir)
     return Response(content=bundle, media_type="application/octet-stream")
+
+
+def _make_skillhub_archive(skill_dir: Path) -> bytes:
+    """Pack a non-git skillhub directory as a zip archive for thin clients."""
+    skill_dir = Path(skill_dir)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for p in sorted(skill_dir.rglob("*")):
+            if p.is_file():
+                zf.write(p, p.relative_to(skill_dir).as_posix())
+    return buf.getvalue()
 
 
 @router.post("/push-edit", response_model=PushEditResponse)

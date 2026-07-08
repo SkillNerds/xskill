@@ -921,11 +921,12 @@ def create_app(home_root: Path | str | None = None,
                 from xskill.ecosystems import (
                     detect_known_ecosystems,
                     CCSessionIngester, JsonlIngester, SqliteIngester,
-                    CODEX_SPEC, OPENCODE_SPEC, NGAGENT_SPEC,
+                    CODEX_SPEC, NGA3_SPEC, OPENCODE_SPEC, NGAGENT_SPEC,
                     OPENCLAW_SPEC, CURSOR_SPEC,
                     TraeIngester,
                     install_all_to_claude_code,
                     install_all_to_codex,
+                    install_all_to_nga3,
                     install_all_to_opencode,
                     install_all_to_ngagent,
                     install_all_to_openclaw,
@@ -1019,6 +1020,38 @@ def create_app(home_root: Path | str | None = None,
                             )
                         ingester = JsonlIngester(
                             CODEX_SPEC,
+                            target_traj_dir=bridge,
+                            home_root=_home_root(),
+                            poll_interval=poll_interval,
+                        )
+                        ingester.start()
+                        _watcher_ref[ingester_key] = ingester
+
+                    elif eco == "nga3":
+                        # nga3 / CodeAgent3: sessions in ~/.cac/projects and
+                        # skills in ~/.cac/skills, both JSONL/symlink-first.
+                        try:
+                            installed = install_all_to_nga3(
+                                _skill_dir, target_root=_home_root(),
+                            )
+                            for dest in installed:
+                                install_history.record(
+                                    skill=dest.parent.name, side="main", sha="",
+                                )
+                            logger.info(
+                                "startup install_all_to_nga3: %d skills installed to ~/.cac/skills/",
+                                len(installed),
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "startup install_all_to_nga3 failed", exc_info=True,
+                            )
+                            install_history.record_fail(
+                                skill="<startup_all>", agent="nga3",
+                                reason=str(e)[:200],
+                            )
+                        ingester = JsonlIngester(
+                            NGA3_SPEC,
                             target_traj_dir=bridge,
                             home_root=_home_root(),
                             poll_interval=poll_interval,
@@ -1256,6 +1289,7 @@ def create_app(home_root: Path | str | None = None,
                     total_slots=int(team_cfg.get("skill_slots", 100)),
                     register_dir=_team_register_dir,
                     allow_anonymous_user=_allow_anonymous(_config),
+                    skillhub=_engine.skillhub,
                 )
                 logger.info("team server context ready (traj_root=%s)", traj_root)
             except Exception:

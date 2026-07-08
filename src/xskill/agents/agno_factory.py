@@ -65,7 +65,8 @@ def _wrap_with_context_mgmt(model, llm_cfg: dict):
     """把弃窗单趟的上下文自管理（spec §4.5）套到 model.invoke 外层。
 
     - max_context 配置优先,缺省 200K + warning（``resolve_max_context``）。
-    - 发请求前到 85% 主动剪裁旧 look/readfile 工具返回（纯截断,不调模型）。
+    - 发请求前到 85% 主动剪裁旧 look/readfile 工具返回。
+    - 若 llm/llm_skill 配了 compact_token_limit，剪裁后仍超限时做一次摘要。
     - 唯一底层兜底：抓后端"上下文超长"报错 → 再剪 → 重发一次。
     - 记后端真实 prompt_tokens 供 ``context_budget()`` 工具读。
 
@@ -73,7 +74,7 @@ def _wrap_with_context_mgmt(model, llm_cfg: dict):
     """
     from xskill.agents.context_budget import ContextManager, resolve_max_context
     max_ctx = resolve_max_context(llm_cfg)
-    cm = ContextManager(max_ctx)
+    cm = ContextManager(max_ctx, config=llm_cfg)
     model.invoke = cm.wrap(model.invoke)
     return model
 

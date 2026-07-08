@@ -97,6 +97,93 @@ def test_unknown_client_rejected(client):
     assert r.status_code == 403
 
 
+def test_version_reports_matching_server_wheel(client, tmp_path, monkeypatch):
+    whl_dir = tmp_path / "whls"
+    whl_dir.mkdir()
+    wheel = whl_dir / "xskill-1.2.3-py3-none-any.whl"
+    wheel.write_bytes(b"wheel-bytes")
+    (whl_dir / "xskill-1.2.2-py3-none-any.whl").write_bytes(b"old")
+    (whl_dir / "other-1.2.3-py3-none-any.whl").write_bytes(b"other")
+    monkeypatch.setattr(server_api, "XSKILL_VERSION", "1.2.3")
+    monkeypatch.setattr(server_api, "get_team_server_whl_dir", lambda: whl_dir)
+
+    r = client.post("/api/v1/team/register", json={"token": "secret-token"})
+    cid = r.json()["client_id"]
+    hdr = {"X-Xskill-Token": "secret-token", "X-Xskill-Client": cid}
+
+    r = client.get("/api/v1/team/version", headers=hdr)
+    assert r.status_code == 200
+    assert r.json() == {
+        "package": "xskill",
+        "version": "1.2.3",
+        "wheel_available": True,
+        "wheel_filename": "xskill-1.2.3-py3-none-any.whl",
+    }
+
+    r = client.get("/api/v1/team/wheel", headers=hdr)
+    assert r.status_code == 200
+    assert r.content == b"wheel-bytes"
+
+
+def test_wheel_endpoint_404_when_matching_wheel_missing(client, tmp_path, monkeypatch):
+    whl_dir = tmp_path / "whls"
+    whl_dir.mkdir()
+    (whl_dir / "xskill-1.2.2-py3-none-any.whl").write_bytes(b"old")
+    monkeypatch.setattr(server_api, "XSKILL_VERSION", "1.2.3")
+    monkeypatch.setattr(server_api, "get_team_server_whl_dir", lambda: whl_dir)
+    monkeypatch.setattr(
+        server_api,
+        "_build_installed_distribution_wheel",
+        lambda package, version: None,
+    )
+
+    r = client.post("/api/v1/team/register", json={"token": "secret-token"})
+    cid = r.json()["client_id"]
+    hdr = {"X-Xskill-Token": "secret-token", "X-Xskill-Client": cid}
+
+    r = client.get("/api/v1/team/version", headers=hdr)
+    assert r.status_code == 200
+    assert r.json()["wheel_available"] is False
+    assert r.json()["wheel_filename"] is None
+
+    r = client.get("/api/v1/team/wheel", headers=hdr)
+    assert r.status_code == 404
+
+
+def test_version_lazily_generates_server_wheel(client, tmp_path, monkeypatch):
+    whl_dir = tmp_path / "whls"
+    whl_dir.mkdir()
+    generated = whl_dir / "xskill-1.2.3-py3-none-any.whl"
+    monkeypatch.setattr(server_api, "XSKILL_VERSION", "1.2.3")
+    monkeypatch.setattr(server_api, "get_team_server_whl_dir", lambda: whl_dir)
+
+    def fake_build(package: str, version: str) -> Path:
+        assert package == "xskill"
+        assert version == "1.2.3"
+        generated.write_bytes(b"generated-wheel")
+        return generated
+
+    monkeypatch.setattr(
+        server_api,
+        "_build_installed_distribution_wheel",
+        fake_build,
+    )
+
+    r = client.post("/api/v1/team/register", json={"token": "secret-token"})
+    cid = r.json()["client_id"]
+    hdr = {"X-Xskill-Token": "secret-token", "X-Xskill-Client": cid}
+
+    r = client.get("/api/v1/team/version", headers=hdr)
+    assert r.status_code == 200
+    assert r.json()["wheel_available"] is True
+    assert r.json()["wheel_filename"] == "xskill-1.2.3-py3-none-any.whl"
+    assert generated.read_bytes() == b"generated-wheel"
+
+    r = client.get("/api/v1/team/wheel", headers=hdr)
+    assert r.status_code == 200
+    assert r.content == b"generated-wheel"
+
+
 def test_upload_writes_traj_md_under_client_bucket(client, tmp_path):
     r = client.post("/api/v1/team/register", json={"token": "secret-token"})
     cid = r.json()["client_id"]

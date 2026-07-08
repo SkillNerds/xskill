@@ -168,6 +168,13 @@ _KNOWN_ECOSYSTEMS: list[dict] = [
         "source_kind": "file",
     },
     {
+        "id": "nga3",
+        # nga3 / CodeAgent3 写 <home>/.cac/projects/<encoded-cwd>/<sid>.jsonl
+        "source_subpath": ".cac/projects",
+        "bridge_subpath": ".xskill/nga3_sessions",
+        "source_kind": "dir",
+    },
+    {
         "id": "openclaw",
         # OpenClaw 写 <home>/.openclaw/agents/<agent>/sessions/<sid>.trajectory.jsonl
         "source_subpath": ".openclaw/agents",
@@ -514,8 +521,9 @@ def adapt_trajectory(
       Converted to a markdown trajectory.
     - ``raw`` -- plain text; wrapped in a basic trajectory markdown template.
     - ``claude_code_jsonl`` / ``codex_rollout_jsonl`` /
-      ``openclaw_trajectory_jsonl`` / ``cursor_transcripts_jsonl`` /
-      ``trae_ide_session_json`` / ``trae_agent_trajectory_json`` -- 各 agent
+      ``nga3_jsonl`` / ``zcode_jsonl`` / ``openclaw_trajectory_jsonl`` /
+      ``cursor_transcripts_jsonl`` / ``trae_ide_session_json`` /
+      ``trae_agent_trajectory_json`` -- 各 agent
       生态原生 session；分发到对应平台模块的 ``_adapt_*``。
 
     Returns ``(md_content, json_metadata)``.
@@ -523,6 +531,7 @@ def adapt_trajectory(
     # 平台 ``_adapt_*`` 延迟 import，避免 _shared <-> 平台模块循环 import。
     from xskill.ecosystems.claude_code import _adapt_claude_code_jsonl
     from xskill.ecosystems.codex import _adapt_codex_rollout_jsonl
+    from xskill.ecosystems.nga3 import _adapt_nga3_jsonl
     from xskill.ecosystems.openclaw import _adapt_openclaw_trajectory_jsonl
     from xskill.ecosystems.cursor import _adapt_cursor_transcripts_jsonl
     from xskill.ecosystems.trae import (
@@ -546,6 +555,9 @@ def adapt_trajectory(
 
     if format == "codex_rollout_jsonl":
         return _adapt_codex_rollout_jsonl(content, metadata)
+
+    if format in ("nga3_jsonl", "zcode_jsonl"):
+        return _adapt_nga3_jsonl(content, metadata)
 
     if format == "openclaw_trajectory_jsonl":
         return _adapt_openclaw_trajectory_jsonl(content, metadata)

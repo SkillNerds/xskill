@@ -9,9 +9,12 @@ _tick 一轮：
 """
 from __future__ import annotations
 
+import io
+import json
 import logging
 import shutil
 import threading
+import zipfile
 from pathlib import Path
 
 from xskill.skill.git import run_git
@@ -149,6 +152,14 @@ class TeamClient:
                 logger.warning("bundle fetch failed: %s HTTP %s",
                                slot.skill_name, r.status_code)
                 continue
+            if getattr(slot, "source", "repo") == "skillhub":
+                self._apply_skillhub_archive(
+                    r.content, repo_dir, expected_sha=slot.sha,
+                    display_name=slot.display_name,
+                    source_path=slot.source_path,
+                )
+                self._install_to_ecosystems(repo_dir)
+                continue
             apply_repo_bundle(r.content, repo_dir)
             # 步骤 1 = manifest 给的 (side, sha)；2/3/4 = 共享助手
             reconcile_skill_side(
@@ -156,6 +167,52 @@ class TeamClient:
                 history=self.history, on_changed=self._install_to_ecosystems,
             )
         logger.info("reconciled %d skills", len(manifest.slots))
+
+    def _apply_skillhub_archive(
+        self, archive_bytes: bytes, dest_dir: Path, *, expected_sha: str,
+        display_name: str | None, source_path: str | None,
+    ) -> None:
+        """Install a non-git skillhub skill archive into the local skill directory."""
+        dest_dir = Path(dest_dir)
+        meta_path = dest_dir / ".xskill_skillhub.json"
+        if meta_path.is_file() and (dest_dir / "SKILL.md").is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                if meta.get("sha") == expected_sha:
+                    return
+            except (OSError, ValueError):
+                pass
+
+        tmp_dir = dest_dir.with_name(f".{dest_dir.name}.tmp")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as zf:
+            root = tmp_dir.resolve()
+            for info in zf.infolist():
+                target = (tmp_dir / info.filename).resolve()
+                try:
+                    target.relative_to(root)
+                except ValueError:
+                    raise RuntimeError(f"unsafe skillhub archive path: {info.filename}")
+                if info.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+        if not (tmp_dir / "SKILL.md").is_file():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise RuntimeError("skillhub archive missing SKILL.md")
+        (tmp_dir / ".xskill_skillhub.json").write_text(
+            json.dumps({
+                "sha": expected_sha,
+                "display_name": display_name,
+                "source_path": source_path,
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        shutil.rmtree(dest_dir, ignore_errors=True)
+        tmp_dir.replace(dest_dir)
 
     def _install_to_ecosystems(self, repo_dir: Path) -> None:
         """把一个已 checkout 好的 skill working copy 装到本机所有生态。
@@ -169,12 +226,13 @@ class TeamClient:
         """
         from xskill.ecosystems import (
             detect_known_ecosystems, install_to_claude_code,
-            install_to_codex, install_to_opencode, install_to_ngagent,
+            install_to_codex, install_to_nga3, install_to_opencode, install_to_ngagent,
             install_to_openclaw, install_to_cursor, install_to_trae,
         )
         installer = {
             "claude_code": install_to_claude_code,
             "codex": install_to_codex,
+            "nga3": install_to_nga3,
             "opencode": install_to_opencode,
             "ngagent": install_to_ngagent,
             "openclaw": install_to_openclaw,
@@ -299,7 +357,11 @@ class TeamClient:
     def run_forever(self) -> None:
         """阻塞循环。先起 collector ingester，再每 poll_interval 跑一轮 _tick。"""
         from xskill.team.client.updater import AutoUpdater
-        updater = AutoUpdater() if self.auto_update else None
+        updater = AutoUpdater(
+            server_url=self.state.server_url,
+            client_id=self.state.client_id,
+            join_token=self.state.join_token,
+        ) if self.auto_update else None
         if updater:
             updater.start()
         self.collector.start_ingesters()
