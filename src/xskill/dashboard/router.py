@@ -202,7 +202,7 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
         hub = _build_skillhub()
         if hub is None:
             raise HTTPException(status_code=404, detail="skillhub disabled")
-        _skillhub_path(hub.dir, name)  # 越权校验 + 存在校验
+        _skillhub_path(hub, name)  # 越权校验 + 存在校验
         versions = hub.ux_scores_by_version(name, days=days)
         return {
             "skill": name,
@@ -218,7 +218,7 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
         hub = _build_skillhub()
         if hub is None:
             raise HTTPException(status_code=404, detail="skillhub disabled")
-        _skillhub_path(hub.dir, name)
+        _skillhub_path(hub, name)
         traj_root = _resolve_traj_root()
         scores = hub.ux_scores_with_atoms(
             name, commit_sha=commit_sha, days=days, traj_root=traj_root)
@@ -416,9 +416,9 @@ def _build_skillhub() -> Optional["object"]:
     return hub if hub.enabled else None
 
 
-def _skillhub_path(hub_dir: Path, name: str) -> Path:
-    """解析并校验三方 skill 子目录，防 name 里塞 ``../`` 越权 + 不存在抛 404。"""
-    root = (Path(hub_dir) / name).resolve()
-    if root.parent != Path(hub_dir).resolve() or not root.is_dir():
+def _skillhub_path(hub, name: str) -> Path:
+    """解析并校验三方 skill 子目录；不存在抛 404。"""
+    root = hub.skill_path(name)
+    if root is None:
         raise HTTPException(status_code=404, detail=f"skill not found: {name!r}")
     return root

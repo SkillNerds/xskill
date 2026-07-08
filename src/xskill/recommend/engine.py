@@ -81,16 +81,23 @@ class SkillRecommendEngine:
 
         返回 ``(names, embeddings, is_skillhub)``。三方 skill 标记 True（仅相关性位）。
         """
-        idx = self._skill_index()
-        repo_names = list(idx.get("skill_names") or [])
-        repo_embs = np.asarray(idx["embeddings"], dtype=float)
+        hub_entries = self._skillhub_entries()
+        idx_path = self.skill_dir / ".skill_index.pkl"
+        if idx_path.is_file():
+            idx = self._skill_index()
+            repo_names = list(idx.get("skill_names") or [])
+            repo_embs = np.asarray(idx["embeddings"], dtype=float)
+        else:
+            repo_names = []
+            dim = len(hub_entries[0]["vec"]) if hub_entries else 0
+            repo_embs = np.zeros((0, dim), dtype=float)
         distributable = {s.name for s in self._distributable_skills()}
         # 仅保留可分发 skill（排除 baby / 已删）
         keep = [i for i, n in enumerate(repo_names) if n in distributable]
         names = [repo_names[i] for i in keep]
         embs = repo_embs[keep] if keep else np.zeros((0, repo_embs.shape[1] if repo_embs.ndim == 2 else 0))
         is_hub = {n: False for n in names}
-        for e in self._skillhub_entries():
+        for e in hub_entries:
             if e["name"] in is_hub:
                 continue  # 自有 skill 同名优先
             names.append(e["name"])
@@ -224,8 +231,6 @@ class SkillRecommendEngine:
         pool = self._distributable_skills()
         if exclude_names:
             pool = [s for s in pool if s.name not in exclude_names]
-        if not pool:
-            return []
 
         quality_ratio = self.rcfg["quality_ratio"]
         qn = min(math.ceil(skill_num * quality_ratio), len(pool))
@@ -239,7 +244,7 @@ class SkillRecommendEngine:
         relevance: list["Skill"] = []
         ci = client_user.client_interest
         if ci is not None and ci.feature_tensor is not None:
-            names, embs, _is_hub = self._combined_relevance()
+            names, embs, is_hub = self._combined_relevance()
             by_name = {s.name: s for s in pool}  # pool 已排除 exclude_names
             picked = set(quality_names)
             for center in ci.feature_tensor:
@@ -251,8 +256,16 @@ class SkillRecommendEngine:
                 order = np.argsort(-sims)
                 for i in order:
                     nm = names[i]
-                    # 仅返回可分发 skill（skillhub-only 无 git，不能作为 slot 分发）
-                    if nm in by_name and nm not in picked:
+                    if nm in picked:
+                        continue
+                    if is_hub.get(nm):
+                        entry = self.skillhub.entry(nm)
+                        if entry is not None:
+                            relevance.append(entry)
+                            picked.add(nm)
+                            if len(quality) + len(relevance) >= skill_num:
+                                break
+                    elif nm in by_name:
                         relevance.append(by_name[nm])
                         picked.add(nm)
                         if len(quality) + len(relevance) >= skill_num:
@@ -275,14 +288,27 @@ class SkillRecommendEngine:
         # 记录推荐 + resolve side（双向）
         client_user.recommended_skills = []
         for s in chosen:
-            side = self.resolve_side(s, client_user)
-            sha = staging_sha(s.path) if side == "staging" else (main_sha(s.path) or "")
+            if isinstance(s, dict) and s.get("source") == "skillhub":
+                side = "main"
+                sha = s["content_sha"]
+                skill_name = s["skill_id"]
+                rec = {
+                    "skill": skill_name,
+                    "branch": side,
+                    "hash": sha,
+                    "source": "skillhub",
+                    "display_name": s["display_name"],
+                    "source_path": s["source_path"],
+                }
+            else:
+                side = self.resolve_side(s, client_user)
+                sha = staging_sha(s.path) if side == "staging" else (main_sha(s.path) or "")
+                skill_name = s.name
+                rec = {"skill": skill_name, "branch": side, "hash": sha}
             self.reco_store.record(
-                user_id=client_user.user_id, skill_name=s.name, side=side, sha=sha,
+                user_id=client_user.user_id, skill_name=skill_name, side=side, sha=sha,
             )
-            client_user.recommended_skills.append(
-                {"skill": s.name, "branch": side, "hash": sha}
-            )
+            client_user.recommended_skills.append(rec)
         return chosen
 
     # ── 5.4 resolve_side：staging 优先达量 ───────────────────────

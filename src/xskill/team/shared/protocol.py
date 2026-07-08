@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 Side = Literal["main", "staging"]
 Bucket = Literal["ranked", "recommended"]
+SkillSource = Literal["repo", "skillhub"]
 
 
 class RegisterRequest(BaseModel):
@@ -72,6 +73,9 @@ class SkillSlot(BaseModel):
     side: Side
     sha: str
     bucket: Bucket         # ranked = ux_score 滑窗；recommended = SP3 画像位（SP1 占位）
+    source: SkillSource = "repo"
+    display_name: str | None = None
+    source_path: str | None = None
 
 
 class SyncResponse(BaseModel):

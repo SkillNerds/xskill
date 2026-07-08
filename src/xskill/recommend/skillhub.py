@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +27,19 @@ def _normalize(v: np.ndarray) -> np.ndarray:
     return v / n if n > 0 else v
 
 
+def _safe_id_part(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip(".-")
+    return safe or "skill"
+
+
+def _content_sha(md: Path) -> str:
+    return hashlib.sha256(md.read_bytes()).hexdigest()[:16]
+
+
+def _path_hash(source_path: str) -> str:
+    return hashlib.sha256(source_path.encode("utf-8")).hexdigest()[:12]
+
+
 class SkillHub:
     """三方 skill 扫描器 + ux 查询。``enabled=False``（缺省）时为 no-op。"""
 
@@ -39,8 +53,7 @@ class SkillHub:
         cfg = skillhub_config(config)
         return cls(enabled=cfg["enabled"], hub_dir=cfg["dir"], embed_client=embed_client)
 
-    def index(self) -> list[dict]:
-        """返回 ``[{name, vec, description}]``。禁用 → 空 list；启用但目录缺失 → raise。"""
+    def _entries(self, *, include_vec: bool, require_description: bool) -> list[dict]:
         if not self.enabled:
             return []
         if not self.dir.is_dir():
@@ -48,19 +61,65 @@ class SkillHub:
                 f"skillhub.dir 不存在: {self.dir}（启用 skillhub 前请放置三方 skill）"
             )
         entries: list[dict] = []
-        for sub in sorted(self.dir.iterdir()):
-            if not sub.is_dir() or sub.name.startswith("."):
+        for md in sorted(self.dir.rglob("SKILL.md")):
+            sub = md.parent
+            try:
+                rel = sub.relative_to(self.dir).as_posix()
+            except ValueError:
                 continue
-            md = sub / "SKILL.md"
-            if not md.is_file():
+            if any(part.startswith(".") for part in Path(rel).parts):
                 continue
             fm, _body = fm_parse(md.read_text(encoding="utf-8"))
+            raw_name = fm.get("name") or sub.name
+            display_name = str(raw_name).strip() or sub.name
             desc = (fm.get("description") or "").strip()
-            if not desc:
+            if require_description and not desc:
                 continue
-            vec = _normalize(np.asarray(self.embed_client.encode(desc), dtype=float))
-            entries.append({"name": sub.name, "vec": vec, "description": desc})
+            content_sha = _content_sha(md)
+            path_hash = _path_hash(rel)
+            skill_id = f"{_safe_id_part(display_name)}@{path_hash}"
+            entry = {
+                "source": "skillhub",
+                "name": skill_id,
+                "skill_id": skill_id,
+                "display_name": display_name,
+                "source_path": rel,
+                "path_hash": path_hash,
+                "content_sha": content_sha,
+                "description": desc,
+                "path": sub,
+            }
+            if include_vec:
+                vec = _normalize(np.asarray(self.embed_client.encode(desc), dtype=float))
+                entry["vec"] = vec
+            entries.append(entry)
         return entries
+
+    def index(self) -> list[dict]:
+        """返回三方 skill 索引。禁用 → 空 list；启用但目录缺失 → raise。
+
+        skill 以 ``skillhub.dir`` 下任意层级中包含 ``SKILL.md`` 的目录为单位。
+        ``name`` / ``skill_id`` 是稳定分发身份，展示名放 ``display_name``。
+        """
+        return self._entries(include_vec=True, require_description=True)
+
+    def entry(self, name: str) -> dict | None:
+        """按 skill_id / source_path / 唯一 display_name 找当前磁盘上的 skill。"""
+        if not self.enabled:
+            return None
+        matches: list[dict] = []
+        for entry in self._entries(include_vec=False, require_description=False):
+            if name in {
+                entry["skill_id"], entry["name"], entry["source_path"],
+                entry["display_name"],
+            }:
+                matches.append(entry)
+        if len(matches) == 1:
+            return matches[0]
+        for entry in matches:
+            if name in {entry["skill_id"], entry["name"], entry["source_path"]}:
+                return entry
+        return None
 
     # ── §7 三方 skill ux 定位 / 版本 / 查询 ──────────────────────
     # 三方 skill 无 git → 版本号用 SKILL.md 内容 sha256 前 16 位；side 恒 "main"
@@ -69,19 +128,20 @@ class SkillHub:
     # 本类只负责读回。
     def skill_path(self, name: str) -> Path | None:
         """返回三方 skill 目录路径（含 ``SKILL.md``）；未启用 / 不存在 → None。"""
-        if not self.enabled:
+        entry = self.entry(name)
+        if entry is None:
             return None
-        sub = self.dir / name
+        sub = Path(entry["path"])
         if not sub.is_dir() or not (sub / "SKILL.md").is_file():
             return None
         return sub
 
     def content_sha(self, name: str) -> str | None:
         """三方 skill 版本号 = ``SKILL.md`` 内容 sha256 前 16 位。无 git → 内容哈希。"""
-        sub = self.skill_path(name)
-        if sub is None:
+        entry = self.entry(name)
+        if entry is None:
             return None
-        return hashlib.sha256((sub / "SKILL.md").read_bytes()).hexdigest()[:16]
+        return entry["content_sha"]
 
     def recent_ux_scores(self, name: str, days: int = 30) -> list[dict]:
         """读三方 skill 的 ``.ux_scores.jsonl``，按 ``days`` 截断近期。无数据 → []。"""

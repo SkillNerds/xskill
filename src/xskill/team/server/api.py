@@ -11,10 +11,12 @@ client 完全信任 server；token 只挡组织外随机接入。
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 from pathlib import Path
 from typing import Callable
+import zipfile
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import Response
@@ -43,6 +45,7 @@ class _Ctx:
     total_slots: int = 100
     allow_anonymous_user: bool = True
     register_dir: Callable[[Path, str], None] | None = None
+    skillhub = None
 
 
 _ctx = _Ctx()
@@ -59,6 +62,7 @@ def init_team_context(
     total_slots: int,
     register_dir: Callable[[Path, str], None],
     allow_anonymous_user: bool = True,
+    skillhub=None,
 ) -> None:
     """create_app(team_server=True) 在 startup 时调用一次。"""
     _ctx.join_token = join_token
@@ -70,6 +74,7 @@ def init_team_context(
     _ctx.total_slots = total_slots
     _ctx.allow_anonymous_user = allow_anonymous_user
     _ctx.register_dir = register_dir
+    _ctx.skillhub = skillhub
 
 
 def _auth(token: str | None, client_id: str | None) -> str:
@@ -242,9 +247,27 @@ async def team_skill_bundle(
     _auth(x_xskill_token, x_xskill_client)
     repo_dir = _ctx.skill_dir / name
     if not (repo_dir / ".git").is_dir():
-        raise HTTPException(status_code=404, detail=f"skill not found: {name}")
+        hub = _ctx.skillhub
+        if hub is None:
+            raise HTTPException(status_code=404, detail=f"skill not found: {name}")
+        hub_dir = hub.skill_path(name)
+        if hub_dir is None:
+            raise HTTPException(status_code=404, detail=f"skill not found: {name}")
+        archive = _make_skillhub_archive(hub_dir)
+        return Response(content=archive, media_type="application/zip")
     bundle = make_repo_bundle(repo_dir)
     return Response(content=bundle, media_type="application/octet-stream")
+
+
+def _make_skillhub_archive(skill_dir: Path) -> bytes:
+    """Pack a non-git skillhub directory as a zip archive for thin clients."""
+    skill_dir = Path(skill_dir)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for p in sorted(skill_dir.rglob("*")):
+            if p.is_file():
+                zf.write(p, p.relative_to(skill_dir).as_posix())
+    return buf.getvalue()
 
 
 @router.post("/push-edit", response_model=PushEditResponse)

@@ -1256,6 +1256,7 @@ def create_app(home_root: Path | str | None = None,
                     total_slots=int(team_cfg.get("skill_slots", 100)),
                     register_dir=_team_register_dir,
                     allow_anonymous_user=_allow_anonymous(_config),
+                    skillhub=_engine.skillhub,
                 )
                 logger.info("team server context ready (traj_root=%s)", traj_root)
             except Exception:
