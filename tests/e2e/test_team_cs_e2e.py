@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import site
 import socket
@@ -43,25 +44,15 @@ THIS_DIR = Path(__file__).resolve().parent
 if str(THIS_DIR.parent) not in sys.path:
     sys.path.insert(0, str(THIS_DIR.parent))
 from _fake_llm_server import (  # noqa: E402
-    FakeLLMServer, Responder, make_openai_chat_response,
+    FakeLLMServer,
+    Responder,
+    make_openai_chat_response,
+    make_openai_tool_call_response,
+    make_openai_tool_calls_response,
 )
 
 XSKILL_BIN = shutil.which("xskill")
 SK_LEAK = "sk-abcdEFGH1234567890leak"
-
-# TaskAgent 期望 <atoms><atom>...</atom></atoms> schema；used_skills 指 fix-foo
-# 让 server 端 CS 归因路径也跑起来。
-_FAKE_ATOM_SPLIT_XML = """<atoms>
-<atom>
-  <offset_start>10</offset_start>
-  <offset_end>200</offset_end>
-  <intent>配置 API key</intent>
-  <summary>用户请求配置 API key；agent 协助完成。</summary>
-  <tags><tag>config</tag></tags>
-  <used_skills><skill>fix-foo</skill></used_skills>
-  <ux_score>7</ux_score>
-</atom>
-</atoms>"""
 
 
 def _free_port() -> int:
@@ -149,19 +140,76 @@ def _program_fake_server(fake: FakeLLMServer) -> None:
                                      if isinstance(p, dict))
         return ""
 
+    def _user_text(body: dict) -> str:
+        parts: list[str] = []
+        for m in body.get("messages", []):
+            if m.get("role") != "user":
+                continue
+            c = m.get("content")
+            if isinstance(c, str):
+                parts.append(c)
+            elif isinstance(c, list):
+                for p in c:
+                    if isinstance(p, dict):
+                        parts.append(p.get("text", ""))
+        return "\n".join(parts)
+
+    def _has_tool_result(body: dict) -> bool:
+        return any(m.get("role") == "tool" for m in body.get("messages", []))
+
+    def _atom_split_build(body: dict) -> dict:
+        if _has_tool_result(body):
+            return make_openai_chat_response(
+                "atom submitted.", model=body.get("model", "fake"))
+        marks = re.findall(r"\[line:(\d+)\]", _user_text(body))
+        if not marks:
+            raise AssertionError("atom-split responder: prompt 里没有 [line:] 标记")
+        return make_openai_tool_call_response(
+            "submit_atom",
+            {
+                "start_line": int(marks[0]),
+                "intent": "配置 API key",
+                "summary": "用户请求配置 API key；agent 协助完成。",
+                "tags": ["config", "api_key", "security"],
+                "used_skills": ["fix-foo"],
+                "ux_score": 7,
+            },
+            model=body.get("model", "fake"),
+        )
+
+    def _cluster_build(body: dict) -> dict:
+        if _has_tool_result(body):
+            return make_openai_chat_response(
+                "cluster completed.", model=body.get("model", "fake"))
+        atom_ids = list(dict.fromkeys(
+            re.findall(r"atom_id:\s*(\S+)", _user_text(body))
+        ))
+        if not atom_ids:
+            return make_openai_chat_response(
+                "信号不足，跳过。", model=body.get("model", "fake"))
+        return make_openai_tool_calls_response(
+            [
+                (
+                    "add_task_to_skill",
+                    {"skill_name": "fix-foo", "atom_id": aid, "weightscore": 1},
+                    f"call_cluster_{idx:04d}",
+                )
+                for idx, aid in enumerate(atom_ids, 1)
+            ],
+            model=body.get("model", "fake"),
+        )
+
     # TaskAgent atom 拆分
     fake.add_responder("/chat/completions", Responder(
         name="atom-split",
         match=lambda b: "AtomTask 拆分员" in _sys_text(b),
-        build=lambda b: make_openai_chat_response(
-            _FAKE_ATOM_SPLIT_XML, model=b.get("model", "fake")),
+        build=_atom_split_build,
     ))
-    # TaskClusterAgent noop
+    # TaskClusterAgent
     fake.add_responder("/chat/completions", Responder(
-        name="cluster-noop",
+        name="cluster-add-task",
         match=lambda b: "TaskClusterAgent" in _sys_text(b),
-        build=lambda b: make_openai_chat_response(
-            "信号不足，跳过。", model=b.get("model", "fake")),
+        build=_cluster_build,
     ))
     # ux 评分员
     fake.add_responder("/chat/completions", Responder(

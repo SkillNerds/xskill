@@ -23,7 +23,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from xskill.dashboard.router import build_dashboard_router
 import xskill.dashboard.router as _router_mod
 from xskill.recommend.skillhub import SkillHub
 from xskill.skill.skill import Skill
@@ -407,7 +406,7 @@ class TestHttpUxEndpoints:
         # 指向 tmp_path/skill 让 _skill_dir_for(db_path) 解析到正确目录
         db = tmp_path / "registry.db"
         app = FastAPI()
-        app.include_router(build_dashboard_router(db_path=db))
+        app.include_router(_router_mod.build_dashboard_router(db_path=db))
         client = TestClient(app)
         r = client.get("/api/v1/dashboard/skill/foo/ux", params={"days": 0})
         assert r.status_code == 200
@@ -425,7 +424,7 @@ class TestHttpUxEndpoints:
         self._seed_skill_with_ux(tmp_path)
         db = tmp_path / "registry.db"
         app = FastAPI()
-        app.include_router(build_dashboard_router(db_path=db))
+        app.include_router(_router_mod.build_dashboard_router(db_path=db))
         client = TestClient(app)
         # 没有 team server 的 traj_root → atom_lookup=unavailable, atom=None
         r = client.get("/api/v1/dashboard/skill/foo/ux/atoms", params={"days": 0})
@@ -450,7 +449,7 @@ class TestHttpUxEndpoints:
         monkeypatch.setattr(router_mod, "_resolve_traj_root", lambda: traj_root)
         db = tmp_path / "registry.db"
         app = FastAPI()
-        app.include_router(build_dashboard_router(db_path=db))
+        app.include_router(_router_mod.build_dashboard_router(db_path=db))
         client = TestClient(app)
         r = client.get("/api/v1/dashboard/skill/foo/ux/atoms", params={"days": 0})
         assert r.status_code == 200
@@ -463,7 +462,7 @@ class TestHttpUxEndpoints:
     def test_skill_ux_nonexistent_skill_400(self, tmp_path):
         db = tmp_path / "registry.db"
         app = FastAPI()
-        app.include_router(build_dashboard_router(db_path=db))
+        app.include_router(_router_mod.build_dashboard_router(db_path=db))
         client = TestClient(app)
         # skill 目录不存在 → _skill_path 校验抛 400
         r = client.get("/api/v1/dashboard/skill/nonexistent/ux")
@@ -484,7 +483,7 @@ class TestHttpUxEndpoints:
             lambda: {"skillhub": {"enabled": True, "dir": str(hub_dir)}})
         db = tmp_path / "registry.db"
         app = FastAPI()
-        app.include_router(build_dashboard_router(db_path=db))
+        app.include_router(_router_mod.build_dashboard_router(db_path=db))
         client = TestClient(app)
         r = client.get("/api/v1/dashboard/skillhub/ext/ux", params={"days": 0})
         assert r.status_code == 200
@@ -500,7 +499,7 @@ class TestHttpUxEndpoints:
             lambda: {"skillhub": {"enabled": False}})
         db = tmp_path / "registry.db"
         app = FastAPI()
-        app.include_router(build_dashboard_router(db_path=db))
+        app.include_router(_router_mod.build_dashboard_router(db_path=db))
         client = TestClient(app)
         r = client.get("/api/v1/dashboard/skillhub/ext/ux")
         assert r.status_code == 404
@@ -521,7 +520,7 @@ class TestHttpUxEndpoints:
         monkeypatch.setattr(router_mod, "_resolve_traj_root", lambda: traj_root)
         db = tmp_path / "registry.db"
         app = FastAPI()
-        app.include_router(build_dashboard_router(db_path=db))
+        app.include_router(_router_mod.build_dashboard_router(db_path=db))
         client = TestClient(app)
         r = client.get("/api/v1/dashboard/skillhub/ext/ux/atoms",
                        params={"days": 0})

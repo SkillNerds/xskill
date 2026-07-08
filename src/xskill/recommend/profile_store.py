@@ -7,14 +7,13 @@ from __future__ import annotations
 
 import json
 import pickle
-from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
 
-from xskill.recommend._sqlite_base import _SqliteStore
+from xskill.recommend._sqlite_base import _SqliteStore, _now
 
-_SCHEMA = """
+PROFILE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS client_interest (
     user_id         TEXT PRIMARY KEY,
     feature_tensor  BLOB,
@@ -25,14 +24,10 @@ CREATE TABLE IF NOT EXISTS client_interest (
 """
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 class ProfileStore(_SqliteStore):
     """``client_interest`` 表的读写。"""
 
-    _SCHEMA = _SCHEMA
+    _SCHEMA = PROFILE_SCHEMA_SQL
 
     def upsert(
         self,

@@ -6,9 +6,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-from xskill.recommend._sqlite_base import _SqliteStore
+from xskill.recommend._sqlite_base import _SqliteStore, _now
 
 RECO_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS recommendations (
@@ -20,10 +18,6 @@ CREATE TABLE IF NOT EXISTS recommendations (
     PRIMARY KEY (user_id, skill_name, side)
 );
 """
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class RecoStore(_SqliteStore):

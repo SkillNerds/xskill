@@ -5,7 +5,12 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class _SqliteStore:
@@ -24,6 +29,8 @@ class _SqliteStore:
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=10)
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.row_factory = sqlite3.Row
         return conn
 

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from xskill.canary import append_ux_score, main_sha, staging_sha
+from xskill.canary import append_ux_score, main_sha, pick_side, staging_sha
 from xskill.recommend.client_interest import ClientInterest
 from xskill.recommend.client_user import ClientUser
 from xskill.recommend.engine import SkillRecommendEngine
@@ -205,6 +205,16 @@ class TestResolveSide:
         user = ClientUser("u1")
         s = eng._distributable_skills()[0]
         assert eng.resolve_side(s, user) == "staging"
+
+    def test_staging_need_zero_defers_to_router(self, tmp_path):
+        skill_dir, d, msh, ssh = self._skill_with_staging(tmp_path)
+        eng = _engine(tmp_path, skill_dir, tmp_path / "traj", total_samples=3)
+        eng.staging_need = 0
+        user = ClientUser("u1")
+        s = eng._distributable_skills()[0]
+        assert eng.resolve_side(s, user) == pick_side(
+            user.user_id, s.name, eng.canary_cfg.probability,
+        )
 
     def test_staging_full_main_under_pushes_main(self, tmp_path):
         skill_dir, d, msh, ssh = self._skill_with_staging(tmp_path)

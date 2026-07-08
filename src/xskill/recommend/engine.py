@@ -330,6 +330,8 @@ class SkillRecommendEngine:
         """
         if not has_staging(skill.path):
             return "main"
+        if self.staging_need <= 0:
+            return pick_side(client_user.user_id, skill.name, self.canary_cfg.probability)
         s_sha = staging_sha(skill.path) or ""
         m_sha = main_sha(skill.path) or ""
         staging_n = self._side_count(skill.path, "staging", s_sha)

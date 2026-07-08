@@ -1,6 +1,7 @@
 """agent_tools v2 atom-era 工具集单测"""
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 from xskill.pipeline.atom import AtomTask, AtomTaskStore
@@ -30,6 +31,10 @@ def _setup(tmp_path: Path) -> tuple[Path, AtomTaskStore]:
         default_traj_root=store_root,
     )
     return skill_dir, store
+
+
+def _spill_root() -> Path:
+    return Path(tempfile.gettempdir()) / "xskill" / "skilleditagent"
 
 
 class TestAtomTaskRead:
@@ -86,7 +91,7 @@ class TestReadFile:
         agent_tools.init_skill_authoring_tool_context(
             skill_dir, skill_dir, {"skill_opt": {"enabled": False}},
         )
-        spill = Path("/tmp/xskill/skilleditagent") / f"{tmp_path.name}-spill.txt"
+        spill = _spill_root() / f"{tmp_path.name}-spill.txt"
         spill.parent.mkdir(parents=True, exist_ok=True)
         spill.write_text("spilled raw tool result\n", encoding="utf-8")
 
@@ -102,7 +107,7 @@ class TestReadFile:
         agent_tools.init_skill_authoring_tool_context(
             skill_dir, skill_dir, {"skill_opt": {"enabled": False}},
         )
-        spill = Path("/tmp/xskill/skilleditagent") / f"{tmp_path.name}-window.txt"
+        spill = _spill_root() / f"{tmp_path.name}-window.txt"
         spill.parent.mkdir(parents=True, exist_ok=True)
         spill.write_text("L1\nL2\nL3\nL4\n", encoding="utf-8")
 

@@ -48,6 +48,8 @@ from _fake_llm_server import (  # noqa: E402
     make_anthropic_text_response,
     make_anthropic_tool_use_response,
     make_openai_chat_response,
+    make_openai_tool_call_response,
+    make_openai_tool_calls_response,
 )
 
 CLAUDE_BIN = shutil.which("claude")
@@ -183,30 +185,31 @@ FAKE_LLM_SCORE_PROFILE = {
 
 
 # ── D. AtomTask 拆分假数据 ────────────────────────────────────────
-# v0.5.0a4 起 TaskAgent 用行号坐标:预处理给 ``## User`` 行打
-# ``[line:<行号>]`` 标记，LLM 只报 atom 起始行号 start_line。fake server 的
-# 拆分应答因此必须动态——扫 prompt 里的 [line:] 标记，按真实行号回应；固定
-# 假数据会因 start_line 不是被标记的 ## User 行而被 TaskAgent 严格校验拒掉。
-# bridged CC 轨迹是单 prompt → 单 user turn，回 1 个覆盖全程的 atom。
+# TaskAgent 通过 submit_atom 工具收集拆分结果。fake server 扫 prompt 里的
+# [line:] 标记，按真实行号发起 submit_atom；工具结果回传后再正常收尾。
 def _atom_split_build(b: dict) -> dict:
+    if _has_openai_tool_result(b):
+        return make_openai_chat_response("atom submitted.", model=b.get("model", "fake"))
     marks = re.findall(r"\[line:(\d+)\]", _msg_user_text(b))
     if not marks:
         raise AssertionError("atom-split responder: prompt 里没有 [line:] 标记")
-    xml = (
-        "<atoms>\n<atom>\n"
-        f"  <start_line>{int(marks[0])}</start_line>\n"
-        "  <intent>列出当前目录下的 .py 文件</intent>\n"
-        "  <summary>用户请求列 Python 文件；agent 调 Bash 输出文件列表。</summary>\n"
-        "  <tags><tag>file_ops</tag><tag>bash</tag></tags>\n"
-        "  <used_skills><skill>list-py-files</skill></used_skills>\n"
-        "  <ux_score>7</ux_score>\n</atom>\n</atoms>"
+    return make_openai_tool_call_response(
+        "submit_atom",
+        {
+            "start_line": int(marks[0]),
+            "intent": "列出当前目录下的 .py 文件",
+            "summary": "用户请求列 Python 文件；agent 调 Bash 输出文件列表。",
+            "tags": ["file_ops", "bash", "python"],
+            "used_skills": [SKILL_NAME],
+            "ux_score": 7,
+        },
+        model=b.get("model", "fake"),
     )
-    return make_openai_chat_response(xml, model=b.get("model", "fake"))
 
-# ── E. cluster agent 应答：不调任何工具（empty text reply） ───────
-# v2 下 TaskClusterAgent 调时 fake 回纯文本，不返工具调用 → agent 不调
-# add_task_to_skill → 不进 candidates → 不触发 SkillEdit。E2E 只关心
-# 灰度链路（ux_score + canary 翻牌），不关心新 skill 蒸馏。
+
+# ── E. cluster agent 应答 ─────────────────────────────────────────
+# TaskClusterAgent 必须逐个 atom 调 add_task_to_skill；fake 用最低权重避免
+# candidates buffer 达到 SkillEdit 阈值。
 FAKE_CLUSTER_RESPONSE = "本次 atom 信号不足以新建或更新 skill，跳过。"
 
 
@@ -349,6 +352,10 @@ def _has_tool_result(body: dict) -> bool:
     return False
 
 
+def _has_openai_tool_result(body: dict) -> bool:
+    return any(m.get("role") == "tool" for m in body.get("messages", []))
+
+
 def _anthropic_user_text(body: dict) -> str:
     """从 Anthropic /v1/messages body 抽**真实用户 prompt**（不含 CC 注入
     的 system-reminder）。
@@ -390,8 +397,8 @@ def _program_fake_server(fake: FakeLLMServer) -> None:
       - 预处理请求（tools=[]）→ default text。
     OpenAI /chat/completions 端：
       - ux_score 区分 main/staging 给档分（驱动 staging 胜出）
-      - TaskAgent atom 拆分（返回 FAKE_ATOM_SPLIT_XML）
-      - TaskClusterAgent 返回纯文本不调工具（noop）
+      - TaskAgent atom 拆分（调用 submit_atom）
+      - TaskClusterAgent 给每个 atom 调 add_task_to_skill
     Embeddings：默认 8-dim 向量足够（不写 responder fake server 自带）。
     """
     fake.reset()
@@ -464,15 +471,34 @@ def _program_fake_server(fake: FakeLLMServer) -> None:
         build=_atom_split_build,
     ))
 
-    # ── OpenAI：TaskClusterAgent noop ─────────────────────────
-    # SYSTEM_PROMPT 标志："TaskClusterAgent"。回纯文本不调工具——
-    # E2E 不关心 cluster 决策，只关心灰度链路。
+    def _cluster_build(body: dict) -> dict:
+        if _has_openai_tool_result(body):
+            return make_openai_chat_response(
+                "cluster completed.", model=body.get("model", "fake"))
+        atom_ids = list(dict.fromkeys(
+            re.findall(r"atom_id:\s*(\S+)", _msg_user_text(body))
+        ))
+        if not atom_ids:
+            return make_openai_chat_response(
+                FAKE_CLUSTER_RESPONSE, model=body.get("model", "fake"))
+        return make_openai_tool_calls_response(
+            [
+                (
+                    "add_task_to_skill",
+                    {"skill_name": SKILL_NAME, "atom_id": aid, "weightscore": 1},
+                    f"call_cluster_{idx:04d}",
+                )
+                for idx, aid in enumerate(atom_ids, 1)
+            ],
+            model=body.get("model", "fake"),
+        )
+
+    # ── OpenAI：TaskClusterAgent ───────────────────────────────
+    # SYSTEM_PROMPT 标志："TaskClusterAgent"。
     fake.add_responder("/chat/completions", Responder(
-        name="cluster-noop",
+        name="cluster-add-task",
         match=lambda b: "TaskClusterAgent" in _msg_system_text(b),
-        build=lambda b: make_openai_chat_response(
-            FAKE_CLUSTER_RESPONSE, model=b.get("model", "fake"),
-        ),
+        build=_cluster_build,
     ))
 
     # ── OpenAI：SkillEditAgent noop（理论不该被触发；保险垫底） ──
@@ -535,6 +561,7 @@ def sandbox(tmp_path, fake_server):
         "canary": {
             "enabled": True, "probability": 0.5,
             "min_samples": CANARY_MIN_SAMPLES, "max_days_hold": 14,
+            "scope_top_n": 0,
         },
         "watcher": {"poll_interval": 2},
         # 入库完成屏障（settle barrier，src/xskill 的 ingest 路径，默认 120s）
@@ -824,6 +851,9 @@ def test_canary_flip_promote_and_install_new_version(sandbox, xskill_daemon):
             line = line.strip()
             if line:
                 assignments_records.append(json.loads(line))
+    assignments_records = list({
+        r["sid"]: r for r in assignments_records if r.get("sid")
+    }.values())
 
     used_count = sum(1 for r in assignments_records if r.get("used_skill"))
     unused_count = sum(1 for r in assignments_records if not r.get("used_skill"))

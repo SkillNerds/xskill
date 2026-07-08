@@ -394,6 +394,50 @@ def make_openai_chat_response(text: str, model: str = "fake-model") -> dict:
     }
 
 
+def make_openai_tool_call_response(
+    tool_name: str,
+    arguments: dict,
+    model: str = "fake-model",
+    tool_call_id: str = "call_fake_0001",
+) -> dict:
+    return make_openai_tool_calls_response(
+        [(tool_name, arguments, tool_call_id)], model=model)
+
+
+def make_openai_tool_calls_response(
+    calls: list[tuple[str, dict, str | None]],
+    model: str = "fake-model",
+) -> dict:
+    tool_calls = []
+    for idx, (tool_name, arguments, tool_call_id) in enumerate(calls, 1):
+        tool_calls.append({
+            "id": tool_call_id or f"call_fake_{idx:04d}",
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "arguments": json.dumps(arguments, ensure_ascii=False),
+            },
+        })
+    return {
+        "id": "chatcmpl-fake-toolcall",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+    }
+
+
 # ─────────────────────────────────────────────────────────────────
 # CLI entry — docker_e2e rig 把本文件当独立可执行 python 脚本启动。
 # 用法: python _fake_llm_server.py <port>

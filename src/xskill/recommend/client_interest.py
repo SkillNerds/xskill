@@ -23,7 +23,8 @@ def _kmeans(
     """纯 numpy Lloyd k-means，返回 (k, D) 中心。
 
     - 确定性：``np.random.default_rng(seed)`` 选初始中心。
-    - 空簇：重置到距自身中心最远的点（打破空簇）。
+    - 空簇：重置到距自身中心最远的点（打破空簇）；大量重复点场景下可能反复空簇，
+      依赖 ``max_iter`` 截止。
     - 最多 ``max_iter`` 轮；中心不再移动即收敛提前停。
     """
     points = np.asarray(points, dtype=float)
