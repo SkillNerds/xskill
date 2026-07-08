@@ -62,27 +62,53 @@ def _restart() -> None:
     """升级成功后重启进程，加载新版本代码。
 
     - Linux/macOS：``os.execv`` 原地替换，PID 不变，对 systemd 透明
-    - Windows：spawn detach 新进程 + 退出；schtasks/Startup 文件夹保持常驻不受影响
+    - Windows schtasks：以非零退出码退出，schtasks RestartOnFailure 在
+      1 分钟内用新版本重启进程；不另起 detach 进程，避免孤立进程脱管
+    - Windows startup_folder：spawn detach 新进程 + 以 0 退出；.vbs
+      无重启能力，必须自己起新进程才能立即用上新版本
     """
+    import time
     logger.info("updater: 升级完成，即将重启...")
     if sys.platform == "win32":
-        CREATE_NO_WINDOW = 0x08000000
-        DETACHED_PROCESS = 0x00000008
-        subprocess.Popen(
-            sys.argv,
-            creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
-            close_fds=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        # 让新进程有时间启动，再退出旧进程
-        import time
-        time.sleep(2)
-        os._exit(0)
+        method = _windows_persistence_method()
+        if method == "schtasks":
+            # schtasks RestartOnFailure 仅在非零退出时触发；
+            # 以 1 退出 → 任务调度器在 1 分钟内重启，新版本自动生效。
+            # 不另起 detach 进程，schtasks 始终是该进程的唯一管理者。
+            logger.info("updater: schtasks 路径 — 以退出码 1 退出，等待调度器重启")
+            time.sleep(1)
+            os._exit(1)
+        else:
+            # startup_folder / 未知：.vbs 无重启能力，手动 spawn 新进程
+            logger.info("updater: startup_folder 路径 — spawn 新进程后退出")
+            CREATE_NO_WINDOW = 0x08000000
+            DETACHED_PROCESS = 0x00000008
+            subprocess.Popen(
+                sys.argv,
+                creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            time.sleep(2)
+            os._exit(0)
     else:
         # os.execv 替换当前进程镜像，不产生新 PID
         os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+def _windows_persistence_method() -> str:
+    """读 daemon state 取 Windows 持久化方式（schtasks / startup_folder）。
+
+    进程由 schtasks 启动时 method='schtasks'；startup_folder 时 method=
+    'startup_folder'。读不到则返回 'startup_folder'（保守：自己 spawn）。
+    """
+    try:
+        from xskill.team.client.service import read_daemon_state
+        return read_daemon_state().get("method", "startup_folder")
+    except Exception:
+        return "startup_folder"
 
 
 class AutoUpdater:

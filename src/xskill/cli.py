@@ -336,6 +336,44 @@ def cmd_start(args) -> int:
     return 0
 
 
+def cmd_update(args) -> int:
+    """立即检查 PyPI 是否有新版 xskill，有则升级并重启。"""
+    from xskill.team.client.updater import (
+        _current_version, _latest_pypi_version, _restart,
+    )
+    current = _current_version("xskill")
+    if not current:
+        print("error: 无法读取当前版本", file=sys.stderr)
+        return 1
+    print(f"当前版本: {current}")
+    print("正在查询 PyPI...")
+    latest = _latest_pypi_version("xskill")
+    if not latest:
+        print("error: 查询 PyPI 失败，请检查网络", file=sys.stderr)
+        return 1
+    try:
+        from packaging.version import Version
+        if Version(latest) <= Version(current):
+            print(f"已是最新版本 ({current})")
+            return 0
+    except Exception:
+        pass
+    print(f"发现新版本: {latest}，开始升级...")
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--upgrade",
+         f"xskill=={latest}", "-i", "https://pypi.org/simple/"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"error: 升级失败:\n{result.stderr.strip() or result.stdout.strip()}",
+              file=sys.stderr)
+        return 1
+    print(f"升级到 {latest} 成功，正在重启...")
+    _restart()
+    return 0  # 不会到达这里
+
+
 def cmd_stop(args) -> int:
     """停止并撤销 connect 常驻任务。"""
     from xskill.team.client.service import ServiceError, get_backend
@@ -621,6 +659,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_stop.add_argument("--json", action="store_true", help="机读 JSON 输出")
 
     p_status = sub.add_parser("status", help="查看 connect 常驻任务状态")
+
+    sub.add_parser("update", help="立即检查 PyPI 新版并升级（有新版则重启）")
     p_status.add_argument("--json", action="store_true", help="机读 JSON 输出")
 
     p_stats = sub.add_parser(
@@ -719,6 +759,8 @@ def main() -> int:
         return cmd_stop(args)
     if args.command == "status":
         return cmd_status(args)
+    if args.command == "update":
+        return cmd_update(args)
 
     # stats 只读 registry，不需要 config.yaml / llm.api_key / facade
     if args.command == "stats":

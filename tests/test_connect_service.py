@@ -69,6 +69,16 @@ def test_foreground_argv_uses_dash_m(monkeypatch):
     assert argv == ["/usr/bin/python3", "-m", "xskill", "connect", "--foreground"]
 
 
+def test_pid_alive_windows_uses_exact_tasklist_pid(monkeypatch):
+    class _Result:
+        stdout = '"python.exe","4242","Console","1","10,000 K"\n'
+
+    monkeypatch.setattr(svc.subprocess, "run", lambda *args, **kwargs: _Result())
+
+    assert svc._pid_alive_windows(4242) is True
+    assert svc._pid_alive_windows(42) is False
+
+
 # ─────────────────── task XML ───────────────────
 
 def test_task_xml_has_persistence_fields():
@@ -176,8 +186,7 @@ def test_windows_status_not_installed(win_backend, monkeypatch):
 def test_windows_stop_idempotent(win_backend, monkeypatch):
     fake = _FakeSchtasks()
     monkeypatch.setattr(svc.subprocess, "run", fake)
-    # 先写一份运行态，stop 后应被清掉
-    svc.write_daemon_state(pid=4242, task_name="Xskill_Connect")
+    svc.write_daemon_state(pid=4242, task_name="Xskill_Connect", method="schtasks")
     st = win_backend.stop()
     assert st["running"] is False
     assert any("/End" in c for c in fake.calls)
@@ -190,3 +199,84 @@ def test_windows_query_pid_parsing(win_backend, monkeypatch):
     monkeypatch.setattr(svc.subprocess, "run", fake)
     monkeypatch.setattr(svc, "_pid_alive", lambda pid: True)
     assert win_backend._query_pid() == 13579
+
+
+# ─────────────── 开机启动文件夹降级（Group Policy 拦截 schtasks）───────────────
+
+class _AccessDeniedSchtasks(_FakeSchtasks):
+    """schtasks /Create 返回 access denied 错误码 + 错误文本。"""
+
+    def __call__(self, args, **kw):
+        cp = super().__call__(args, **kw)
+        if args[0] == "schtasks" and "/Create" in args:
+            cp.returncode = 1
+            cp.stderr = "ERROR: Access is denied."
+        return cp
+
+
+def test_access_denied_falls_back_to_startup_folder(
+    win_backend, monkeypatch, tmp_path
+):
+    """schtasks /Create 返回 access denied → 自动降级到开机启动文件夹。"""
+    fake_startup_vbs = tmp_path / "xskill_connect.vbs"
+    monkeypatch.setattr(svc, "_startup_vbs_path", lambda: fake_startup_vbs)
+    monkeypatch.setattr(svc.subprocess, "run", _AccessDeniedSchtasks())
+
+    spawned = []
+
+    class _FakePopen:
+        pid = 9999
+
+        def __init__(self, *a, **kw):
+            spawned.append(a[0])
+
+    monkeypatch.setattr(svc.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(svc, "_pid_alive", lambda pid: pid == 9999)
+
+    st = win_backend.install_and_start()
+
+    # .vbs 应被写入
+    assert fake_startup_vbs.is_file()
+    assert "xskill" in fake_startup_vbs.read_text(encoding="utf-8").lower()
+    # 进程应被 detach 启动
+    assert len(spawned) == 1
+    assert "--foreground" in spawned[0]
+    # status 反映 startup_folder 方法
+    assert st["method"] == "startup_folder"
+    assert st["running"] is True
+
+
+def test_access_denied_stop_cleans_vbs_and_kills_pid(
+    win_backend, monkeypatch, tmp_path
+):
+    """stop() 在 startup_folder 方法下：删 .vbs + 杀进程。"""
+    fake_vbs = tmp_path / "xskill_connect.vbs"
+    fake_vbs.write_text("stub", encoding="utf-8")
+    svc.write_daemon_state(method="startup_folder", pid=8888,
+                           vbs_path=str(fake_vbs))
+
+    killed = []
+
+    def _fake_run(args, **kw):
+        import types
+        if args[0] == "taskkill":
+            killed.append(args)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(svc.subprocess, "run", _fake_run)
+    monkeypatch.setattr(svc, "_pid_alive", lambda pid: True)
+
+    st = win_backend.stop()
+    assert not fake_vbs.exists()        # .vbs 已删
+    assert any("8888" in str(c) for c in killed)   # pid 被 taskkill
+    assert st["running"] is False
+
+
+def test_is_access_denied_detects_english_and_chinese():
+    import types
+    en = types.SimpleNamespace(stderr="ERROR: Access is denied.", stdout="")
+    zh = types.SimpleNamespace(stderr="", stdout="拒绝访问。")
+    ok = types.SimpleNamespace(stderr="other error", stdout="")
+    assert svc._is_access_denied(en) is True
+    assert svc._is_access_denied(zh) is True
+    assert svc._is_access_denied(ok) is False

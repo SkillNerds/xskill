@@ -25,6 +25,7 @@ CLI (``xskill start/stop/status``) 只跟 ``get_backend()`` 打交道，不关�
 from __future__ import annotations
 
 import abc
+import csv
 import json
 import logging
 import os
@@ -75,11 +76,14 @@ def _pid_alive_windows(pid: int) -> bool:
     try:
         out = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, check=False, timeout=2,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return False
-    return str(pid) in out
+    for row in csv.reader(out.splitlines()):
+        if len(row) >= 2 and row[1] == str(pid):
+            return True
+    return False
 
 
 def read_daemon_state() -> dict:
@@ -188,8 +192,45 @@ class _UnsupportedBackend(ConnectServiceBackend):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Windows：计划任务（schtasks）
+# Windows：计划任务（schtasks）+ 开机启动文件夹降级
 # ═══════════════════════════════════════════════════════════════
+
+# 开机启动文件夹里的 .vbs 脚本名（用 wscript 隐藏窗口运行 pythonw）
+_STARTUP_VBS_NAME = "xskill_connect.vbs"
+
+
+def _startup_vbs_path() -> Optional[Path]:
+    """返回 %APPDATA%\\...\\Startup\\xskill_connect.vbs 路径。
+
+    仅在 Windows 上有效；环境变量 APPDATA 不存在时返回 None。
+    """
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return None
+    return (Path(appdata) / "Microsoft" / "Windows"
+            / "Start Menu" / "Programs" / "Startup" / _STARTUP_VBS_NAME)
+
+
+def _build_startup_vbs(argv: list[str]) -> str:
+    """生成隐藏窗口运行 `xskill connect --foreground` 的 VBS 脚本。
+
+    用 WScript.Shell.Run(..., 0, False)：
+    - 第二参数 0 = 隐藏窗口（无 CMD 弹窗）
+    - 第三参数 False = 不等待进程退出，立即返回
+    """
+    # list2cmdline 保证路径含空格时正确加引号
+    cmd = subprocess.list2cmdline(argv)
+    return (
+        'Set oShell = CreateObject("WScript.Shell")\r\n'
+        f'oShell.Run "{cmd.replace(chr(34), chr(34)+chr(34))}", 0, False\r\n'
+    )
+
+
+def _is_access_denied(cp: "subprocess.CompletedProcess") -> bool:
+    """判断 schtasks 输出是否包含"拒绝访问 / Access is denied"。"""
+    combined = ((cp.stderr or "") + (cp.stdout or "")).lower()
+    return ("access" in combined and "denied" in combined) or "拒绝访问" in combined
+
 
 def _xml_escape(s: str) -> str:
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -261,9 +302,7 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
         command, arguments = argv[0], subprocess.list2cmdline(argv[1:])
         xml = _build_task_xml(command, arguments, working_dir=str(Path.home()))
 
-        # schtasks /Create /XML 需要一个 XML 文件路径；写到临时文件再删。
         import tempfile
-        # Task Scheduler 期望 UTF-16 BOM 的 XML（<?xml ... encoding="UTF-16"?>）。
         fd, xml_path = tempfile.mkstemp(suffix=".xml", prefix="xskill_task_")
         try:
             with os.fdopen(fd, "wb") as fh:
@@ -276,7 +315,16 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
                 os.unlink(xml_path)
             except OSError:
                 pass
+
         if create.returncode != 0:
+            if _is_access_denied(create):
+                # 公司 Group Policy 禁止普通用户通过 schtasks 创建任务。
+                # 降级：写开机启动文件夹，立即 detach 启动进程。
+                logger.info(
+                    "schtasks /Create 被拒（Group Policy 限制），"
+                    "降级到开机启动文件夹方案"
+                )
+                return self._install_startup_folder_and_spawn(argv)
             raise ServiceError(
                 "创建计划任务失败：\n"
                 f"  {create.stderr.strip() or create.stdout.strip()}"
@@ -291,20 +339,127 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
             )
 
         write_daemon_state(task_name=self.task_name, backend=self.name,
-                           argv=argv, pid=self._query_pid())
+                           method="schtasks", argv=argv, pid=self._query_pid())
+        return self.status()
+
+    def _install_startup_folder_and_spawn(self, argv: list[str]) -> dict:
+        """降级方案：写 Startup 文件夹 .vbs 脚本 + 立即 detach 启动进程。
+
+        适用于公司 Group Policy 禁止 schtasks 的场景。
+        - 持久化：.vbs 在 %APPDATA%\\...\\Startup\\，用户登录即自动执行
+        - 无窗口：WScript.Shell.Run(..., 0, False) 隐藏 CMD 窗口
+        - 立即启动：用 subprocess.Popen CREATE_NO_WINDOW|DETACHED_PROCESS
+
+        缺点（相比计划任务）：无崩溃自愈重启，但日常运行足够稳定。
+        """
+        vbs_path = _startup_vbs_path()
+        if vbs_path is None:
+            raise ServiceError(
+                "无法定位开机启动文件夹（APPDATA 未设置）。\n"
+                "  请手动将 `xskill connect --foreground` 加入开机自启，\n"
+                "  或以管理员身份运行后重试。"
+            )
+        try:
+            vbs_path.parent.mkdir(parents=True, exist_ok=True)
+            vbs_path.write_text(_build_startup_vbs(argv), encoding="utf-8")
+        except OSError as e:
+            raise ServiceError(f"写开机启动脚本失败：{e}") from e
+
+        # 立即 detach 启动（CREATE_NO_WINDOW=0x08000000, DETACHED_PROCESS=0x00000008）
+        CREATE_NO_WINDOW = 0x08000000
+        DETACHED_PROCESS = 0x00000008
+        try:
+            proc = subprocess.Popen(
+                argv,
+                creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            pid = proc.pid
+        except OSError as e:
+            raise ServiceError(f"启动进程失败：{e}") from e
+
+        write_daemon_state(method="startup_folder", backend=self.name,
+                           vbs_path=str(vbs_path), argv=argv, pid=pid)
+        logger.info("startup folder 方案安装成功：vbs=%s  pid=%s", vbs_path, pid)
         return self.status()
 
     def stop(self) -> dict:
-        """停止并删除计划任务。任务不存在时也视作成功（幂等）。"""
+        """停止并清理常驻任务（计划任务 或 启动文件夹，按 state 判断）。"""
+        state = read_daemon_state()
+        method = state.get("method", "schtasks")
+
+        if method == "startup_folder":
+            # 1. 删 .vbs 防下次登录自启
+            vbs = state.get("vbs_path") or str(_startup_vbs_path() or "")
+            if vbs:
+                try:
+                    Path(vbs).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            # 2. 按 pid 杀进程
+            pid = state.get("pid")
+            if pid and _pid_alive(pid):
+                try:
+                    subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                                   capture_output=True, check=False)
+                except OSError:
+                    pass
+            clear_daemon_state()
+            return {"running": False, "backend": self.name, "method": method}
+
+        # 计划任务路径
         self._run(["/End", "/TN", self.task_name])
         delete = self._run(["/Delete", "/TN", self.task_name, "/F"])
         clear_daemon_state()
-        st = {"running": False, "backend": self.name, "task_name": self.task_name}
-        # /Delete 对不存在的任务返回非 0——这在 stop 语义下不算错，照常返回。
+        st = {"running": False, "backend": self.name,
+              "task_name": self.task_name, "method": method}
         err = (delete.stderr or "").strip()
         if delete.returncode != 0 and "cannot find" not in err.lower():
             st["warning"] = err or (delete.stdout or "").strip()
         return st
+
+    def status(self) -> dict:
+        state = read_daemon_state()
+        method = state.get("method", "schtasks")
+
+        if method == "startup_folder":
+            pid = state.get("pid")
+            vbs = state.get("vbs_path") or str(_startup_vbs_path() or "")
+            installed = bool(vbs and Path(vbs).is_file())
+            return {
+                "installed": installed,
+                "backend": self.name,
+                "method": method,
+                "vbs_path": vbs,
+                "pid": pid,
+                "running": _pid_alive(pid),
+                "server_url": state.get("server_url"),
+                "client_id": state.get("client_id"),
+                "started_at": state.get("started_at"),
+            }
+
+        # 计划任务路径
+        q = self._run(["/Query", "/TN", self.task_name, "/FO", "LIST", "/V"])
+        if q.returncode != 0:
+            return {"running": False, "installed": False,
+                    "backend": self.name, "task_name": self.task_name,
+                    "method": method}
+        pid = self._query_pid()
+        return {
+            "installed": True,
+            "backend": self.name,
+            "task_name": self.task_name,
+            "method": method,
+            "pid": pid,
+            "running": _pid_alive(pid),
+            "server_url": state.get("server_url"),
+            "client_id": state.get("client_id"),
+            "started_at": state.get("started_at"),
+            "schtasks_query": q.stdout.strip(),
+        }
 
     def _query_pid(self) -> Optional[int]:
         """从 ``schtasks /Query /V`` 里取任务当前进程 PID（拿不到返回 None）。"""
@@ -318,25 +473,6 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
                 if val.isdigit() and int(val) > 0:
                     return int(val)
         return None
-
-    def status(self) -> dict:
-        q = self._run(["/Query", "/TN", self.task_name, "/FO", "LIST", "/V"])
-        if q.returncode != 0:
-            return {"running": False, "installed": False,
-                    "backend": self.name, "task_name": self.task_name}
-        pid = self._query_pid()
-        state = read_daemon_state()
-        return {
-            "installed": True,
-            "backend": self.name,
-            "task_name": self.task_name,
-            "pid": pid,
-            "running": _pid_alive(pid),
-            "server_url": state.get("server_url"),
-            "client_id": state.get("client_id"),
-            "started_at": state.get("started_at"),
-            "schtasks_query": q.stdout.strip(),
-        }
 
 
 # ═══════════════════════════════════════════════════════════════
