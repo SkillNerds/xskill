@@ -245,3 +245,49 @@ def test_connect_unsupported_platform_falls_back_to_foreground(
     rc = cmd_connect(args)
     assert rc == 0
     assert ran["forever"] == 1  # 退化成前台阻塞
+
+
+# ── --pypi-url：内网镜像地址落盘，供自动更新回退用 ──
+
+def test_pypi_url_flag_parses():
+    parser = build_parser()
+    args = parser.parse_args(["connect", "1.2.3.4:8000", "--token", "t"])
+    assert args.pypi_url is None
+    args2 = parser.parse_args(
+        ["connect", "1.2.3.4:8000", "--token", "t",
+         "--pypi-url", "http://mirror/simple"])
+    assert args2.pypi_url == "http://mirror/simple"
+
+
+def test_pypi_url_persisted_on_first_connect(tmp_path, monkeypatch):
+    from xskill.team.client.state import load_client_state
+    state_path = tmp_path / "team_client.json"
+    monkeypatch.setattr("xskill.config.get_team_client_state_path",
+                        lambda: state_path)
+    _install_fakes(monkeypatch)
+    parser = build_parser()
+    args = parser.parse_args(
+        ["connect", "1.2.3.4:8000", "--token", "t",
+         "--pypi-url", "http://mirror/simple"])
+    rc = cmd_connect(args)
+    assert rc == 0
+    assert load_client_state(state_path).pypi_url == "http://mirror/simple"
+
+
+def test_pypi_url_preserved_on_reconnect_without_flag(tmp_path, monkeypatch):
+    """重连时不重复传 --pypi-url，应沿用上次已存的镜像地址，而不是被清空。"""
+    from xskill.team.client.state import ClientState, load_client_state, save_client_state
+    state_path = tmp_path / "team_client.json"
+    monkeypatch.setattr("xskill.config.get_team_client_state_path",
+                        lambda: state_path)
+    save_client_state(
+        ClientState(server_url="http://1.2.3.4:8000", client_id="cid-1",
+                    join_token="old-tok", pypi_url="http://mirror/simple"),
+        state_path,
+    )
+    _install_fakes(monkeypatch)
+    parser = build_parser()
+    args = parser.parse_args(["connect", "1.2.3.4:8000", "--token", "t"])
+    rc = cmd_connect(args)
+    assert rc == 0
+    assert load_client_state(state_path).pypi_url == "http://mirror/simple"

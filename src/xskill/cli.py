@@ -244,9 +244,12 @@ def _connect_handshake(args, state_path):
     # 作为 ``claimed_client_id`` 一起发给 server——server 按 (claimed/fingerprint/
     # new) 三级判定续用。state 不在 → existing_client_id=None，让 server 按指纹回查。
     existing_client_id: str | None = None
+    existing_pypi_url: str | None = None
     if state_path.is_file():
         try:
-            existing_client_id = load_client_state(state_path).client_id
+            existing_state = load_client_state(state_path)
+            existing_client_id = existing_state.client_id
+            existing_pypi_url = existing_state.pypi_url
         except Exception:
             # state 文件损坏不阻断重连——按"无本地身份"处理，让 server 走指纹回查
             # 或新发。损坏的 state 接下来会被新的 save 覆盖。
@@ -269,7 +272,8 @@ def _connect_handshake(args, state_path):
         print(f"error: 注册失败: {e}", file=sys.stderr)
         return None
     state = ClientState(server_url=server_url, client_id=client_id,
-                        join_token=args.token)
+                        join_token=args.token,
+                        pypi_url=args.pypi_url or existing_pypi_url)
     save_client_state(state, state_path)
     name_hint = f"  (--name={args.name})" if args.name else ""
     print(f"connected: client_id={client_id}  server={server_url}{name_hint}")
@@ -337,41 +341,47 @@ def cmd_start(args) -> int:
 
 
 def cmd_update(args) -> int:
-    """立即检查 PyPI 是否有新版 xskill，有则升级并重启。"""
-    from xskill.team.client.updater import (
-        _current_version, _latest_pypi_version, _restart,
-    )
+    """立即检查是否有新版 xskill，有则升级并重启。
+
+    复用 ``AutoUpdater`` 的三级回退链路（公网 PyPI → 已连接过的内网镜像 →
+    team server wheel），而不是自己另开一条查询/安装逻辑——这样手动
+    `xskill update` 和后台每小时自动检查行为完全一致，不会出现"自动更新能
+    绕过公网不可达，手动触发却直接报错"的不一致。
+    """
+    from xskill.config import get_team_client_state_path
+    from xskill.team.client.state import load_client_state
+    from xskill.team.client.updater import AutoUpdater, _current_version
+
     current = _current_version("xskill")
     if not current:
         print("error: 无法读取当前版本", file=sys.stderr)
         return 1
     print(f"当前版本: {current}")
-    print("正在查询 PyPI...")
-    latest = _latest_pypi_version("xskill")
-    if not latest:
-        print("error: 查询 PyPI 失败，请检查网络", file=sys.stderr)
-        return 1
-    try:
-        from packaging.version import Version
-        if Version(latest) <= Version(current):
-            print(f"已是最新版本 ({current})")
-            return 0
-    except Exception:
-        pass
-    print(f"发现新版本: {latest}，开始升级...")
-    import subprocess
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--upgrade",
-         f"xskill=={latest}", "-i", "https://pypi.org/simple/"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print(f"error: 升级失败:\n{result.stderr.strip() or result.stdout.strip()}",
+
+    kwargs: dict = {}
+    state_path = get_team_client_state_path()
+    if state_path.is_file():
+        try:
+            state = load_client_state(state_path)
+            kwargs.update(server_url=state.server_url, client_id=state.client_id,
+                         join_token=state.join_token)
+            if state.pypi_url:
+                kwargs["pypi_url"] = state.pypi_url
+        except Exception:
+            pass  # state 文件损坏：退化为「只查公网 PyPI」
+
+    print("正在检查更新（公网 PyPI"
+         + ("、内网镜像" if kwargs.get("pypi_url") else "")
+         + ("、team server 回退" if kwargs.get("server_url") else "") + "）...")
+
+    updater = AutoUpdater(**kwargs)
+    if not updater.run_once():
+        print("error: 升级失败：所有可用来源均不可用或安装失败，详情见上方日志",
               file=sys.stderr)
         return 1
-    print(f"升级到 {latest} 成功，正在重启...")
-    _restart()
-    return 0  # 不会到达这里
+    # 升级成功时 _restart() 已替换/重启进程，走不到这里；到这里说明本来就是最新版本。
+    print(f"已是最新版本 ({current})")
+    return 0
 
 
 def cmd_stop(args) -> int:
@@ -648,6 +658,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_conn.add_argument(
         "--no-auto-update", action="store_true", dest="no_auto_update",
         help="禁用自动更新检查（默认每小时查一次 PyPI，有新版则升级重启）。",
+    )
+    p_conn.add_argument(
+        "--pypi-url", default=None, metavar="URL",
+        help="内网 PyPI 镜像地址（PEP 503 /simple/ 索引），自动更新会在公网 "
+             "PyPI 不可达时用它查版本、装包，装 server 回退 wheel 时的依赖也走它。"
+             "落盘到本地连接信息，后续 `xskill connect` / `xskill update` 复用，"
+             "不用每次都传。默认不设，只用公网 PyPI + server wheel 回退。",
     )
 
     p_start = sub.add_parser(
