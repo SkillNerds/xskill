@@ -1,8 +1,15 @@
 """updater.py — xskill client 自动更新
 
 TeamClient 跑起来后每隔一段时间（默认 1 小时）查 PyPI，发现新版就升级并重启。
-如果 PyPI 查询或安装失败，且 client 已连接 team server，则读取 server 版本；
-server 版本高于本地版本时，下载 server 暴露的 wheel 并安装。
+查询/安装链路三级回退：
+
+1. 公网 PyPI（JSON API 查版本 + ``pip install -i pypi_url``）
+2. 已配置的内网 PyPI 镜像（``pypi_url`` 非公网地址时，``pip index versions``
+   查版本 + 复用同一 ``-i pypi_url`` 安装）——多数内网镜像（devpi/artifactory）
+   不提供 pypi.org 的 legacy JSON API，所以查询手段和公网不同，但安装命令相同。
+3. 都不可用，且 client 已连接 team server：读取 server 版本，高于本地时下载
+   server 暴露的 wheel 安装——wheel 依赖同样经 ``pypi_url``（配了镜像就用镜像，
+   否则退回公网）解析，不会因为装了新依赖又绕回不可达的公网索引。
 
 重启机制
 ────────
@@ -13,7 +20,7 @@ server 版本高于本地版本时，下载 server 暴露的 wheel 并安装。
 ────────
 - 包含预发版（a/b/rc），因为内部用 alpha 版本
 - 严格大于当前版本才升级，不降级
-- 网络/PyPI/server 故障不会打断主循环
+- 网络/PyPI/镜像/server 故障不会打断主循环
 """
 from __future__ import annotations
 
@@ -29,6 +36,7 @@ from typing import Any, Optional
 logger = logging.getLogger("xskill.team.client.updater")
 
 _PYPI_JSON_URL = "https://pypi.org/pypi/{package}/json"
+PUBLIC_PYPI_SIMPLE_URL = "https://pypi.org/simple/"
 
 
 def _team_api_url(server_url: str, path: str) -> str:
@@ -70,6 +78,33 @@ def _latest_pypi_version(package: str) -> Optional[str]:
         return str(max(all_versions))
     except Exception:
         logger.debug("updater: 查 PyPI 失败", exc_info=True)
+        return None
+
+
+def _latest_mirror_version(package: str, pypi_url: str) -> Optional[str]:
+    """查内网 PyPI 镜像取最新版本（含预发版）。
+
+    内网镜像（devpi/artifactory 等）通常不实现 pypi.org 的 legacy JSON API，
+    只有标准 PEP 503 ``/simple/`` 索引，所以改用 ``pip index versions``
+    （走的正是同一个 ``/simple/`` 索引，公网/镜像通用）。超时/查询失败返回 None。
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "index", "versions", package,
+             "--pre", "-i", pypi_url],
+            capture_output=True, text=True, timeout=20,
+        )
+        from packaging.version import Version
+        for line in result.stdout.splitlines():
+            if not line.startswith("Available versions:"):
+                continue
+            versions = [v.strip() for v in line.split(":", 1)[1].split(",") if v.strip()]
+            parsed = [Version(v) for v in versions]
+            if parsed:
+                return str(max(parsed))
+        return None
+    except Exception:
+        logger.debug("updater: 查镜像 %s 版本失败", pypi_url, exc_info=True)
         return None
 
 
@@ -194,7 +229,7 @@ class AutoUpdater:
         self,
         package: str = "xskill",
         interval: float = 3600,       # 默认 1 小时
-        pypi_url: str = "https://pypi.org/simple/",
+        pypi_url: str = PUBLIC_PYPI_SIMPLE_URL,
         server_url: str | None = None,
         client_id: str | None = None,
         join_token: str | None = None,
@@ -221,6 +256,20 @@ class AutoUpdater:
     def stop(self) -> None:
         self._stop.set()
 
+    def run_once(self) -> bool:
+        """立即检查一次并在有新版时升级（供 ``xskill update`` 手动触发）。
+
+        返回是否成功：已是最新版本 / 升级成功（后者 ``_restart()`` 会直接
+        替换进程，通常不会真的返回到这里）都算 True；所有可用来源都升级
+        失败才是 False。
+        """
+        return self._check_and_update()
+
+    def _has_mirror(self) -> bool:
+        return bool(self.pypi_url) and (
+            self.pypi_url.rstrip("/") != PUBLIC_PYPI_SIMPLE_URL.rstrip("/")
+        )
+
     # ─────────────────────────────────────────────────────────────
 
     def _loop(self) -> None:
@@ -230,39 +279,42 @@ class AutoUpdater:
             self._check_and_update()
             self._stop.wait(self.interval)
 
-    def _check_and_update(self) -> None:
+    def _check_and_update(self) -> bool:
         current_str = _current_version(self.package)
         if not current_str:
             logger.debug("updater: 无法读取当前版本，跳过本次检查")
-            return
+            return False
         try:
             from packaging.version import Version
             current = Version(current_str)
         except Exception:
             logger.debug("updater: 当前版本不可解析: %s", current_str, exc_info=True)
-            return
+            return False
 
         latest_str = _latest_pypi_version(self.package)
+        reason = "pypi_query_failed"
+        if not latest_str and self._has_mirror():
+            latest_str = _latest_mirror_version(self.package, self.pypi_url)
+            reason = "mirror_query_failed"
         if not latest_str:
-            self._check_server_fallback(current_str, current, reason="pypi_query_failed")
-            return
+            return self._check_server_fallback(current_str, current, reason=reason)
 
         try:
             latest = Version(latest_str)
         except Exception:
-            return
+            return False
 
         if latest <= current:
             logger.debug("updater: 当前版本 %s 已是最新", current_str)
-            return
+            return True
 
         logger.info("updater: 发现新版本 %s（当前 %s），开始升级...",
                     latest_str, current_str)
         if self._install(latest_str):
             _restart()   # 升级成功后重启，不会走到这行之后的代码
             # （_restart 在 Windows 上 os._exit；Linux 上 execv）
-            return
-        self._check_server_fallback(current_str, current, reason="pypi_install_failed")
+            return True
+        return self._check_server_fallback(current_str, current, reason="pypi_install_failed")
 
     def _install(self, target_version: str) -> bool:
         """用 pip 升级到指定版本。返回是否成功。"""
@@ -284,15 +336,20 @@ class AutoUpdater:
             logger.warning("updater: 执行 pip 失败", exc_info=True)
             return False
 
-    def _check_server_fallback(self, current_str: str, current, *, reason: str) -> None:
-        """PyPI 不可用时，从 team server 下载同版本 wheel 回退升级。"""
+    def _check_server_fallback(self, current_str: str, current, *, reason: str) -> bool:
+        """PyPI/镜像都不可用时，从 team server 下载同版本 wheel 回退升级。
+
+        返回值语义与 ``_check_and_update`` 一致：没有更高版本可装（无论是
+        因为没配 server、server 版本不比本地新，还是本来就已最新）算 True；
+        明确「有更新但装不上」才是 False。
+        """
         if not (self.server_url and self.client_id and self.join_token):
             logger.debug("updater: 无 server 回退配置，跳过（%s）", reason)
-            return
+            return False
 
         info = _server_version(self.server_url, self.join_token, self.client_id)
         if not info:
-            return
+            return False
 
         server_version_str = str(info.get("version") or "")
         try:
@@ -301,16 +358,16 @@ class AutoUpdater:
         except Exception:
             logger.debug("updater: server 版本不可解析: %s",
                          server_version_str, exc_info=True)
-            return
+            return False
 
         if server_version <= current:
             logger.debug("updater: server 版本 %s 不高于当前版本 %s",
                          server_version_str, current_str)
-            return
+            return True
         if not info.get("wheel_available"):
             logger.warning("updater: server 版本 %s 可用，但未提供 wheel",
                            server_version_str)
-            return
+            return False
 
         with tempfile.TemporaryDirectory(prefix="xskill-update-") as td:
             wheel = _download_server_wheel(
@@ -321,17 +378,25 @@ class AutoUpdater:
                 str(info.get("wheel_filename") or ""),
             )
             if wheel is None:
-                return
-            logger.info("updater: PyPI 不可用（%s），改用 server wheel 升级到 %s",
+                return False
+            logger.info("updater: PyPI/镜像不可用（%s），改用 server wheel 升级到 %s",
                         reason, server_version_str)
             if self._install_wheel(wheel):
                 _restart()
+                return True
+            return False
 
     def _install_wheel(self, wheel_path: Path) -> bool:
-        """用 pip 安装 server 下载的 wheel。返回是否成功。"""
+        """用 pip 安装 server 下载的 wheel。返回是否成功。
+
+        显式传 ``-i self.pypi_url``：wheel 本体来自 server，但它的依赖仍要
+        走一个可达的索引解析——配了内网镜像就用镜像，没配就退回公网 PyPI，
+        绝不能静默吃 pip 自己的默认索引配置（那台机器上很可能压根没配）。
+        """
         cmd = [
             sys.executable, "-m", "pip", "install", "--upgrade",
             str(wheel_path),
+            "-i", self.pypi_url,
             "-q",
         ]
         try:

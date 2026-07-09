@@ -18,6 +18,7 @@ class ClientState:
     server_url: str          # 形如 http://1.2.3.4:8000
     client_id: str
     join_token: str
+    pypi_url: str | None = None   # 内网 PyPI 镜像，供自动更新回退用；None=只用公网 PyPI
 
 
 def save_client_state(state: ClientState, path: Path | str) -> None:
@@ -40,4 +41,5 @@ def load_client_state(path: Path | str) -> ClientState:
         server_url=data["server_url"],
         client_id=data["client_id"],
         join_token=data["join_token"],
+        pypi_url=data.get("pypi_url"),
     )
