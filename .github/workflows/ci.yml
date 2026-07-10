@@ -88,6 +88,21 @@ jobs:
       - name: Smoke E2E (stub LLM + fixture, no network)
         run: pytest tests/e2e/test_smoke.py -v -k "${{ matrix.agent }}"
 
+  connect-lifecycle-e2e:
+    name: connect lifecycle e2e (linux/wsl mode)
+    needs: ut-it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install xskill (with dev extras)
+        run: pip install -e .[dev]
+      - name: Connect lifecycle E2E (local stub, no network)
+        run: pytest tests/e2e/test_connect_lifecycle_e2e.py -v
+
   real-llm-e2e:
     name: real-llm-e2e (linux)
     if: github.event_name != 'pull_request'

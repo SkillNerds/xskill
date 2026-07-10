@@ -54,7 +54,8 @@ def _latest_pypi_version(package: str) -> Optional[str]:
     """查 PyPI JSON API 取最新版本（含预发版）。超时/网络错误返回 None。"""
     import json
     import urllib.request
-    url = _PYPI_JSON_URL.format(package=package)
+    url_template = os.environ.get("XSKILL_PYPI_JSON_URL", _PYPI_JSON_URL)
+    url = url_template.format(package=package)
     try:
         with urllib.request.urlopen(url, timeout=10) as r:
             data = json.loads(r.read().decode("utf-8"))

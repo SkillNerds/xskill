@@ -354,7 +354,7 @@ def cmd_start(args) -> int:
 def cmd_update(args) -> int:
     """立即检查 PyPI 是否有新版 xskill，有则升级并重启。"""
     from xskill.team.client.updater import (
-        _current_version, _latest_pypi_version, _restart,
+        AutoUpdater, _current_version, _latest_pypi_version, _restart,
     )
     current = _current_version("xskill")
     if not current:
@@ -374,15 +374,8 @@ def cmd_update(args) -> int:
     except Exception:
         pass
     print(f"发现新版本: {latest}，开始升级...")
-    import subprocess
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--upgrade",
-         f"xskill=={latest}", "-i", "https://pypi.org/simple/"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print(f"error: 升级失败:\n{result.stderr.strip() or result.stdout.strip()}",
-              file=sys.stderr)
+    if not AutoUpdater()._install(latest):
+        print("error: 升级失败，请检查 pip 配置和日志", file=sys.stderr)
         return 1
     print(f"升级到 {latest} 成功，正在重启...")
     _restart()
@@ -397,6 +390,9 @@ def cmd_stop(args) -> int:
     except ServiceError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+    if getattr(args, "json", False):
+        _print_connect_status(st, as_json=True)
+        return 0
     if st.get("warning"):
         print(f"warning: {st['warning']}", file=sys.stderr)
     print("stopped.")

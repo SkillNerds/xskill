@@ -504,6 +504,8 @@ def _systemd_user_available() -> bool:
     WSL 只有在 /etc/wsl.conf 启用 systemd 后才满足；普通 Linux 的精简容器或
     没有 user bus 的 SSH 环境也会返回 False，随后使用 detached 后端。
     """
+    if os.environ.get("XSKILL_CONNECT_BACKEND", "").strip().lower() == "detached":
+        return False
     if not shutil.which("systemctl"):
         return False
     try:
