@@ -29,6 +29,9 @@ import csv
 import json
 import logging
 import os
+import shlex
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -41,6 +44,7 @@ logger = logging.getLogger("xskill.team.client.service")
 
 # Windows 计划任务名（TN）。带前缀避免和用户其他任务重名；schtasks 大小写不敏感。
 WINDOWS_TASK_NAME = "Xskill_Connect"
+SYSTEMD_UNIT_NAME = "xskill-connect.service"
 
 
 class ServiceError(RuntimeError):
@@ -476,13 +480,298 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
 
 
 # ═══════════════════════════════════════════════════════════════
+# Linux / WSL：systemd --user + detached 降级
+# ═══════════════════════════════════════════════════════════════
+
+def _is_wsl() -> bool:
+    """当前 Linux 是否运行在 WSL。"""
+    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+        return True
+    try:
+        release = Path("/proc/sys/kernel/osrelease").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "microsoft" in release.lower()
+
+
+def _linux_platform_name() -> str:
+    return "wsl" if _is_wsl() else "linux"
+
+
+def _systemd_user_available() -> bool:
+    """用户级 systemd manager 是否可用。
+
+    WSL 只有在 /etc/wsl.conf 启用 systemd 后才满足；普通 Linux 的精简容器或
+    没有 user bus 的 SSH 环境也会返回 False，随后使用 detached 后端。
+    """
+    if not shutil.which("systemctl"):
+        return False
+    try:
+        cp = subprocess.run(
+            ["systemctl", "--user", "show-environment"],
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return cp.returncode == 0
+
+
+class SystemdUserBackend(ConnectServiceBackend):
+    """用 ``systemd --user`` 托管 connect，支持自启和崩溃自动重启。"""
+
+    name = "linux"
+    method = "systemd-user"
+
+    def __init__(self, unit_name: str = SYSTEMD_UNIT_NAME,
+                 unit_path: Path | None = None):
+        self.unit_name = unit_name
+        self.unit_path = unit_path or (
+            Path.home() / ".config" / "systemd" / "user" / unit_name
+        )
+
+    def _run(self, args: list[str]) -> subprocess.CompletedProcess:
+        try:
+            return subprocess.run(
+                ["systemctl", "--user", *args], capture_output=True,
+                text=True, check=False, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            raise ServiceError(f"systemd --user 执行失败：{e}") from e
+
+    def _unit_text(self) -> str:
+        command = shlex.join(_foreground_argv())
+        return (
+            "[Unit]\n"
+            "Description=xskill team client\n"
+            "Wants=network-online.target\n"
+            "After=network-online.target\n\n"
+            "[Service]\n"
+            "Type=simple\n"
+            f"ExecStart={command}\n"
+            "Restart=always\n"
+            "RestartSec=10\n"
+            "Environment=PYTHONUNBUFFERED=1\n\n"
+            "[Install]\n"
+            "WantedBy=default.target\n"
+        )
+
+    def install_and_start(self) -> dict:
+        try:
+            self.unit_path.parent.mkdir(parents=True, exist_ok=True)
+            self.unit_path.write_text(self._unit_text(), encoding="utf-8")
+        except OSError as e:
+            raise ServiceError(f"写 systemd user unit 失败：{e}") from e
+
+        reload_cp = self._run(["daemon-reload"])
+        if reload_cp.returncode != 0:
+            raise ServiceError(
+                "systemd user daemon-reload 失败：\n  "
+                + (reload_cp.stderr.strip() or reload_cp.stdout.strip())
+            )
+        start_cp = self._run(["enable", "--now", self.unit_name])
+        if start_cp.returncode != 0:
+            raise ServiceError(
+                "启用 systemd user service 失败：\n  "
+                + (start_cp.stderr.strip() or start_cp.stdout.strip())
+            )
+
+        linger_enabled = False
+        user = os.environ.get("USER")
+        if user and shutil.which("loginctl"):
+            try:
+                linger = subprocess.run(
+                    ["loginctl", "enable-linger", user], capture_output=True,
+                    text=True, check=False, timeout=5,
+                )
+                linger_enabled = linger.returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+        st = self.status()
+        if not st.get("running"):
+            raise ServiceError(
+                "systemd unit 已安装但未进入 running；"
+                f"请运行 `journalctl --user -u {self.unit_name} -n 50` 排查。"
+            )
+        write_daemon_state(
+            backend=self.name, method=self.method, unit_name=self.unit_name,
+            unit_path=str(self.unit_path), pid=st.get("pid"),
+            platform=_linux_platform_name(), linger_enabled=linger_enabled,
+        )
+        return self.status()
+
+    def stop(self) -> dict:
+        cp = self._run(["disable", "--now", self.unit_name])
+        warning = ""
+        if cp.returncode != 0:
+            warning = cp.stderr.strip() or cp.stdout.strip()
+        try:
+            self.unit_path.unlink(missing_ok=True)
+        except OSError as e:
+            warning = warning or str(e)
+        self._run(["daemon-reload"])
+        clear_daemon_state()
+        st = {
+            "running": False, "installed": False, "backend": self.name,
+            "method": self.method, "platform": _linux_platform_name(),
+        }
+        if warning and "not loaded" not in warning.lower():
+            st["warning"] = warning
+        return st
+
+    def status(self) -> dict:
+        state = read_daemon_state()
+        cp = self._run([
+            "show", self.unit_name,
+            "--property=LoadState", "--property=ActiveState",
+            "--property=SubState", "--property=MainPID",
+        ])
+        props: dict[str, str] = {}
+        if cp.returncode == 0:
+            for line in cp.stdout.splitlines():
+                key, sep, value = line.partition("=")
+                if sep:
+                    props[key] = value
+        pid_text = props.get("MainPID", "")
+        pid = int(pid_text) if pid_text.isdigit() and int(pid_text) > 0 else None
+        installed = props.get("LoadState") == "loaded" or self.unit_path.is_file()
+        running = (props.get("ActiveState") == "active"
+                   and props.get("SubState") == "running")
+        return {
+            "installed": installed,
+            "running": running,
+            "backend": self.name,
+            "method": self.method,
+            "platform": _linux_platform_name(),
+            "unit_name": self.unit_name,
+            "unit_path": str(self.unit_path),
+            "pid": pid,
+            "server_url": state.get("server_url"),
+            "client_id": state.get("client_id"),
+            "started_at": state.get("started_at"),
+            "linger_enabled": state.get("linger_enabled"),
+        }
+
+
+def _pid_is_connect_daemon(pid: Optional[int]) -> bool:
+    """避免 detached 状态文件里的陈旧 PID 误杀无关进程。"""
+    if not _pid_alive(pid):
+        return False
+    cmdline = Path(f"/proc/{pid}/cmdline")
+    try:
+        args = cmdline.read_bytes().split(b"\0")
+    except OSError:
+        return True
+    return b"xskill" in args and b"connect" in args and b"--foreground" in args
+
+
+class DetachedProcessBackend(ConnectServiceBackend):
+    """无 systemd 时脱离终端运行；适用于未启用 systemd 的 WSL/精简 Linux。"""
+
+    name = "linux"
+    method = "detached"
+
+    def install_and_start(self) -> dict:
+        current = self.status()
+        if current.get("running"):
+            return current
+        argv = _foreground_argv()
+        state_path = get_connect_daemon_state_path()
+        log_path = state_path.parent / "logs" / "connect-daemon.log"
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("ab") as log_file:
+                proc = subprocess.Popen(
+                    argv, cwd=str(Path.home()), stdin=subprocess.DEVNULL,
+                    stdout=log_file, stderr=subprocess.STDOUT,
+                    start_new_session=True, close_fds=True,
+                )
+        except OSError as e:
+            raise ServiceError(f"启动 detached connect 进程失败：{e}") from e
+        write_daemon_state(
+            backend=self.name, method=self.method, pid=proc.pid, argv=argv,
+            platform=_linux_platform_name(), log_path=str(log_path),
+        )
+        return self.status()
+
+    def stop(self) -> dict:
+        state = read_daemon_state()
+        pid = state.get("pid")
+        warning = ""
+        if _pid_is_connect_daemon(pid):
+            try:
+                os.kill(pid, signal.SIGTERM)
+                deadline = time.time() + 5
+                while _pid_alive(pid) and time.time() < deadline:
+                    time.sleep(0.05)
+                if _pid_alive(pid):
+                    os.kill(pid, signal.SIGKILL)
+            except OSError as e:
+                warning = str(e)
+        clear_daemon_state()
+        st = {
+            "running": False, "installed": False, "backend": self.name,
+            "method": self.method, "platform": _linux_platform_name(),
+        }
+        if warning:
+            st["warning"] = warning
+        return st
+
+    def status(self) -> dict:
+        state = read_daemon_state()
+        pid = state.get("pid") if state.get("method") == self.method else None
+        return {
+            "installed": bool(pid),
+            "running": _pid_is_connect_daemon(pid),
+            "backend": self.name,
+            "method": self.method,
+            "platform": _linux_platform_name(),
+            "pid": pid,
+            "server_url": state.get("server_url"),
+            "client_id": state.get("client_id"),
+            "started_at": state.get("started_at"),
+            "log_path": state.get("log_path"),
+            "restart_policy": "none",
+        }
+
+
+class LinuxServiceBackend(ConnectServiceBackend):
+    """Linux/WSL 入口：优先 systemd user，缺失时自动使用 detached。"""
+
+    name = "linux"
+
+    @staticmethod
+    def _from_state() -> ConnectServiceBackend:
+        method = read_daemon_state().get("method")
+        if method == SystemdUserBackend.method:
+            return SystemdUserBackend()
+        if method == DetachedProcessBackend.method:
+            return DetachedProcessBackend()
+        return (SystemdUserBackend() if _systemd_user_available()
+                else DetachedProcessBackend())
+
+    def install_and_start(self) -> dict:
+        backend = (SystemdUserBackend() if _systemd_user_available()
+                   else DetachedProcessBackend())
+        return backend.install_and_start()
+
+    def stop(self) -> dict:
+        return self._from_state().stop()
+
+    def status(self) -> dict:
+        return self._from_state().status()
+
+
+# ═══════════════════════════════════════════════════════════════
 # 平台选择
 # ═══════════════════════════════════════════════════════════════
 
 def get_backend() -> ConnectServiceBackend:
-    """按当前平台返回后端。Linux/macOS 暂返回占位后端（操作即报“未实现”）。"""
+    """按当前平台返回常驻后端。"""
     if sys.platform == "win32":
         return WindowsTaskSchedulerBackend()
+    if sys.platform.startswith("linux"):
+        return LinuxServiceBackend()
     if sys.platform == "darwin":
         return _UnsupportedBackend("macOS", "launchd LaunchAgent，KeepAlive=true")
-    return _UnsupportedBackend("Linux", "systemd --user，Restart=always")
+    return _UnsupportedBackend(sys.platform, "请使用该平台的服务管理器")

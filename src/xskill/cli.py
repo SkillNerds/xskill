@@ -179,7 +179,7 @@ def cmd_connect(args) -> int:
     ``xskill connect ... --foreground``          前台阻塞跑守护循环
 
     默认（非 --foreground）：完成握手 / 校验连接信息后，把常驻循环交给操作系统的
-    守护设施（Windows「计划任务」；Linux·macOS 的 systemd·launchd 后续支持）在
+    守护设施（Windows「计划任务」；Linux/WSL 优先 systemd user）在
     后台拉起，命令随即返回——用户不必一直开着终端。``--foreground`` 才是真正阻塞的
     轮询循环，也是后台任务实际 execute 的形态（见 team.client.service）。
     """
@@ -202,9 +202,7 @@ def cmd_connect(args) -> int:
     from xskill.team.client.service import ServiceError, get_backend
     backend = get_backend()
 
-    # 前台模式，或本平台还没有原生常驻后端（Linux/macOS 暂时）：直接阻塞跑守护
-    # 循环（= 历史行为；后台任务 execute 的也是这条路径）。这样非 Windows 用户的
-    # `xskill connect` 行为不变，仍可用自己的 init 系统托管 --foreground。
+    # 前台模式，或本平台还没有原生常驻后端：直接阻塞跑守护循环。
     if args.foreground or not backend.supported:
         print(f"reconnecting: client_id={state.client_id}  server={state.server_url}")
         _run_team_client_forever(state, use_proxy=args.use_proxy,
@@ -317,8 +315,18 @@ def _print_connect_status(st: dict, as_json: bool) -> None:
     print(f"connect daemon: {mark}")
     if st.get("task_name"):
         print(f"  task     : {st['task_name']} ({st.get('backend')})")
+    elif st.get("unit_name"):
+        print(f"  service  : {st['unit_name']} ({st.get('backend')})")
+    elif st.get("backend"):
+        print(f"  backend  : {st['backend']}")
+    if st.get("platform"):
+        print(f"  platform : {st['platform']}")
+    if st.get("method"):
+        print(f"  method   : {st['method']}")
     if st.get("pid"):
         print(f"  pid      : {st['pid']}")
+    if st.get("log_path"):
+        print(f"  log      : {st['log_path']}")
     if st.get("server_url"):
         print(f"  server   : {st['server_url']}")
     if st.get("client_id"):

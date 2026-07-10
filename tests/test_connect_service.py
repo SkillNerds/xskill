@@ -1,7 +1,7 @@
 """test_connect_service.py — connect 常驻后端（Problem 2）
 
 平台无关：用 monkeypatch 把 sys.platform 与 subprocess 打桩，在 Linux CI 上也能
-验证 Windows 计划任务后端的 argv/XML；非 Windows 平台的占位后端验证会报“未实现”。
+验证 Windows 计划任务和 Linux systemd/detached 后端。
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 import xskill.team.client.service as svc
 
 
-# ─────────────────── 平台选择 & 占位后端 ───────────────────
+# ─────────────────── 平台选择 ───────────────────
 
 def test_get_backend_windows(monkeypatch):
     monkeypatch.setattr(svc.sys, "platform", "win32")
@@ -20,16 +20,26 @@ def test_get_backend_windows(monkeypatch):
     assert b.supported is True
 
 
-@pytest.mark.parametrize("platform,label", [("linux", "Linux"),
-                                            ("darwin", "macOS")])
-def test_get_backend_unsupported_raises(monkeypatch, platform, label):
-    monkeypatch.setattr(svc.sys, "platform", platform)
+def test_get_backend_linux(monkeypatch):
+    monkeypatch.setattr(svc.sys, "platform", "linux")
     b = svc.get_backend()
-    assert b.supported is False  # connect 据此退化成前台阻塞
+    assert isinstance(b, svc.LinuxServiceBackend)
+    assert b.supported is True
+
+
+def test_get_backend_macos_unsupported(monkeypatch):
+    monkeypatch.setattr(svc.sys, "platform", "darwin")
+    b = svc.get_backend()
+    assert b.supported is False
     for op in (b.install_and_start, b.stop, b.status):
         with pytest.raises(svc.ServiceError) as ei:
             op()
-        assert label in str(ei.value)
+        assert "macOS" in str(ei.value)
+
+
+def test_is_wsl_from_environment(monkeypatch):
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    assert svc._is_wsl() is True
 
 
 # ─────────────────── pid / 运行态读写 ───────────────────
@@ -77,6 +87,53 @@ def test_pid_alive_windows_uses_exact_tasklist_pid(monkeypatch):
 
     assert svc._pid_alive_windows(4242) is True
     assert svc._pid_alive_windows(42) is False
+
+
+# ─────────────────── Linux 后端 ───────────────────
+
+class _FakeSystemctl:
+    def __init__(self):
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args, **kwargs):
+        import types
+        self.calls.append(list(args))
+        stdout = ""
+        if "show" in args:
+            stdout = ("LoadState=loaded\nActiveState=active\n"
+                      "SubState=running\nMainPID=2468\n")
+        return types.SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+
+def test_systemd_install_writes_unit_and_starts(tmp_path, monkeypatch):
+    state_path = tmp_path / "connect_daemon.json"
+    unit_path = tmp_path / "xskill-connect.service"
+    fake = _FakeSystemctl()
+    monkeypatch.setattr(svc, "get_connect_daemon_state_path", lambda: state_path)
+    monkeypatch.setattr(svc.subprocess, "run", fake)
+    monkeypatch.setattr(svc.shutil, "which", lambda name: None)
+    monkeypatch.setattr(svc, "_is_wsl", lambda: False)
+
+    st = svc.SystemdUserBackend(unit_path=unit_path).install_and_start()
+
+    text = unit_path.read_text(encoding="utf-8")
+    assert "xskill connect --foreground" in text
+    assert "Restart=always" in text
+    assert any("daemon-reload" in call for call in fake.calls)
+    assert any("enable" in call and "--now" in call for call in fake.calls)
+    assert st["running"] is True
+    assert st["pid"] == 2468
+    assert st["method"] == "systemd-user"
+
+
+def test_linux_selects_detached_when_systemd_unavailable(monkeypatch):
+    monkeypatch.setattr(svc, "_systemd_user_available", lambda: False)
+    monkeypatch.setattr(
+        svc.DetachedProcessBackend, "install_and_start",
+        lambda self: {"running": True, "method": self.method},
+    )
+    st = svc.LinuxServiceBackend().install_and_start()
+    assert st == {"running": True, "method": "detached"}
 
 
 # ─────────────────── task XML ───────────────────
