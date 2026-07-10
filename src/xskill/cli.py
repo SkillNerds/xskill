@@ -331,6 +331,8 @@ def _print_connect_status(st: dict, as_json: bool) -> None:
         print(f"  server   : {st['server_url']}")
     if st.get("client_id"):
         print(f"  client_id: {st['client_id']}")
+    if st.get("warning"):
+        print(f"  warning  : {st['warning']}")
 
 
 def cmd_start(args) -> int:

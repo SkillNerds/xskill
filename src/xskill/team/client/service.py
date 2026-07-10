@@ -6,7 +6,9 @@
 
     ConnectServiceBackend           抽象基类（含共享 pid/state 读写 + 存活校验）
       └─ WindowsTaskSchedulerBackend  Windows「计划任务」(schtasks)  —— 本 MR 完整实现
-      └─ SystemdUserBackend           Linux systemd --user            —— TODO(占位)
+      └─ LinuxServiceBackend          Linux/WSL 平台选择
+           ├─ SystemdUserBackend      systemd --user（WSL 必需）
+           └─ DetachedProcessBackend  仅普通 Linux 的降级
       └─ LaunchdBackend               macOS launchd LaunchAgent       —— TODO(占位)
 
 CLI (``xskill start/stop/status``) 只跟 ``get_backend()`` 打交道，不关心平台。
@@ -498,6 +500,17 @@ def _linux_platform_name() -> str:
     return "wsl" if _is_wsl() else "linux"
 
 
+def _wsl_systemd_required_message() -> str:
+    return (
+        "WSL 常驻要求启用 systemd，不能降级为 detached。\n"
+        "  请在 /etc/wsl.conf 中配置：\n"
+        "    [boot]\n"
+        "    systemd=true\n"
+        "  然后从 Windows 执行 `wsl --shutdown`，重新进入 WSL 后再运行 "
+        "`xskill start`。"
+    )
+
+
 def _systemd_user_available() -> bool:
     """用户级 systemd manager 是否可用。
 
@@ -557,7 +570,28 @@ class SystemdUserBackend(ConnectServiceBackend):
             "WantedBy=default.target\n"
         )
 
+    @staticmethod
+    def _enable_linger() -> bool:
+        """允许 user manager 随系统启动，而不是依赖当前终端会话。"""
+        user = os.environ.get("USER")
+        if not user or not shutil.which("loginctl"):
+            return False
+        try:
+            linger = subprocess.run(
+                ["loginctl", "enable-linger", user], capture_output=True,
+                text=True, check=False, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return linger.returncode == 0
+
     def install_and_start(self) -> dict:
+        linger_enabled = self._enable_linger()
+        if _is_wsl() and not linger_enabled:
+            raise ServiceError(
+                "WSL 无法启用 user linger，不能保证发行版启动时自动运行 xskill。\n"
+                "  请确认 `loginctl enable-linger $USER` 可执行后重试。"
+            )
         try:
             self.unit_path.parent.mkdir(parents=True, exist_ok=True)
             self.unit_path.write_text(self._unit_text(), encoding="utf-8")
@@ -576,18 +610,6 @@ class SystemdUserBackend(ConnectServiceBackend):
                 "启用 systemd user service 失败：\n  "
                 + (start_cp.stderr.strip() or start_cp.stdout.strip())
             )
-
-        linger_enabled = False
-        user = os.environ.get("USER")
-        if user and shutil.which("loginctl"):
-            try:
-                linger = subprocess.run(
-                    ["loginctl", "enable-linger", user], capture_output=True,
-                    text=True, check=False, timeout=5,
-                )
-                linger_enabled = linger.returncode == 0
-            except (OSError, subprocess.SubprocessError):
-                pass
 
         st = self.status()
         if not st.get("running"):
@@ -737,8 +759,31 @@ class DetachedProcessBackend(ConnectServiceBackend):
         }
 
 
+class WSLSystemdRequiredBackend(ConnectServiceBackend):
+    """WSL 未启用 systemd 时的明确失败后端，不允许伪装成常驻成功。"""
+
+    name = "linux"
+    method = "systemd-required"
+
+    def install_and_start(self) -> dict:
+        raise ServiceError(_wsl_systemd_required_message())
+
+    def stop(self) -> dict:
+        return self.status()
+
+    def status(self) -> dict:
+        return {
+            "installed": False,
+            "running": False,
+            "backend": self.name,
+            "method": self.method,
+            "platform": "wsl",
+            "warning": _wsl_systemd_required_message(),
+        }
+
+
 class LinuxServiceBackend(ConnectServiceBackend):
-    """Linux/WSL 入口：优先 systemd user，缺失时自动使用 detached。"""
+    """Linux/WSL 入口：WSL 必须 systemd，普通 Linux 可 detached 降级。"""
 
     name = "linux"
 
@@ -749,13 +794,32 @@ class LinuxServiceBackend(ConnectServiceBackend):
             return SystemdUserBackend()
         if method == DetachedProcessBackend.method:
             return DetachedProcessBackend()
+        if _is_wsl() and not _systemd_user_available():
+            return WSLSystemdRequiredBackend()
         return (SystemdUserBackend() if _systemd_user_available()
                 else DetachedProcessBackend())
 
     def install_and_start(self) -> dict:
-        backend = (SystemdUserBackend() if _systemd_user_available()
-                   else DetachedProcessBackend())
-        return backend.install_and_start()
+        systemd_available = _systemd_user_available()
+        if _is_wsl() and not systemd_available:
+            return WSLSystemdRequiredBackend().install_and_start()
+
+        state = read_daemon_state()
+        if systemd_available:
+            # 从旧版 detached 迁移到 systemd 前先停旧进程，避免双 daemon。
+            if (state.get("method") == DetachedProcessBackend.method
+                    and state.get("running")):
+                DetachedProcessBackend().stop()
+            try:
+                return SystemdUserBackend().install_and_start()
+            except ServiceError:
+                if _is_wsl():
+                    raise
+                logger.warning(
+                    "systemd user 安装失败，普通 Linux 降级为 detached",
+                    exc_info=True,
+                )
+        return DetachedProcessBackend().install_and_start()
 
     def stop(self) -> dict:
         return self._from_state().stop()
