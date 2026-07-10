@@ -58,9 +58,9 @@ def _json_output(result: subprocess.CompletedProcess) -> dict:
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux service E2E")
-def test_connect_update_status_start_stop_lifecycle(tmp_path):
+def test_linux_connect_update_status_start_stop_lifecycle(tmp_path):
     """
-    AC: Linux/WSL 用户关闭终端后 connect 常驻，且 start/stop/status/update 可用。
+    AC: 普通 Linux 用户关闭终端后 connect 常驻，且 start/stop/status/update 可用。
     Behavior: connect → status → update → stop/start → observable daemon states.
     @category: service-integration-e2e
     @lane: service-integration-e2e
@@ -81,7 +81,6 @@ def test_connect_update_status_start_stop_lifecycle(tmp_path):
         "HOME": str(tmp_path),
         "PYTHONPATH": os.pathsep.join(python_paths),
         "XDG_CONFIG_HOME": str(tmp_path / ".config"),
-        "WSL_DISTRO_NAME": "Ubuntu-E2E",
         "XSKILL_CONNECT_BACKEND": "detached",
         "XSKILL_PYPI_JSON_URL": (
             f"http://127.0.0.1:{server.server_port}/pypi/{{package}}/json"
@@ -97,8 +96,8 @@ def test_connect_update_status_start_stop_lifecycle(tmp_path):
 
         running = _json_output(_run_cli(repo, env, "status", "--json"))
         assert running["running"] is True
-        assert running["platform"] == "wsl"
-        assert running["method"] in {"systemd-user", "detached"}
+        assert running["platform"] == "linux"
+        assert running["method"] == "detached"
 
         update = _run_cli(repo, env, "update")
         assert update.returncode == 0, update.stderr or update.stdout
