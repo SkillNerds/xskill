@@ -5,13 +5,20 @@
 的原生守护设施。本模块把这层抽象成可插拔后端：
 
     ConnectServiceBackend           抽象基类（含共享 pid/state 读写 + 存活校验）
-      └─ WindowsTaskSchedulerBackend  Windows「计划任务」(schtasks)  —— 本 MR 完整实现
-      └─ LinuxServiceBackend          Linux/WSL 平台选择
-           ├─ SystemdUserBackend      systemd --user（WSL 必需）
-           └─ DetachedProcessBackend  仅普通 Linux 的降级
+      └─ WindowsTaskSchedulerBackend  Windows「计划任务」(schtasks)
+                                      + Group Policy 拒绝时降级启动文件夹(supervisor)
+      └─ LinuxServiceBackend          Linux 族（linux/wsl/harmony）能力探测选择
+           ├─ SystemdUserBackend        systemd --user 可用时的首选
+           ├─ SupervisedProcessBackend  无 systemd 的降级：watchdog 崩溃自愈
+           └─ DetachedProcessBackend    裸 detached，仅显式 override 可达
       └─ LaunchdBackend               macOS launchd LaunchAgent       —— TODO(占位)
 
 CLI (``xskill start/stop/status``) 只跟 ``get_backend()`` 打交道，不关心平台。
+
+选择原则：按「能力探测」（systemd 可用？crontab 可用？WSL interop 可用？）逐级
+降级，平台名（wsl/harmony/linux）只影响提示文案与开机自启的挂载方式；每一级降级
+都在 status 的 ``crash_recovery`` / ``boot_autostart`` / ``degraded`` 里如实汇报，
+不伪装成完整常驻，也不因为不完美而拒绝服务。
 
 设计约定
 ────────
@@ -49,6 +56,9 @@ WINDOWS_TASK_NAME = "Xskill_Connect"
 SYSTEMD_UNIT_NAME = "xskill-connect.service"
 
 
+WINDOWS_WSL_BOOT_TASK = "Xskill_WSL_Boot"
+
+
 class ServiceError(RuntimeError):
     """后端操作失败（含平台不支持）。CLI 捕获后打印 message 即可。"""
 
@@ -58,7 +68,12 @@ class ServiceError(RuntimeError):
 # ═══════════════════════════════════════════════════════════════
 
 def _pid_alive(pid: Optional[int]) -> bool:
-    """pid 是否存活。与 runtime._alive 同款：signal 0 探测，权限错也算活。"""
+    """pid 是否存活。signal 0 探测，权限错也算活；Linux 上僵尸视为死。
+
+    容器/精简环境里 PID 1 常不收割孤儿（bash/应用直接当 init），被停掉的
+    watchdog 会长期滞留为僵尸——signal 0 对僵尸返回成功，若不识别 Z 态，
+    status 会误报 running、stop 会对尸体空等 + 无谓 SIGKILL。
+    """
     if not isinstance(pid, int) or pid <= 0:
         return False
     if sys.platform == "win32":
@@ -69,6 +84,14 @@ def _pid_alive(pid: Optional[int]) -> bool:
         return False
     except PermissionError:
         return True
+    if sys.platform.startswith("linux"):
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+            # comm 可含空格/括号，状态字段取最后一个 ')' 之后的首个 token
+            if stat.rsplit(")", 1)[1].split()[0] == "Z":
+                return False
+        except (OSError, IndexError):
+            pass
     return True
 
 
@@ -125,6 +148,33 @@ def clear_daemon_state() -> None:
         pass
 
 
+def update_daemon_state(**fields) -> None:
+    """合并写运行态：保留已有键，仅覆盖传入键。
+
+    后端与 supervisor watchdog 会先后写同一个 state 文件（后端写 method/
+    backend，watchdog 补 watchdog_pid/child_pid）——整文件覆盖会互相抹掉
+    对方的键，必须 read-merge-write。文件损坏时退化为全新写入。
+    """
+    path = get_connect_daemon_state_path()
+    current: dict = {}
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                current = loaded
+        except (OSError, ValueError):
+            current = {}
+    current.pop("running", None)   # 派生字段不落盘
+    current.update(fields)
+    current.setdefault("started_at", int(time.time()))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(current, ensure_ascii=False),
+                        encoding="utf-8")
+    except OSError:
+        logger.debug("update connect daemon state failed", exc_info=True)
+
+
 def _foreground_argv() -> list[str]:
     """常驻任务真正执行的命令：``<python> -m xskill connect --foreground``。
 
@@ -136,6 +186,12 @@ def _foreground_argv() -> list[str]:
         if pythonw.is_file():
             exe = str(pythonw)
     return [exe, "-m", "xskill", "connect", "--foreground"]
+
+
+def _supervise_argv() -> list[str]:
+    """watchdog 进程的命令：``<python> -m xskill connect --supervise``。"""
+    argv = _foreground_argv()
+    return argv[:-1] + ["--supervise"]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -355,9 +411,11 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
         - 持久化：.vbs 在 %APPDATA%\\...\\Startup\\，用户登录即自动执行
         - 无窗口：WScript.Shell.Run(..., 0, False) 隐藏 CMD 窗口
         - 立即启动：用 subprocess.Popen CREATE_NO_WINDOW|DETACHED_PROCESS
-
-        缺点（相比计划任务）：无崩溃自愈重启，但日常运行足够稳定。
+        - 崩溃自愈：.vbs 与 detach 拉起的都是 supervisor watchdog
+          （connect --supervise），schtasks RestartOnFailure 的用户态等价物。
         """
+        del argv  # 调主任务用 foreground argv；本降级路径固定走 supervisor。
+        watchdog_argv = _supervise_argv()
         vbs_path = _startup_vbs_path()
         if vbs_path is None:
             raise ServiceError(
@@ -367,7 +425,8 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
             )
         try:
             vbs_path.parent.mkdir(parents=True, exist_ok=True)
-            vbs_path.write_text(_build_startup_vbs(argv), encoding="utf-8")
+            vbs_path.write_text(_build_startup_vbs(watchdog_argv),
+                                encoding="utf-8")
         except OSError as e:
             raise ServiceError(f"写开机启动脚本失败：{e}") from e
 
@@ -376,7 +435,7 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
         DETACHED_PROCESS = 0x00000008
         try:
             proc = subprocess.Popen(
-                argv,
+                watchdog_argv,
                 creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
                 close_fds=True,
                 stdin=subprocess.DEVNULL,
@@ -388,8 +447,10 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
             raise ServiceError(f"启动进程失败：{e}") from e
 
         write_daemon_state(method="startup_folder", backend=self.name,
-                           vbs_path=str(vbs_path), argv=argv, pid=pid)
-        logger.info("startup folder 方案安装成功：vbs=%s  pid=%s", vbs_path, pid)
+                           vbs_path=str(vbs_path), argv=watchdog_argv,
+                           watchdog_pid=pid, pid=pid)
+        logger.info("startup folder 方案安装成功：vbs=%s  watchdog pid=%s",
+                    vbs_path, pid)
         return self.status()
 
     def stop(self) -> dict:
@@ -405,14 +466,16 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
                     Path(vbs).unlink(missing_ok=True)
                 except OSError:
                     pass
-            # 2. 按 pid 杀进程
-            pid = state.get("pid")
-            if pid and _pid_alive(pid):
-                try:
-                    subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                                   capture_output=True, check=False)
-                except OSError:
-                    pass
+            # 2. 杀 watchdog 进程树（/T 连 connect 子进程一起）
+            for pid in {state.get("watchdog_pid"), state.get("pid"),
+                        state.get("child_pid")}:
+                if pid and _pid_alive(pid):
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/PID", str(pid), "/T", "/F"],
+                            capture_output=True, check=False)
+                    except OSError:
+                        pass
             clear_daemon_state()
             return {"running": False, "backend": self.name, "method": method}
 
@@ -432,7 +495,7 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
         method = state.get("method", "schtasks")
 
         if method == "startup_folder":
-            pid = state.get("pid")
+            wpid = state.get("watchdog_pid") or state.get("pid")
             vbs = state.get("vbs_path") or str(_startup_vbs_path() or "")
             installed = bool(vbs and Path(vbs).is_file())
             return {
@@ -440,8 +503,11 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
                 "backend": self.name,
                 "method": method,
                 "vbs_path": vbs,
-                "pid": pid,
-                "running": _pid_alive(pid),
+                "pid": state.get("child_pid") or wpid,
+                "watchdog_pid": wpid,
+                "child_alive": _pid_alive(state.get("child_pid")),
+                "running": _pid_alive(wpid),
+                "crash_recovery": "watchdog",
                 "server_url": state.get("server_url"),
                 "client_id": state.get("client_id"),
                 "started_at": state.get("started_at"),
@@ -464,6 +530,7 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
             "server_url": state.get("server_url"),
             "client_id": state.get("client_id"),
             "started_at": state.get("started_at"),
+            "crash_recovery": "schtasks",
             "schtasks_query": q.stdout.strip(),
         }
 
@@ -482,7 +549,7 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Linux / WSL：systemd --user + detached 降级
+# Linux 族（linux / wsl / harmony）：平台与能力探测
 # ═══════════════════════════════════════════════════════════════
 
 def _is_wsl() -> bool:
@@ -496,28 +563,50 @@ def _is_wsl() -> bool:
     return "microsoft" in release.lower()
 
 
+_HARMONY_IDS = {"harmonyos", "openharmony", "ohos"}
+
+
+def _is_harmony(os_release_path: str = "/etc/os-release") -> bool:
+    """当前 Linux 是否鸿蒙用户态（HarmonyOS / OpenHarmony）。
+
+    鸿蒙终端 = Linux 内核 + 自有 init（无 systemd）。识别只影响提示文案与
+    开机自启挂载方式，常驻主链路与普通无 systemd Linux 完全一致。
+    """
+    try:
+        text = Path(os_release_path).read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() in ("ID", "ID_LIKE"):
+            values = value.strip().strip('"').lower().split()
+            if _HARMONY_IDS & set(values):
+                return True
+    return "ohos" in os.uname().release.lower() if hasattr(os, "uname") else False
+
+
+def _linux_flavor() -> str:
+    """``"wsl" | "harmony" | "linux"``。wsl 判定优先（interop 语义更特殊）。"""
+    if _is_wsl():
+        return "wsl"
+    if _is_harmony():
+        return "harmony"
+    return "linux"
+
+
 def _linux_platform_name() -> str:
-    return "wsl" if _is_wsl() else "linux"
-
-
-def _wsl_systemd_required_message() -> str:
-    return (
-        "WSL 常驻要求启用 systemd，不能降级为 detached。\n"
-        "  请在 /etc/wsl.conf 中配置：\n"
-        "    [boot]\n"
-        "    systemd=true\n"
-        "  然后从 Windows 执行 `wsl --shutdown`，重新进入 WSL 后再运行 "
-        "`xskill start`。"
-    )
+    return _linux_flavor()
 
 
 def _systemd_user_available() -> bool:
     """用户级 systemd manager 是否可用。
 
-    WSL 只有在 /etc/wsl.conf 启用 systemd 后才满足；普通 Linux 的精简容器或
-    没有 user bus 的 SSH 环境也会返回 False，随后使用 detached 后端。
+    WSL 只有在 /etc/wsl.conf 启用 systemd 后才满足；普通 Linux 的精简容器、
+    没有 user bus 的 SSH 环境、鸿蒙终端都会返回 False，随后落到 supervised
+    watchdog 链路。
     """
-    if os.environ.get("XSKILL_CONNECT_BACKEND", "").strip().lower() == "detached":
+    if (os.environ.get("XSKILL_CONNECT_BACKEND", "").strip().lower()
+            in ("detached", "supervised")):
         return False
     if not shutil.which("systemctl"):
         return False
@@ -529,6 +618,164 @@ def _systemd_user_available() -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return cp.returncode == 0
+
+
+# ═══════════════════════════════════════════════════════════════
+# 开机自启挂载（与 systemd/supervised 后端正交的能力层）
+# ═══════════════════════════════════════════════════════════════
+#
+# WSL 的关键事实：即使发行版内 systemd + linger 齐备，Windows 重启后 WSL VM
+# 也不会自动拉起——「开机自启」只能靠 Windows 侧触发器经 interop 调 wsl.exe。
+# 普通 Linux/鸿蒙无 systemd 时则用 crontab @reboot。两者挂的都是幂等的
+# ``xskill start --quiet``（已在跑则静默退出），触发器可无脑重复执行。
+
+_CRON_MARKER = "# xskill-connect-boot"
+
+
+def _boot_start_command() -> str:
+    return shlex.join([sys.executable or "python", "-m", "xskill",
+                       "start", "--quiet"])
+
+
+def _crontab_available() -> bool:
+    """crontab 可用 = 命令存在且能读（退出码 0 或 1=「no crontab for user」）。"""
+    if not shutil.which("crontab"):
+        return False
+    try:
+        cp = subprocess.run(["crontab", "-l"], capture_output=True,
+                            text=True, check=False, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return cp.returncode in (0, 1)
+
+
+def _read_crontab_lines() -> list[str]:
+    try:
+        cp = subprocess.run(["crontab", "-l"], capture_output=True,
+                            text=True, check=False, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return cp.stdout.splitlines() if cp.returncode == 0 else []
+
+
+def _write_crontab_lines(lines: list[str]) -> bool:
+    text = "\n".join(lines)
+    if text and not text.endswith("\n"):
+        text += "\n"
+    try:
+        cp = subprocess.run(["crontab", "-"], input=text, capture_output=True,
+                            text=True, check=False, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return cp.returncode == 0
+
+
+def _install_cron_boot() -> bool:
+    """幂等挂 ``@reboot … xskill start --quiet`` 行（marker 去重）。"""
+    if not _crontab_available():
+        return False
+    lines = [ln for ln in _read_crontab_lines() if _CRON_MARKER not in ln]
+    lines.append(f"@reboot {_boot_start_command()} {_CRON_MARKER}")
+    return _write_crontab_lines(lines)
+
+
+def _remove_cron_boot() -> None:
+    if not _crontab_available():
+        return
+    lines = _read_crontab_lines()
+    kept = [ln for ln in lines if _CRON_MARKER not in ln]
+    if kept != lines:
+        _write_crontab_lines(kept)
+
+
+def _wsl_interop_available() -> bool:
+    """WSL interop 是否可调 Windows 侧工具（wsl.exe + schtasks.exe 在 PATH）。
+
+    WSL 默认把 Windows PATH 追加进来；interop 被 /etc/wsl.conf 关闭或用户
+    精简了 PATH 时探测失败——此时开机自启降级为「无」并在 status 里明示。
+    """
+    return bool(shutil.which("wsl.exe") and shutil.which("schtasks.exe"))
+
+
+def _install_wsl_boot_task() -> bool:
+    """经 interop 在 Windows 侧挂登录触发任务：wsl.exe 里跑 xskill start。
+
+    schtasks.exe /SC ONLOGON 对当前用户无需管理员；被 Group Policy 拒绝时
+    返回 False（调用方记 degraded，不阻断常驻本身）。
+    """
+    distro = os.environ.get("WSL_DISTRO_NAME", "").strip()
+    if not distro or not _wsl_interop_available():
+        return False
+    import getpass
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = ""
+    inner = _boot_start_command()
+    user_part = f"-u {user} " if user else ""
+    tr = f"wsl.exe -d {distro} {user_part}-- {inner}"
+    try:
+        cp = subprocess.run(
+            ["schtasks.exe", "/Create", "/TN", WINDOWS_WSL_BOOT_TASK,
+             "/SC", "ONLOGON", "/TR", tr, "/F"],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if cp.returncode != 0:
+        logger.info("WSL boot task 创建失败（degraded 继续）：%s",
+                    (cp.stderr or cp.stdout or "").strip())
+    return cp.returncode == 0
+
+
+def _remove_wsl_boot_task() -> None:
+    if not _wsl_interop_available():
+        return
+    try:
+        subprocess.run(
+            ["schtasks.exe", "/Delete", "/TN", WINDOWS_WSL_BOOT_TASK, "/F"],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _install_boot_autostart(flavor: str, *,
+                            systemd_linger: bool = False
+                            ) -> tuple[str, list[str]]:
+    """按 flavor 挂开机自启。返回 (boot_autostart 标识, degraded 警告列表)。
+
+    任何失败都只降级不抛错——常驻本身（自愈）已就位，自启缺失是可接受的
+    降级，必须让用户看得见（degraded），但不能因此拒绝服务。
+    """
+    warnings: list[str] = []
+    if flavor == "wsl":
+        # systemd/linger 只覆盖「VM 内」自启；VM 本身要 Windows 侧拉起。
+        if _install_wsl_boot_task():
+            return "windows-task", warnings
+        warnings.append(
+            "未能注册 Windows 侧开机任务（interop 不可用或被策略拒绝）：Windows"
+            " 重启后需手动进一次 WSL 或跑 `xskill start`。")
+        if systemd_linger:
+            return "systemd-linger", warnings   # 至少 VM 内自启还在
+        return "none", warnings
+    if systemd_linger:
+        return "systemd-linger", warnings
+    if _install_cron_boot():
+        return "cron", warnings
+    warnings.append(
+        "未能注册开机自启（无 systemd linger，且 crontab 不可用）：重启后需"
+        "手动跑 `xskill start`。")
+    return "none", warnings
+
+
+def _remove_boot_autostart(state: dict) -> None:
+    """卸载开机自启挂载。按 state 记录的方式卸，兜底两种都试（幂等）。"""
+    mode = state.get("boot_autostart")
+    if mode == "windows-task" or _is_wsl():
+        _remove_wsl_boot_task()
+    if mode == "cron" or mode is None:
+        _remove_cron_boot()
 
 
 class SystemdUserBackend(ConnectServiceBackend):
@@ -586,12 +833,11 @@ class SystemdUserBackend(ConnectServiceBackend):
         return linger.returncode == 0
 
     def install_and_start(self) -> dict:
+        # linger 失败不再硬失败（旧版对 WSL 直接 raise）：常驻与崩溃自愈由
+        # unit 本身保证，linger 只影响「重启后无登录也自启」——那属于
+        # boot_autostart 层的降级，由 LinuxServiceBackend 补 cron/Windows
+        # 任务并记 degraded。
         linger_enabled = self._enable_linger()
-        if _is_wsl() and not linger_enabled:
-            raise ServiceError(
-                "WSL 无法启用 user linger，不能保证发行版启动时自动运行 xskill。\n"
-                "  请确认 `loginctl enable-linger $USER` 可执行后重试。"
-            )
         try:
             self.unit_path.parent.mkdir(parents=True, exist_ok=True)
             self.unit_path.write_text(self._unit_text(), encoding="utf-8")
@@ -674,6 +920,7 @@ class SystemdUserBackend(ConnectServiceBackend):
             "client_id": state.get("client_id"),
             "started_at": state.get("started_at"),
             "linger_enabled": state.get("linger_enabled"),
+            "crash_recovery": "systemd",
         }
 
 
@@ -759,73 +1006,211 @@ class DetachedProcessBackend(ConnectServiceBackend):
         }
 
 
-class WSLSystemdRequiredBackend(ConnectServiceBackend):
-    """WSL 未启用 systemd 时的明确失败后端，不允许伪装成常驻成功。"""
+class SupervisedProcessBackend(ConnectServiceBackend):
+    """无 systemd 平台的常驻：detach 一个 watchdog，由它自愈 connect 子进程。
+
+    适用于未启 systemd 的 WSL、精简/老 Linux、鸿蒙终端。watchdog 主体见
+    supervisor.py（指数退避重启、SIGTERM 级联、child_pid 回写 state）。
+    ``running`` 以 watchdog 存活为准——子进程崩溃是 watchdog 的正常工况
+    （退避窗口内 child 短暂不在），单侧状态另以 child_alive 汇报。
+    """
 
     name = "linux"
-    method = "systemd-required"
+    method = "supervised"
 
     def install_and_start(self) -> dict:
-        raise ServiceError(_wsl_systemd_required_message())
-
-    def stop(self) -> dict:
+        current = self.status()
+        if current.get("running"):
+            return current
+        argv = _supervise_argv()
+        state_path = get_connect_daemon_state_path()
+        log_path = state_path.parent / "logs" / "connect-supervisor.log"
+        # 静态字段在 spawn 前整写；spawn 后 watchdog 会合并写 watchdog_pid/
+        # child_pid——若 spawn 后再整写会与 watchdog 的合并写竞态互抹。
+        write_daemon_state(
+            backend=self.name, method=self.method, argv=argv,
+            platform=_linux_flavor(), log_path=str(log_path),
+        )
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("ab") as log_file:
+                proc = subprocess.Popen(
+                    argv, cwd=str(Path.home()), stdin=subprocess.DEVNULL,
+                    stdout=log_file, stderr=subprocess.STDOUT,
+                    start_new_session=True, close_fds=True,
+                )
+        except OSError as e:
+            clear_daemon_state()
+            raise ServiceError(f"启动 supervisor watchdog 失败：{e}") from e
+        update_daemon_state(watchdog_pid=proc.pid)
+        # 等 watchdog 把首个 connect 子进程拉起来（最多 10s）——让 start 的
+        # 返回状态里就带上 child_pid，用户不必二次 status 确认。
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            st = read_daemon_state()
+            if _pid_alive(st.get("child_pid")):
+                break
+            if not _pid_alive(proc.pid):
+                raise ServiceError(
+                    "supervisor watchdog 启动后立即退出；"
+                    f"请查看日志 {log_path} 排查。")
+            time.sleep(0.2)
         return self.status()
 
+    def stop(self) -> dict:
+        state = read_daemon_state()
+        warning = ""
+        wpid = state.get("watchdog_pid")
+        if _pid_alive(wpid):
+            try:
+                os.kill(wpid, signal.SIGTERM)
+                # watchdog 收 SIGTERM 后最多 5s 宽限杀 child，再留余量。
+                deadline = time.time() + 8
+                while _pid_alive(wpid) and time.time() < deadline:
+                    time.sleep(0.05)
+                if _pid_alive(wpid):
+                    os.kill(wpid, signal.SIGKILL)
+            except OSError as e:
+                warning = str(e)
+        # 兜底：watchdog 已死但 child 还挂着（如 watchdog 被 SIGKILL 过）。
+        cpid = state.get("child_pid")
+        if _pid_is_connect_daemon(cpid):
+            try:
+                os.kill(cpid, signal.SIGTERM)
+                deadline = time.time() + 5
+                while _pid_alive(cpid) and time.time() < deadline:
+                    time.sleep(0.05)
+                if _pid_alive(cpid):
+                    os.kill(cpid, signal.SIGKILL)
+            except OSError as e:
+                warning = warning or str(e)
+        clear_daemon_state()
+        st = {
+            "running": False, "installed": False, "backend": self.name,
+            "method": self.method, "platform": _linux_flavor(),
+        }
+        if warning:
+            st["warning"] = warning
+        return st
+
     def status(self) -> dict:
+        state = read_daemon_state()
+        if state.get("method") != self.method:
+            return {"installed": False, "running": False,
+                    "backend": self.name, "method": self.method,
+                    "platform": _linux_flavor()}
+        wpid = state.get("watchdog_pid")
+        cpid = state.get("child_pid")
+        watchdog_alive = _pid_alive(wpid)
+        child_alive = _pid_is_connect_daemon(cpid)
         return {
-            "installed": False,
-            "running": False,
+            "installed": bool(wpid),
+            "running": watchdog_alive,
             "backend": self.name,
             "method": self.method,
-            "platform": "wsl",
-            "warning": _wsl_systemd_required_message(),
+            "platform": _linux_flavor(),
+            "pid": cpid,
+            "watchdog_pid": wpid,
+            "watchdog_alive": watchdog_alive,
+            "child_alive": child_alive,
+            "server_url": state.get("server_url"),
+            "client_id": state.get("client_id"),
+            "started_at": state.get("started_at"),
+            "log_path": state.get("log_path"),
+            "crash_recovery": "watchdog",
+            "boot_autostart": state.get("boot_autostart"),
         }
 
 
 class LinuxServiceBackend(ConnectServiceBackend):
-    """Linux/WSL 入口：WSL 必须 systemd，普通 Linux 可 detached 降级。"""
+    """Linux 族入口：能力探测选择 systemd/supervised，并编排开机自启挂载。
+
+    旧版曾对「WSL 无 systemd」硬失败（WSLSystemdRequiredBackend）——策略过苛
+    且没解决真问题（systemd+linger 也管不了 Windows 重启后 VM 不自启）。现在：
+    崩溃自愈由 systemd 或 watchdog 保证，开机自启由 _install_boot_autostart
+    按能力尽力挂载，挂不上只记 degraded。
+    """
 
     name = "linux"
+
+    @staticmethod
+    def _select_for_install() -> ConnectServiceBackend:
+        override = os.environ.get("XSKILL_CONNECT_BACKEND", "").strip().lower()
+        if override == "detached":
+            return DetachedProcessBackend()
+        if override == "supervised":
+            return SupervisedProcessBackend()
+        if override == "systemd" or _systemd_user_available():
+            return SystemdUserBackend()
+        return SupervisedProcessBackend()
 
     @staticmethod
     def _from_state() -> ConnectServiceBackend:
         method = read_daemon_state().get("method")
         if method == SystemdUserBackend.method:
             return SystemdUserBackend()
+        if method == SupervisedProcessBackend.method:
+            return SupervisedProcessBackend()
         if method == DetachedProcessBackend.method:
             return DetachedProcessBackend()
-        if _is_wsl() and not _systemd_user_available():
-            return WSLSystemdRequiredBackend()
-        return (SystemdUserBackend() if _systemd_user_available()
-                else DetachedProcessBackend())
+        return LinuxServiceBackend._select_for_install()
 
     def install_and_start(self) -> dict:
-        systemd_available = _systemd_user_available()
-        if _is_wsl() and not systemd_available:
-            return WSLSystemdRequiredBackend().install_and_start()
+        target = self._select_for_install()
 
+        # 换后端（如旧 detached → systemd/supervised）先停旧进程防双 daemon。
         state = read_daemon_state()
-        if systemd_available:
-            # 从旧版 detached 迁移到 systemd 前先停旧进程，避免双 daemon。
-            if (state.get("method") == DetachedProcessBackend.method
-                    and state.get("running")):
-                DetachedProcessBackend().stop()
+        old_method = state.get("method")
+        if old_method and old_method != target.method:
             try:
-                return SystemdUserBackend().install_and_start()
+                self._from_state().stop()
             except ServiceError:
-                if _is_wsl():
-                    raise
-                logger.warning(
-                    "systemd user 安装失败，普通 Linux 降级为 detached",
-                    exc_info=True,
-                )
-        return DetachedProcessBackend().install_and_start()
+                logger.warning("停止旧 %s 后端失败，继续安装 %s",
+                               old_method, target.method, exc_info=True)
+
+        try:
+            st = target.install_and_start()
+        except ServiceError:
+            if isinstance(target, SystemdUserBackend):
+                # systemd 探测通过但安装失败（unit 拒载等）→ 降级 supervised，
+                # 任何 Linux 族平台一视同仁（旧版 WSL 在此硬 raise）。
+                logger.warning("systemd user 安装失败，降级为 supervised",
+                               exc_info=True)
+                st = SupervisedProcessBackend().install_and_start()
+            else:
+                raise
+
+        # 开机自启挂载 + 降级如实记录（detached 是显式 override 的裸模式，
+        # 保持历史语义：不挂自启）。
+        if st.get("method") != DetachedProcessBackend.method:
+            flavor = _linux_flavor()
+            linger = bool(read_daemon_state().get("linger_enabled"))
+            boot, warnings = _install_boot_autostart(
+                flavor, systemd_linger=linger)
+            update_daemon_state(boot_autostart=boot, flavor=flavor,
+                                degraded=warnings)
+        return self.status()
 
     def stop(self) -> dict:
-        return self._from_state().stop()
+        state = read_daemon_state()
+        st = self._from_state().stop()
+        _remove_boot_autostart(state)
+        return st
 
     def status(self) -> dict:
-        return self._from_state().status()
+        st = self._from_state().status()
+        state = read_daemon_state()
+        st.setdefault("flavor", state.get("flavor") or _linux_flavor())
+        if state.get("boot_autostart") is not None:
+            st["boot_autostart"] = state.get("boot_autostart")
+        degraded = state.get("degraded") or []
+        if degraded:
+            st["degraded"] = degraded
+        if "crash_recovery" not in st:
+            st["crash_recovery"] = (
+                "systemd" if st.get("method") == SystemdUserBackend.method
+                else "none")
+        return st
 
 
 # ═══════════════════════════════════════════════════════════════

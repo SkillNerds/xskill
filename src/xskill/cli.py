@@ -188,6 +188,17 @@ def cmd_connect(args) -> int:
 
     state_path = get_team_client_state_path()
 
+    # watchdog 模式：不握手，直接进 supervisor 循环（由它拉 --foreground
+    # 子进程并崩溃自愈）。仅供 service 后端内部拉起，不面向用户。
+    if getattr(args, "supervise", False):
+        if not state_path.is_file():
+            print("error: 尚未连接过 server，supervisor 无从拉起。先跑：\n"
+                  "  xskill connect <host:port> --token <token>",
+                  file=sys.stderr)
+            return 2
+        from xskill.team.client.supervisor import run_supervisor
+        return run_supervisor()
+
     if args.address:
         state = _connect_handshake(args, state_path)
         if state is None:
@@ -325,12 +336,21 @@ def _print_connect_status(st: dict, as_json: bool) -> None:
         print(f"  method   : {st['method']}")
     if st.get("pid"):
         print(f"  pid      : {st['pid']}")
+    if st.get("watchdog_pid"):
+        print(f"  watchdog : {st['watchdog_pid']}"
+              + ("" if st.get("watchdog_alive", True) else "  (dead)"))
+    if st.get("crash_recovery"):
+        print(f"  自愈     : {st['crash_recovery']}")
+    if st.get("boot_autostart"):
+        print(f"  开机自启 : {st['boot_autostart']}")
     if st.get("log_path"):
         print(f"  log      : {st['log_path']}")
     if st.get("server_url"):
         print(f"  server   : {st['server_url']}")
     if st.get("client_id"):
         print(f"  client_id: {st['client_id']}")
+    for msg in st.get("degraded") or []:
+        print(f"  degraded : {msg}")
     if st.get("warning"):
         print(f"  warning  : {st['warning']}")
 
@@ -339,13 +359,27 @@ def cmd_start(args) -> int:
     """安装并启动 connect 常驻任务（未 connect 过则提示先 connect）。"""
     from xskill.config import get_team_client_state_path
     from xskill.team.client.service import ServiceError, get_backend
+    quiet = getattr(args, "quiet", False)
     if not get_team_client_state_path().is_file():
-        print("error: 尚未连接过 server。先跑一次：\n"
-              "  xskill connect <host:port> --token <token>",
-              file=sys.stderr)
+        if not quiet:
+            print("error: 尚未连接过 server。先跑一次：\n"
+                  "  xskill connect <host:port> --token <token>",
+                  file=sys.stderr)
         return 2
+    backend = get_backend()
+    if quiet:
+        # 自启触发器（cron @reboot / Windows 计划任务）幂等入口：已在跑
+        # 什么都不做；没在跑就装起，但保持静默（触发器无人看输出）。
+        try:
+            if backend.status().get("running"):
+                return 0
+            backend.install_and_start()
+            return 0
+        except ServiceError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
     try:
-        st = get_backend().install_and_start()
+        st = backend.install_and_start()
     except ServiceError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -376,8 +410,11 @@ def cmd_update(args) -> int:
     except Exception:
         pass
     print(f"发现新版本: {latest}，开始升级...")
-    if not AutoUpdater()._install(latest):
-        print("error: 升级失败，请检查 pip 配置和日志", file=sys.stderr)
+    # install_and_verify：装完先健康检查，坏版本自动回滚 + 拉黑，
+    # 手动 update 与后台自动更新同一套安全网。
+    if not AutoUpdater().install_and_verify(latest, current):
+        print("error: 升级失败（或新版本健康检查未通过已回滚），"
+              "详见日志", file=sys.stderr)
         return 1
     print(f"升级到 {latest} 成功，正在重启...")
     _restart()
@@ -662,11 +699,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-auto-update", action="store_true", dest="no_auto_update",
         help="禁用自动更新检查（默认每小时查一次 PyPI，有新版则升级重启）。",
     )
+    p_conn.add_argument(
+        # 内部形态：supervisor watchdog 主体（team.client.supervisor）。由
+        # service 后端在无 systemd 平台上 detach 拉起，用户无需手动使用。
+        "--supervise", action="store_true", help=argparse.SUPPRESS,
+    )
 
     p_start = sub.add_parser(
         "start", help="把 connect 装成后台常驻（开机自启 + 崩溃自愈）",
     )
     p_start.add_argument("--json", action="store_true", help="机读 JSON 输出")
+    p_start.add_argument(
+        "--quiet", action="store_true",
+        help="已在运行则静默退出 0；供开机自启触发器（cron @reboot / Windows"
+             " 计划任务）幂等调用。",
+    )
 
     p_stop = sub.add_parser("stop", help="停止并撤销 connect 常驻任务")
     p_stop.add_argument("--json", action="store_true", help="机读 JSON 输出")
