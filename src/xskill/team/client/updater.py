@@ -6,14 +6,21 @@ server 版本高于本地版本时，下载 server 暴露的 wheel 并安装。
 
 重启机制
 ────────
-- Linux / macOS：``os.execv`` 原地替换进程（同 PID，守护进程/systemd 不感知）
-- Windows：spawn 新 detach 进程 + 退出当前进程（schtasks/Startup 文件夹会保持常驻）
+- supervisor 托管（XSKILL_SUPERVISED=1：无 systemd 的 Linux/WSL/鸿蒙，以及
+  Windows startup_folder 降级）：以非零退出码退出，watchdog 用新版本拉起
+- Linux / macOS（systemd 直管）：``os.execv`` 原地替换进程（同 PID）
+- Windows schtasks：非零退出，RestartOnFailure 在 1 分钟内重启
 
-版本策略
+版本策略与健壮性
 ────────
 - 包含预发版（a/b/rc），因为内部用 alpha 版本
 - 严格大于当前版本才升级，不降级
 - 网络/PyPI/server 故障不会打断主循环
+- **升级后健康检查**：pip 装完先用子进程验证 ``<python> -m xskill --version``
+  可跑，失败则回滚到升级前版本——坏 wheel（半残依赖/二进制不兼容，鸿蒙与
+  老 glibc 上很现实）不会把常驻进程带进「重启即崩」的死循环
+- **坏版本拉黑**：健康检查失败的版本记入 ``~/.xskill/update_journal.json``，
+  之后的检查跳过该版本，杜绝「升级→崩→回滚→再升级」空转
 """
 from __future__ import annotations
 
@@ -130,14 +137,20 @@ def _download_server_wheel(
 def _restart() -> None:
     """升级成功后重启进程，加载新版本代码。
 
+    - supervisor 托管（XSKILL_SUPERVISED=1）：全平台统一以非零退出码退出，
+      watchdog 用新版本拉起；不自行 spawn，watchdog 始终是唯一管理者
     - Linux/macOS：``os.execv`` 原地替换，PID 不变，对 systemd 透明
     - Windows schtasks：以非零退出码退出，schtasks RestartOnFailure 在
       1 分钟内用新版本重启进程；不另起 detach 进程，避免孤立进程脱管
-    - Windows startup_folder：spawn detach 新进程 + 以 0 退出；.vbs
-      无重启能力，必须自己起新进程才能立即用上新版本
+    - Windows startup_folder（旧版无 supervisor 的存量安装）：spawn detach
+      新进程 + 以 0 退出
     """
     import time
     logger.info("updater: 升级完成，即将重启...")
+    if os.environ.get("XSKILL_SUPERVISED") == "1":
+        logger.info("updater: supervisor 托管 — 以退出码 1 退出，等 watchdog 重启")
+        time.sleep(1)
+        os._exit(1)
     if sys.platform == "win32":
         method = _windows_persistence_method()
         if method == "schtasks":
@@ -165,6 +178,79 @@ def _restart() -> None:
     else:
         # os.execv 替换当前进程镜像，不产生新 PID
         os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+def _journal_path() -> Path:
+    from xskill.config import get_connect_daemon_state_path
+    return get_connect_daemon_state_path().parent / "update_journal.json"
+
+
+def load_update_journal() -> dict:
+    """读更新日志（坏版本黑名单 + last_good）。缺失/损坏容忍为空。"""
+    import json
+    try:
+        d = json.loads(_journal_path().read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_update_journal(journal: dict) -> None:
+    import json
+    try:
+        path = _journal_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(journal, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+    except OSError:
+        logger.debug("updater: 写 update journal 失败", exc_info=True)
+
+
+def _blacklist_version(version: str, reason: str) -> None:
+    import time
+    journal = load_update_journal()
+    bad = journal.setdefault("bad_versions", {})
+    bad[version] = {"ts": int(time.time()), "reason": reason}
+    save_update_journal(journal)
+    logger.warning("updater: 版本 %s 已拉黑（%s），后续检查将跳过", version, reason)
+
+
+def _is_blacklisted(version: str) -> bool:
+    return version in (load_update_journal().get("bad_versions") or {})
+
+
+def _record_last_good(version: str) -> None:
+    journal = load_update_journal()
+    journal["last_good"] = version
+    save_update_journal(journal)
+
+
+# 健康检查的子进程超时。--version 只 import 包 + 打印，正常几秒内返回；
+# 超时视为坏版本（import 挂死同样是坏）。
+_HEALTH_CHECK_TIMEOUT = 60
+
+
+def _health_check() -> bool:
+    """新版本装完后、重启前，用干净子进程验证包可导入可执行。
+
+    当前进程内存里跑的还是旧代码，import 状态不能证明新安装是好的；
+    必须起新解释器让它真正加载磁盘上的新版本。
+    """
+    try:
+        cp = subprocess.run(
+            [sys.executable, "-m", "xskill", "--version"],
+            capture_output=True, text=True, timeout=_HEALTH_CHECK_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("updater: 健康检查超时（%ds）", _HEALTH_CHECK_TIMEOUT)
+        return False
+    except Exception:
+        logger.warning("updater: 健康检查执行失败", exc_info=True)
+        return False
+    if cp.returncode != 0:
+        logger.warning("updater: 健康检查失败 (rc=%s):\n%s", cp.returncode,
+                       (cp.stderr or cp.stdout or "").strip()[:2000])
+    return cp.returncode == 0
 
 
 def _windows_persistence_method() -> str:
@@ -257,6 +343,13 @@ class AutoUpdater:
         except Exception:
             return
 
+        if _is_blacklisted(latest_str):
+            # 该版本此前健康检查失败被回滚过——跳过，等再新的版本。
+            logger.info("updater: PyPI 最新 %s 在坏版本黑名单中，跳过", latest_str)
+            self._check_server_fallback(current_str, current,
+                                        reason="pypi_blacklisted")
+            return
+
         if latest <= current:
             logger.debug("updater: 当前版本 %s 不低于 PyPI 最新 %s",
                          current_str, latest_str)
@@ -270,9 +363,9 @@ class AutoUpdater:
 
         logger.info("updater: 发现新版本 %s（当前 %s），开始升级...",
                     latest_str, current_str)
-        if self._install(latest_str):
+        if self.install_and_verify(latest_str, current_str):
             _restart()   # 升级成功后重启，不会走到这行之后的代码
-            # （_restart 在 Windows 上 os._exit；Linux 上 execv）
+            # （_restart 在 supervisor/Windows 下 os._exit；Linux 上 execv）
             return
         self._check_server_fallback(current_str, current, reason="pypi_install_failed")
 
@@ -280,6 +373,37 @@ class AutoUpdater:
     # 代理黑洞式的涓涓细流永远不触发；而 updater 是单线程循环，一次
     # subprocess.run 挂死 = 之后每小时的检查全部消失，自动更新静默死亡。
     _PIP_TIMEOUT = 600
+
+    def install_and_verify(self, target_version: str,
+                           current_version: str) -> bool:
+        """升级到 target 并做健康检查；失败回滚到 current 并拉黑 target。
+
+        返回 True = 新版本已装好且健康，可以重启。
+        返回 False = 未升级成功；若发生过回滚，当前磁盘上仍是（或已回到）
+        current_version，进程可安全继续跑内存里的旧代码。
+        """
+        if not self._install(target_version):
+            return False
+        if _health_check():
+            _record_last_good(target_version)
+            return True
+        _blacklist_version(target_version, "health_check_failed")
+        logger.warning("updater: 新版本 %s 健康检查失败，回滚到 %s...",
+                       target_version, current_version)
+        if self._install(current_version):
+            if _health_check():
+                logger.info("updater: 已回滚到 %s", current_version)
+            else:
+                logger.critical(
+                    "updater: 回滚到 %s 后健康检查仍失败——环境可能已损坏，"
+                    "请人工介入（pip install xskill==%s）",
+                    current_version, current_version)
+        else:
+            logger.critical(
+                "updater: 回滚安装失败！磁盘上可能是坏版本 %s；本进程继续以"
+                "内存中的旧代码运行，且不会重启。请人工执行 "
+                "pip install xskill==%s", target_version, current_version)
+        return False
 
     def _install(self, target_version: str) -> bool:
         """用 pip 升级到指定版本。返回是否成功。"""
@@ -331,6 +455,10 @@ class AutoUpdater:
             logger.debug("updater: server 版本 %s 不高于当前版本 %s",
                          server_version_str, current_str)
             return
+        if _is_blacklisted(server_version_str):
+            logger.info("updater: server 版本 %s 在坏版本黑名单中，跳过",
+                        server_version_str)
+            return
         if not info.get("wheel_available"):
             logger.warning("updater: server 版本 %s 可用，但未提供 wheel",
                            server_version_str)
@@ -348,8 +476,22 @@ class AutoUpdater:
                 return
             logger.info("updater: PyPI 不可用（%s），改用 server wheel 升级到 %s",
                         reason, server_version_str)
-            if self._install_wheel(wheel):
+            if not self._install_wheel(wheel):
+                return
+            if _health_check():
+                _record_last_good(server_version_str)
                 _restart()
+                return
+            # server wheel 健康检查失败：拉黑 + 尽力回滚（回滚走 pip 索引，
+            # 纯内网机若无镜像可能失败——critical 留痕，进程不重启保命）。
+            _blacklist_version(server_version_str, "health_check_failed")
+            logger.warning("updater: server wheel %s 健康检查失败，回滚到 %s...",
+                           server_version_str, current_str)
+            if not (self._install(current_str) and _health_check()):
+                logger.critical(
+                    "updater: 回滚失败或仍不健康——请人工执行 "
+                    "pip install xskill==%s；本进程继续跑内存旧代码，不重启",
+                    current_str)
 
     def _install_wheel(self, wheel_path: Path) -> bool:
         """用 pip 安装 server 下载的 wheel。返回是否成功。"""
