@@ -90,7 +90,10 @@ jobs:
 
   connect-lifecycle-e2e:
     name: connect lifecycle e2e (linux/wsl mode)
-    needs: ut-it
+    # 只依赖 verify-build：ut-it 在 macOS/Windows 存在与常驻链路无关的存量
+    # 红（test_skill_tools_atom 路径解析等），连接类 e2e 是持久化改动的关键
+    # 验证，不应被无关红灯连坐跳过。
+    needs: verify-build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -107,7 +110,7 @@ jobs:
 
   connect-e2e-windows:
     name: connect e2e (windows, real schtasks)
-    needs: ut-it
+    needs: verify-build
     runs-on: windows-latest
     env:
       XSKILL_WIN_E2E: "1"   # 一次性 runner，允许写真实用户 Profile
@@ -128,7 +131,7 @@ jobs:
     # nightly / 手动触发跑；本地随时可 bash tests/docker_e2e/platform_matrix/run.sh all
     name: platform matrix e2e (docker, nightly)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    needs: ut-it
+    needs: verify-build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
