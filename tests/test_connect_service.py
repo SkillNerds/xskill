@@ -79,6 +79,27 @@ def test_foreground_argv_uses_dash_m(monkeypatch):
     assert argv == ["/usr/bin/python3", "-m", "xskill", "connect", "--foreground"]
 
 
+@pytest.mark.skipif(not __import__("sys").platform.startswith("linux"),
+                    reason="fork/zombie 语义仅 Linux")
+def test_pid_alive_treats_zombie_as_dead():
+    """容器里 PID 1 不收割孤儿：僵尸必须判死，否则 status 误报 running。"""
+    import os as _os
+    import time as _time
+    pid = _os.fork()
+    if pid == 0:
+        _os._exit(0)
+    try:
+        deadline = _time.time() + 5
+        while _time.time() < deadline:
+            stat = open(f"/proc/{pid}/stat").read()
+            if stat.rsplit(")", 1)[1].split()[0] == "Z":
+                break
+            _time.sleep(0.02)
+        assert svc._pid_alive(pid) is False
+    finally:
+        _os.waitpid(pid, 0)
+
+
 def test_pid_alive_windows_uses_exact_tasklist_pid(monkeypatch):
     class _Result:
         stdout = '"python.exe","4242","Console","1","10,000 K"\n'
@@ -126,14 +147,50 @@ def test_systemd_install_writes_unit_and_starts(tmp_path, monkeypatch):
     assert st["method"] == "systemd-user"
 
 
-def test_linux_selects_detached_when_systemd_unavailable(monkeypatch):
+def test_linux_selects_supervised_when_systemd_unavailable(monkeypatch, tmp_path):
+    """无 systemd 的 Linux 落 supervised watchdog（自愈），不再是裸 detached。"""
+    monkeypatch.setattr(svc, "get_connect_daemon_state_path",
+                        lambda: tmp_path / "connect_daemon.json")
     monkeypatch.setattr(svc, "_systemd_user_available", lambda: False)
+    monkeypatch.setattr(svc, "_install_boot_autostart",
+                        lambda flavor, systemd_linger=False: ("cron", []))
     monkeypatch.setattr(
-        svc.DetachedProcessBackend, "install_and_start",
-        lambda self: {"running": True, "method": self.method},
+        svc.SupervisedProcessBackend, "install_and_start",
+        lambda self: svc.write_daemon_state(method=self.method)
+        or {"running": True, "method": self.method},
+    )
+    monkeypatch.setattr(
+        svc.SupervisedProcessBackend, "status",
+        lambda self: {"running": True, "method": self.method,
+                      "crash_recovery": "watchdog"},
     )
     st = svc.LinuxServiceBackend().install_and_start()
-    assert st == {"running": True, "method": "detached"}
+    assert st["method"] == "supervised"
+    assert st["running"] is True
+    assert st["crash_recovery"] == "watchdog"
+    assert st["boot_autostart"] == "cron"
+
+
+def test_linux_detached_only_via_explicit_override(monkeypatch, tmp_path):
+    """XSKILL_CONNECT_BACKEND=detached 仍可选裸 detached（历史语义保留）。"""
+    monkeypatch.setattr(svc, "get_connect_daemon_state_path",
+                        lambda: tmp_path / "connect_daemon.json")
+    monkeypatch.setenv("XSKILL_CONNECT_BACKEND", "detached")
+    monkeypatch.setattr(
+        svc.DetachedProcessBackend, "install_and_start",
+        lambda self: svc.write_daemon_state(method=self.method)
+        or {"running": True, "method": self.method},
+    )
+    monkeypatch.setattr(
+        svc.DetachedProcessBackend, "status",
+        lambda self: {"running": True, "method": self.method},
+    )
+    installed_boot = []
+    monkeypatch.setattr(svc, "_install_boot_autostart",
+                        lambda *a, **kw: installed_boot.append(a) or ("cron", []))
+    st = svc.LinuxServiceBackend().install_and_start()
+    assert st["method"] == "detached"
+    assert installed_boot == []   # 裸模式不挂自启
 
 
 # ─────────────────── task XML ───────────────────
@@ -295,12 +352,14 @@ def test_access_denied_falls_back_to_startup_folder(
     # .vbs 应被写入
     assert fake_startup_vbs.is_file()
     assert "xskill" in fake_startup_vbs.read_text(encoding="utf-8").lower()
-    # 进程应被 detach 启动
+    # 进程应被 detach 启动，且是 supervisor watchdog（降级路径也有崩溃自愈）
     assert len(spawned) == 1
-    assert "--foreground" in spawned[0]
+    assert "--supervise" in spawned[0]
+    assert "--supervise" in fake_startup_vbs.read_text(encoding="utf-8")
     # status 反映 startup_folder 方法
     assert st["method"] == "startup_folder"
     assert st["running"] is True
+    assert st["crash_recovery"] == "watchdog"
 
 
 def test_access_denied_stop_cleans_vbs_and_kills_pid(
