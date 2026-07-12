@@ -400,9 +400,57 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
                 "  可手动在「任务计划程序」里运行 " + self.task_name + " 排查。"
             )
 
+        # /Run 返回 0 ≠ 进程真起来了：LogonTrigger 任务（未存凭据）只能在
+        # 「用户已登录」的交互会话里启动，服务上下文/CI/断开的 RDP 里
+        # schtasks 会报成功但任务永远不进 Running。按观测验证，拿不到
+        # 任务进程 PID 就降级：direct-spawn supervisor 保证当下常驻，
+        # 计划任务保留作下次登录自启。
+        pid = self._wait_task_pid(timeout=self.TASK_START_TIMEOUT)
+        if pid is None:
+            logger.info(
+                "schtasks /Run 成功但 %ss 内未观测到任务进程"
+                "（无交互登录会话？），降级 direct-spawn supervisor",
+                self.TASK_START_TIMEOUT)
+            watchdog_pid = self._spawn_detached(_supervise_argv())
+            write_daemon_state(task_name=self.task_name, backend=self.name,
+                               method="schtasks", argv=argv,
+                               launch="direct-spawn", watchdog_pid=watchdog_pid)
+            return self.status()
+
         write_daemon_state(task_name=self.task_name, backend=self.name,
-                           method="schtasks", argv=argv, pid=self._query_pid())
+                           method="schtasks", argv=argv, pid=pid)
         return self.status()
+
+    # /Run 后等任务进程出现的观测窗口（秒）。已登录桌面上任务 1-2s 就起。
+    TASK_START_TIMEOUT = 10
+
+    def _wait_task_pid(self, timeout: float) -> Optional[int]:
+        deadline = time.time() + timeout
+        while True:
+            pid = self._query_pid()
+            if pid is not None and _pid_alive(pid):
+                return pid
+            if time.time() >= deadline:
+                return None
+            time.sleep(1)
+
+    @staticmethod
+    def _spawn_detached(argv: list[str]) -> int:
+        """CREATE_NO_WINDOW|DETACHED_PROCESS 拉起进程，返回 pid。"""
+        CREATE_NO_WINDOW = 0x08000000
+        DETACHED_PROCESS = 0x00000008
+        try:
+            proc = subprocess.Popen(
+                argv,
+                creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as e:
+            raise ServiceError(f"启动进程失败：{e}") from e
+        return proc.pid
 
     def _install_startup_folder_and_spawn(self, argv: list[str]) -> dict:
         """降级方案：写 Startup 文件夹 .vbs 脚本 + 立即 detach 启动进程。
@@ -430,21 +478,7 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
         except OSError as e:
             raise ServiceError(f"写开机启动脚本失败：{e}") from e
 
-        # 立即 detach 启动（CREATE_NO_WINDOW=0x08000000, DETACHED_PROCESS=0x00000008）
-        CREATE_NO_WINDOW = 0x08000000
-        DETACHED_PROCESS = 0x00000008
-        try:
-            proc = subprocess.Popen(
-                watchdog_argv,
-                creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
-                close_fds=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            pid = proc.pid
-        except OSError as e:
-            raise ServiceError(f"启动进程失败：{e}") from e
+        pid = self._spawn_detached(watchdog_argv)
 
         write_daemon_state(method="startup_folder", backend=self.name,
                            vbs_path=str(vbs_path), argv=watchdog_argv,
@@ -482,6 +516,14 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
         # 计划任务路径
         self._run(["/End", "/TN", self.task_name])
         delete = self._run(["/Delete", "/TN", self.task_name, "/F"])
+        # direct-spawn 降级过的还有 watchdog 进程树要杀（/End 只管任务进程）
+        for pid in {state.get("watchdog_pid"), state.get("child_pid")}:
+            if pid and _pid_alive(pid):
+                try:
+                    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                                   capture_output=True, check=False)
+                except OSError:
+                    pass
         clear_daemon_state()
         st = {"running": False, "backend": self.name,
               "task_name": self.task_name, "method": method}
@@ -520,17 +562,22 @@ class WindowsTaskSchedulerBackend(ConnectServiceBackend):
                     "backend": self.name, "task_name": self.task_name,
                     "method": method}
         pid = self._query_pid()
+        wpid = state.get("watchdog_pid")
+        direct_spawn = state.get("launch") == "direct-spawn"
         return {
             "installed": True,
             "backend": self.name,
             "task_name": self.task_name,
             "method": method,
-            "pid": pid,
-            "running": _pid_alive(pid),
+            "pid": pid or state.get("child_pid") or wpid,
+            "watchdog_pid": wpid,
+            # 任务进程或 direct-spawn 的 watchdog 任一存活即 running
+            "running": _pid_alive(pid) or _pid_alive(wpid),
             "server_url": state.get("server_url"),
             "client_id": state.get("client_id"),
             "started_at": state.get("started_at"),
-            "crash_recovery": "schtasks",
+            "crash_recovery": "watchdog" if direct_spawn else "schtasks",
+            "launch": state.get("launch"),
             "schtasks_query": q.stdout.strip(),
         }
 
