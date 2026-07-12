@@ -57,9 +57,12 @@ class _StubHandler(BaseHTTPRequestHandler):
 
 
 def _run_cli(repo: Path, env: dict, *args: str) -> subprocess.CompletedProcess:
+    # CLI 已把 stdout/stderr 重配为 UTF-8（cli.main），读取端也按 UTF-8 解码；
+    # errors=replace 防个别系统消息混入非 UTF-8 字节炸掉测试。
     return subprocess.run(
         [sys.executable, "-m", "xskill", *args], cwd=repo, env=env,
         capture_output=True, text=True, timeout=60,
+        encoding="utf-8", errors="replace",
     )
 
 

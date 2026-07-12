@@ -795,6 +795,17 @@ def _setup_logging(debug: bool, quiet: bool, *, command: str = "") -> None:
 # ═══════════════════════════════════════════════════════════════
 
 def main() -> int:
+    # Windows 默认控制台编码常是 cp1252/GBK 之外的单字节页（如英文系统
+    # cp1252），CLI 的中文输出会 UnicodeEncodeError 直接炸——而且炸点在
+    # schtasks 任务已装好之后，用户看到 traceback + 退出码 1，实际却成功了。
+    # 统一重配为 UTF-8（errors=replace 兜底），POSIX 上是 no-op。
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, OSError, ValueError):
+                pass
+
     parser = build_parser()
     args = parser.parse_args()
     if not args.command:
