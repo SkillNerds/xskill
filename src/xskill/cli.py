@@ -795,11 +795,20 @@ def _setup_logging(debug: bool, quiet: bool, *, command: str = "") -> None:
 # ═══════════════════════════════════════════════════════════════
 
 def main() -> int:
-    # Windows 默认控制台编码常是 cp1252/GBK 之外的单字节页（如英文系统
-    # cp1252），CLI 的中文输出会 UnicodeEncodeError 直接炸——而且炸点在
-    # schtasks 任务已装好之后，用户看到 traceback + 退出码 1，实际却成功了。
-    # 统一重配为 UTF-8（errors=replace 兜底），POSIX 上是 no-op。
+    # Windows 两个输出流暗坑，都会把进程直接带崩，必须在最入口兜底：
+    # 1. pythonw（schtasks/启动文件夹常驻用它免弹窗）下 sys.stdout/stderr
+    #    是 None——任何 print 即 AttributeError，`connect --foreground`
+    #    开头那句 "reconnecting: ..." 就足以让常驻进程秒崩、pid 永远拿
+    #    不到（Windows e2e 实测抓出）。补 devnull 流。
+    # 2. 控制台编码常是 cp1252 等单字节页，中文输出 UnicodeEncodeError，
+    #    且炸点可能在 schtasks 任务已装好之后——用户看到 traceback +
+    #    退出码 1，实际却成功了。统一重配 UTF-8（errors=replace）。
     if sys.platform == "win32":
+        import os as _os
+        if sys.stdout is None:
+            sys.stdout = open(_os.devnull, "w", encoding="utf-8")
+        if sys.stderr is None:
+            sys.stderr = open(_os.devnull, "w", encoding="utf-8")
         for stream in (sys.stdout, sys.stderr):
             try:
                 stream.reconfigure(encoding="utf-8", errors="replace")
