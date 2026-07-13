@@ -90,7 +90,10 @@ jobs:
 
   connect-lifecycle-e2e:
     name: connect lifecycle e2e (linux/wsl mode)
-    needs: ut-it
+    # 只依赖 verify-build：ut-it 在 macOS/Windows 存在与常驻链路无关的存量
+    # 红（test_skill_tools_atom 路径解析等），连接类 e2e 是持久化改动的关键
+    # 验证，不应被无关红灯连坐跳过。
+    needs: verify-build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -102,6 +105,38 @@ jobs:
         run: pip install -e .[dev]
       - name: Connect lifecycle E2E (local stub, no network)
         run: pytest tests/e2e/test_connect_lifecycle_e2e.py -v
+      - name: Supervised self-heal E2E (watchdog, no-systemd path)
+        run: pytest tests/e2e/test_supervised_selfheal_e2e.py -v
+
+  connect-e2e-windows:
+    name: connect e2e (windows, real schtasks)
+    needs: verify-build
+    runs-on: windows-latest
+    env:
+      XSKILL_WIN_E2E: "1"   # 一次性 runner，允许写真实用户 Profile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install xskill (with dev extras)
+        run: pip install -e .[dev]
+      - name: Windows connect lifecycle E2E (real Task Scheduler)
+        run: pytest tests/e2e/test_windows_connect_e2e.py -v
+
+  platform-matrix-e2e:
+    # 多发行版容器矩阵（ubuntu/debian/openEuler/鸿蒙模拟）验证 supervised
+    # 常驻链路（自愈 + cron 自启 + stop 清理）。拉镜像+装依赖较重，只在
+    # nightly / 手动触发跑；本地随时可 bash tests/docker_e2e/platform_matrix/run.sh all
+    name: platform matrix e2e (docker, nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: verify-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run distro matrix (supervised self-heal in containers)
+        run: bash tests/docker_e2e/platform_matrix/run.sh all
 
   real-llm-e2e:
     name: real-llm-e2e (linux)

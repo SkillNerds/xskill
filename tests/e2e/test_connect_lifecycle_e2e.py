@@ -37,7 +37,11 @@ class _LocalTeamAndPypiHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/pypi/xskill/json":
-            self._json({"releases": {__version__: [{}]}})
+            # 额外给一个非 dev 的 0.0.0：CI 浅克隆下 setuptools-scm 的本地
+            # 版本是 dev 版（0.0.1.dev1+unknown...），updater 会过滤 dev
+            # 版——若 releases 里只有它，查询结果为空，「已是最新版本」断言
+            # 就变成「查询失败」。0.0.0 恒不高于当前版本，语义不变。
+            self._json({"releases": {"0.0.0": [{}], __version__: [{}]}})
             return
         self._json({"detail": "not found"}, status=404)
 
