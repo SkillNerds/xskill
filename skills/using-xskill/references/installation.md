@@ -48,15 +48,24 @@ never write `main`, and their edits land only on `user-staging/<client_id>` bran
 
 ### Keep `connect` resident
 
-The token is needed **once** (it writes `~/.xskill/team_client.json`); the resident
-process runs the token-less `xskill connect`, which reuses the stored connection and
-auto-reconnects if the server restarts. Configure auto-start + auto-restart:
+The token is needed **once** (it writes `~/.xskill/team_client.json`). After the
+handshake, `xskill connect` (without `--foreground`) hands the daemon to the OS
+persistence backend automatically; `xskill start` / `stop` / `status` manage it from
+then on. Backends are chosen by **capability probing** (systemd --user? crontab? WSL
+interop?), not by platform name — see the platform reference selected in SKILL.md
+Step 1 for mechanics and pitfalls. macOS has no native backend yet: host
+`xskill connect --foreground` under a launchd LaunchAgent (`KeepAlive=true`) yourself.
 
-- **Windows** — Task Scheduler, AtLogOn trigger, `ExecutionTimeLimit 0`, restart on failure.
-- **macOS** — launchd LaunchAgent with `KeepAlive=true`, `RunAtLoad=true`.
-- **Linux** — `systemd --user` service with `Restart=always`, `WantedBy=default.target`.
+`xskill status` fields that matter: `method` (schtasks / startup_folder / systemd-user
+/ supervised / detached), `crash_recovery`, `boot_autostart`, and `degraded` — every
+capability the environment lacks is reported there instead of failing the install.
+`XSKILL_CONNECT_BACKEND=systemd|supervised|detached` overrides the probe.
 
-Validate: the resident task is Running; after ~10 min, `~/.xskill/clients/<server>/`
+The resident client self-updates hourly; each install is health-checked
+(`python -m xskill --version`), rolled back via pip on failure, and bad versions are
+blacklisted in `~/.xskill/update_journal.json`.
+
+Validate: `xskill status` shows running; after ~10 min, `~/.xskill/clients/<server>/`
 appears and its `*.json` updates (there is a ~10-min debounce window before first upload).
 
 > Never put a real token in a public repo or chat log.
