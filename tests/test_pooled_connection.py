@@ -82,6 +82,7 @@ def test_deleted_db_file_triggers_reopen(tmp_path):
         first.execute("INSERT INTO llm_usage(step,model,prompt,completion,"
                       "total,cost_usd,price_source) VALUES('s','m',1,1,2,0,'x')")
         first.commit()
+    assert registry.close_pooled_connection(db)
     db.unlink()
     for suffix in ("-wal", "-shm"):
         sidecar = db.with_name(db.name + suffix)

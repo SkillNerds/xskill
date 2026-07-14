@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
+import stat
 from datetime import datetime, date
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Optional
@@ -32,6 +34,15 @@ if TYPE_CHECKING:
     from xskill.pipeline.trajectory import Trajectory
 
 logger = logging.getLogger("xskill.skill_manager")
+
+
+def _remove_readonly(func, path: str, exc_info) -> None:
+    """Make a read-only path writable and retry its failed removal."""
+    error = exc_info[1]
+    if not isinstance(error, PermissionError):
+        raise error
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -552,7 +563,7 @@ def delete_skill(skill_dir: Path, name: str) -> bool:
         logger.error(f"skill not found: {name}")
         return False
 
-    shutil.rmtree(skill_path)
+    shutil.rmtree(skill_path, onerror=_remove_readonly)
     committed = commit_changes(str(skill_dir), f"delete skill: {name}")
     if committed:
         logger.info(f"deleted: {name}")
