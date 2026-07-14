@@ -883,7 +883,8 @@ def _store_user_skill(hub, owner_dir: str, payload: bytes) -> dict:
     shutil.rmtree(dest_dir, ignore_errors=True)
     tmp_dir.replace(dest_dir)
     source_path = dest_dir.relative_to(Path(hub.dir)).as_posix()
-    entry = hub.entry(source_path)
+    # 上传前可能已经建立过 SkillHub TTL 快照；强制刷新保证本次响应立即可见。
+    entry = hub.entry(source_path, force_refresh=True)
     if entry is None:
         raise HTTPException(status_code=500,
                             detail="stored skill not visible in skillhub scan")

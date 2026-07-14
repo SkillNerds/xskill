@@ -11,10 +11,15 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import pickle
 import re
+import threading
+import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -42,64 +47,184 @@ def _safe_id_part(value: str) -> str:
     return safe or "skill"
 
 
-def _content_sha(md: Path) -> str:
-    return hashlib.sha256(md.read_bytes()).hexdigest()[:16]
-
-
 def _path_hash(source_path: str) -> str:
     return hashlib.sha256(source_path.encode("utf-8")).hexdigest()[:12]
+
+
+@dataclass(frozen=True)
+class _SkillFileMemo:
+    """一次稳定文件版本对应的解析结果与内容哈希。"""
+
+    mtime_ns: int
+    size: int
+    content_sha: str
+    entry: dict
+
+
+@dataclass(frozen=True)
+class _SkillHubSnapshot:
+    """一次全树扫描结果；条目和名称索引只在实例内部使用。"""
+
+    entries: tuple[dict, ...]
+    by_name: dict[str, dict]
 
 
 class SkillHub:
     """三方 skill 扫描器 + ux 查询。``enabled=False``（缺省）时为 no-op。"""
 
-    def __init__(self, *, enabled: bool, hub_dir: Path | str, embed_client):
+    def __init__(
+        self, *, enabled: bool, hub_dir: Path | str, embed_client,
+        scan_ttl_seconds: float = 5.0,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         self.enabled = bool(enabled)
         self.dir = Path(hub_dir)
         self.embed_client = embed_client
+        self._scan_ttl_seconds = max(0.0, float(scan_ttl_seconds))
+        self._clock = clock
+        self._scan_lock = threading.Lock()
+        self._snapshot: _SkillHubSnapshot | None = None
+        self._snapshot_expires_at = 0.0
+        self._snapshot_generation = 0
+        self._file_memo: dict[Path, _SkillFileMemo] = {}
 
     @classmethod
     def from_config(cls, config: dict, embed_client) -> "SkillHub":
         cfg = skillhub_config(config)
         return cls(enabled=cfg["enabled"], hub_dir=cfg["dir"], embed_client=embed_client)
 
-    def _entries(self, *, include_vec: bool, require_description: bool) -> list[dict]:
-        if not self.enabled:
-            return []
+    @staticmethod
+    def _signature(stat_result: os.stat_result) -> tuple[int, int]:
+        return stat_result.st_mtime_ns, stat_result.st_size
+
+    def _read_entry(
+        self, md: Path, rel: str, stat_result: os.stat_result,
+    ) -> _SkillFileMemo:
+        """读取变化过的 SKILL.md；若读取期间被替换则按新版本再读一次。"""
+        content = md.read_bytes()
+        stable_stat = md.stat()
+        if self._signature(stable_stat) != self._signature(stat_result):
+            content = md.read_bytes()
+            stable_stat = md.stat()
+        fm, _body = fm_parse(content.decode("utf-8"))
+        sub = md.parent
+        raw_name = fm.get("name") or sub.name
+        display_name = str(raw_name).strip() or sub.name
+        desc = (fm.get("description") or "").strip()
+        content_sha = hashlib.sha256(content).hexdigest()[:16]
+        path_hash = _path_hash(rel)
+        skill_id = f"{_safe_id_part(display_name)}@{path_hash}"
+        entry = {
+            "source": "skillhub",
+            "name": skill_id,
+            "skill_id": skill_id,
+            "display_name": display_name,
+            "source_path": rel,
+            "path_hash": path_hash,
+            "content_sha": content_sha,
+            "description": desc,
+            "path": sub,
+        }
+        return _SkillFileMemo(
+            mtime_ns=stable_stat.st_mtime_ns,
+            size=stable_stat.st_size,
+            content_sha=content_sha,
+            entry=entry,
+        )
+
+    @staticmethod
+    def _build_snapshot(entries: list[dict]) -> _SkillHubSnapshot:
+        """构造 O(1) 精确身份/唯一定义名查询索引。"""
+        by_name: dict[str, dict] = {}
+        display_counts: dict[str, int] = {}
+        for entry in entries:
+            for key in (entry["skill_id"], entry["name"], entry["source_path"]):
+                by_name.setdefault(key, entry)
+            display = entry["display_name"]
+            display_counts[display] = display_counts.get(display, 0) + 1
+        for entry in entries:
+            display = entry["display_name"]
+            if display_counts[display] == 1:
+                by_name.setdefault(display, entry)
+        return _SkillHubSnapshot(entries=tuple(entries), by_name=by_name)
+
+    def _scan_entries(self) -> _SkillHubSnapshot:
+        """遍历 skillhub 一次；隐藏目录不下钻，未变化文件不再读取。"""
         if not self.dir.is_dir():
             raise FileNotFoundError(
                 f"skillhub.dir 不存在: {self.dir}（启用 skillhub 前请放置三方 skill）"
             )
+        next_memo: dict[Path, _SkillFileMemo] = {}
         entries: list[dict] = []
-        for md in sorted(self.dir.rglob("SKILL.md")):
-            sub = md.parent
+        for root, dir_names, file_names in os.walk(self.dir, topdown=True):
+            dir_names[:] = sorted(
+                name for name in dir_names if not name.startswith(".")
+            )
+            if "SKILL.md" not in file_names:
+                continue
+            md = Path(root) / "SKILL.md"
             try:
-                rel = sub.relative_to(self.dir).as_posix()
+                stat_result = md.stat()
+                rel = md.parent.relative_to(self.dir).as_posix()
+            except FileNotFoundError:
+                continue
             except ValueError:
                 continue
-            if any(part.startswith(".") for part in Path(rel).parts):
-                continue
-            fm, _body = fm_parse(md.read_text(encoding="utf-8"))
-            raw_name = fm.get("name") or sub.name
-            display_name = str(raw_name).strip() or sub.name
-            desc = (fm.get("description") or "").strip()
-            if require_description and not desc:
-                continue
-            content_sha = _content_sha(md)
-            path_hash = _path_hash(rel)
-            skill_id = f"{_safe_id_part(display_name)}@{path_hash}"
-            entry = {
-                "source": "skillhub",
-                "name": skill_id,
-                "skill_id": skill_id,
-                "display_name": display_name,
-                "source_path": rel,
-                "path_hash": path_hash,
-                "content_sha": content_sha,
-                "description": desc,
-                "path": sub,
-            }
-            entries.append(entry)
+            memo = self._file_memo.get(md)
+            if (
+                memo is None
+                or (memo.mtime_ns, memo.size) != self._signature(stat_result)
+            ):
+                try:
+                    memo = self._read_entry(md, rel, stat_result)
+                except FileNotFoundError:
+                    continue
+            next_memo[md] = memo
+            entries.append(memo.entry)
+        entries.sort(key=lambda entry: entry["source_path"])
+        self._file_memo = next_memo
+        return self._build_snapshot(entries)
+
+    def _current_snapshot(self, *, force_refresh: bool = False) -> _SkillHubSnapshot:
+        """返回短 TTL 快照；同一代并发过期请求只允许一个线程真扫。"""
+        observed_generation = self._snapshot_generation
+        now = self._clock()
+        if (
+            not force_refresh
+            and self._snapshot is not None
+            and now < self._snapshot_expires_at
+        ):
+            return self._snapshot
+        with self._scan_lock:
+            # 等锁期间已有线程完成刷新时直接共享该结果，包括 TTL=0/force 场景。
+            if (
+                self._snapshot is not None
+                and self._snapshot_generation != observed_generation
+            ):
+                return self._snapshot
+            now = self._clock()
+            if (
+                not force_refresh
+                and self._snapshot is not None
+                and now < self._snapshot_expires_at
+            ):
+                return self._snapshot
+            snapshot = self._scan_entries()
+            self._snapshot = snapshot
+            self._snapshot_expires_at = self._clock() + self._scan_ttl_seconds
+            self._snapshot_generation += 1
+            return snapshot
+
+    def _entries(
+        self, *, include_vec: bool, require_description: bool,
+        force_refresh: bool = False,
+    ) -> list[dict]:
+        if not self.enabled:
+            return []
+        snapshot = self._current_snapshot(force_refresh=force_refresh)
+        entries = [dict(entry) for entry in snapshot.entries]
+        if require_description:
+            entries = [entry for entry in entries if entry["description"]]
         if include_vec and entries:
             # 批量 + 按内容哈希复用：重启/改一个 SKILL.md 不再全量重 embed。
             embed_store = EmbedStore(
@@ -187,23 +312,15 @@ class SkillHub:
         scored.sort(key=lambda pair: (-pair[0], pair[1]["skill_id"]))
         return [entry for _score, entry in scored[:limit]]
 
-    def entry(self, name: str) -> dict | None:
+    def entry(self, name: str, *, force_refresh: bool = False) -> dict | None:
         """按 skill_id / source_path / 唯一 display_name 找当前磁盘上的 skill。"""
         if not self.enabled:
             return None
-        matches: list[dict] = []
-        for entry in self._entries(include_vec=False, require_description=False):
-            if name in {
-                entry["skill_id"], entry["name"], entry["source_path"],
-                entry["display_name"],
-            }:
-                matches.append(entry)
-        if len(matches) == 1:
-            return matches[0]
-        for entry in matches:
-            if name in {entry["skill_id"], entry["name"], entry["source_path"]}:
-                return entry
-        return None
+        snapshot = self._current_snapshot(force_refresh=force_refresh)
+        entry = snapshot.by_name.get(name)
+        if entry is None or not (Path(entry["path"]) / "SKILL.md").is_file():
+            return None
+        return dict(entry)
 
     # ── §7 三方 skill ux 定位 / 版本 / 查询 ──────────────────────
     # 三方 skill 无 git → 版本号用 SKILL.md 内容 sha256 前 16 位；side 恒 "main"

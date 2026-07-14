@@ -11,7 +11,7 @@ import copy
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from xskill.pipeline.registry import pooled_connection
 
@@ -421,7 +421,9 @@ class DashboardMetrics:
     def __init__(self, db_path: Optional[Path] = None, *,
                  skill_dir: Optional[Path] = None,
                  unknown_harness: str = "unknown",
-                 unknown_model: str = "unknown"):
+                 unknown_model: str = "unknown",
+                 tag_cloud_ttl_seconds: float = 5.0,
+                 clock: Callable[[], float] = time.monotonic):
         self._db = db_path
         # 使用/UX 类指标的事实源目录（<skill_dir>/<name>/.ux_scores.jsonl）。
         self._skill_dir = skill_dir
@@ -429,6 +431,11 @@ class DashboardMetrics:
         # 默认 'unknown'；看板路由按 config.dashboard.default_harness/_model 传入覆盖。
         self._unknown_harness = unknown_harness
         self._unknown_model = unknown_model
+        self._tag_cloud_ttl_seconds = max(0.0, float(tag_cloud_ttl_seconds))
+        self._clock = clock
+        self._tag_cloud_lock = threading.Lock()
+        self._tag_cloud_expires_at = 0.0
+        self._tag_cloud_rows: list[dict] | None = None
 
     def _usage(self) -> list[dict]:
         return load_usage_records(self._skill_dir)
@@ -548,6 +555,20 @@ class DashboardMetrics:
         本机(非 team)目录的原子计入 count 但不归属任何用户。
         返回按出现次数降序的 ``[{tag, count, users}]`` 前 top_n。
         """
+        now = self._clock()
+        if self._tag_cloud_rows is None or now >= self._tag_cloud_expires_at:
+            with self._tag_cloud_lock:
+                now = self._clock()
+                if self._tag_cloud_rows is None or now >= self._tag_cloud_expires_at:
+                    self._tag_cloud_rows = self._scan_tag_cloud()
+                    self._tag_cloud_expires_at = (
+                        self._clock() + self._tag_cloud_ttl_seconds
+                    )
+        limit = max(0, int(top_n))
+        return copy.deepcopy(self._tag_cloud_rows[:limit])
+
+    def _scan_tag_cloud(self) -> list[dict]:
+        """执行一次标签全量扫描；由 :meth:`tag_cloud` 合并并发调用。"""
         from collections import Counter, defaultdict
         from xskill.pipeline.atom import AtomTaskStore
         from xskill.config import get_registry_db_path
@@ -572,8 +593,9 @@ class DashboardMetrics:
                                 tag_users[t].add(client)
             except OSError:
                 continue  # 某个目录不可读/路径异常,跳过不阻断整体聚合
-        return [{"tag": t, "count": n, "users": sorted(tag_users.get(t, ()))}
-                for t, n in counter.most_common(top_n)]
+        return [{"tag": tag, "count": count,
+                 "users": sorted(tag_users.get(tag, ()))}
+                for tag, count in counter.most_common()]
 
     def canary_sides(self) -> list[dict]:
         """灰度分桶分布：使用打分记录按 side 聚合（与 check_and_decide 裁决同源）。
