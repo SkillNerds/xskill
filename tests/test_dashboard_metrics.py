@@ -494,6 +494,82 @@ def test_tag_cloud_aggregates_atom_tags(tmp_path):
     assert cloud["migrate"] == 1 and cloud["nginx"] == 1
 
 
+def test_tag_cloud_ttl_reuses_scan_and_refreshes_after_expiry(
+        tmp_path, monkeypatch):
+    from xskill.pipeline.atom import AtomTask, AtomTaskStore
+    wd = tmp_path / "wd"; wd.mkdir()
+    store = AtomTaskStore(root=wd)
+
+    def save(index, tags):
+        store.save(AtomTask(
+            atom_id=f"atom_t_{index:04d}", traj_id="t",
+            offset_start=1, offset_end=2, intent="i", summary="s",
+            tags=tags, used_skills=[], ux_score=7,
+            pre_atom_id=None, post_atom_id=None, context_prefix="", raw_segment="",
+        ))
+
+    save(0, ["first"])
+    db = tmp_path / "tg-cache.db"
+    conn = get_connection(db)
+    conn.execute("INSERT INTO watch_dirs(path,label,ecosystem) VALUES(?,?,?)",
+                 (str(wd), "w", "claude_code"))
+    conn.commit(); conn.close()
+    now = [0.0]
+    metrics = DashboardMetrics(
+        db_path=db, tag_cloud_ttl_seconds=5.0, clock=lambda: now[0],
+    )
+    original = AtomTaskStore.all_atoms
+    scans = 0
+
+    def counted(self):
+        nonlocal scans
+        scans += 1
+        yield from original(self)
+
+    monkeypatch.setattr(AtomTaskStore, "all_atoms", counted)
+    assert metrics.tag_cloud() == [{"tag": "first", "count": 1, "users": []}]
+    save(1, ["second"])
+    assert metrics.tag_cloud() == [{"tag": "first", "count": 1, "users": []}]
+    assert scans == 1
+
+    now[0] = 6.0
+    assert {row["tag"] for row in metrics.tag_cloud()} == {"first", "second"}
+    assert scans == 2
+
+
+def test_tag_cloud_concurrent_calls_share_one_scan(tmp_path, monkeypatch):
+    db = tmp_path / "tg-flight.db"
+    get_connection(db).close()
+    metrics = DashboardMetrics(db_path=db)
+    original = metrics._scan_tag_cloud
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def counted():
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        entered.set()
+        assert release.wait(timeout=5)
+        return original()
+
+    monkeypatch.setattr(metrics, "_scan_tag_cloud", counted)
+    barrier = threading.Barrier(16)
+
+    def load():
+        barrier.wait()
+        return metrics.tag_cloud()
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        futures = [pool.submit(load) for _ in range(16)]
+        assert entered.wait(timeout=5)
+        release.set()
+        assert all(future.result(timeout=5) == [] for future in futures)
+    assert calls == 1
+
+
 def test_by_model(tmp_path):
     db = tmp_path / "r.db"
     _seed(db)

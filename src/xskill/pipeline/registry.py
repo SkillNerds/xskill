@@ -363,6 +363,28 @@ def pooled_connection(db_path: Optional[Path] = None) -> Iterator[sqlite3.Connec
         slot.busy = False
 
 
+def close_pooled_connection(db_path: Optional[Path] = None) -> bool:
+    """Close this thread's idle pooled connection for ``db_path``.
+
+    Call this before replacing or deleting a database file on platforms such
+    as Windows, where an open SQLite handle prevents filesystem removal.
+    """
+    if db_path is None:
+        db_path = get_registry_db_path()
+    db_key = db_path.expanduser().resolve()
+    slots = getattr(_REGISTRY_THREAD_POOL, "slots", None)
+    if not slots:
+        return False
+    slot = slots.get(db_key)
+    if slot is None:
+        return False
+    if slot.busy:
+        raise RuntimeError("cannot close a pooled connection while it is in use")
+    slots.pop(db_key)
+    slot.conn.close()
+    return True
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     """Add columns missing from older schema versions."""
     # ── trajectories ──

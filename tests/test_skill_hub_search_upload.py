@@ -130,6 +130,12 @@ def test_search_and_upload_503_when_skillhub_disabled(tmp_path):
 
 def test_upload_stores_under_user_skill_hub_and_is_searchable(hub_env, tmp_path):
     cid, hdr = _register(hub_env.client, user_name="alice")
+    # 先建立不含上传件的 TTL 快照，验证 upload 会显式刷新而非等 5 秒。
+    before = hub_env.client.get(
+        "/api/v1/team/skill_hub/search",
+        params={"query": "terraform"}, headers=hdr,
+    )
+    assert before.status_code == 200 and before.json()["results"] == []
     src = tmp_path / "my-skill-src"
     src.mkdir()
     (src / "SKILL.md").write_text(

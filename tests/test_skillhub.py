@@ -5,9 +5,12 @@ TDD: 缺省关 no-op；启用扫描+向量化；启用但目录缺失抛错；�
 """
 from __future__ import annotations
 
+import os
 import pickle
 import shutil
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +21,7 @@ from fastapi.testclient import TestClient
 from xskill.recommend.client_interest import ClientInterest
 from xskill.recommend.client_user import ClientUser
 from xskill.recommend.engine import SkillRecommendEngine
+from xskill.recommend import skillhub as skillhub_module
 from xskill.recommend.skillhub import SkillHub
 from xskill.team.client.daemon import TeamClient
 from xskill.team.client.state import ClientState
@@ -39,6 +43,17 @@ class FakeEmbed:
 
     def encode_batch(self, texts):
         return np.stack([self.encode(t) for t in texts])
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds: float):
+        self.now += seconds
 
 
 def _git(args, cwd):
@@ -200,6 +215,121 @@ class TestSkillHub:
         assert entries[0]["content_sha"] == entries[1]["content_sha"]
         assert entries[0]["skill_id"] != entries[1]["skill_id"]
 
+    def test_ttl_snapshot_reuses_unchanged_files_and_evicts_deleted_memo(
+        self, tmp_path, monkeypatch,
+    ):
+        hub_dir = tmp_path / "hub"
+        _write_hub_skill(hub_dir, "foo", "first version")
+        _write_hub_skill(hub_dir, "bar", "unchanged")
+        clock = FakeClock()
+        hub = SkillHub(
+            enabled=True, hub_dir=hub_dir, embed_client=None,
+            scan_ttl_seconds=5.0, clock=clock,
+        )
+        original = hub._read_entry
+        reads: list[str] = []
+
+        def counted(md, rel, stat_result):
+            reads.append(rel)
+            return original(md, rel, stat_result)
+
+        monkeypatch.setattr(hub, "_read_entry", counted)
+        first_sha = hub.entry("foo")["content_sha"]
+        assert sorted(reads) == ["bar", "foo"]
+
+        # TTL 内不遍历；TTL 后只 stat，未变化文件不再读取/解析/哈希。
+        assert hub.entry("foo")["content_sha"] == first_sha
+        clock.advance(6)
+        hub.fingerprint()
+        assert sorted(reads) == ["bar", "foo"]
+
+        skill_md = hub_dir / "foo" / "SKILL.md"
+        old_mtime = skill_md.stat().st_mtime_ns
+        os.utime(skill_md, ns=(old_mtime + 1_000_000, old_mtime + 1_000_000))
+        clock.advance(6)
+        assert hub.entry("foo")["content_sha"] == first_sha
+        assert reads.count("foo") == 2
+
+        skill_md.write_text(
+            "---\nname: foo\ndescription: second version\n---\n# foo\n",
+            encoding="utf-8",
+        )
+        # 保证内容变更测试不依赖文件系统时间戳粒度。
+        os.utime(skill_md, ns=(old_mtime + 2_000_000, old_mtime + 2_000_000))
+        shutil.rmtree(hub_dir / "bar")
+        clock.advance(6)
+
+        refreshed = hub.entry("foo")
+        assert refreshed["content_sha"] != first_sha
+        assert reads.count("foo") == 3
+        assert hub.entry("bar") is None
+        assert set(hub._file_memo) == {skill_md}
+
+    def test_concurrent_expired_calls_share_one_scan(self, tmp_path, monkeypatch):
+        hub_dir = tmp_path / "hub"
+        _write_hub_skill(hub_dir, "foo", "django helper")
+        hub = SkillHub(enabled=True, hub_dir=hub_dir, embed_client=None)
+        original = hub._scan_entries
+        entered = threading.Event()
+        release = threading.Event()
+        calls = 0
+        calls_lock = threading.Lock()
+
+        def counted():
+            nonlocal calls
+            with calls_lock:
+                calls += 1
+            entered.set()
+            assert release.wait(timeout=5)
+            return original()
+
+        monkeypatch.setattr(hub, "_scan_entries", counted)
+        barrier = threading.Barrier(32)
+
+        def load():
+            barrier.wait()
+            return hub.entry("foo")
+
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            futures = [pool.submit(load) for _ in range(32)]
+            assert entered.wait(timeout=5)
+            release.set()
+            results = [future.result(timeout=5) for future in futures]
+
+        assert calls == 1
+        assert all(entry and entry["display_name"] == "foo" for entry in results)
+
+    def test_scan_prunes_hidden_directories_before_descent(
+        self, tmp_path, monkeypatch,
+    ):
+        hub_dir = tmp_path / "hub"
+        _write_hub_skill(hub_dir, "visible", "visible helper")
+        _write_hub_skill(hub_dir, ".git/objects/deep/hidden", "must stay hidden")
+        visited: list[Path] = []
+        original_walk = skillhub_module.os.walk
+
+        def recording_walk(*args, **kwargs):
+            for root, dirs, files in original_walk(*args, **kwargs):
+                visited.append(Path(root))
+                yield root, dirs, files
+
+        monkeypatch.setattr(skillhub_module.os, "walk", recording_walk)
+        hub = SkillHub(enabled=True, hub_dir=hub_dir, embed_client=None)
+
+        assert [entry["source_path"] for entry in hub._entries(
+            include_vec=False, require_description=False,
+        )] == ["visible"]
+        assert all(".git" not in path.relative_to(hub_dir).parts for path in visited)
+
+    def test_force_refresh_makes_new_skill_visible_inside_ttl(self, tmp_path):
+        hub_dir = tmp_path / "hub"
+        hub_dir.mkdir()
+        hub = SkillHub(enabled=True, hub_dir=hub_dir, embed_client=None)
+        assert hub.entry("new-skill") is None
+        _write_hub_skill(hub_dir, "new-skill", "new helper")
+        assert hub.entry("new-skill") is None
+        assert hub.entry("new-skill", force_refresh=True)["source_path"] == "new-skill"
+
 
 # ── 引擎检索池合并 ───────────────────────────────────────────────
 
@@ -346,6 +476,8 @@ class TestEngineSkillhubPool:
             embed_client=FakeEmbed(dim=4),
             profile_db=tmp_path / "p.db",
         )
+        clock = FakeClock()
+        eng.skillhub._clock = clock
         q = FakeEmbed(dim=4).encode("django migration helper")
         q = q / np.linalg.norm(q)
         eng.profile_store.upsert(
@@ -369,6 +501,7 @@ class TestEngineSkillhubPool:
             _write_hub_skill(
                 hub_dir, "hub-a/foo", "django migration helper", name="foo",
             )
+            clock.advance(6)
             second = build_manifest(
                 client_id="client-one",
                 skill_dir=skill_dir,
