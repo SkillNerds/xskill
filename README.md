@@ -14,7 +14,7 @@
 [![GitHub](https://img.shields.io/badge/code-SkillNerds%2Fxskill-243B45?style=flat-square&logo=github)](https://github.com/SkillNerds/xskill)
 [![Paper](https://img.shields.io/badge/paper-PDF-8E44AD?style=flat-square&logo=readthedocs&logoColor=white)](paper/xskill_v4.pdf)
 [![Live demo](https://img.shields.io/badge/demo-xskill.wiki-0E7C86?style=flat-square)](https://xskill.wiki/story/)
-[![WeChat group](https://img.shields.io/badge/微信-进群-2E8B6F?style=flat-square&logo=wechat&logoColor=white)](#community)
+[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-社区-FFB003?style=flat-square)](https://linux.do)
 
 [English](README.en.md) · **简体中文**
 
@@ -192,21 +192,6 @@ xskill connect <服务器地址:端口> --token <TOKEN>   # 首次握手(macOS/L
 - **2026-05-12** —— 支持 Claude Code、Codex、OpenCode;接通 OpenClaw 与 Cursor。
 
 * * *
-
-<a name="community"></a>
-## 💬 社区
-
-关于 coding-agent 技能的问题、想法、踩坑故事——来一起聊。扫码加微信群:
-
-<div align="center">
-
-<table><tr><td align="center" style="border:2px solid #07C160;border-radius:16px;padding:18px 26px;background:#F2FCF6">
-<b style="color:#07C160;font-size:1.05em">💬 微信交流群</b><br><br>
-<img src="docs/assets/wechat-qr.jpg" width="200" alt="xskill 微信群二维码"><br>
-<sub>扫码进群 · 一起聊 coding agent 技能</sub>
-</td></tr></table>
-
-</div>
 
 ## 🙏 致谢
 

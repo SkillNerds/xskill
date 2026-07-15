@@ -14,7 +14,7 @@
 [![GitHub](https://img.shields.io/badge/code-SkillNerds%2Fxskill-243B45?style=flat-square&logo=github)](https://github.com/SkillNerds/xskill)
 [![Paper](https://img.shields.io/badge/paper-PDF-8E44AD?style=flat-square&logo=readthedocs&logoColor=white)](paper/xskill_v4.pdf)
 [![Live demo](https://img.shields.io/badge/demo-xskill.wiki-0E7C86?style=flat-square)](https://xskill.wiki/story/)
-[![WeChat group](https://img.shields.io/badge/WeChat-join%20group-2E8B6F?style=flat-square&logo=wechat&logoColor=white)](#community)
+[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-community-FFB003?style=flat-square)](https://linux.do)
 
 [简体中文](README.md) · **English**
 
@@ -181,21 +181,6 @@ On **macOS / Linux**, native persistence (launchd / systemd --user) is still on 
 - **2026-05-12** — Claude Code, Codex, OpenCode supported; OpenClaw and Cursor connected.
 
 * * *
-
-<a name="community"></a>
-## 💬 Community
-
-Questions, ideas, war stories about coding-agent skills — come hang out. Scan to join the WeChat group:
-
-<div align="center">
-
-<table><tr><td align="center" style="border:2px solid #07C160;border-radius:16px;padding:18px 26px;background:#F2FCF6">
-<b style="color:#07C160;font-size:1.05em">💬 WeChat group</b><br><br>
-<img src="docs/assets/wechat-qr.jpg" width="200" alt="xskill WeChat group QR"><br>
-<sub>Scan to join</sub>
-</td></tr></table>
-
-</div>
 
 ## 🙏 Acknowledgement
 

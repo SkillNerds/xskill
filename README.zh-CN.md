@@ -6,6 +6,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/xskill.svg?style=flat-square&color=4A90B8)](https://pypi.org/project/xskill/)
 [![License](https://img.shields.io/badge/license-MIT-5B8C5A?style=flat-square)](LICENSE)
 [![GitHub](https://img.shields.io/badge/github-SkillNerds%2Fxskill-D4A574?style=flat-square&logo=github&logoColor=white)](https://github.com/SkillNerds/xskill)
+[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-社区-FFB003?style=flat-square)](https://linux.do)
 
 [English](./README.md) · **简体中文**
 
