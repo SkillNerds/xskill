@@ -1,0 +1,14 @@
+skill_generation:
+  active:
+    # 开发模式可加载 class_path；生产模式使用 package + version + entry point。
+    class_path: demo_skillgen.kernel:DemoAtomTaskKernel
+    package: xskill-kernel-demo-atomtask
+    version: 1.0.0
+  config_revision: 42
+  config:
+    min_cluster_size: 1
+  rollout:
+    mode: shadow
+    shadow_kernel: builtin-atomtask
+    traffic_percent: 0
+
