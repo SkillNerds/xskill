@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
+import xskill.dashboard.metrics as metrics_module
 import xskill.dashboard.profile_viz as profile_viz_module
 from xskill.dashboard.profile_viz import ProfileViz
 from xskill.recommend.profile_store import ProfileStore
@@ -96,8 +97,11 @@ def test_cluster_graph_ttl_expiry_picks_up_new_profiles(tmp_path, monkeypatch):
     pdb = tmp_path / "p.db"
     store = _seed_two_similar_users(pdb)
     profile_viz_module._cluster_graph_cache.clear()
+    current_time = [100.0]
     monkeypatch.setattr(
-        profile_viz_module._cluster_graph_cache, "ttl_seconds", 0.02)
+        metrics_module.time, "monotonic", lambda: current_time[0])
+    monkeypatch.setattr(
+        profile_viz_module._cluster_graph_cache, "ttl_seconds", 5.0)
 
     viz = ProfileViz(pdb)
     assert len(viz.cluster_graph()["nodes"]) == 3
@@ -105,8 +109,7 @@ def test_cluster_graph_ttl_expiry_picks_up_new_profiles(tmp_path, monkeypatch):
                  used_skills=[])
     assert len(viz.cluster_graph()["nodes"]) == 3      # TTL 内仍是旧的
 
-    import time
-    time.sleep(0.04)
+    current_time[0] += 5.1
     assert {node["user"] for node in viz.cluster_graph()["nodes"]} == {
         "alice", "bob", "carol", "dave"}
 

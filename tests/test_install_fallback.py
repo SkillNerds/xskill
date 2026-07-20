@@ -434,17 +434,18 @@ def test_write_install_metadata_failure_is_safe_and_loud(
 
     src = _make_src(tmp_path / "srcs")
     dest = tmp_path / "private" / "target"
+    dest.mkdir(parents=True)
+    (dest / "SKILL.md").write_text("copy", encoding="utf-8")
 
-    class UnwritableMetadata:
-        def write_text(self, *_args, **_kwargs):
-            raise PermissionError(
-                "Authorization: Bearer write-secret /root/private/meta"
-            )
+    def fail_atomic_write(_path, _payload):
+        raise PermissionError(
+            "Authorization: Bearer write-secret /root/private/meta"
+        )
 
     monkeypatch.setattr(
         installation,
-        "install_metadata_path",
-        lambda _dest: UnwritableMetadata(),
+        "_atomic_write_json",
+        fail_atomic_write,
     )
     raised_error = None
     with caplog.at_level(logging.ERROR, logger="xskill.installation"):
@@ -456,6 +457,8 @@ def test_write_install_metadata_failure_is_safe_and_loud(
 
     assert raised_error is not None
     assert raised_error.error_type == "INSTALL_METADATA_WRITE_FAILED"
+    assert "stage=copy_identity_marker" in caplog.text
+    assert "exception_type=PermissionError" in caplog.text
     assert "write-secret" not in caplog.text
     assert "/root/private/meta" not in caplog.text
     assert "write-secret" not in formatted_traceback

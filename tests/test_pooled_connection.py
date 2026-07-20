@@ -1,6 +1,7 @@
 """pooled_connection 线程内连接复用的行为契约。"""
 from __future__ import annotations
 
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -82,6 +83,10 @@ def test_deleted_db_file_triggers_reopen(tmp_path):
         first.execute("INSERT INTO llm_usage(step,model,prompt,completion,"
                       "total,cost_usd,price_source) VALUES('s','m',1,1,2,0,'x')")
         first.commit()
+    if os.name == "nt":
+        # Windows 不允许删除仍由连接池持有句柄的 SQLite 文件；关闭句柄后
+        # 仍验证连接池不会继续复用已失效的连接。
+        first.close()
     db.unlink()
     for suffix in ("-wal", "-shm"):
         sidecar = db.with_name(db.name + suffix)

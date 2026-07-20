@@ -123,6 +123,7 @@ async function renderAverage(trajs, average) {{
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
     assert json.loads(result.stdout) == ["—", "0", "2.75"]
