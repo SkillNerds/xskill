@@ -452,6 +452,19 @@ def _hash_verified_copy_file(
             or _stat_is_reparse_point(opened_stat)
         ):
             raise OSError("copy baseline file identity changed")
+        expected_content_stat = (
+            expected_stat.st_size,
+            expected_stat.st_mtime_ns,
+        )
+        opened_content_stat = (
+            opened_stat.st_size,
+            opened_stat.st_mtime_ns,
+        )
+        if os.name != "nt":
+            expected_content_stat += (expected_stat.st_ctime_ns,)
+            opened_content_stat += (opened_stat.st_ctime_ns,)
+        if opened_content_stat != expected_content_stat:
+            raise OSError("copy baseline file changed before reading")
         if os.name != "nt":
             os.set_blocking(file_descriptor, True)
         digest = hashlib.sha256()
@@ -469,12 +482,12 @@ def _hash_verified_copy_file(
             final_stat.st_mtime_ns,
             final_stat.st_ctime_ns,
         ) != (
-            expected_stat.st_dev,
-            expected_stat.st_ino,
-            stat.S_IFMT(expected_stat.st_mode),
-            expected_stat.st_size,
-            expected_stat.st_mtime_ns,
-            expected_stat.st_ctime_ns,
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+            stat.S_IFMT(opened_stat.st_mode),
+            opened_stat.st_size,
+            opened_stat.st_mtime_ns,
+            opened_stat.st_ctime_ns,
         ):
             raise OSError("copy baseline file changed while reading")
         return digest.hexdigest()

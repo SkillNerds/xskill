@@ -609,6 +609,19 @@ def _copy_verified_file_to_stage(
             or _is_reparse_point(opened_stat)
         ):
             raise OSError("source identity changed")
+        expected_content_stat = (
+            file_info.size,
+            file_info.mtime_ns,
+        )
+        opened_content_stat = (
+            opened_stat.st_size,
+            opened_stat.st_mtime_ns,
+        )
+        if os.name != "nt":
+            expected_content_stat += (file_info.ctime_ns,)
+            opened_content_stat += (opened_stat.st_ctime_ns,)
+        if opened_content_stat != expected_content_stat:
+            raise OSError("source changed before reading")
         if os.name != "nt":
             os.set_blocking(file_descriptor, True)
         with os.fdopen(
@@ -619,12 +632,19 @@ def _copy_verified_file_to_stage(
             os.fsync(staged_file.fileno())
         final_stat = os.fstat(file_descriptor)
         if (
-            final_stat.st_dev != file_info.device
-            or final_stat.st_ino != file_info.inode
-            or not stat.S_ISREG(final_stat.st_mode)
-            or final_stat.st_size != file_info.size
-            or final_stat.st_mtime_ns != file_info.mtime_ns
-            or final_stat.st_ctime_ns != file_info.ctime_ns
+            final_stat.st_dev,
+            final_stat.st_ino,
+            stat.S_IFMT(final_stat.st_mode),
+            final_stat.st_size,
+            final_stat.st_mtime_ns,
+            final_stat.st_ctime_ns,
+        ) != (
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+            stat.S_IFMT(opened_stat.st_mode),
+            opened_stat.st_size,
+            opened_stat.st_mtime_ns,
+            opened_stat.st_ctime_ns,
         ):
             raise OSError("source changed while reading")
         os.chmod(staged_path, stat.S_IMODE(file_info.mode))
@@ -704,6 +724,19 @@ def _hash_verified_file(
             or _is_reparse_point(opened_stat)
         ):
             raise OSError("file identity changed")
+        expected_content_stat = (
+            file_info.size,
+            file_info.mtime_ns,
+        )
+        opened_content_stat = (
+            opened_stat.st_size,
+            opened_stat.st_mtime_ns,
+        )
+        if os.name != "nt":
+            expected_content_stat += (file_info.ctime_ns,)
+            opened_content_stat += (opened_stat.st_ctime_ns,)
+        if opened_content_stat != expected_content_stat:
+            raise OSError("file changed before reading")
         if os.name != "nt":
             os.set_blocking(file_descriptor, True)
         digest = hashlib.sha256()
@@ -721,12 +754,12 @@ def _hash_verified_file(
             final_stat.st_mtime_ns,
             final_stat.st_ctime_ns,
         ) != (
-            file_info.device,
-            file_info.inode,
-            stat.S_IFMT(file_info.mode),
-            file_info.size,
-            file_info.mtime_ns,
-            file_info.ctime_ns,
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+            stat.S_IFMT(opened_stat.st_mode),
+            opened_stat.st_size,
+            opened_stat.st_mtime_ns,
+            opened_stat.st_ctime_ns,
         ):
             raise OSError("file changed while reading")
         return digest.hexdigest()
@@ -799,7 +832,7 @@ def _fsync_directory(directory: Path) -> None:
 
 
 def _fsync_regular_file(path: Path) -> None:
-    open_flags = os.O_RDONLY
+    open_flags = os.O_RDWR if os.name == "nt" else os.O_RDONLY
     open_flags |= getattr(os, "O_BINARY", 0)
     open_flags |= getattr(os, "O_NOFOLLOW", 0)
     file_descriptor = os.open(path, open_flags)
