@@ -265,7 +265,7 @@ class InstallHistoryIndex:
 
     def lookup_at(
         self,
-        t: float,
+        timestamp: float,
         *,
         skill: str,
         target: str,
@@ -280,7 +280,7 @@ class InstallHistoryIndex:
                 continue
             insertion_position = bisect_right(
                 timed_run.keys,
-                (float(t), self._record_limit),
+                (float(timestamp), self._record_limit),
             )
             entry_position = timed_run.rightmost_position_at_most(
                 last_index=insertion_position - 1,
