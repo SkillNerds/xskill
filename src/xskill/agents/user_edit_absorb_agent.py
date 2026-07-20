@@ -325,6 +325,23 @@ def _log_reverse_sync_failure(dest_dir: Path, error_type: str) -> None:
     )
 
 
+def _log_reverse_transaction_failure(
+    source_dir: Path,
+    stage: str,
+    error: BaseException | None = None,
+) -> None:
+    """记录不包含底层路径或异常文本的回流事务失败原因。"""
+    logger.warning(
+        "reverse transaction failed path_hash=%s stage=%s "
+        "exception_type=%s errno=%s winerror=%s",
+        _reverse_sync_path_hash(source_dir),
+        stage,
+        type(error).__name__ if error is not None else None,
+        getattr(error, "errno", None),
+        getattr(error, "winerror", None),
+    )
+
+
 def _read_install_meta_ts(dest_dir: Path) -> tuple[bool, Optional[float]]:
     """读取 installed_at，返回 ``(读取状态正常, 时间戳)``。
 
@@ -1128,10 +1145,12 @@ def _commit_reverse_transaction(
 ) -> bool:
     staged_dir = data_dir / "staged"
     rollback_dir = data_dir / "rollback"
+    transaction_stage = "write_committing_manifest"
     try:
         manifest["state"] = "committing"
         _atomic_write_reverse_manifest(manifest_path, manifest)
         for entry in manifest["files"]:
+            transaction_stage = "check_preconditions"
             relative_path = _manifest_relative_path(entry["path"])
             target_path = source_dir / relative_path
             staged_path = staged_dir / relative_path
@@ -1148,25 +1167,41 @@ def _commit_reverse_transaction(
                 or _path_signature(target_path) != original_signature
             ):
                 raise OSError("reverse transaction precondition changed")
+            transaction_stage = "prepare_directories"
             _ensure_real_directory(source_dir, relative_path.parent)
             if original_signature is not None:
                 _ensure_real_directory(
                     rollback_dir, relative_path.parent,
                 )
+                transaction_stage = "sync_source"
                 _fsync_regular_file(target_path)
+                transaction_stage = "source_to_rollback"
                 target_path.replace(backup_path)
                 _fsync_directory(target_path.parent)
                 _fsync_directory(backup_path.parent)
+            transaction_stage = "sync_staged"
             _fsync_regular_file(staged_path)
+            transaction_stage = "staged_to_source"
             staged_path.replace(target_path)
+            transaction_stage = "sync_replaced_source"
             _fsync_regular_file(target_path)
             _fsync_directory(target_path.parent)
+        transaction_stage = "write_committed_manifest"
         manifest["state"] = "committed"
         _atomic_write_reverse_manifest(manifest_path, manifest)
-        return _cleanup_reverse_transaction(
+        transaction_stage = "cleanup"
+        cleaned = _cleanup_reverse_transaction(
             manifest_path, data_dir,
         )
-    except (OSError, ValueError):
+        if not cleaned:
+            _log_reverse_transaction_failure(
+                source_dir, transaction_stage,
+            )
+        return cleaned
+    except (OSError, ValueError) as transaction_error:
+        _log_reverse_transaction_failure(
+            source_dir, transaction_stage, transaction_error,
+        )
         return False
 
 

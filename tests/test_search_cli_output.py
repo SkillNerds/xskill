@@ -798,6 +798,7 @@ def test_remove_target_failure_keeps_transaction_and_retry_succeeds(
     metadata_path = install_metadata_path(target)
     write_install_metadata(target, source, "copy")
     original_remove = daemon._rmtree_anchored
+    original_rmtree = daemon.shutil.rmtree
     removal_attempts = 0
 
     def fail_first_remove(*args, **kwargs):
@@ -809,7 +810,22 @@ def test_remove_target_failure_keeps_transaction_and_retry_succeeds(
             )
         return original_remove(*args, **kwargs)
 
-    monkeypatch.setattr(daemon, "_rmtree_anchored", fail_first_remove)
+    if (
+        getattr(original_rmtree, "avoids_symlink_attacks", False)
+        and os.open in os.supports_dir_fd
+    ):
+        monkeypatch.setattr(daemon, "_rmtree_anchored", fail_first_remove)
+    else:
+        def fail_first_rmtree(path, *args, **kwargs):
+            nonlocal removal_attempts
+            removal_attempts += 1
+            if removal_attempts == 1:
+                raise PermissionError(
+                    "Authorization: Bearer remove-secret /root/private/target"
+                )
+            return original_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(daemon.shutil, "rmtree", fail_first_rmtree)
 
     assert daemon._remove_owned_install_target(target, source) is False
     assert not target.exists()
@@ -830,6 +846,10 @@ def test_remove_target_failure_keeps_transaction_and_retry_succeeds(
     assert not transaction_record.exists()
 
 
+@pytest.mark.skipif(
+    os.open not in os.supports_dir_fd,
+    reason="anchored open unavailable",
+)
 def test_copy_uninstall_does_not_require_rmtree_dir_fd(
     tmp_path, monkeypatch,
 ):
@@ -1314,6 +1334,7 @@ def test_partial_copy_removal_retries_without_identity_marker(
     (target / "SKILL.md").write_text("body\n", encoding="utf-8")
     write_install_metadata(target, source, "copy")
     original_remove = daemon._rmtree_anchored
+    original_rmtree = daemon.shutil.rmtree
     first_attempt = True
 
     def remove_marker_then_fail(
@@ -1339,9 +1360,25 @@ def test_partial_copy_removal_retries_without_identity_marker(
             display_path,
         )
 
-    monkeypatch.setattr(
-        daemon, "_rmtree_anchored", remove_marker_then_fail,
-    )
+    if (
+        getattr(original_rmtree, "avoids_symlink_attacks", False)
+        and os.open in os.supports_dir_fd
+    ):
+        monkeypatch.setattr(
+            daemon, "_rmtree_anchored", remove_marker_then_fail,
+        )
+    else:
+        def remove_marker_then_fail_rmtree(path, *args, **kwargs):
+            nonlocal first_attempt
+            if first_attempt:
+                first_attempt = False
+                (Path(path) / COPY_INSTALL_MARKER_NAME).unlink()
+                raise PermissionError("partial recursive delete")
+            return original_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(
+            daemon.shutil, "rmtree", remove_marker_then_fail_rmtree,
+        )
 
     assert daemon._remove_owned_install_target(target, source) is False
     active_transaction = daemon._active_removal_transaction(target)

@@ -512,7 +512,7 @@ def _stage_all(repo: Repo, root: Path) -> bool:
         except ValueError:
             continue
         parts = rel.parts
-        if not parts or parts[0] == ".git":
+        if not parts or parts[0] in {".git", ".repo_locks"}:
             continue
         # description 触发优化的实验留档 NEVER staged。新建仓库的 .gitignore
         # 模板已含 .description_optimization/，但对**预先存在**的 skill 仓

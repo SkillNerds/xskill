@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -503,14 +504,15 @@ def test_search_slot_records_every_detected_ecosystem_target(tmp_path):
     records = slots.entries()[0]["installations"]
     by_target = {Path(r["target"]): (r["mode"], Path(r["source"])) for r in records}
     skill_id = installed.name
+    trae_mode = "copy" if sys.platform == "win32" else "symlink"
     assert by_target == {
         home / ".claude" / "skills" / skill_id: ("symlink", installed),
         home / ".agents" / "skills" / skill_id: ("copy", installed),
         home / ".cac" / "skills" / skill_id: ("symlink", installed),
         home / ".config" / "opencode" / "skills" / skill_id: ("copy", installed),
         home / ".cursor" / "skills" / skill_id: ("symlink", installed),
-        home / ".trae-cn" / "skills" / skill_id: ("symlink", installed),
-        home / ".trae" / "skills" / skill_id: ("symlink", installed),
+        home / ".trae-cn" / "skills" / skill_id: (trae_mode, installed),
+        home / ".trae" / "skills" / skill_id: (trae_mode, installed),
     }
 
 
