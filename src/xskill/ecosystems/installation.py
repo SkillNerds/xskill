@@ -510,7 +510,10 @@ def _safe_copy_file_fingerprints(dest: Path) -> dict[str, str]:
                     and entry.name == COPY_INSTALL_MARKER_NAME
                 ):
                     continue
-                entry_stat = entry.stat(follow_symlinks=False)
+                # Windows 的 DirEntry.stat() 可能直接使用 WIN32_FIND_DATA
+                # 缓存，其 st_dev/st_ino 为 0；后续 os.fstat() 则返回真实
+                # 文件身份，导致安全校验把正常文件误判成竞态替换。
+                entry_stat = Path(entry.path).lstat()
                 if _stat_is_reparse_point(entry_stat):
                     raise OSError("copy baseline contains reparse point")
                 if stat.S_ISDIR(entry_stat.st_mode):

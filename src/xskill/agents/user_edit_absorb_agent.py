@@ -384,7 +384,9 @@ def _safe_dest_files(
                     relative_path = relative_dir / entry.name
                     if relative_path.parts[0] in exclude:
                         continue
-                    entry_stat = entry.stat(follow_symlinks=False)
+                    # Windows 的 DirEntry.stat() 可能返回没有真实文件身份的
+                    # WIN32_FIND_DATA 缓存；lstat 与后续 fstat 统一走句柄信息。
+                    entry_stat = Path(entry.path).lstat()
                     if _is_reparse_point(entry_stat):
                         return False, ()
                     if stat.S_ISDIR(entry_stat.st_mode):
@@ -462,8 +464,6 @@ def has_pending_dest_edit(
             dest_dir, "REVERSE_SYNC_BASELINE_FAILED",
         )
         return False
-    if not _OPEN_SUPPORTS_DIR_FD:
-        return False
     try:
         candidate_files = [
             file_info
@@ -530,8 +530,6 @@ def _copy_verified_file_to_stage(
     staged_path: Path,
 ) -> None:
     """O_NOFOLLOW + fstat 身份校验后把一个普通文件写入受控 staging。"""
-    if not _OPEN_SUPPORTS_DIR_FD:
-        raise OSError("safe directory-relative open unavailable")
     open_flags = os.O_RDONLY
     open_flags |= getattr(os, "O_BINARY", 0)
     open_flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -541,20 +539,37 @@ def _copy_verified_file_to_stage(
     directory_flags |= getattr(os, "O_NOFOLLOW", 0)
     opened_directories: list[int] = []
     try:
-        current_directory = os.open(dest_root, directory_flags)
-        opened_directories.append(current_directory)
-        for path_part in file_info.relative_path.parent.parts:
-            current_directory = os.open(
-                path_part,
-                directory_flags,
+        if _OPEN_SUPPORTS_DIR_FD:
+            current_directory = os.open(dest_root, directory_flags)
+            opened_directories.append(current_directory)
+            for path_part in file_info.relative_path.parent.parts:
+                current_directory = os.open(
+                    path_part,
+                    directory_flags,
+                    dir_fd=current_directory,
+                )
+                opened_directories.append(current_directory)
+            file_descriptor = os.open(
+                file_info.relative_path.name,
+                open_flags,
                 dir_fd=current_directory,
             )
-            opened_directories.append(current_directory)
-        file_descriptor = os.open(
-            file_info.relative_path.name,
-            open_flags,
-            dir_fd=current_directory,
-        )
+        elif os.name == "nt":
+            root_stat = dest_root.lstat()
+            if (
+                not stat.S_ISDIR(root_stat.st_mode)
+                or _is_reparse_point(root_stat)
+            ):
+                raise OSError("unsafe source root")
+            _validate_real_directory_prefix(
+                dest_root, file_info.relative_path.parent,
+            )
+            file_descriptor = os.open(
+                dest_root / file_info.relative_path,
+                open_flags,
+            )
+        else:
+            raise OSError("safe directory-relative open unavailable")
     except Exception:
         for directory_descriptor in reversed(opened_directories):
             os.close(directory_descriptor)
@@ -610,8 +625,6 @@ def _hash_verified_file(
     root: Path, file_info: _SafeDestFile,
 ) -> str:
     """在目录锚点下 nofollow 读取并校验一个普通文件的内容摘要。"""
-    if not _OPEN_SUPPORTS_DIR_FD:
-        raise OSError("safe directory-relative open unavailable")
     open_flags = os.O_RDONLY
     open_flags |= getattr(os, "O_BINARY", 0)
     open_flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -621,20 +634,37 @@ def _hash_verified_file(
     directory_flags |= getattr(os, "O_NOFOLLOW", 0)
     opened_directories: list[int] = []
     try:
-        current_directory = os.open(root, directory_flags)
-        opened_directories.append(current_directory)
-        for path_part in file_info.relative_path.parent.parts:
-            current_directory = os.open(
-                path_part,
-                directory_flags,
+        if _OPEN_SUPPORTS_DIR_FD:
+            current_directory = os.open(root, directory_flags)
+            opened_directories.append(current_directory)
+            for path_part in file_info.relative_path.parent.parts:
+                current_directory = os.open(
+                    path_part,
+                    directory_flags,
+                    dir_fd=current_directory,
+                )
+                opened_directories.append(current_directory)
+            file_descriptor = os.open(
+                file_info.relative_path.name,
+                open_flags,
                 dir_fd=current_directory,
             )
-            opened_directories.append(current_directory)
-        file_descriptor = os.open(
-            file_info.relative_path.name,
-            open_flags,
-            dir_fd=current_directory,
-        )
+        elif os.name == "nt":
+            root_stat = root.lstat()
+            if (
+                not stat.S_ISDIR(root_stat.st_mode)
+                or _is_reparse_point(root_stat)
+            ):
+                raise OSError("unsafe file root")
+            _validate_real_directory_prefix(
+                root, file_info.relative_path.parent,
+            )
+            file_descriptor = os.open(
+                root / file_info.relative_path,
+                open_flags,
+            )
+        else:
+            raise OSError("safe directory-relative open unavailable")
     except Exception:
         for directory_descriptor in reversed(opened_directories):
             os.close(directory_descriptor)
@@ -731,6 +761,10 @@ def _path_signature(path: Path) -> tuple[int, int, int, int, int] | None:
 
 
 def _fsync_directory(directory: Path) -> None:
+    if os.name == "nt":
+        # Windows 的 os.open() 不能打开目录，标准库也没有可移植的目录
+        # fsync；文件本身已在写入后 fsync，再依赖同卷原子 replace。
+        return
     directory_flags = os.O_RDONLY
     directory_flags |= getattr(os, "O_DIRECTORY", 0)
     directory_flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -1195,12 +1229,6 @@ def reverse_sync_copy_dest(
                 and not assessment.files
             ):
                 return ReverseSyncStatus.NO_EDIT
-            if not _OPEN_SUPPORTS_DIR_FD:
-                _log_reverse_sync_failure(
-                    dest_dir, "REVERSE_SYNC_NO_SAFE_OPEN",
-                )
-                return ReverseSyncStatus.FAILED
-
             try:
                 baseline_fingerprints = read_copy_install_baseline(
                     dest_dir,

@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
+import stat
 from datetime import datetime, date
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Optional
@@ -32,6 +34,19 @@ if TYPE_CHECKING:
     from xskill.pipeline.trajectory import Trajectory
 
 logger = logging.getLogger("xskill.skill_manager")
+
+
+def _remove_readonly_file(function, path: str, error_info) -> None:
+    """让 Windows 上只读的 Git 对象可由 shutil.rmtree 删除。"""
+    error = error_info[1]
+    if os.name != "nt" or not isinstance(error, PermissionError):
+        raise error
+    os.chmod(path, stat.S_IWRITE)
+    function(path)
+
+
+def _remove_tree(path: Path) -> None:
+    shutil.rmtree(path, onerror=_remove_readonly_file)
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -552,7 +567,7 @@ def delete_skill(skill_dir: Path, name: str) -> bool:
         logger.error(f"skill not found: {name}")
         return False
 
-    shutil.rmtree(skill_path)
+    _remove_tree(skill_path)
     committed = commit_changes(str(skill_dir), f"delete skill: {name}")
     if committed:
         logger.info(f"deleted: {name}")
@@ -567,7 +582,7 @@ def export_skill(skill_dir: Path, name: str, output_path: Path) -> Path:
 
     target = output_path / name if output_path.is_dir() else output_path
     if target.exists():
-        shutil.rmtree(target)
+        _remove_tree(target)
     shutil.copytree(skill_path, target)
     logger.info(f"exported: {name} -> {target}")
     return target
