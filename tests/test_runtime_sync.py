@@ -21,7 +21,6 @@ import json
 import sqlite3
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -306,6 +305,7 @@ class TestWatcherInstallSkillToAllDetected:
             llm=None, embed_client=None, config={},
             skill_dir=tmp_path / "skill",
             home_root=tmp_path,
+            xskill_home=tmp_path,
         )
 
     def _make_all_3_agents_detected(self, tmp_path):
@@ -352,10 +352,8 @@ class TestWatcherInstallSkillToAllDetected:
 
         monkeypatch.setattr(eco, "install_to_codex", _broken_codex)
 
-        # 把 install_history 路径指向 tmp_path 避免污染 ~/.xskill
-        from xskill import config as cfg
+        # watcher 在构造时已绑定实例根，历史记录必须落在该实例内。
         history_path = tmp_path / "install_history.jsonl"
-        monkeypatch.setattr(cfg, "XSKILL_HOME", tmp_path)
 
         results = watcher._install_skill_to_all_detected(skill)
 

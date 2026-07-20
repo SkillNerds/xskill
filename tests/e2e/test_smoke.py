@@ -25,7 +25,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -70,6 +69,12 @@ _CC_FIXTURE = "\n".join([
                 {"type": "text", "text": "Here are the .py files: a.py, b.py."},
             ],
         },
+    }),
+    json.dumps({
+        "type": "last-prompt",
+        "sessionId": _CC_SESSION_ID,
+        "cwd": "/tmp/cc-smoke-workspace",
+        "timestamp": "2026-05-13T10:00:02.000Z",
     }),
 ]) + "\n"
 

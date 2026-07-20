@@ -49,7 +49,7 @@ def _call_tool(tool, *args):
 
 class _BatchCountingStub:
     """cluster 分支：每次 agent.run = 一次 ClusterAgent 调用 → cluster_calls += 1；
-    解析 user_msg 里**所有** atom_id（批量），逐个 add_task_to_skill 给 auto-skill。
+    解析 user_msg 里**所有** atom_id，一次 add_tasks_to_skill 写入 auto-skill。
 
     类级计数器跨实例/跨 watcher 共享（断点续传测试要统计两个 watcher 的总量）。
     每个测试 setup_method 复位。weightscore 取 3（< 晋升阈值 10）让 candidates
@@ -76,8 +76,15 @@ class _BatchCountingStub:
                 _call_tool(self.tools["new_skill_folder"], type(self).target_skill, "stub desc")
             for aid in atom_ids:
                 type(self).sent_atoms.append(aid)
-                if "add_task_to_skill" in self.tools:
-                    _call_tool(self.tools["add_task_to_skill"], type(self).target_skill, aid, 3)
+            if "add_tasks_to_skill" in self.tools:
+                _call_tool(
+                    self.tools["add_tasks_to_skill"],
+                    type(self).target_skill,
+                    [
+                        {"atom_id": atom_id, "weightscore": 3}
+                        for atom_id in atom_ids
+                    ],
+                )
             return _R("clustered")
         # SkillEditAgent / 其它：不动手（不写 SKILL.md、不 commit → candidates 不清空）
         return _R("stub")
@@ -158,8 +165,20 @@ class TestBatchCallCount:
         _BatchCountingStub.cluster_calls = 0
         _BatchCountingStub.sent_atoms = []
 
-    def test_calls_equal_ceil_total_over_batch(self, tmp_path):
+    def test_calls_equal_ceil_total_over_batch(
+        self, tmp_path, monkeypatch,
+    ):
+        from unittest.mock import Mock
+
+        from xskill.pipeline import registry as registry_module
+
         db = tmp_path / "test.db"
+        global_db = tmp_path / "global" / "registry.db"
+        monkeypatch.setattr(
+            registry_module,
+            "get_registry_db_path",
+            Mock(return_value=global_db),
+        )
         wd = tmp_path / "wd"; wd.mkdir()
         skill_dir = tmp_path / "skill"; skill_dir.mkdir()
         store = AtomTaskStore(root=wd)
@@ -186,6 +205,12 @@ class TestBatchCallCount:
         assert len(sent) == total and all(v == 1 for v in sent.values())
         # 全部轨迹 done
         assert len(get_trajs_by_status(wd_id, "done", db_path=db)) == n_trajs
+        with registry_module.pooled_connection(db) as connection:
+            adoption_count = connection.execute(
+                "SELECT COUNT(*) FROM atom_adoption"
+            ).fetchone()[0]
+        assert adoption_count == total
+        assert not global_db.exists()
 
     def test_pool_smaller_than_batch_takes_all_in_one_call(self, tmp_path):
         """待消费 < batch_size 时全取，一次调用清空。"""

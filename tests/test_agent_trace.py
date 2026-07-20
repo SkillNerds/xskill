@@ -1,7 +1,10 @@
 """tests/test_agent_trace.py — 每次 agent 调用按 traj/atom/skill 落独立 trace 文件"""
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
+
+import pytest
 
 from xskill.agents import agent_trace
 from xskill.agents.agent_trace import trace_to, record
@@ -65,6 +68,73 @@ def test_run_overwrites_previous(tmp_path):
     assert "第二次run" in txt and "第一次run" not in txt
 
 
+def test_nested_trace_restores_outer_sink_and_round(tmp_path):
+    outer = tmp_path / "outer.log"
+    inner = tmp_path / "inner.log"
+
+    with trace_to(outer):
+        record(_msgs(), _fake_resp(reasoning="outer-before"))
+        with trace_to(inner):
+            record(_msgs(), _fake_resp(reasoning="inner"))
+        record(_msgs(), _fake_resp(reasoning="outer-after"))
+
+    outer_text = outer.read_text(encoding="utf-8")
+    inner_text = inner.read_text(encoding="utf-8")
+    assert "outer-before" in outer_text
+    assert "outer-after" in outer_text
+    assert "inner" not in outer_text
+    assert "round 1" in outer_text
+    assert "round 2" in outer_text
+    assert "inner" in inner_text
+    assert "round 1" in inner_text
+    assert "round 2" not in inner_text
+
+
+def test_nested_none_temporarily_disables_outer_trace(tmp_path):
+    outer = tmp_path / "outer.log"
+
+    with trace_to(outer):
+        record(_msgs(), _fake_resp(reasoning="outer-before"))
+        with trace_to(None):
+            record(_msgs(), _fake_resp(reasoning="suppressed"))
+        record(_msgs(), _fake_resp(reasoning="outer-after"))
+
+    text = outer.read_text(encoding="utf-8")
+    assert "outer-before" in text
+    assert "suppressed" not in text
+    assert "outer-after" in text
+    assert "round 2" in text
+
+
+def test_trace_disk_errors_warn_once_without_path_or_error_text(
+    tmp_path, monkeypatch, caplog,
+):
+    sink = tmp_path / "private" / "trace.log"
+
+    def fail_open(*args, **kwargs):
+        del args, kwargs
+        raise PermissionError("secret disk detail")
+
+    with agent_trace._WARNING_LOCK:
+        agent_trace._WARNED_FAILURES.clear()
+    with trace_to(sink):
+        monkeypatch.setattr("builtins.open", fail_open)
+        with caplog.at_level(logging.WARNING, logger="xskill.agent_trace"):
+            record(_msgs(), _fake_resp(reasoning="first"))
+            record(_msgs(), _fake_resp(reasoning="second"))
+
+    warnings = [
+        record_item.getMessage()
+        for record_item in caplog.records
+        if record_item.name == "xskill.agent_trace"
+    ]
+    assert len(warnings) == 1
+    assert "error_type=PermissionError" in warnings[0]
+    assert "sink_hash=" in warnings[0]
+    assert str(sink) not in warnings[0]
+    assert "secret disk detail" not in warnings[0]
+
+
 def test_wrap_with_trace_records_each_invoke(tmp_path):
     """工厂的 _wrap_with_trace：包装后每次 model.invoke 自动写进当前 sink。"""
     from xskill.agents.agno_factory import _wrap_with_trace
@@ -80,6 +150,28 @@ def test_wrap_with_trace_records_each_invoke(tmp_path):
         m.invoke(_msgs())
     txt = sink.read_text(encoding="utf-8")
     assert txt.count("wrapped-round") == 2 and "round 2" in txt
+
+
+def test_wrap_with_trace_does_not_swallow_unexpected_trace_bug(tmp_path):
+    from xskill.agents.agno_factory import _wrap_with_trace
+
+    class _BrokenResponse:
+        @property
+        def choices(self):
+            raise RuntimeError("unexpected response implementation bug")
+
+    class _FakeModel:
+        def invoke(self, messages, **kwargs):
+            del messages, kwargs
+            return _BrokenResponse()
+
+    model = _wrap_with_trace(_FakeModel())
+    with trace_to(tmp_path / "broken.log"):
+        with pytest.raises(
+            RuntimeError,
+            match="unexpected response implementation bug",
+        ):
+            model.invoke(_msgs())
 
 
 def test_dict_tool_call_shape(tmp_path):

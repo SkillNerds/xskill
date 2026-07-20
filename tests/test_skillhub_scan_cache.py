@@ -6,12 +6,14 @@ force_refresh 绕过 TTL；single-flight 并发只扫一次；目录缺失 raise
 """
 from __future__ import annotations
 
+import logging
 import os
 import pathlib
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -190,6 +192,427 @@ def test_single_flight_concurrent_entry(tmp_path, monkeypatch):
 
     assert all(result is not None for result in results)
     assert len(walk_calls) == 1
+
+
+def test_invalid_skills_are_isolated_and_log_safe_locations(
+    tmp_path, monkeypatch, caplog,
+):
+    hub_dir = tmp_path / "hub"
+    _write_hub_skill(hub_dir, "valid/alpha", "alpha searchable helper")
+
+    encoding_path = hub_dir / "broken/encoding/SKILL.md"
+    encoding_path.parent.mkdir(parents=True)
+    encoding_bytes = (
+        b"---\nname: encoding\ndescription: invalid \xa1\xaa marker\n---\nbody\n"
+    )
+    encoding_path.write_bytes(encoding_bytes)
+
+    eof_path = hub_dir / "broken/eof/SKILL.md"
+    eof_path.parent.mkdir(parents=True)
+    eof_bytes = b"---\nname: eof\ndescription: invalid at eof\n---\nbody\n\xff"
+    eof_path.write_bytes(eof_bytes)
+
+    schema_path = hub_dir / "broken/schema/SKILL.md"
+    schema_path.parent.mkdir(parents=True)
+    schema_path.write_text(
+        "---\nname: schema\ndescription:\n  - invalid\n---\nbody\n",
+        encoding="utf-8",
+    )
+
+    io_path = hub_dir / "broken/io/SKILL.md"
+    io_path.parent.mkdir(parents=True)
+    io_path.write_text(
+        "---\nname: io\ndescription: unreadable\n---\nbody\n",
+        encoding="utf-8",
+    )
+
+    real_read_bytes = pathlib.Path.read_bytes
+
+    def controlled_read_bytes(self):
+        if self == io_path:
+            raise PermissionError("absolute path and secret must not enter logs")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", controlled_read_bytes)
+    caplog.set_level(logging.WARNING, logger="xskill.skillhub")
+
+    hub = _make_hub(hub_dir, scan_ttl_seconds=0.0)
+    results = hub.search("alpha", limit=5)
+
+    assert [result["display_name"] for result in results] == ["alpha"]
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    invalid_offset = encoding_bytes.index(b"\xa1")
+    assert (
+        "path=broken/encoding/SKILL.md "
+        f"offset={invalid_offset} bytes=a1aa206d"
+    ) in log_text
+    eof_offset = eof_bytes.index(b"\xff")
+    assert (
+        "path=broken/eof/SKILL.md "
+        f"offset={eof_offset} bytes=ff"
+    ) in log_text
+    assert (
+        "path=broken/schema/SKILL.md "
+        "error_type=SkillFileSchemaError"
+    ) in log_text
+    assert "path=broken/io/SKILL.md error_type=PermissionError" in log_text
+    assert str(hub_dir) not in log_text
+    assert "secret" not in log_text
+    assert "marker" not in log_text
+
+
+def test_unchanged_invalid_skill_is_not_reread_or_relogged(
+    tmp_path, monkeypatch, caplog,
+):
+    hub_dir = tmp_path / "hub"
+    invalid_path = hub_dir / "broken/SKILL.md"
+    invalid_path.parent.mkdir(parents=True)
+    invalid_path.write_bytes(b"\xa1\xaa")
+    hub = _make_hub(hub_dir, scan_ttl_seconds=0.0)
+    monotonic = Mock(return_value=100.0)
+
+    read_calls: list[Path] = []
+    real_read_bytes = pathlib.Path.read_bytes
+
+    def counting_read_bytes(self):
+        read_calls.append(self)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", counting_read_bytes)
+    monkeypatch.setattr(skillhub_module.time, "monotonic", monotonic)
+    caplog.set_level(logging.WARNING, logger="xskill.skillhub")
+
+    assert hub.fingerprint() == ()
+    assert hub.fingerprint() == ()
+    monotonic.return_value += (
+        skillhub_module.INVALID_SKILL_RECHECK_COOLDOWN_SECONDS + 1
+    )
+    assert hub.fingerprint() == ()
+
+    warnings = [
+        record for record in caplog.records
+        if "invalid UTF-8" in record.getMessage()
+    ]
+    assert read_calls == [invalid_path, invalid_path]
+    assert len(warnings) == 1
+
+
+def test_force_refresh_retries_unchanged_invalid_skill(
+    tmp_path, monkeypatch, caplog,
+):
+    hub_dir = tmp_path / "hub"
+    invalid_path = hub_dir / "broken/SKILL.md"
+    invalid_path.parent.mkdir(parents=True)
+    invalid_path.write_bytes(b"\xa1\xaa")
+    hub = _make_hub(hub_dir, scan_ttl_seconds=60.0)
+
+    read_calls: list[Path] = []
+    real_read_bytes = pathlib.Path.read_bytes
+
+    def counting_read_bytes(self):
+        read_calls.append(self)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", counting_read_bytes)
+    caplog.set_level(logging.WARNING, logger="xskill.skillhub")
+
+    assert hub.entry("broken") is None
+    assert hub.entry("broken", force_refresh=True) is None
+
+    warnings = [
+        record for record in caplog.records
+        if "invalid UTF-8" in record.getMessage()
+    ]
+    assert read_calls == [invalid_path, invalid_path]
+    assert len(warnings) == 2
+
+
+def test_modified_invalid_skill_recovers_without_force_refresh(tmp_path):
+    hub_dir = tmp_path / "hub"
+    invalid_path = hub_dir / "repaired/SKILL.md"
+    invalid_path.parent.mkdir(parents=True)
+    invalid_path.write_bytes(b"\xa1\xaa")
+    hub = _make_hub(hub_dir, scan_ttl_seconds=0.0)
+
+    assert hub.entry("repaired") is None
+    invalid_path.write_text(
+        "---\nname: repaired\ndescription: repaired searchable skill\n"
+        "---\nbody\n",
+        encoding="utf-8",
+    )
+    future = time.time() + 5
+    os.utime(invalid_path, (future, future))
+
+    repaired = hub.entry("repaired")
+    assert repaired is not None
+    assert repaired["description"] == "repaired searchable skill"
+    assert hub._file_memo[invalid_path][3] == "repaired"
+
+
+def test_same_metadata_invalid_skill_is_rechecked_and_recovers(
+    tmp_path, monkeypatch,
+):
+    hub_dir = tmp_path / "hub"
+    skill_path = hub_dir / "fixed/SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    valid_bytes = (
+        b"---\nname: fixed\ndescription: same metadata\n---\nbody\n"
+    )
+    invalid_bytes = valid_bytes.replace(b"same", b"\xffame", 1)
+    skill_path.write_bytes(invalid_bytes)
+    original_stat = skill_path.stat()
+
+    monotonic = Mock(return_value=100.0)
+    monkeypatch.setattr(skillhub_module.time, "monotonic", monotonic)
+    hub = _make_hub(hub_dir, scan_ttl_seconds=0.0)
+    assert hub.entry("fixed") is None
+
+    skill_path.write_bytes(valid_bytes)
+    os.utime(
+        skill_path,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+    assert skill_path.stat().st_size == original_stat.st_size
+    assert skill_path.stat().st_mtime_ns == original_stat.st_mtime_ns
+
+    monotonic.return_value += (
+        skillhub_module.INVALID_SKILL_RECHECK_COOLDOWN_SECONDS - 1
+    )
+    assert hub.entry("fixed") is None
+    monotonic.return_value += 2
+
+    repaired = hub.entry("fixed")
+    assert repaired is not None
+    assert repaired["description"] == "same metadata"
+
+
+def test_periodic_invalid_rechecks_are_bounded_per_scan(
+    tmp_path, monkeypatch, caplog,
+):
+    hub_dir = tmp_path / "hub"
+    invalid_paths = []
+    for index in range(5):
+        skill_path = hub_dir / f"broken-{index}" / "SKILL.md"
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_bytes(b"\xa1\xaa")
+        invalid_paths.append(skill_path)
+
+    read_calls: list[Path] = []
+    real_read_bytes = pathlib.Path.read_bytes
+
+    def counting_read_bytes(self):
+        if self in invalid_paths:
+            read_calls.append(self)
+        return real_read_bytes(self)
+
+    monotonic = Mock(return_value=100.0)
+    monkeypatch.setattr(pathlib.Path, "read_bytes", counting_read_bytes)
+    monkeypatch.setattr(skillhub_module.time, "monotonic", monotonic)
+    monkeypatch.setattr(skillhub_module, "INVALID_SKILL_RECHECK_LIMIT", 2)
+    caplog.set_level(logging.WARNING, logger="xskill.skillhub")
+    hub = _make_hub(hub_dir, scan_ttl_seconds=0.0)
+
+    assert hub.fingerprint() == ()
+    assert len(read_calls) == 5
+    monotonic.return_value += (
+        skillhub_module.INVALID_SKILL_RECHECK_COOLDOWN_SECONDS + 1
+    )
+
+    assert hub.fingerprint() == ()
+    assert len(read_calls) == 7
+    assert hub.fingerprint() == ()
+    assert len(read_calls) == 9
+    assert hub.fingerprint() == ()
+    assert len(read_calls) == 10
+    assert all(read_calls.count(path) == 2 for path in invalid_paths)
+
+    monotonic.return_value += (
+        skillhub_module.INVALID_SKILL_RECHECK_COOLDOWN_SECONDS + 1
+    )
+    assert hub.fingerprint() == ()
+    assert hub.fingerprint() == ()
+    assert hub.fingerprint() == ()
+    assert all(read_calls.count(path) == 3 for path in invalid_paths)
+    assert len(hub._invalid_recheck_queue) == len(invalid_paths)
+    assert len(hub._invalid_recheck_paths) == len(invalid_paths)
+    warnings = [
+        record for record in caplog.records
+        if "invalid UTF-8" in record.getMessage()
+    ]
+    assert len(warnings) == 5
+
+
+def test_transient_read_error_is_throttled_then_recovers(
+    tmp_path, monkeypatch, caplog,
+):
+    hub_dir = tmp_path / "hub"
+    skill_dir = _write_hub_skill(hub_dir, "readable", "readable helper")
+    skill_path = skill_dir / "SKILL.md"
+    monotonic = Mock(return_value=100.0)
+    read_fails = [True]
+    read_calls: list[int] = []
+    real_read_bytes = pathlib.Path.read_bytes
+
+    def controlled_read_bytes(self):
+        if self == skill_path:
+            read_calls.append(1)
+            if read_fails[0]:
+                raise PermissionError("transient read failure")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", controlled_read_bytes)
+    monkeypatch.setattr(skillhub_module.time, "monotonic", monotonic)
+    caplog.set_level(logging.WARNING, logger="xskill.skillhub")
+    hub = _make_hub(hub_dir, scan_ttl_seconds=0.0)
+
+    assert hub.entry("readable") is None
+    assert hub.entry("readable") is None
+    assert read_calls == [1]
+
+    read_fails[0] = False
+    monotonic.return_value += (
+        skillhub_module.SKILL_FILE_IO_RETRY_COOLDOWN_SECONDS + 1
+    )
+    recovered = hub.entry("readable")
+
+    assert recovered is not None
+    assert read_calls == [1, 1]
+    assert skill_path not in hub._file_io_retry_after
+    warnings = [
+        record for record in caplog.records
+        if "error_type=PermissionError" in record.getMessage()
+    ]
+    assert len(warnings) == 1
+
+
+def test_transient_stat_error_is_throttled_then_recovers(
+    tmp_path, monkeypatch, caplog,
+):
+    hub_dir = tmp_path / "hub"
+    skill_dir = _write_hub_skill(hub_dir, "statable", "statable helper")
+    skill_path = skill_dir / "SKILL.md"
+    monotonic = Mock(return_value=100.0)
+    stat_fails = [True]
+    stat_calls: list[int] = []
+    real_stat = pathlib.Path.stat
+
+    def controlled_stat(self, *args, **kwargs):
+        if self == skill_path:
+            stat_calls.append(1)
+            if stat_fails[0]:
+                raise PermissionError("transient stat failure")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "stat", controlled_stat)
+    monkeypatch.setattr(skillhub_module.time, "monotonic", monotonic)
+    caplog.set_level(logging.WARNING, logger="xskill.skillhub")
+    hub = _make_hub(hub_dir, scan_ttl_seconds=0.0)
+
+    assert hub.entry("statable") is None
+    assert hub.entry("statable") is None
+    assert stat_calls == [1]
+
+    stat_fails[0] = False
+    monotonic.return_value += (
+        skillhub_module.SKILL_FILE_IO_RETRY_COOLDOWN_SECONDS + 1
+    )
+    recovered = hub.entry("statable")
+
+    assert recovered is not None
+    assert stat_calls == [1, 1]
+    assert skill_path not in hub._file_io_retry_after
+    warnings = [
+        record for record in caplog.records
+        if "error_type=PermissionError" in record.getMessage()
+    ]
+    assert len(warnings) == 1
+
+
+@pytest.mark.parametrize(
+    "exception_type", [RuntimeError, AttributeError, ValueError],
+)
+def test_unknown_frontmatter_exception_propagates(
+    tmp_path, monkeypatch, caplog, exception_type,
+):
+    hub_dir = tmp_path / "hub"
+    skill_dir = _write_hub_skill(hub_dir, "unknown", "unknown helper")
+    skill_path = skill_dir / "SKILL.md"
+
+    def failing_parse(_text):
+        raise exception_type("unexpected parser defect")
+
+    monkeypatch.setattr(skillhub_module, "fm_parse", failing_parse)
+    caplog.set_level(logging.WARNING, logger="xskill.skillhub")
+    hub = _make_hub(hub_dir)
+
+    with pytest.raises(exception_type, match="unexpected parser defect"):
+        hub.fingerprint()
+
+    assert skill_path not in hub._file_memo
+    assert not any(
+        "path=unknown/SKILL.md" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_deleted_invalid_skill_clears_failed_file_memo(tmp_path):
+    hub_dir = tmp_path / "hub"
+    invalid_path = hub_dir / "deleted/SKILL.md"
+    invalid_path.parent.mkdir(parents=True)
+    invalid_path.write_bytes(b"\xa1\xaa")
+    hub = _make_hub(hub_dir, scan_ttl_seconds=0.0)
+
+    assert hub.fingerprint() == ()
+    assert invalid_path in hub._file_memo
+    invalid_path.unlink()
+
+    assert hub.fingerprint() == ()
+    assert invalid_path not in hub._file_memo
+    assert invalid_path not in hub._invalid_recheck_paths
+    assert invalid_path not in hub._invalid_recheck_queue
+
+
+def test_concurrent_search_reads_and_logs_invalid_skill_once(
+    tmp_path, monkeypatch, caplog,
+):
+    hub_dir = tmp_path / "hub"
+    _write_hub_skill(hub_dir, "alpha", "alpha helper")
+    invalid_path = hub_dir / "broken/SKILL.md"
+    invalid_path.parent.mkdir(parents=True)
+    invalid_path.write_bytes(b"\xa1\xaa")
+    hub = _make_hub(hub_dir)
+
+    invalid_read_calls: list[int] = []
+    calls_lock = threading.Lock()
+    real_read_bytes = pathlib.Path.read_bytes
+
+    def counting_read_bytes(self):
+        if self == invalid_path:
+            with calls_lock:
+                invalid_read_calls.append(1)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", counting_read_bytes)
+    caplog.set_level(logging.WARNING, logger="xskill.skillhub")
+    barrier = threading.Barrier(8)
+
+    def search():
+        barrier.wait()
+        return hub.search("alpha", limit=5)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = [
+            future.result(timeout=10)
+            for future in [pool.submit(search) for _ in range(8)]
+        ]
+
+    warnings = [
+        record for record in caplog.records
+        if "invalid UTF-8" in record.getMessage()
+    ]
+    assert all(rows[0]["display_name"] == "alpha" for rows in results)
+    assert len(invalid_read_calls) == 1
+    assert len(warnings) == 1
 
 
 def test_missing_dir_raises_then_recovers(tmp_path):

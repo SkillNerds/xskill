@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from xskill import cli
@@ -19,6 +20,19 @@ from xskill.team.server import api as server_api
 from xskill.team.server.client_registry import ClientRegistry, safe_dir_name
 
 TOKEN = "secret-token"
+
+
+class _FailingSearchHub:
+    enabled = True
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def cached_search(self, _query: str, _limit: int):
+        return None
+
+    def search(self, _query: str, _limit: int):
+        raise self.error
 
 
 def _write_hub_skill(hub_dir: Path, folder: str, name: str, description: str) -> Path:
@@ -125,6 +139,104 @@ def test_search_and_upload_503_when_skillhub_disabled(tmp_path):
                     files={"file": ("x.zip", b"zz", "application/zip")},
                     headers=hdr)
     assert r.status_code == 503
+
+
+def test_search_unknown_error_returns_safe_correlated_response(tmp_path, caplog):
+    sensitive_error = RuntimeError(
+        "database password leaked from /root/private/search-index.db"
+    )
+    client = _make_team_client(
+        tmp_path,
+        skillhub=_FailingSearchHub(sensitive_error),
+    )
+    client_id, headers = _register(client)
+    caplog.set_level(logging.ERROR, logger="xskill.server")
+
+    response = client.get(
+        "/api/v1/team/skill_hub/search",
+        params={"query": "private user search phrase", "limit": 9},
+        headers=headers,
+    )
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload == {
+        "code": "SKILL_HUB_SEARCH_FAILED",
+        "message": "服务器执行 SkillHub 搜索时发生异常",
+        "request_id": payload["request_id"],
+        "retryable": False,
+    }
+    assert payload["request_id"].startswith("search-")
+    assert len(payload["request_id"]) == len("search-") + 16
+    assert response.headers["X-Request-ID"] == payload["request_id"]
+    assert "password" not in response.text
+    assert "/root/private" not in response.text
+    assert payload["request_id"] in caplog.text
+    assert client_id in caplog.text
+    assert "limit=9" in caplog.text
+    assert "query_length=26" in caplog.text
+    assert "private user search phrase" not in caplog.text
+    assert "RuntimeError: database password leaked" in caplog.text
+    assert any(record.exc_info for record in caplog.records)
+
+
+def test_search_missing_source_returns_503_and_logs_path(tmp_path, caplog):
+    missing_path = "/root/private/missing-skillhub"
+    client = _make_team_client(
+        tmp_path,
+        skillhub=_FailingSearchHub(FileNotFoundError(missing_path)),
+    )
+    client_id, headers = _register(client)
+    caplog.set_level(logging.WARNING, logger="xskill.server")
+
+    response = client.get(
+        "/api/v1/team/skill_hub/search",
+        params={"query": "docker", "limit": 5},
+        headers=headers,
+    )
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload == {
+        "code": "SKILL_HUB_SOURCE_UNAVAILABLE",
+        "message": "SkillHub 数据源暂时不可用",
+        "request_id": payload["request_id"],
+        "retryable": True,
+    }
+    request_id = response.headers["X-Request-ID"]
+    assert request_id == payload["request_id"]
+    assert request_id.startswith("search-")
+    assert missing_path not in response.text
+    assert request_id in caplog.text
+    assert client_id in caplog.text
+    assert missing_path in caplog.text
+    assert any(record.exc_info for record in caplog.records)
+
+
+def test_search_preserves_http_exception_status_detail_and_headers(tmp_path):
+    rate_limited = HTTPException(
+        status_code=429,
+        detail={"code": "SEARCH_RATE_LIMITED", "retry_after": 7},
+        headers={"Retry-After": "7"},
+    )
+    client = _make_team_client(
+        tmp_path,
+        skillhub=_FailingSearchHub(rate_limited),
+    )
+    _client_id, headers = _register(client)
+
+    response = client.get(
+        "/api/v1/team/skill_hub/search",
+        params={"query": "docker"},
+        headers=headers,
+    )
+
+    assert response.status_code == 429
+    assert response.json() == {
+        "detail": {"code": "SEARCH_RATE_LIMITED", "retry_after": 7},
+    }
+    assert response.headers["Retry-After"] == "7"
+    assert "X-Request-ID" not in response.headers
 
 
 # ── server: upload ──────────────────────────────────────────────
@@ -317,7 +429,9 @@ def test_search_slot_eviction_records_and_removes_link_and_copy_targets(tmp_path
     assert not _install_meta_path(copy_dest).exists()
 
 
-def test_search_slot_eviction_supports_legacy_ledger_without_installations(tmp_path):
+def test_search_slot_eviction_does_not_delete_copy_without_sidecar_identity(
+    tmp_path,
+):
     home = tmp_path / "home"
     _enable_link_and_copy_ecosystems(home)
     slots = SearchSlots(xskill_home=tmp_path / "xhome",
@@ -333,7 +447,9 @@ def test_search_slot_eviction_supports_legacy_ledger_without_installations(tmp_p
     slots.install(_fake_result("new"), _fake_archive("new"), query="q")
 
     assert not (home / ".claude" / "skills" / old_id).exists()
-    assert not (home / ".agents" / "skills" / old_id).exists()
+    # copy target 内 marker 单独不能证明所有权；sidecar 已丢失时必须留给用户
+    # 手工确认，不能为了兼容旧台账而递归删除。
+    assert (home / ".agents" / "skills" / old_id).exists()
 
 
 def test_search_slot_eviction_preserves_targets_taken_over_by_another_source(tmp_path):

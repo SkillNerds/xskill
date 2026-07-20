@@ -262,6 +262,59 @@ class TestController:
         assert res["action"] == "timeout_discarded"
         assert not canary.has_staging(sd)
 
+    def test_reject_discard_failure_is_retryable(self, tmp_path, monkeypatch):
+        sd = self._setup_staged(tmp_path)
+        cfg = canary.CanaryConfig(min_samples=3)
+        main_commit = canary.main_sha(sd)
+        staging_commit = canary.staging_sha(sd)
+        for sample_index in range(3):
+            canary.append_ux_score(
+                sd,
+                traj_id=f"main-{sample_index}",
+                skill_name="s",
+                side="main",
+                commit_sha=main_commit,
+                score=9,
+                reasons="main wins",
+            )
+            canary.append_ux_score(
+                sd,
+                traj_id=f"staging-{sample_index}",
+                skill_name="s",
+                side="staging",
+                commit_sha=staging_commit,
+                score=1,
+                reasons="staging loses",
+            )
+        def fail_discard(_skill_path):
+            return False
+
+        monkeypatch.setattr(canary, "discard_staging", fail_discard)
+
+        result = canary.check_and_decide(sd, cfg)
+
+        assert result["action"] == "discard_failed"
+        assert result["attempted_action"] == "rejected"
+        assert canary.has_staging(sd)
+
+    def test_timeout_discard_failure_is_retryable(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        sd = self._setup_staged(tmp_path)
+        cfg = canary.CanaryConfig(min_samples=5, max_days_hold=0)
+        def fail_discard(_skill_path):
+            return False
+
+        monkeypatch.setattr(canary, "discard_staging", fail_discard)
+
+        result = canary.check_and_decide(sd, cfg)
+
+        assert result["action"] == "discard_failed"
+        assert result["attempted_action"] == "timeout_discarded"
+        assert canary.has_staging(sd)
+
 
 # ──────────────────────────────────────────────────────
 # gitignore 模板

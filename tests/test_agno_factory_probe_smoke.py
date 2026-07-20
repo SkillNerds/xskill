@@ -128,12 +128,15 @@ def test_context_management_reads_compact_config_and_calls_compactor(tmp_path):
                 return ModelResponse(role="assistant", content="COMPACT SUMMARY")
             return ModelResponse(role="assistant", content="final", input_tokens=10)
 
-    model = _wrap_with_context_mgmt(_FakeModel(), {
-        "max_context": 1000,
-        "compact_token_limit": 20,
-        "compact_keep_recent_messages": 2,
-        "spill_root": str(tmp_path / "spill"),
-    })
+    model = _wrap_with_context_mgmt(
+        _FakeModel(),
+        {
+            "max_context": 1000,
+            "compact_token_limit": 20,
+            "compact_keep_recent_messages": 2,
+        },
+        spill_root=tmp_path / "spill",
+    )
     assistant_message = Message(role="assistant", content=None)
     messages = [
         Message(role="system", content="SkillEditAgent system prompt"),

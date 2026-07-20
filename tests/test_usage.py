@@ -104,6 +104,38 @@ def test_ledger_record_never_raises(monkeypatch):
     assert led.snapshot()["total_calls"] == 2  # 仍记账(token=0)
 
 
+def test_ledger_persists_only_to_explicit_instance_db(
+    tmp_path, monkeypatch,
+):
+    from unittest.mock import Mock
+
+    from xskill.pipeline import registry
+
+    instance_db_path = tmp_path / "instance" / "registry.db"
+    global_db_path = tmp_path / "global" / "registry.db"
+    monkeypatch.setattr(
+        registry,
+        "get_registry_db_path",
+        Mock(return_value=global_db_path),
+    )
+    ledger = UsageLedger(_table(), db_path=instance_db_path)
+
+    ledger.record_llm(
+        "atom_split",
+        "deepseek-v4-flash",
+        {
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+            }
+        },
+    )
+
+    assert registry.usage_summary(instance_db_path)["total_calls"] == 1
+    assert not global_db_path.exists()
+
+
 # ── vendored 表加载 ──────────────────────────────────────────────
 def test_load_vendored_price_table():
     t = load_price_table(None)

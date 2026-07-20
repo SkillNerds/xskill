@@ -221,11 +221,16 @@ class TestFirstRunSinglePass:
         traj_path = traj_dir / "traj_x.md"
         traj_path.write_text(_TRAJ_MD, encoding="utf-8")
         store = AtomTaskStore(root=traj_dir)
+        logs_dir = tmp_path / "instance-logs"
         atoms = TaskAgent(
             agno_agent_factory=_AutoSplitAgno, store=store,
+            logs_dir=logs_dir,
         ).run(traj_id="traj_x", traj_path=traj_path)
 
         assert len(atoms) == 2
+        assert (
+            logs_dir / "agents" / "task_agents" / "traj_x.log"
+        ).is_file()
         # 首 atom 从 floor(1) 起（并前言）；终点 = 下一 atom 起点（17）。
         assert atoms[0].offset_start == 1
         assert atoms[0].offset_end == 17
@@ -895,6 +900,26 @@ class TestContextManager:
         assert "RAW_SEGMENT_SHOULD_NOT_STAY_IN_CONTEXT" not in content
         spill_path = re.search(r"spill_path: (.+)", content).group(1).strip()
         assert Path(spill_path).read_text(encoding="utf-8") == original_tool_content
+
+    def test_spillable_trim_without_instance_root_fails_loud(self):
+        from xskill.agents.context_budget import ContextManager
+
+        class _Msg:
+            def __init__(self, role, content, tool_name=None):
+                self.role = role
+                self.content = content
+                self.tool_name = tool_name
+
+        messages = [
+            _Msg("user", "scenario"),
+            _Msg("tool", "x" * 8000, "read_file"),
+        ]
+
+        def fake_invoke(_messages, **_keyword_arguments):
+            raise AssertionError("unsafe spill must fail before model invoke")
+
+        with pytest.raises(RuntimeError, match="spill_root 未绑定"):
+            ContextManager(max_context=1000).wrap(fake_invoke)(messages)
 
     def test_compact_runs_after_spill_when_history_still_exceeds_limit(self, tmp_path):
         """spill 后仍超 compact_token_limit 时,应调用 compact_fn 并收敛历史。"""

@@ -21,7 +21,7 @@ from xskill.dashboard.auth import (
 )
 from xskill.dashboard.console import build_console_router
 from xskill.pipeline import registry as R
-from xskill.team.server.api import init_team_context
+from xskill.team.server.api import init_team_context, team_context
 from xskill.team.server.client_registry import ClientRegistry
 from xskill.team.server.skill_manifest import build_manifest
 
@@ -59,9 +59,21 @@ def console_env(tmp_path):
     reg = ClientRegistry(tmp_path / "c.db")
     cid = reg.register(user_name="alice")
     token = reg.ensure_dashboard_token(cid)
+
+    def configure_watch_dir(path: Path, label: str, auto_index: bool) -> None:
+        R.register_dir(
+            path,
+            label=label,
+            auto_index=auto_index,
+            ecosystem="team_client",
+            db_path=db,
+        )
+
     init_team_context(
         join_token="jt", client_registry=reg, skill_dir=skills,
-        traj_root=tmp_path / "traj", register_dir=lambda p, l: None)
+        traj_root=tmp_path / "traj",
+        register_dir=lambda p, l: configure_watch_dir(p, l, True),
+        configure_watch_dir=configure_watch_dir)
     # 槽位改由现取 live config(热生效),不再走 init_team_context 快照
     from xskill.api import app as app_mod
     app_mod._config = {"team": {"server": {"skill_slots": 3, "ranked_slots": 2}}}
@@ -266,6 +278,73 @@ def test_users_matrix_lists_clients_with_version(console_env):
     um = boss.get("/api/v1/dashboard/admin/users-matrix").json()
     row = next(u for u in um["users"] if u["user"] == "alice")
     assert row["client_version"] == "0.9.9"
+    assert row["client_id"] == cid
+    assert row["ingest_paused"] is False
+
+
+def test_admin_ingest_control_is_authorized_idempotent_and_syncs_watch_dir(
+    console_env,
+):
+    alice = console_env["alice"]
+    boss = console_env["boss"]
+    registry = console_env["registry"]
+    db = console_env["db"]
+    client_id = registry.find_by_user_name("alice")
+    sessions_dir = (
+        team_context().traj_root
+        / "clients"
+        / registry.dir_name_for(client_id)
+        / "sessions"
+    )
+    sessions_dir.mkdir(parents=True)
+    R.register_dir(
+        sessions_dir,
+        label="alice",
+        ecosystem="team_client",
+        db_path=db,
+    )
+    endpoint = f"/api/v1/dashboard/admin/client/{client_id}/ingest"
+
+    assert alice.put(
+        endpoint, json={"paused": True, "reason": "quality review"},
+    ).status_code == 403
+
+    first = boss.put(
+        endpoint, json={"paused": True, "reason": "quality review"},
+    )
+    assert first.status_code == 200
+    body = first.json()
+    assert body["ingest_paused"] is True
+    assert body["ingest_paused_by"] == "boss"
+    assert body["ingest_pause_reason"] == "quality review"
+    assert body["auto_index"] is False
+    paused_at = body["ingest_paused_at"]
+    assert R.get_watch_dir(sessions_dir, db_path=db)["auto_index"] == 0
+
+    repeated = boss.put(
+        endpoint, json={"paused": True, "reason": "different"},
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["ingest_paused_at"] == paused_at
+    assert repeated.json()["ingest_pause_reason"] == "quality review"
+
+    matrix = boss.get("/api/v1/dashboard/admin/users-matrix").json()
+    user_row = next(row for row in matrix["users"] if row["client_id"] == client_id)
+    assert user_row["ingest_paused"] is True
+    assert user_row["ingest_pause_reason"] == "quality review"
+
+    resumed = boss.put(endpoint, json={"paused": False})
+    assert resumed.status_code == 200
+    assert resumed.json()["ingest_paused"] is False
+    assert resumed.json()["ingest_paused_at"] == ""
+    assert resumed.json()["auto_index"] is True
+    assert R.get_watch_dir(sessions_dir, db_path=db)["auto_index"] == 1
+
+    unknown = boss.put(
+        "/api/v1/dashboard/admin/client/missing/ingest",
+        json={"paused": True},
+    )
+    assert unknown.status_code == 404
 
 
 # ── 2.9 设置页 ──────────────────────────────────────────────────────

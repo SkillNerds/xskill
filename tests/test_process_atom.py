@@ -1,8 +1,6 @@
 """process_atom_task 单测（v2.1: cluster only, edit 独立扫描）"""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from xskill.pipeline.atom import AtomTask, AtomTaskStore
@@ -58,10 +56,21 @@ def _cluster_factory(*, instructions, tools):
 
 
 class TestProcessAtomTask:
-    def test_cluster_writes_candidates(self, tmp_path):
+    def test_cluster_writes_candidates(self, tmp_path, monkeypatch):
         """process_atom_task 只跑 cluster：写出 candidates，不再触发 edit。"""
+        from unittest.mock import Mock
+
+        from xskill.pipeline import registry
+
         skill_dir = tmp_path / "skill"; skill_dir.mkdir()
         store_root = tmp_path / "cc-sessions"; store_root.mkdir()
+        instance_db_path = tmp_path / "instance" / "registry.db"
+        global_db_path = tmp_path / "global" / "registry.db"
+        monkeypatch.setattr(
+            registry,
+            "get_registry_db_path",
+            Mock(return_value=global_db_path),
+        )
         store = AtomTaskStore(root=store_root)
         atom = _seed_atom(store)
         store.rebuild_vector_index(_FakeEmbed())
@@ -72,6 +81,7 @@ class TestProcessAtomTask:
             skill_dir=skill_dir, store=store,
             embed_client=_FakeEmbed(),
             agno_agent_factory=_cluster_factory,
+            db_path=instance_db_path,
         )
         assert result["action"] == "clustered"
         assert result["atom_id"] == "atom_x_0001"
@@ -85,6 +95,12 @@ class TestProcessAtomTask:
         assert data["candidates"][0]["weightscore"] == 10
         # v2.1: 不再有 promoted 字段
         assert "promoted" not in data["candidates"][0]
+        with registry.pooled_connection(instance_db_path) as connection:
+            adoption_count = connection.execute(
+                "SELECT COUNT(*) FROM atom_adoption"
+            ).fetchone()[0]
+        assert adoption_count == 1
+        assert not global_db_path.exists()
 
     def test_cluster_failure_does_not_corrupt_candidates(self, tmp_path):
         """Bug 1 关键回归：cluster 调 LLM 失败时，已写的 candidates 不被污染。

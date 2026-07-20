@@ -15,6 +15,9 @@ dispatch handler 来观察并发情况：替换 ``status`` 的 handler 为有人
 """
 from __future__ import annotations
 
+import errno
+import multiprocessing
+import shutil
 import threading
 import time
 
@@ -30,6 +33,20 @@ from xskill.skill.git import (
     run_git,
     skill_repo_lock,
 )
+
+
+def _hold_repo_lock_process(repo, acquired, release) -> None:
+    with skill_repo_lock(repo, use_git_write_limit=False):
+        acquired.set()
+        release.wait(timeout=10)
+
+
+def _read_repo_status_process(repo, started, done, result_queue) -> None:
+    started.set()
+    result_queue.put(
+        run_git(["status", "--porcelain"], cwd=repo),
+    )
+    done.set()
 
 
 @pytest.fixture(autouse=True)
@@ -109,6 +126,125 @@ def test_run_git_different_repos_run_in_parallel(tmp_path, monkeypatch):
     for t in threads:
         t.join()
     assert active["max"] > 1, "不同 repo 也被串行了——锁粒度错了，应是 per-repo"
+
+
+def test_cross_process_read_waits_for_same_repo_transaction(tmp_path):
+    """另一进程的只读 Git 命令不能穿透同仓复合写事务。"""
+    repo = str(tmp_path / "cross-process")
+    ensure_repo(repo)
+    process_context = multiprocessing.get_context("spawn")
+    acquired = process_context.Event()
+    release = process_context.Event()
+    reader_started = process_context.Event()
+    reader_done = process_context.Event()
+    result_queue = process_context.Queue()
+    holder = process_context.Process(
+        target=_hold_repo_lock_process,
+        args=(repo, acquired, release),
+    )
+    reader = process_context.Process(
+        target=_read_repo_status_process,
+        args=(repo, reader_started, reader_done, result_queue),
+    )
+
+    holder.start()
+    assert acquired.wait(timeout=10)
+    reader.start()
+    assert reader_started.wait(timeout=10)
+    assert not reader_done.wait(timeout=0.2)
+    release.set()
+    holder.join(timeout=10)
+    reader.join(timeout=10)
+
+    stuck_processes = [
+        process
+        for process in (holder, reader)
+        if process.is_alive()
+    ]
+    for process in stuck_processes:
+        process.terminate()
+        process.join(timeout=5)
+    assert stuck_processes == []
+    assert holder.exitcode == 0
+    assert reader.exitcode == 0
+    assert result_queue.get(timeout=5) == (0, "", "")
+
+
+def test_repo_lock_survives_repository_cleanup_while_held(tmp_path):
+    """删 working copy 不能换掉锁 inode，让第二进程穿透仍在运行的事务。"""
+    repo = tmp_path / "cleanup-race"
+    repo.mkdir()
+    process_context = multiprocessing.get_context("spawn")
+    holder_acquired = process_context.Event()
+    holder_release = process_context.Event()
+    contender_acquired = process_context.Event()
+    contender_release = process_context.Event()
+    holder = process_context.Process(
+        target=_hold_repo_lock_process,
+        args=(str(repo), holder_acquired, holder_release),
+    )
+    contender = process_context.Process(
+        target=_hold_repo_lock_process,
+        args=(str(repo), contender_acquired, contender_release),
+    )
+
+    holder.start()
+    assert holder_acquired.wait(timeout=10)
+    shutil.rmtree(repo)
+    contender.start()
+    assert not contender_acquired.wait(timeout=0.2)
+    holder_release.set()
+    assert contender_acquired.wait(timeout=10)
+    contender_release.set()
+    holder.join(timeout=10)
+    contender.join(timeout=10)
+
+    stuck_processes = [
+        process
+        for process in (holder, contender)
+        if process.is_alive()
+    ]
+    for process in stuck_processes:
+        process.terminate()
+        process.join(timeout=5)
+    assert stuck_processes == []
+    assert holder.exitcode == 0
+    assert contender.exitcode == 0
+
+
+def test_windows_lock_wait_retries_contention_but_not_permanent_error(
+    tmp_path,
+    monkeypatch,
+):
+    class FakeMsvcrt:
+        LK_NBLCK = 2
+
+        def __init__(self, failures: int, windows_error: int) -> None:
+            self.calls = 0
+            self.failures = failures
+            self.windows_error = windows_error
+
+        def locking(self, _file_number, _mode, _length) -> None:
+            self.calls += 1
+            if self.calls <= self.failures:
+                error = OSError(errno.EACCES, "injected lock failure")
+                error.winerror = self.windows_error
+                raise error
+
+    lock_path = tmp_path / "windows.lock"
+    lock_path.write_bytes(b"\0")
+    monkeypatch.setattr(gitmod, "_WINDOWS_LOCK_RETRY_SECONDS", 0)
+
+    contention = FakeMsvcrt(failures=12, windows_error=33)
+    with lock_path.open("a+b") as lock_file:
+        gitmod._acquire_windows_file_lock(lock_file, contention)
+    assert contention.calls == 13
+
+    permanent = FakeMsvcrt(failures=1, windows_error=5)
+    with lock_path.open("a+b") as lock_file:
+        with pytest.raises(OSError, match="injected lock failure"):
+            gitmod._acquire_windows_file_lock(lock_file, permanent)
+    assert permanent.calls == 1
 
 
 def test_skill_repo_lock_reentrant_and_allows_inner_run_git(tmp_path, monkeypatch):

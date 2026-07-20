@@ -2,6 +2,9 @@
 不能让 daemon 带 None client 继续跑（CLAUDE.md 第 1 条：不写 fallback）。"""
 from __future__ import annotations
 
+import logging
+from unittest.mock import MagicMock
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -68,3 +71,332 @@ def test_startup_raises_when_create_embed_client_fails(monkeypatch, tmp_path, _s
     with pytest.raises(RuntimeError, match="invalid llm config"):
         with TestClient(app):
             pass
+
+
+def test_standalone_worker_commands_share_resolved_ecosystem_home(
+    monkeypatch, tmp_path, _stub_loaded,
+):
+    """standalone 的 sweep/轻量 ingester 都只能访问同一个显式生态 HOME。"""
+    from xskill.api import app as srv
+    from xskill.pipeline import scheduler as scheduler_module
+
+    scheduler_records = []
+
+    class TrackedScheduler:
+        def __init__(self, name, command, **keyword_arguments):
+            self.name = name
+            self.command = list(command)
+            self.keyword_arguments = keyword_arguments
+            self.started = False
+            self.stopped = False
+            scheduler_records.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self, timeout=5.0):
+            del timeout
+            self.stopped = True
+
+    ecosystem_home = tmp_path / "isolated-harness-home"
+    ecosystem_home.mkdir()
+    monkeypatch.setattr(srv, "_schedulers", [])
+    monkeypatch.setattr(
+        srv, "create_llm_client", MagicMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        srv, "create_embed_client", MagicMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        srv, "init_skill_authoring_tool_context", MagicMock(),
+    )
+    monkeypatch.setattr(
+        scheduler_module,
+        "IntervalSubprocessScheduler",
+        TrackedScheduler,
+    )
+
+    app = srv.create_app(home_root=ecosystem_home)
+    with TestClient(app):
+        assert all(record.started for record in scheduler_records)
+
+    records_by_name = {
+        record.name: record for record in scheduler_records
+    }
+    expected_home_arguments = [
+        "--home",
+        str(ecosystem_home.resolve()),
+    ]
+    assert set(records_by_name) == {"sweep", "ecosystem-ingest"}
+    assert records_by_name["sweep"].command[-2:] == expected_home_arguments
+    ingest_command = records_by_name["ecosystem-ingest"].command
+    home_argument_index = ingest_command.index("--home")
+    assert ingest_command[
+        home_argument_index:home_argument_index + 2
+    ] == expected_home_arguments
+    assert "--server" not in ingest_command
+    assert all(record.stopped for record in scheduler_records)
+
+
+def test_team_server_schedules_only_server_sweep(
+    monkeypatch, tmp_path, _stub_loaded,
+):
+    """team server 只跑 server sweep，不得启动任何本机生态采集子进程。"""
+    from xskill import config as config_module
+    from xskill.api import app as srv
+    from xskill.pipeline import scheduler as scheduler_module
+    from xskill.recommend import engine as recommend_engine
+    from xskill.team.server import api as server_api
+    from xskill.team.server import client_registry as registry_module
+    from xskill.team.server import skill_manifest
+    from xskill.team.server import state as server_state
+
+    scheduler_records = []
+
+    class TrackedScheduler:
+        def __init__(self, name, command, **keyword_arguments):
+            self.name = name
+            self.command = list(command)
+            self.keyword_arguments = keyword_arguments
+            self.started = False
+            self.stopped = False
+            scheduler_records.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self, timeout=5.0):
+            del timeout
+            self.stopped = True
+
+    class TrackedRegistry:
+        def __init__(self, database_path):
+            self.database_path = database_path
+            self.closed = False
+
+        def list(self):
+            return []
+
+        def close(self):
+            self.closed = True
+            return True
+
+    class SuccessfulEngine:
+        def __init__(self, **_keyword_arguments):
+            self.skillhub = None
+
+    server_api.clear_team_context(profile_refresh_shutdown_timeout=0)
+    skill_manifest.set_recommend_engine(None)
+    monkeypatch.setattr(srv, "_schedulers", [])
+    monkeypatch.setattr(
+        srv, "create_llm_client", MagicMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        srv, "create_embed_client", MagicMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        srv, "init_skill_authoring_tool_context", MagicMock(),
+    )
+    monkeypatch.setattr(
+        scheduler_module,
+        "IntervalSubprocessScheduler",
+        TrackedScheduler,
+    )
+    monkeypatch.setattr(
+        registry_module, "ClientRegistry", TrackedRegistry,
+    )
+    monkeypatch.setattr(
+        recommend_engine, "SkillRecommendEngine", SuccessfulEngine,
+    )
+    monkeypatch.setattr(
+        server_state, "ensure_join_token", MagicMock(return_value="token"),
+    )
+    monkeypatch.setattr(
+        config_module,
+        "get_team_clients_db_path",
+        MagicMock(return_value=tmp_path / "team_clients.db"),
+    )
+    monkeypatch.setattr(
+        config_module,
+        "get_team_server_state_path",
+        MagicMock(return_value=tmp_path / "team_server.json"),
+    )
+    monkeypatch.setattr(
+        config_module,
+        "get_team_trajectories_dir",
+        MagicMock(return_value=tmp_path / "team_trajectories"),
+    )
+
+    app = srv.create_app(
+        home_root=tmp_path / "must-not-be-scanned",
+        team_server=True,
+    )
+    with TestClient(app):
+        assert all(record.started for record in scheduler_records)
+
+    records_by_name = {
+        record.name: record for record in scheduler_records
+    }
+    assert set(records_by_name) == {"profile-refresh", "sweep"}
+    sweep_command = records_by_name["sweep"].command
+    assert sweep_command[-1] == "--server"
+    assert "--home" not in sweep_command
+    assert "ecosystem-ingest" not in records_by_name
+    assert all(record.stopped for record in scheduler_records)
+
+
+def test_team_context_init_failure_aborts_startup(
+    monkeypatch, tmp_path, _stub_loaded, caplog,
+):
+    """team 上下文初始化失败必须清理后终止 startup，不能带 None context 服务。"""
+    from xskill.api import app as srv
+    from xskill.team.server import api as server_api
+    from xskill.team.server import state as server_state
+
+    private_error = "broken join token file at /root/private/team-state.json"
+
+    def fail_join_token(_state_path):
+        raise RuntimeError(private_error)
+
+    monkeypatch.setattr(srv, "create_llm_client", MagicMock(return_value=object()))
+    monkeypatch.setattr(srv, "create_embed_client", MagicMock(return_value=object()))
+    monkeypatch.setattr(srv, "init_skill_authoring_tool_context", MagicMock())
+    monkeypatch.setattr(server_state, "ensure_join_token", fail_join_token)
+    caplog.set_level(logging.ERROR, logger="xskill.server")
+    app = srv.create_app(home_root=tmp_path, team_server=True)
+
+    with pytest.raises(RuntimeError, match="broken join token file"):
+        with TestClient(app):
+            pass
+
+    assert "team server context init failed" in caplog.text
+    assert private_error in caplog.text
+    assert any(record.exc_info for record in caplog.records)
+    assert server_api.team_context().client_registry is None
+
+
+def test_engine_init_failure_closes_unattached_registry_once(
+    monkeypatch, tmp_path, _stub_loaded, caplog,
+):
+    """engine 构造失败时局部 registry 尚未注入 context，也必须且只能关闭一次。"""
+    from xskill.api import app as srv
+    from xskill.recommend import engine as recommend_engine
+    from xskill.team.server import api as server_api
+    from xskill.team.server import client_registry as registry_module
+    from xskill.team.server import skill_manifest
+    from xskill.team.server import state as server_state
+
+    registries = []
+    private_error = "engine failed for /root/private/team-profile.db"
+
+    class TrackedRegistry:
+        def __init__(self, _database_path):
+            self.close_calls = 0
+            registries.append(self)
+
+        def list(self):
+            return []
+
+        def close(self):
+            self.close_calls += 1
+            return True
+
+    class FailingEngine:
+        def __init__(self, **_kwargs):
+            raise RuntimeError(private_error)
+
+    server_api.clear_team_context(profile_refresh_shutdown_timeout=0)
+    skill_manifest.set_recommend_engine(None)
+    monkeypatch.setattr(srv, "create_llm_client", MagicMock(return_value=object()))
+    monkeypatch.setattr(srv, "create_embed_client", MagicMock(return_value=object()))
+    monkeypatch.setattr(srv, "init_skill_authoring_tool_context", MagicMock())
+    monkeypatch.setattr(server_state, "ensure_join_token", MagicMock(return_value="token"))
+    monkeypatch.setattr(registry_module, "ClientRegistry", TrackedRegistry)
+    monkeypatch.setattr(recommend_engine, "SkillRecommendEngine", FailingEngine)
+    caplog.set_level(logging.ERROR, logger="xskill.server")
+    app = srv.create_app(home_root=tmp_path, team_server=True)
+
+    with pytest.raises(RuntimeError, match="engine failed"):
+        with TestClient(app):
+            pass
+
+    assert len(registries) == 1
+    assert registries[0].close_calls == 1
+    assert server_api.team_context().client_registry is None
+    assert skill_manifest.get_recommend_engine() is None
+    assert private_error in caplog.text
+    assert "team server context init failed" in caplog.text
+    assert any(record.exc_info for record in caplog.records)
+
+
+def test_profile_scheduler_start_failure_cleans_attached_resources(
+    monkeypatch, tmp_path, _stub_loaded, caplog,
+):
+    """context/executor/engine 已接线后再失败，startup 回滚必须逐项且不重复清理。"""
+    from xskill.api import app as srv
+    from xskill.pipeline import scheduler as scheduler_module
+    from xskill.recommend import engine as recommend_engine
+    from xskill.team.server import api as server_api
+    from xskill.team.server import client_registry as registry_module
+    from xskill.team.server import skill_manifest
+    from xskill.team.server import state as server_state
+
+    registries = []
+    schedulers = []
+    private_error = "scheduler failed for /root/private/profile-worker"
+
+    class TrackedRegistry:
+        def __init__(self, _database_path):
+            self.close_calls = 0
+            registries.append(self)
+
+        def list(self):
+            return []
+
+        def close(self):
+            self.close_calls += 1
+            return True
+
+    class SuccessfulEngine:
+        def __init__(self, **_kwargs):
+            self.skillhub = None
+
+    class FailingScheduler:
+        def __init__(self, *_args, **_kwargs):
+            self.stop_calls = 0
+            schedulers.append(self)
+
+        def start(self):
+            raise RuntimeError(private_error)
+
+        def stop(self):
+            self.stop_calls += 1
+
+    server_api.clear_team_context(profile_refresh_shutdown_timeout=0)
+    skill_manifest.set_recommend_engine(None)
+    monkeypatch.setattr(srv, "create_llm_client", MagicMock(return_value=object()))
+    monkeypatch.setattr(srv, "create_embed_client", MagicMock(return_value=object()))
+    monkeypatch.setattr(srv, "init_skill_authoring_tool_context", MagicMock())
+    monkeypatch.setattr(server_state, "ensure_join_token", MagicMock(return_value="token"))
+    monkeypatch.setattr(registry_module, "ClientRegistry", TrackedRegistry)
+    monkeypatch.setattr(recommend_engine, "SkillRecommendEngine", SuccessfulEngine)
+    monkeypatch.setattr(
+        scheduler_module, "IntervalSubprocessScheduler", FailingScheduler,
+    )
+    caplog.set_level(logging.ERROR, logger="xskill.server")
+    app = srv.create_app(home_root=tmp_path, team_server=True)
+
+    with pytest.raises(RuntimeError, match="scheduler failed"):
+        with TestClient(app):
+            pass
+
+    assert len(registries) == 1
+    assert registries[0].close_calls == 1
+    assert len(schedulers) == 1
+    assert schedulers[0].stop_calls == 1
+    assert not hasattr(app.state, "xskill_team_sync_executor")
+    assert not hasattr(app.state, "xskill_team_telemetry_executor")
+    assert server_api.team_context().client_registry is None
+    assert skill_manifest.get_recommend_engine() is None
+    assert private_error in caplog.text
+    assert any(record.exc_info for record in caplog.records)

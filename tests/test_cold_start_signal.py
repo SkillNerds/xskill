@@ -59,6 +59,7 @@ def _make_watcher(tmp_path, skill_root):
         store=atom_store,
         agno_agent_factory=_make_barrier_agno(1, threading.Barrier(1)),
         home_root=tmp_path,
+        xskill_home=tmp_path,
     )
 
 
@@ -101,6 +102,22 @@ class TestColdStartSignal:
         (tmp_path / COLD_START_FILENAME).touch()
 
         assert ColdStartSignal(tmp_path).snapshot() is None
+
+    def test_watcher_default_uses_xskill_home_not_ecosystem_home(
+        self, tmp_path, monkeypatch,
+    ):
+        xskill_home = tmp_path / "xskill-home"
+        ecosystem_home = tmp_path / "user-home"
+        monkeypatch.setattr("xskill.config.XSKILL_HOME", xskill_home)
+
+        watcher = DirectoryWatcher(home_root=ecosystem_home)
+        try:
+            assert watcher.home_root == ecosystem_home
+            assert watcher._cold_start_signal.file_path == (
+                xskill_home / COLD_START_FILENAME
+            )
+        finally:
+            watcher.stop()
 
 
 class TestColdStartFlush:

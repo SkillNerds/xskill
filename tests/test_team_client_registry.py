@@ -10,6 +10,77 @@ import pytest
 from xskill.team.server.client_registry import ClientRegistry, client_id_from_name
 
 
+def test_legacy_clients_schema_migrates_ingest_control_without_data_loss(tmp_path):
+    db_path = tmp_path / "team_clients.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE clients (
+                client_id TEXT PRIMARY KEY,
+                label TEXT DEFAULT '',
+                hostname TEXT DEFAULT '',
+                user_name TEXT DEFAULT '',
+                client_version TEXT DEFAULT '',
+                dashboard_token TEXT DEFAULT '',
+                joined_at TEXT NOT NULL,
+                last_seen TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO clients"
+            " (client_id,label,hostname,user_name,client_version,dashboard_token,"
+            "  joined_at,last_seen) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                "legacy-client",
+                "legacy-label",
+                "legacy-host",
+                "alice",
+                "0.6.24",
+                "dashboard-secret",
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-02T00:00:00+00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    reg = ClientRegistry(db_path)
+    row = reg.get("legacy-client")
+    assert row["label"] == "legacy-label"
+    assert row["client_version"] == "0.6.24"
+    assert row["dashboard_token"] == "dashboard-secret"
+    assert row["ingest_paused"] == 0
+    assert row["ingest_paused_at"] is None
+    assert row["ingest_paused_by"] == ""
+    assert row["ingest_pause_reason"] == ""
+    assert reg.is_ingest_paused("legacy-client") is False
+
+    paused = reg.set_ingest_paused(
+        "legacy-client", True, actor="boss", reason="quality review",
+    )
+    first_paused_at = paused["ingest_paused_at"]
+    repeated = reg.set_ingest_paused(
+        "legacy-client", True, actor="other", reason="must not overwrite",
+    )
+    assert repeated["ingest_paused_at"] == first_paused_at
+    assert repeated["ingest_paused_by"] == "boss"
+    assert repeated["ingest_pause_reason"] == "quality review"
+
+    assert reg.close() is True
+    restarted = ClientRegistry(db_path)
+    assert restarted.is_ingest_paused("legacy-client") is True
+    resumed = restarted.set_ingest_paused(
+        "legacy-client", False, actor="boss",
+    )
+    assert resumed["ingest_paused"] == 0
+    assert resumed["ingest_paused_at"] is None
+    assert resumed["ingest_paused_by"] == ""
+    assert resumed["ingest_pause_reason"] == ""
+
+
 def test_register_returns_unique_ids(tmp_path):
     reg = ClientRegistry(tmp_path / "team_clients.db")
     a = reg.register(label="alice-laptop", hostname="alice")

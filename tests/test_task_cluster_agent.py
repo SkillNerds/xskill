@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from xskill.pipeline.atom import AtomTask, AtomTaskStore
 from xskill.agents.task_cluster_agent import TaskClusterAgent, build_skill_catalog_block
 
@@ -168,8 +166,13 @@ class TestClusterAgentPrompt:
         agent = TaskClusterAgent(
             skill_dir=skill_dir, store=store,
             agno_agent_factory=_factory, llm_cfg={}, tools=[],
+            logs_dir=tmp_path / "instance-logs",
         )
         agent.process(atom)
+        assert (
+            tmp_path / "instance-logs" / "agents"
+            / "task_cluster_agents" / "t" / "atom_t_0001.log"
+        ).is_file()
         # User msg contains atom_id + intent + summary
         assert "atom_t_0001" in captured["user_msg"]
         assert "跑了 makemigrations" in captured["user_msg"]
@@ -221,6 +224,8 @@ class TestClusterAgentPrompt:
         for i in range(3):
             assert f"atom_t_{i:04d}" in captured["user_msg"]
         assert "共 3 个" in captured["user_msg"]
+        assert "add_tasks_to_skill" in captured["user_msg"]
+        assert "本次只提供 add_tasks_to_skill" in captured["instructions"][0]
 
     def test_process_batch_empty_is_noop(self, tmp_path):
         """空批次直接返回空串，不调 agent。"""

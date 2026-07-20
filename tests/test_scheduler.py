@@ -96,6 +96,54 @@ def test_stop_joins_thread_promptly():
     assert scheduler._thread is not None and not scheduler._thread.is_alive()
 
 
+def test_persistent_mode_keeps_one_child_and_terminates_on_stop(monkeypatch):
+    """轻量 ingest 常驻子进程不应每个 poll 反复启动或退出后泄漏。"""
+    started = threading.Event()
+    processes = []
+
+    class FakeProcess:
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return 0 if self.terminated or self.killed else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            del timeout
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    def fake_popen(_command, **_kwargs):
+        process = FakeProcess()
+        processes.append(process)
+        started.set()
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    scheduler = IntervalSubprocessScheduler(
+        "persistent-test",
+        ["xskill", "ecosystem-ingest", "--loop"],
+        interval=0.01,
+        timeout=1.0,
+        persistent=True,
+    )
+
+    scheduler.start()
+    assert started.wait(1.0)
+    scheduler.stop(timeout=1.0)
+
+    assert len(processes) == 1
+    assert processes[0].terminated
+    assert scheduler._thread is not None
+    assert not scheduler._thread.is_alive()
+
+
 def test_subprocess_is_windowless_and_gbk_safe(monkeypatch):
     """回归:调度器每 poll_interval spawn 一次子进程。
 

@@ -149,6 +149,7 @@ def test_appjs_routes_skillhub_detail_by_source():
     js = (STATIC / "app.js").read_text(encoding="utf-8")
     # 基于 source 的分流判定
     assert "source === 'skillhub'" in js
+    assert "s.source === 'native'" in js
     # 调三方 ux 端点(版本聚合分)与关联原子端点，而非自产 detail
     assert "dashboard/skillhub/" in js
     assert "/ux?days=" in js

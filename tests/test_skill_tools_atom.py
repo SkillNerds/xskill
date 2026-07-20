@@ -28,6 +28,7 @@ def _setup(tmp_path: Path) -> tuple[Path, AtomTaskStore]:
     agent_tools.init_atom_task_tool_context(
         skill_dir=skill_dir, atom_store=store,
         default_traj_root=store_root,
+        spill_root=tmp_path / "instance-spill",
     )
     return skill_dir, store
 
@@ -85,8 +86,9 @@ class TestReadFile:
         skill_dir, _ = _setup(tmp_path)
         agent_tools.init_skill_authoring_tool_context(
             skill_dir, skill_dir, {"skill_opt": {"enabled": False}},
+            spill_root=tmp_path / "instance-spill",
         )
-        spill = Path("/tmp/xskill/skilleditagent") / f"{tmp_path.name}-spill.txt"
+        spill = tmp_path / "instance-spill" / "tool-result.txt"
         spill.parent.mkdir(parents=True, exist_ok=True)
         spill.write_text("spilled raw tool result\n", encoding="utf-8")
 
@@ -101,8 +103,9 @@ class TestReadFile:
         skill_dir, _ = _setup(tmp_path)
         agent_tools.init_skill_authoring_tool_context(
             skill_dir, skill_dir, {"skill_opt": {"enabled": False}},
+            spill_root=tmp_path / "instance-spill",
         )
-        spill = Path("/tmp/xskill/skilleditagent") / f"{tmp_path.name}-window.txt"
+        spill = tmp_path / "instance-spill" / "window.txt"
         spill.parent.mkdir(parents=True, exist_ok=True)
         spill.write_text("L1\nL2\nL3\nL4\n", encoding="utf-8")
 
@@ -124,6 +127,7 @@ class TestListFiles:
         skill_dir, _ = _setup(tmp_path)
         agent_tools.init_skill_authoring_tool_context(
             skill_dir, skill_dir, {"skill_opt": {"enabled": False}},
+            spill_root=tmp_path / "instance-spill",
         )
         note = skill_dir / "notes.md"
         note.write_text("hello from listed file\n", encoding="utf-8")
@@ -209,6 +213,66 @@ class TestAddTaskToSkill:
         for bad in [0, 11, -1, 100]:
             msg = agent_tools.add_task_to_skill.entrypoint("auto-skill", "atom_x_0001", bad)
             assert msg.startswith("error")
+
+    def test_batch_add_writes_every_atom(self, tmp_path):
+        skill_dir, _ = _setup(tmp_path)
+        agent_tools.new_skill_folder.entrypoint("auto-skill", "stub desc")
+        message = agent_tools.add_tasks_to_skill.entrypoint(
+            "auto-skill",
+            [
+                {"atom_id": "atom-a", "weightscore": 3},
+                {
+                    "atom_id": "atom-b",
+                    "weightscore": 7,
+                    "note": "strong",
+                },
+            ],
+        )
+
+        assert "atoms=2" in message
+        assert "new=2" in message
+        assert "buffer_total=10" in message
+        from xskill.skill import candidates as C
+        data = C.load_candidates(skill_dir / "auto-skill")
+        assert {
+            candidate["atom_id"]
+            for candidate in data["candidates"]
+        } == {"atom-a", "atom-b"}
+
+    def test_batch_add_rejects_duplicate_without_writing(self, tmp_path):
+        skill_dir, _ = _setup(tmp_path)
+        agent_tools.new_skill_folder.entrypoint("auto-skill", "stub desc")
+        message = agent_tools.add_tasks_to_skill.entrypoint(
+            "auto-skill",
+            [
+                {"atom_id": "atom-a", "weightscore": 3},
+                {"atom_id": "atom-a", "weightscore": 7},
+            ],
+        )
+
+        assert message.startswith("error")
+        from xskill.skill import candidates as C
+        assert C.load_candidates(
+            skill_dir / "auto-skill",
+        )["candidates"] == []
+
+    def test_batch_tool_schema_exposes_item_fields(self):
+        parameters = agent_tools.add_tasks_to_skill.parameters
+        task_items = parameters["properties"]["tasks"]["items"]
+
+        assert task_items["type"] == "object"
+        assert task_items["additionalProperties"] is False
+        assert set(task_items["properties"]) == {
+            "atom_id",
+            "weightscore",
+            "note",
+        }
+        assert set(task_items["required"]) == {
+            "atom_id",
+            "weightscore",
+        }
+        assert task_items["properties"]["weightscore"]["minimum"] == 1
+        assert task_items["properties"]["weightscore"]["maximum"] == 10
 
 
 class TestScoreTask:

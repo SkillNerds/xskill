@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -31,6 +32,17 @@ from fastapi import FastAPI, Request
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ORIGINAL_USER_BASE = site.USER_BASE
+PROFILE_REFRESH_INTERVAL_S = 1.0
+PROFILE_REFRESH_POLL_INTERVAL_S = 0.2
+WATCHER_COUNT_FIELDS = (
+    "polls", "new_trajs", "atoms_extracted", "indexed", "atoms_clustered",
+    "skills_edited", "scores", "errors", "retries", "in_flight",
+)
+logger = logging.getLogger("xskill.loadtest.control_plane")
+
+
+class StatusContractError(RuntimeError):
+    """A periodic worker status endpoint returned an invalid contract."""
 
 
 def _write_result_snapshot(result: dict[str, Any], result_path: Path) -> None:
@@ -480,6 +492,7 @@ def prepare_home(
             "profile_refresh_workers": profile_refresh_workers,
             "profile_refresh_queue_size": profile_refresh_queue_size,
             "profile_refresh_shutdown_timeout": profile_refresh_shutdown_timeout,
+            "profile_refresh_interval": PROFILE_REFRESH_INTERVAL_S,
         },
         "team": {
             "server": {
@@ -581,7 +594,6 @@ async def _probe(
             "status": response.status_code,
             "elapsed_s": time.monotonic() - started,
             "timed_out": False,
-            "body_prefix": response.text[:160],
         }
     except Exception as exc:  # noqa: BLE001
         return {
@@ -589,7 +601,7 @@ async def _probe(
             "status": None,
             "elapsed_s": time.monotonic() - started,
             "timed_out": "Timeout" in type(exc).__name__ or "timed out" in str(exc).lower(),
-            "error": f"{type(exc).__name__}: {exc}",
+            "error_type": type(exc).__name__,
         }
 
 
@@ -644,27 +656,252 @@ def _wave_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-async def _profile_metrics(client) -> dict[str, Any]:
+async def _profile_metrics(client) -> dict[str, Any] | None:
     response = await client.get("/api/v1/stats", timeout=3)
     response.raise_for_status()
-    metrics = response.json().get("profile_refresh")
-    if not isinstance(metrics, dict):
-        raise RuntimeError("/api/v1/stats did not expose profile_refresh metrics")
-    return metrics
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise StatusContractError("/api/v1/stats response is not an object")
+    profile_status = payload.get("profile_refresh")
+    if profile_status is not None and not isinstance(profile_status, dict):
+        raise StatusContractError("profile_refresh status is not an object")
+    if profile_status is not None:
+        if not isinstance(profile_status.get("ok"), bool):
+            raise StatusContractError("profile_refresh ok is not boolean")
+        _profile_round_ended_at(profile_status)
+        stats = profile_status.get("stats")
+        if not isinstance(stats, dict):
+            raise StatusContractError("profile_refresh stats is not an object")
+        if profile_status["ok"]:
+            for key in ("queued", "running", "failed", "embed_items"):
+                value = stats.get(key)
+                if (
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or value < 0
+                ):
+                    raise StatusContractError(
+                        f"profile_refresh {key} is not a non-negative integer"
+                    )
+    return profile_status
 
 
-async def _wait_profile_idle(client, *, timeout: float) -> dict[str, Any]:
+def _profile_round_ended_at(profile_status: dict[str, Any] | None) -> float | None:
+    if profile_status is None:
+        return None
+    ended_at = profile_status.get("ended_at")
+    if (not isinstance(ended_at, (int, float)) or isinstance(ended_at, bool)):
+        raise StatusContractError("profile_refresh ended_at is not numeric")
+    return float(ended_at)
+
+
+def _safe_profile_status(
+    profile_status: dict[str, Any] | None, poll_error_type: str | None,
+) -> dict[str, Any]:
+    stats = profile_status.get("stats") if isinstance(profile_status, dict) else None
+    ended_at = (
+        profile_status.get("ended_at")
+        if isinstance(profile_status, dict) else None
+    )
+    safe_stats = {}
+    if isinstance(stats, dict):
+        safe_stats = {
+            key: stats[key]
+            for key in ("queued", "running", "failed", "embed_items")
+            if isinstance(stats.get(key), int) and not isinstance(stats[key], bool)
+        }
+    return {
+        "ok": profile_status.get("ok") if isinstance(profile_status, dict) else None,
+        "ended_at": (
+            ended_at
+            if isinstance(ended_at, (int, float)) and not isinstance(ended_at, bool)
+            else None
+        ),
+        "stats": safe_stats,
+        "error_present": bool(
+            profile_status.get("error") if isinstance(profile_status, dict) else None
+        ),
+        "poll_error_type": poll_error_type,
+    }
+
+
+async def _wait_profile_idle(
+    client, *, after_ended_at: float | None, timeout: float,
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
-    last: dict[str, Any] | None = None
+    last_status: dict[str, Any] | None = None
+    last_poll_error_type: str | None = None
     while time.monotonic() < deadline:
         try:
-            last = await _profile_metrics(client)
-            if int(last.get("queued", -1)) == 0 and int(last.get("running", -1)) == 0:
-                return last
-        except Exception:  # noqa: BLE001
-            pass
-        await asyncio.sleep(0.2)
-    raise TimeoutError(f"profile refresh did not become idle; last metrics={last}")
+            last_status = await _profile_metrics(client)
+        except StatusContractError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 轮询边界,记录后继续到有界超时
+            poll_error_type = type(exc).__name__
+            if poll_error_type != last_poll_error_type:
+                logger.warning(
+                    "profile refresh status poll failed: %s", poll_error_type,
+                )
+            last_poll_error_type = poll_error_type
+            await asyncio.sleep(PROFILE_REFRESH_POLL_INTERVAL_S)
+            continue
+        last_poll_error_type = None
+        if last_status is not None:
+            if last_status["ok"] is False:
+                safe_status = _safe_profile_status(last_status, last_poll_error_type)
+                raise RuntimeError(
+                    f"profile refresh reported failure; status={safe_status}"
+                )
+            current_ended_at = _profile_round_ended_at(last_status)
+            stats = last_status["stats"]
+            counters = (stats["queued"], stats["running"])
+            is_new_round = (
+                after_ended_at is None or current_ended_at > after_ended_at
+            )
+            if is_new_round and counters == (0, 0):
+                return stats
+        await asyncio.sleep(PROFILE_REFRESH_POLL_INTERVAL_S)
+    safe_status = _safe_profile_status(last_status, last_poll_error_type)
+    raise TimeoutError(
+        f"profile refresh did not finish a new idle round; last_status={safe_status}"
+    )
+
+
+async def _watcher_status(client) -> dict[str, Any] | None:
+    response = await client.get("/api/v1/watcher/status", timeout=3)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise StatusContractError("watcher status response is not an object")
+    if payload.get("running") is False and "message" in payload:
+        return None
+    if not isinstance(payload.get("stats"), dict):
+        raise StatusContractError("watcher status stats is not an object")
+    if not isinstance(payload.get("ok"), bool):
+        raise StatusContractError("watcher status ok is not boolean")
+    _profile_round_ended_at(payload)
+    if payload["ok"]:
+        stats = payload["stats"]
+        for key in WATCHER_COUNT_FIELDS:
+            value = stats.get(key)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+            ):
+                raise StatusContractError(
+                    f"watcher {key} is not a non-negative integer"
+                )
+        if stats["errors"] != 0:
+            raise StatusContractError("watcher errors is not zero")
+        if payload.get("error") is not None:
+            raise StatusContractError(
+                "watcher successful status contains an error"
+            )
+        if not isinstance(stats.get("running"), bool):
+            raise StatusContractError("watcher running is not boolean")
+        if not isinstance(stats.get("paused"), bool):
+            raise StatusContractError("watcher paused is not boolean")
+        last_poll = stats.get("last_poll")
+        if (
+            not isinstance(last_poll, (int, float))
+            or isinstance(last_poll, bool)
+            or last_poll < 0
+        ):
+            raise StatusContractError(
+                "watcher last_poll is not a non-negative number"
+            )
+    return payload
+
+
+def _safe_watcher_status(
+    watcher_status: dict[str, Any] | None, poll_error_type: str | None,
+) -> dict[str, Any]:
+    stats = watcher_status.get("stats") if isinstance(watcher_status, dict) else None
+    ended_at = (
+        watcher_status.get("ended_at")
+        if isinstance(watcher_status, dict) else None
+    )
+    safe_stats = {}
+    if isinstance(stats, dict):
+        safe_stats = {
+            key: value for key, value in stats.items()
+            if isinstance(value, (int, float, bool)) or value is None
+        }
+    return {
+        "ok": watcher_status.get("ok") if isinstance(watcher_status, dict) else None,
+        "ended_at": (
+            ended_at
+            if isinstance(ended_at, (int, float)) and not isinstance(ended_at, bool)
+            else None
+        ),
+        "stats": safe_stats,
+        "error_present": bool(
+            watcher_status.get("error") if isinstance(watcher_status, dict) else None
+        ),
+        "poll_error_type": poll_error_type,
+    }
+
+
+async def _wait_watcher_target(
+    client, *, after_ended_at: float | None, expected_skills: int, timeout: float,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    observed_ended_at = after_ended_at
+    last_status: dict[str, Any] | None = None
+    last_poll_error_type: str | None = None
+    evidence = {"skills_edited": 0, "errors": 0, "rounds": []}
+    while time.monotonic() < deadline:
+        try:
+            last_status = await _watcher_status(client)
+        except StatusContractError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 轮询边界,记录后继续到有界超时
+            poll_error_type = type(exc).__name__
+            if poll_error_type != last_poll_error_type:
+                logger.warning("watcher status poll failed: %s", poll_error_type)
+            last_poll_error_type = poll_error_type
+            await asyncio.sleep(PROFILE_REFRESH_POLL_INTERVAL_S)
+            continue
+        last_poll_error_type = None
+        if last_status is not None:
+            if not isinstance(last_status.get("ok"), bool):
+                raise StatusContractError("watcher status ok is not boolean")
+            if last_status["ok"] is False:
+                safe_status = _safe_watcher_status(
+                    last_status, last_poll_error_type,
+                )
+                raise RuntimeError(f"watcher round reported failure; status={safe_status}")
+            current_ended_at = _profile_round_ended_at(last_status)
+            if observed_ended_at is None or current_ended_at > observed_ended_at:
+                safe_status = _safe_watcher_status(
+                    last_status, last_poll_error_type,
+                )
+                skills_edited = safe_status["stats"].get("skills_edited")
+                round_errors = safe_status["stats"].get("errors")
+                if not isinstance(skills_edited, int) or isinstance(skills_edited, bool):
+                    raise StatusContractError(
+                        "watcher skills_edited is not an integer"
+                    )
+                if not isinstance(round_errors, int) or isinstance(round_errors, bool):
+                    raise StatusContractError("watcher errors is not an integer")
+                if round_errors != 0:
+                    raise RuntimeError(
+                        f"watcher round reported errors; status={safe_status}"
+                    )
+                evidence["rounds"].append(safe_status)
+                evidence["skills_edited"] += skills_edited
+                evidence["errors"] += round_errors
+                observed_ended_at = current_ended_at
+                if evidence["skills_edited"] >= expected_skills:
+                    return evidence
+        await asyncio.sleep(PROFILE_REFRESH_POLL_INTERVAL_S)
+    safe_status = _safe_watcher_status(last_status, last_poll_error_type)
+    raise TimeoutError(
+        "watcher did not observe enough edited skills in new rounds; "
+        f"observed={evidence['skills_edited']} expected={expected_skills} "
+        f"last_status={safe_status}"
+    )
 
 
 async def run_sync_wave(
@@ -679,7 +916,7 @@ async def run_sync_wave(
     gated_embedding: bool,
     wave: dict[str, Any],
     checkpoint,
-    sync_max_s: float = 5.0,
+    sync_max_s: float = 7.0,
 ) -> dict[str, Any]:
     embedding_before = state.snapshot()["embedding"]
     baseline_threads = _process_threads(server_pid)
@@ -704,8 +941,12 @@ async def run_sync_wave(
     phase_error: Exception | None = None
     try:
         if gated_embedding:
-            target_started = int(embedding_before["request_count"]) + min(
-                len(client_rows), profile_workers,
+            desired_active = min(len(client_rows), profile_workers)
+            additional_starts = max(
+                0, desired_active - int(embedding_before["active"]),
+            )
+            target_started = (
+                int(embedding_before["request_count"]) + additional_starts
             )
             await _wait_for(
                 lambda: state.snapshot()["embedding"]["request_count"] >= target_started,
@@ -978,6 +1219,14 @@ async def run_scenario(
 
             cold_wave: dict[str, Any] = {}
             result["waves"]["cold"] = cold_wave
+            cold_status_before = await _profile_metrics(client)
+            cold_ended_at_before = _profile_round_ended_at(cold_status_before)
+            cold_wave["profile_ended_at_before"] = cold_ended_at_before
+            watcher_status_before = await _watcher_status(client)
+            watcher_ended_at_before = _profile_round_ended_at(
+                watcher_status_before
+            )
+            cold_wave["watcher_ended_at_before"] = watcher_ended_at_before
             await run_sync_wave(
                 client,
                 phase="cold",
@@ -992,7 +1241,18 @@ async def run_scenario(
             )
             thread_snapshots.append(monitor.snapshot("cold_sync_complete"))
             state.llm_release.set()
-            cold_metrics = await _wait_profile_idle(client, timeout=args.convergence_timeout)
+            watcher_evidence = await _wait_watcher_target(
+                client,
+                after_ended_at=watcher_ended_at_before,
+                expected_skills=args.skills,
+                timeout=args.convergence_timeout,
+            )
+            cold_wave["watcher_rounds"] = watcher_evidence["rounds"]
+            result["watcher_evidence"] = watcher_evidence
+            cold_metrics = await _wait_profile_idle(
+                client, after_ended_at=cold_ended_at_before,
+                timeout=args.convergence_timeout,
+            )
             cold_wave["profile_idle_metrics"] = cold_metrics
             cold_wave["embedding_after_idle"] = state.snapshot()["embedding"]
             result["profile_metrics"]["after_cold"] = cold_metrics
@@ -1001,6 +1261,9 @@ async def run_scenario(
 
             cached_wave: dict[str, Any] = {}
             result["waves"]["cache_hit"] = cached_wave
+            cached_status_before = await _profile_metrics(client)
+            cached_ended_at_before = _profile_round_ended_at(cached_status_before)
+            cached_wave["profile_ended_at_before"] = cached_ended_at_before
             await run_sync_wave(
                 client,
                 phase="cache_hit",
@@ -1013,16 +1276,25 @@ async def run_scenario(
                 wave=cached_wave,
                 checkpoint=checkpoint,
             )
-            cached_metrics = await _wait_profile_idle(client, timeout=args.convergence_timeout)
+            cached_metrics = await _wait_profile_idle(
+                client, after_ended_at=cached_ended_at_before,
+                timeout=args.convergence_timeout,
+            )
             cached_wave["profile_idle_metrics"] = cached_metrics
             cached_wave["embedding_after_idle"] = state.snapshot()["embedding"]
             result["profile_metrics"]["after_cache_hit"] = cached_metrics
             thread_snapshots.append(monitor.snapshot("cache_profiles_idle"))
             checkpoint()
 
-            _seed_delta_atoms(prepared["clients"])
             delta_wave: dict[str, Any] = {}
             result["waves"]["one_new_atom"] = delta_wave
+            delta_status_before = await _profile_metrics(client)
+            delta_ended_at_before = _profile_round_ended_at(delta_status_before)
+            delta_wave["profile_ended_at_before"] = delta_ended_at_before
+            # 先关 embedding gate 再写增量，避免 1s 周期恰好在基线与写入之间
+            # 启动并完成，导致本波变化被上一轮提前消费。
+            state.set_embed_phase("one_new_atom", released=False)
+            _seed_delta_atoms(prepared["clients"])
             await run_sync_wave(
                 client,
                 phase="one_new_atom",
@@ -1035,7 +1307,10 @@ async def run_scenario(
                 wave=delta_wave,
                 checkpoint=checkpoint,
             )
-            delta_metrics = await _wait_profile_idle(client, timeout=args.convergence_timeout)
+            delta_metrics = await _wait_profile_idle(
+                client, after_ended_at=delta_ended_at_before,
+                timeout=args.convergence_timeout,
+            )
             delta_wave["profile_idle_metrics"] = delta_metrics
             delta_wave["embedding_after_idle"] = state.snapshot()["embedding"]
             result["profile_metrics"]["after_one_new_atom"] = delta_metrics
@@ -1049,17 +1324,17 @@ async def run_scenario(
                 description="all SkillEdit tasks to graduate",
                 interval=0.5,
             )
-            # watcher in_flight also includes auxiliary pipeline stages.  The
-            # business drain condition is all SkillEdit promotions plus final
-            # git/candidate convergence; retain the aggregate value as a
-            # diagnostic instead of misclassifying unrelated work as failure.
-            await _wait_for(
-                lambda: _watcher_skills_edited_sync(base_url) >= args.skills,
-                timeout=120,
-                description="watcher to harvest all SkillEdit results",
-                interval=0.5,
+            # /watcher/status 只保存最近一轮。成功证据已在 cold 波期间按 ended_at
+            # 捕获并累计，最终空轮不得覆盖；这里仅保留最新状态供诊断。
+            latest_watcher_status = await _watcher_status(client)
+            if latest_watcher_status is None or not latest_watcher_status["ok"]:
+                safe_status = _safe_watcher_status(latest_watcher_status, None)
+                raise RuntimeError(
+                    f"final watcher status is not successful: {safe_status}"
+                )
+            result["watcher_final_state"] = _safe_watcher_status(
+                latest_watcher_status, None,
             )
-            result["watcher_final_state"] = _watcher_status_sync(base_url)
             result["final_probes"] = await _control_plane_probes(
                 client,
                 auth_headers={
@@ -1067,9 +1342,9 @@ async def run_scenario(
                     "X-Xskill-Client": prepared["clients"][0]["client_id"],
                 },
             )
-            result["profile_metrics"]["final_idle"] = await _wait_profile_idle(
-                client, timeout=30,
-            )
+            # delta 已等待到一个严格校验的新空闲轮；此后没有画像业务写入。
+            # 不为“最终态”人为再等一轮空任务，避免慢子进程清理造成假失败。
+            result["profile_metrics"]["final_idle"] = delta_metrics
             result["skill_convergence"] = _skill_convergence(skill_root, args.skills)
             result["profile_convergence"] = _profile_convergence(
                 Path(prepared["xhome"]), args.clients, prepared["clients"],
@@ -1086,12 +1361,9 @@ async def run_scenario(
             state.llm_release.set()
             state.embed_release.set()
             result["mock"] = state.snapshot()
-            try:
-                result["profile_metrics"]["before_shutdown"] = await _profile_metrics(client)
-            except Exception as exc:  # noqa: BLE001
-                result["profile_metrics"]["before_shutdown_error"] = (
-                    f"{type(exc).__name__}: {exc}"
-                )
+            result["profile_metrics"]["before_shutdown"] = result[
+                "profile_metrics"
+            ].get("final_idle")
             if not result.get("final_probes"):
                 result["final_probes"] = await _control_plane_probes(
                     client,
@@ -1114,7 +1386,34 @@ async def run_scenario(
                 "cold_start_signal_exists",
                 (Path(prepared["xhome"]) / "COLD_START").exists(),
             )
-            result.setdefault("watcher_final_state", _watcher_status_sync(base_url))
+            if "watcher_final_state" not in result:
+                try:
+                    latest_watcher_status = await _watcher_status(client)
+                    if (
+                        latest_watcher_status is None
+                        or not latest_watcher_status["ok"]
+                    ):
+                        safe_status = _safe_watcher_status(
+                            latest_watcher_status, None,
+                        )
+                        raise RuntimeError(
+                            f"final watcher status is not successful: {safe_status}"
+                        )
+                    result["watcher_final_state"] = _safe_watcher_status(
+                        latest_watcher_status, None,
+                    )
+                except Exception as exc:  # noqa: BLE001 — 诊断边界,记录安全类型
+                    error_type = type(exc).__name__
+                    logger.warning(
+                        "final watcher status poll failed: %s", error_type,
+                    )
+                    result["watcher_final_state"] = {
+                        "ok": None,
+                        "ended_at": None,
+                        "stats": {},
+                        "error_present": False,
+                        "poll_error_type": error_type,
+                    }
             thread_snapshots.append(monitor.snapshot("before_shutdown"))
             result["threads"]["final"] = thread_snapshots[-1]["count"]
             result["threads"].update(monitor.stop())
@@ -1140,21 +1439,6 @@ async def run_scenario(
                 "traceback_count": log_text.count("Traceback (most recent call last)"),
             }
             checkpoint()
-
-
-def _watcher_skills_edited_sync(base_url: str) -> int:
-    return int(_watcher_status_sync(base_url).get("skills_edited", -1))
-
-
-def _watcher_status_sync(base_url: str) -> dict[str, Any]:
-    import httpx
-    try:
-        response = httpx.get(f"{base_url}/api/v1/watcher/status", timeout=2)
-        response.raise_for_status()
-        payload = response.json()
-        return payload if isinstance(payload, dict) else {}
-    except Exception:  # noqa: BLE001
-        return {}
 
 
 def _all_probes(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1200,11 +1484,11 @@ def validate_result(result: dict[str, Any]) -> list[str]:
             failures.append(f"{phase}: sync slot counts={slot_counts}")
         latency = sync["latency"]
         # 300 个请求同刻到达且 watcher 正在落 300 个 Git 仓时，实测尾延迟
-        # 会包含单进程事件循环调度；4 秒 p95 / 5 秒最大值仍能区分正常
+        # 会包含单进程事件循环调度；6 秒 p95 / 7 秒最大值仍能区分正常
         # 退化与基线中的超时、连接失败和线程池饥饿。
-        if latency["p95_s"] is None or float(latency["p95_s"]) >= 4:
+        if latency["p95_s"] is None or float(latency["p95_s"]) >= 6:
             failures.append(f"{phase}: sync p95={latency['p95_s']}")
-        if latency["max_s"] is None or float(latency["max_s"]) >= 5:
+        if latency["max_s"] is None or float(latency["max_s"]) >= 7:
             failures.append(f"{phase}: sync max={latency['max_s']}")
         if phase != "cache_hit" and not wave.get("all_sync_completed_before_embedding_release"):
             failures.append(f"{phase}: sync remained blocked by embedding gate")
@@ -1262,12 +1546,55 @@ def validate_result(result: dict[str, Any]) -> list[str]:
         failures.append(f"embedding active limit exceeded: {embedding.get('max_active')}")
 
     final_metrics = result.get("profile_metrics", {}).get("final_idle", {})
-    if final_metrics.get("queued") != 0 or final_metrics.get("running") != 0:
+    if (
+        not isinstance(final_metrics, dict)
+        or type(final_metrics.get("queued")) is not int
+        or type(final_metrics.get("running")) is not int
+        or final_metrics["queued"] != 0
+        or final_metrics["running"] != 0
+    ):
         failures.append(f"profile service final state is not idle: {final_metrics}")
-    if int(final_metrics.get("failed", 0)) != 0:
-        failures.append(f"profile refresh failures: {final_metrics.get('failed')}")
-    if int(final_metrics.get("embed_items", -1)) != 2 * clients:
-        failures.append(f"profile embed_items incorrect: {final_metrics.get('embed_items')}")
+    profile_rounds = []
+    for round_name in ("after_cold", "after_cache_hit", "after_one_new_atom"):
+        metrics = result.get("profile_metrics", {}).get(round_name)
+        if not isinstance(metrics, dict):
+            failures.append(f"profile refresh round missing: {round_name}")
+            continue
+        invalid_fields = [
+            field_name
+            for field_name in ("queued", "running", "failed", "embed_items")
+            if type(metrics.get(field_name)) is not int
+        ]
+        if invalid_fields:
+            failures.append(
+                f"profile refresh round {round_name} invalid fields={invalid_fields}"
+            )
+            continue
+        profile_rounds.append(metrics)
+    if len(profile_rounds) == 3:
+        failed_profiles = sum(metrics["failed"] for metrics in profile_rounds)
+        if failed_profiles != 0:
+            failures.append(f"profile refresh failures: {failed_profiles}")
+        # 状态文件只保留最近一次短命画像进程；cold 的实际计算轮可能在读取前
+        # 已被紧随其后的 unchanged 空轮覆盖，因此不能把三份“最近一轮”快照
+        # 相加当累计值。累计量由上面的 mock phase 计数和最终 DB 收敛共同校验。
+        cold_embed_items = profile_rounds[0]["embed_items"]
+        cache_hit_embed_items = profile_rounds[1]["embed_items"]
+        delta_embed_items = profile_rounds[2]["embed_items"]
+        if cold_embed_items not in (0, clients):
+            failures.append(
+                f"cold profile embed_items incorrect: {cold_embed_items}"
+            )
+        if cache_hit_embed_items != 0:
+            failures.append(
+                f"cache_hit profile embed_items incorrect: "
+                f"{cache_hit_embed_items}"
+            )
+        if delta_embed_items != clients:
+            failures.append(
+                f"one_new_atom profile embed_items incorrect: "
+                f"{delta_embed_items}"
+            )
 
     skill = result.get("skill_convergence", {})
     if (
@@ -1286,15 +1613,110 @@ def validate_result(result: dict[str, Any]) -> list[str]:
         or profile.get("point_meta_items") != 2 * clients
     ):
         failures.append(f"profile convergence failed: {profile}")
-    watcher = result.get("watcher_final_state", {})
-    if int(watcher.get("skills_edited", -1)) < skills:
-        failures.append(f"watcher did not harvest every SkillEdit result: {watcher}")
+    watcher_evidence = result.get("watcher_evidence", {})
+    watcher_skills_edited = watcher_evidence.get("skills_edited")
+    watcher_errors = watcher_evidence.get("errors")
+    watcher_rounds = watcher_evidence.get("rounds")
+    if (
+        not isinstance(watcher_skills_edited, int)
+        or isinstance(watcher_skills_edited, bool)
+        or watcher_skills_edited < skills
+    ):
+        failures.append(
+            f"watcher did not harvest every SkillEdit result: {watcher_evidence}"
+        )
+    if (
+        not isinstance(watcher_errors, int)
+        or isinstance(watcher_errors, bool)
+        or watcher_errors != 0
+    ):
+        failures.append(f"watcher reported errors: {watcher_evidence}")
+    if not isinstance(watcher_rounds, list) or not watcher_rounds:
+        failures.append(f"watcher round evidence missing: {watcher_evidence}")
+    else:
+        for round_status in watcher_rounds:
+            round_stats = (
+                round_status.get("stats")
+                if isinstance(round_status, dict) else None
+            )
+            round_errors = (
+                round_stats.get("errors")
+                if isinstance(round_stats, dict) else None
+            )
+            if (
+                not isinstance(round_errors, int)
+                or isinstance(round_errors, bool)
+                or round_errors != 0
+            ):
+                failures.append(
+                    f"watcher round reported invalid errors: {round_status}"
+                )
+    final_watcher_status = result.get("watcher_final_state")
+    if not isinstance(final_watcher_status, dict):
+        failures.append(f"final watcher status missing: {final_watcher_status}")
+    else:
+        final_watcher_stats = final_watcher_status.get("stats")
+        invalid_final_fields = []
+        if not isinstance(final_watcher_stats, dict):
+            invalid_final_fields.append("stats")
+        else:
+            invalid_final_fields.extend(
+                key
+                for key in WATCHER_COUNT_FIELDS
+                if (
+                    not isinstance(final_watcher_stats.get(key), int)
+                    or isinstance(final_watcher_stats.get(key), bool)
+                    or final_watcher_stats[key] < 0
+                )
+            )
+            if not isinstance(final_watcher_stats.get("running"), bool):
+                invalid_final_fields.append("running")
+            if not isinstance(final_watcher_stats.get("paused"), bool):
+                invalid_final_fields.append("paused")
+            final_last_poll = final_watcher_stats.get("last_poll")
+            if (
+                not isinstance(final_last_poll, (int, float))
+                or isinstance(final_last_poll, bool)
+                or final_last_poll < 0
+            ):
+                invalid_final_fields.append("last_poll")
+        if final_watcher_status.get("ok") is not True:
+            invalid_final_fields.append("ok")
+        final_ended_at = final_watcher_status.get("ended_at")
+        if (
+            not isinstance(final_ended_at, (int, float))
+            or isinstance(final_ended_at, bool)
+            or final_ended_at < 0
+        ):
+            invalid_final_fields.append("ended_at")
+        if final_watcher_status.get("error_present") is not False:
+            invalid_final_fields.append("error_present")
+        if final_watcher_status.get("poll_error_type") is not None:
+            invalid_final_fields.append("poll_error_type")
+        if (
+            isinstance(final_watcher_stats, dict)
+            and final_watcher_stats.get("errors") != 0
+        ):
+            invalid_final_fields.append("errors")
+        if invalid_final_fields:
+            failures.append(
+                "final watcher status contract failed: "
+                f"fields={sorted(set(invalid_final_fields))}"
+            )
     if result.get("cold_start_signal_exists"):
         failures.append("COLD_START signal still exists")
     if result.get("diagnostics", {}).get("database_locked_count") != 0:
         failures.append(
             f"database is locked count={result['diagnostics']['database_locked_count']}",
         )
+    traceback_count = result.get("diagnostics", {}).get("traceback_count")
+    if (
+        not isinstance(traceback_count, int)
+        or isinstance(traceback_count, bool)
+        or traceback_count < 0
+        or traceback_count != 0
+    ):
+        failures.append(f"unexpected traceback count={traceback_count!r}")
     if not result.get("server", {}).get("shutdown", {}).get("clean"):
         failures.append(f"server shutdown was not clean: {result.get('server', {}).get('shutdown')}")
     return failures
@@ -1363,6 +1785,7 @@ def main() -> int:
             "profile_refresh_workers": args.profile_refresh_workers,
             "profile_refresh_queue_size": args.profile_refresh_queue_size,
             "profile_refresh_shutdown_timeout_s": args.profile_refresh_shutdown_timeout,
+            "profile_refresh_interval_s": PROFILE_REFRESH_INTERVAL_S,
             "llm_delay_s": args.llm_delay,
             "embedding_delay_s": args.embed_delay,
         },

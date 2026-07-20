@@ -186,8 +186,15 @@ class TestThresholdGate:
             skill_dir=skill_dir, store=None,
             agno_agent_factory=_baby_factory,
             llm_cfg={}, traj_root=tmp_path,
+            logs_dir=tmp_path / "instance-logs",
         )
         assert agent.maybe_run() is True
+        assert list(
+            (
+                tmp_path / "instance-logs" / "agents"
+                / "skill_edit_agents" / "skills"
+            ).glob("my-skill_*.log")
+        )
         # baby → main graduate 完成
         from xskill.skill.git import current_branch
         assert current_branch(str(skill_dir)) == "main"

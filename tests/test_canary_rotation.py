@@ -67,6 +67,24 @@ def _cur_branch(path: Path) -> str:
     return out.strip()
 
 
+def _reject_terminal_plan(canary_instance, **_keyword_arguments):
+    from xskill.canary import main_sha, staging_sha
+    return {
+        "action": "rejected",
+        "main_sha": main_sha(canary_instance.skill_dir),
+        "staging_sha": staging_sha(canary_instance.skill_dir),
+    }
+
+
+def _promote_terminal_plan(canary_instance, **_keyword_arguments):
+    from xskill.canary import main_sha, staging_sha
+    return {
+        "action": "promoted",
+        "main_sha": main_sha(canary_instance.skill_dir),
+        "staging_sha": staging_sha(canary_instance.skill_dir),
+    }
+
+
 # ──────────────────────────────────────────────────────
 # 1. has_pending_user_edit
 # ──────────────────────────────────────────────────────
@@ -158,6 +176,36 @@ def _make_watcher(skill_dir: Path, tmp_path: Path, *, probability: float):
 
 
 class TestRotateCanarySide:
+    def test_twenty_five_skills_share_one_history_parse(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """一轮多 skill 调谐只建一次 history 索引。"""
+        from xskill.ecosystems._history import InstallHistory
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        for skill_index in range(25):
+            skill_path = _init_repo(
+                skill_dir / f"batch-{skill_index:02d}"
+            )
+            _make_staging(skill_path)
+        history = InstallHistory(tmp_path / "install_history.jsonl")
+        watcher = _make_watcher(
+            skill_dir,
+            tmp_path,
+            probability=0.5,
+        )
+        def use_shared_history():
+            return history
+
+        monkeypatch.setattr(watcher, "_install_history", use_shared_history)
+
+        watcher._reconcile_skill_sides()
+
+        assert history.read_count == 1
+
     def test_staging_skill_rotated_to_staging_when_p1(self, tmp_path, monkeypatch):
         """p=1 → 必切 staging + 落一条 install_history。"""
         skill_dir = tmp_path / "skill"
@@ -289,3 +337,875 @@ class TestRotateCanarySide:
         from xskill.ecosystems._history import InstallHistory
         recs = InstallHistory(tmp_path / "xhome" / "install_history.jsonl").all_records()
         assert len(recs) == 1
+
+    def test_same_window_is_idempotent_across_short_lived_watchers(
+        self,
+        tmp_path,
+    ):
+        """新进程会丢内存节流时间；window decision 仍只能应用一次。"""
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        skill_path = _init_repo(skill_dir / "zeta")
+        _make_staging(skill_path)
+        history_path = tmp_path / "install_history.jsonl"
+        fixed_time = 1_800_000_000.0
+
+        first_watcher = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={
+                "canary": {
+                    "probability": 1.0,
+                    "rotate_interval": 300,
+                },
+            },
+            install_history_path=history_path,
+            home_root=tmp_path,
+        )
+        second_watcher = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={
+                "canary": {
+                    "probability": 1.0,
+                    "rotate_interval": 300,
+                },
+            },
+            install_history_path=history_path,
+            home_root=tmp_path,
+        )
+        with patch(
+            "xskill.pipeline.runner.time.time",
+            return_value=fixed_time,
+        ):
+            first_watcher._reconcile_skill_sides()
+            second_watcher._reconcile_skill_sides()
+
+        from xskill.ecosystems._history import InstallHistory
+        records = InstallHistory(history_path).all_records()
+        assert len(records) == 1
+        assert records[0]["decision_ids"] == [
+            f"window:{int(fixed_time // 300)}"
+        ]
+        assert records[0]["side"] == "staging"
+        assert (skill_path / "SKILL.md").read_text(
+            encoding="utf-8",
+        ) == "v2-staging"
+
+    def test_older_window_cannot_override_newer_persisted_sequence(
+        self,
+        tmp_path,
+    ):
+        """墙钟回拨后 W100 必须被已经追加的 W101 拒绝。"""
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        skill_path = _init_repo(skill_dir / "eta")
+        _make_staging(skill_path)
+        history_path = tmp_path / "install_history.jsonl"
+        newer = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={
+                "canary": {
+                    "probability": 1.0,
+                    "rotate_interval": 300,
+                },
+            },
+            install_history_path=history_path,
+            home_root=tmp_path,
+        )
+        older = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={
+                "canary": {
+                    "probability": 0.0,
+                    "rotate_interval": 300,
+                },
+            },
+            install_history_path=history_path,
+            home_root=tmp_path,
+        )
+
+        with patch(
+            "xskill.pipeline.runner.time.time",
+            return_value=101 * 300 + 1,
+        ):
+            newer._reconcile_skill_sides()
+        with patch(
+            "xskill.pipeline.runner.time.time",
+            return_value=100 * 300 + 1,
+        ):
+            older._reconcile_skill_sides()
+
+        from xskill.ecosystems._history import InstallHistory
+        records = InstallHistory(history_path).all_records()
+        assert len(records) == 1
+        assert records[0]["decision_sequence"] == 101
+        assert records[0]["side"] == "staging"
+        assert (skill_path / "SKILL.md").read_text(
+            encoding="utf-8",
+        ) == "v2-staging"
+
+    def test_terminal_reject_converges_claude_target_under_shared_lock(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """终态删除 staging 后同一目标事务追加新 main，旧 side 不可回滚。"""
+        from xskill.canary import canary_generation, staging_sha
+        from xskill.ecosystems._history import InstallHistory
+        from xskill.ecosystems.claude_code import install_to_claude_code
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        skill_path = _init_repo(skill_dir / "theta")
+        _make_staging(skill_path)
+        canary_path = skill_dir / ".canary" / skill_path.name
+        canary_path.mkdir(parents=True)
+        (canary_path / "SKILL.md").write_text(
+            "v2-staging",
+            encoding="utf-8",
+        )
+        home_root = tmp_path / "home"
+        (home_root / ".claude" / "projects").mkdir(parents=True)
+        install_to_claude_code(
+            skill_path,
+            target_root=home_root,
+            side="staging",
+        )
+        history_path = tmp_path / "install_history.jsonl"
+        history = InstallHistory(history_path)
+        history.record(
+            skill=skill_path.name,
+            target="claude_code",
+            side="staging",
+            sha=staging_sha(skill_path) or "",
+        )
+        watcher = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={"canary": {}},
+            install_history_path=history_path,
+            home_root=home_root,
+            db_path=tmp_path / "registry.db",
+        )
+
+        monkeypatch.setattr(
+            "xskill.canary.AtomCanary.plan_decision",
+            _reject_terminal_plan,
+        )
+
+        def empty_model_share(**_kwargs):
+            return []
+
+        monkeypatch.setattr(
+            "xskill.pipeline.registry.model_share",
+            empty_model_share,
+        )
+        watcher._check_canary_decisions()
+
+        installed = (
+            home_root
+            / ".claude"
+            / "skills"
+            / skill_path.name
+        )
+        assert installed.resolve() == skill_path.resolve()
+        assert not canary_path.exists()
+        latest = history.index().latest(
+            skill_path.name,
+            "claude_code",
+        )
+        assert latest["side"] == "main"
+        assert latest["generation"] == canary_generation(skill_path)
+        assert latest["generation"].endswith(":")
+
+    def test_terminal_receipts_recover_after_staging_is_gone(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """终态已删 staging、history 追加不确定时，下一轮仍能补全 receipts。"""
+        from xskill.canary import staging_sha
+        from xskill.ecosystems._history import (
+            InstallHistory,
+            InstallHistoryAppendUncertainError,
+        )
+        from xskill.ecosystems.claude_code import install_to_claude_code
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        skill_path = _init_repo(skill_dir / "terminal-recovery")
+        _make_staging(skill_path)
+        canary_path = skill_dir / ".canary" / skill_path.name
+        canary_path.mkdir(parents=True)
+        (canary_path / "SKILL.md").write_text(
+            "v2-staging",
+            encoding="utf-8",
+        )
+        home_root = tmp_path / "home"
+        (home_root / ".claude" / "projects").mkdir(parents=True)
+        install_to_claude_code(
+            skill_path,
+            target_root=home_root,
+            side="staging",
+        )
+        history = InstallHistory(tmp_path / "install_history.jsonl")
+        history.record(
+            skill=skill_path.name,
+            target="claude_code",
+            side="staging",
+            sha=staging_sha(skill_path) or "",
+        )
+        watcher = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={"canary": {}},
+            install_history_path=history.path,
+            home_root=home_root,
+            db_path=tmp_path / "registry.db",
+        )
+        def use_shared_history():
+            return history
+
+        def empty_model_share(**_kwargs):
+            return []
+
+        monkeypatch.setattr(watcher, "_install_history", use_shared_history)
+        monkeypatch.setattr(
+            "xskill.pipeline.registry.model_share",
+            empty_model_share,
+        )
+
+        monkeypatch.setattr(
+            "xskill.canary.AtomCanary.plan_decision",
+            _reject_terminal_plan,
+        )
+        original_append = history._append_records
+
+        def uncertain_append(*_args, **_kwargs):
+            raise InstallHistoryAppendUncertainError(
+                "injected terminal append uncertainty"
+            )
+
+        monkeypatch.setattr(history, "_append_records", uncertain_append)
+        watcher._check_canary_decisions()
+
+        assert not canary_path.exists()
+        assert history.has_pending_recovery(
+            skill_path.name,
+            "claude_code",
+        )
+
+        monkeypatch.setattr(history, "_append_records", original_append)
+        watcher._check_canary_decisions()
+
+        records = history.all_records()
+        terminal_records = [
+            record
+            for record in records
+            if record.get("action") == "terminal_decision"
+        ]
+        main_installs = [
+            record
+            for record in records
+            if record.get("action") == "install"
+            and record.get("side") == "main"
+        ]
+        assert len(terminal_records) == 1
+        assert len(main_installs) == 1
+        assert not history.has_pending_recovery(
+            skill_path.name,
+            "claude_code",
+        )
+
+    def test_terminal_git_is_untouched_when_journal_prepare_fails(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """prepared journal 未落盘时不得先删 staging 或物化副本。"""
+        from xskill.ecosystems._history import InstallHistory
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        skill_path = _init_repo(skill_dir / "prepare-failure")
+        _make_staging(skill_path)
+        canary_path = skill_dir / ".canary" / skill_path.name
+        canary_path.mkdir(parents=True)
+        (canary_path / "SKILL.md").write_text(
+            "v2-staging",
+            encoding="utf-8",
+        )
+        history = InstallHistory(tmp_path / "install_history.jsonl")
+        watcher = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={"canary": {}},
+            install_history_path=history.path,
+            home_root=tmp_path,
+            server_mode=True,
+        )
+
+        def use_shared_history():
+            return history
+
+        def empty_model_share(**_kwargs):
+            return []
+
+        def fail_recovery_write(**_kwargs):
+            raise RuntimeError("injected journal prepare failure")
+
+        monkeypatch.setattr(
+            watcher,
+            "_install_history",
+            use_shared_history,
+        )
+        monkeypatch.setattr(
+            "xskill.pipeline.registry.model_share",
+            empty_model_share,
+        )
+        monkeypatch.setattr(
+            "xskill.canary.AtomCanary.plan_decision",
+            _reject_terminal_plan,
+        )
+        monkeypatch.setattr(
+            history,
+            "_write_recovery",
+            fail_recovery_write,
+        )
+
+        watcher._check_canary_decisions()
+
+        code, _, _ = run_git(
+            ["rev-parse", "--verify", "staging"],
+            cwd=str(skill_path),
+        )
+        assert code == 0
+        assert canary_path.is_dir()
+        assert history.all_records() == []
+        assert not history.has_pending_recovery(
+            skill_path.name,
+            "canary_state",
+        )
+
+    @pytest.mark.parametrize(
+        "crash_stage",
+        ("before_primary_install", "after_detected_installs"),
+    )
+    def test_terminal_recovery_converges_all_detected_ecosystems_once(
+        self,
+        tmp_path,
+        monkeypatch,
+        crash_stage,
+    ):
+        """终态中断后 Git、CC 和 copy 生态均恢复，receipt/遥测各一次。"""
+        from xskill.canary import staging_sha
+        from xskill.ecosystems._history import InstallHistory
+        from xskill.ecosystems.claude_code import install_to_claude_code
+        from xskill.ecosystems.openclaw import install_to_openclaw
+
+        class SimulatedCrash(BaseException):
+            """模拟不会被事务 Exception 补偿捕获的进程退出。"""
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        skill_path = _init_repo(skill_dir / f"crash-{crash_stage}")
+        _make_staging(skill_path)
+        canary_path = skill_dir / ".canary" / skill_path.name
+        canary_path.mkdir(parents=True)
+        (canary_path / "SKILL.md").write_text(
+            "v2-staging",
+            encoding="utf-8",
+        )
+        home_root = tmp_path / "home"
+        (home_root / ".claude" / "projects").mkdir(parents=True)
+        (home_root / ".openclaw" / "agents").mkdir(parents=True)
+        install_to_claude_code(
+            skill_path,
+            target_root=home_root,
+            side="staging",
+        )
+        install_to_openclaw(
+            skill_path,
+            target_root=home_root,
+            side="staging",
+        )
+        history_path = tmp_path / "install_history.jsonl"
+        history = InstallHistory(history_path)
+        history.record(
+            skill=skill_path.name,
+            target="claude_code",
+            side="staging",
+            sha=staging_sha(skill_path) or "",
+        )
+        watcher = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={"canary": {}},
+            install_history_path=history_path,
+            home_root=home_root,
+            db_path=tmp_path / "registry.db",
+        )
+        def empty_model_share(**_kwargs):
+            return []
+
+        monkeypatch.setattr(
+            "xskill.pipeline.registry.model_share",
+            empty_model_share,
+        )
+        monkeypatch.setattr(
+            "xskill.canary.AtomCanary.plan_decision",
+            _reject_terminal_plan,
+        )
+        telemetry_decisions = []
+
+        def record_telemetry(*arguments, **keyword_arguments):
+            telemetry_decisions.append((arguments, keyword_arguments))
+
+        monkeypatch.setattr(
+            "xskill.canary._record_decision",
+            record_telemetry,
+        )
+
+        if crash_stage == "before_primary_install":
+            from xskill.ecosystems import claude_code
+
+            original_install = claude_code.install_to_claude_code
+
+            def crash_before_primary_install(*_args, **_kwargs):
+                raise SimulatedCrash("before primary install")
+
+            monkeypatch.setattr(
+                claude_code,
+                "install_to_claude_code",
+                crash_before_primary_install,
+            )
+        else:
+            original_install_all = (
+                watcher._install_skill_to_all_detected
+            )
+
+            def crash_after_detected_installs(*args, **kwargs):
+                original_install_all(*args, **kwargs)
+                raise SimulatedCrash("after detected installs")
+
+            monkeypatch.setattr(
+                watcher,
+                "_install_skill_to_all_detected",
+                crash_after_detected_installs,
+            )
+
+        with pytest.raises(SimulatedCrash):
+            watcher._check_canary_decisions()
+        assert history.has_pending_recovery(
+            skill_path.name,
+            "claude_code",
+        )
+        assert telemetry_decisions == []
+
+        if crash_stage == "before_primary_install":
+            monkeypatch.setattr(
+                claude_code,
+                "install_to_claude_code",
+                original_install,
+            )
+
+        recovered_watcher = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={"canary": {}},
+            install_history_path=history_path,
+            home_root=home_root,
+            db_path=tmp_path / "registry.db",
+        )
+        recovered_watcher._check_canary_decisions()
+        recovered_watcher._check_canary_decisions()
+
+        code, _, _ = run_git(
+            ["rev-parse", "--verify", "staging"],
+            cwd=str(skill_path),
+        )
+        installed_claude = (
+            home_root / ".claude" / "skills" / skill_path.name
+        )
+        installed_openclaw = (
+            home_root / ".agents" / "skills" / skill_path.name
+        )
+        records = InstallHistory(history_path).all_records()
+        terminal_records = [
+            record
+            for record in records
+            if record.get("action") == "terminal_decision"
+        ]
+        main_installs = [
+            record
+            for record in records
+            if (
+                record.get("action") == "install"
+                and record.get("side") == "main"
+            )
+        ]
+        assert code != 0
+        assert not canary_path.exists()
+        assert installed_claude.resolve() == skill_path.resolve()
+        assert (
+            installed_openclaw / "SKILL.md"
+        ).read_text(encoding="utf-8") == "v1"
+        assert len(terminal_records) == 1
+        assert len(main_installs) == 1
+        assert len(telemetry_decisions) == 1
+        assert not history.has_pending_recovery(
+            skill_path.name,
+            "claude_code",
+        )
+
+    def test_terminal_recovery_cleans_copy_after_branch_delete_crash(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """分支已删但 rmtree 中断时，journal 重放仍清理精确 canary 目录。"""
+        import shutil
+
+        from xskill.canary import staging_sha
+        from xskill.ecosystems._history import InstallHistory
+        from xskill.ecosystems.claude_code import install_to_claude_code
+
+        class SimulatedCrash(BaseException):
+            """模拟分支删除之后的进程退出。"""
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        skill_path = _init_repo(skill_dir / "rmtree-crash")
+        _make_staging(skill_path)
+        canary_path = skill_dir / ".canary" / skill_path.name
+        canary_path.mkdir(parents=True)
+        (canary_path / "SKILL.md").write_text(
+            "v2-staging",
+            encoding="utf-8",
+        )
+        home_root = tmp_path / "home"
+        (home_root / ".claude" / "projects").mkdir(parents=True)
+        install_to_claude_code(
+            skill_path,
+            target_root=home_root,
+            side="staging",
+        )
+        history = InstallHistory(tmp_path / "install_history.jsonl")
+        history.record(
+            skill=skill_path.name,
+            target="claude_code",
+            side="staging",
+            sha=staging_sha(skill_path) or "",
+        )
+        watcher = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={"canary": {}},
+            install_history_path=history.path,
+            home_root=home_root,
+            db_path=tmp_path / "registry.db",
+        )
+        def empty_model_share(**_kwargs):
+            return []
+
+        monkeypatch.setattr(
+            "xskill.pipeline.registry.model_share",
+            empty_model_share,
+        )
+        monkeypatch.setattr(
+            "xskill.canary.AtomCanary.plan_decision",
+            _reject_terminal_plan,
+        )
+        original_rmtree = shutil.rmtree
+
+        def crash_during_canary_cleanup(path, *args, **kwargs):
+            if Path(path) == canary_path:
+                raise SimulatedCrash("after branch delete")
+            return original_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "rmtree", crash_during_canary_cleanup)
+        with pytest.raises(SimulatedCrash):
+            watcher._check_canary_decisions()
+
+        code, _, _ = run_git(
+            ["rev-parse", "--verify", "staging"],
+            cwd=str(skill_path),
+        )
+        assert code != 0
+        assert canary_path.is_dir()
+        assert history.has_pending_recovery(
+            skill_path.name,
+            "claude_code",
+        )
+
+        monkeypatch.setattr(shutil, "rmtree", original_rmtree)
+        recovered_watcher = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={"canary": {}},
+            install_history_path=history.path,
+            home_root=home_root,
+            db_path=tmp_path / "registry.db",
+        )
+        recovered_watcher._check_canary_decisions()
+
+        installed = (
+            home_root / ".claude" / "skills" / skill_path.name
+        )
+        records = history.all_records()
+        assert not canary_path.exists()
+        assert installed.resolve() == skill_path.resolve()
+        assert len([
+            record
+            for record in records
+            if record.get("action") == "terminal_decision"
+        ]) == 1
+        assert not history.has_pending_recovery(
+            skill_path.name,
+            "claude_code",
+        )
+
+    def test_promote_removes_canary_before_next_claude_ingest(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """晋升后下一轮 CC ingester 不再把残留物化目录当作 staging。"""
+        from xskill.canary import staging_sha
+        from xskill.ecosystems._history import InstallHistory
+        from xskill.ecosystems.claude_code import (
+            CCSessionIngester,
+            _staging_skills_under,
+            install_to_claude_code,
+        )
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        skill_path = _init_repo(skill_dir / "promote-cleanup")
+        _make_staging(skill_path)
+        canary_path = skill_dir / ".canary" / skill_path.name
+        canary_path.mkdir(parents=True)
+        (canary_path / "SKILL.md").write_text(
+            "v2-staging",
+            encoding="utf-8",
+        )
+        home_root = tmp_path / "home"
+        (home_root / ".claude" / "projects").mkdir(parents=True)
+        install_to_claude_code(
+            skill_path,
+            target_root=home_root,
+            side="staging",
+        )
+        history_path = tmp_path / "install_history.jsonl"
+        history = InstallHistory(history_path)
+        history.record(
+            skill=skill_path.name,
+            target="claude_code",
+            side="staging",
+            sha=staging_sha(skill_path) or "",
+        )
+        watcher = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={"canary": {}},
+            install_history_path=history_path,
+            home_root=home_root,
+            db_path=tmp_path / "registry.db",
+        )
+        def empty_model_share(**_kwargs):
+            return []
+
+        monkeypatch.setattr(
+            "xskill.pipeline.registry.model_share",
+            empty_model_share,
+        )
+        promote_calls = []
+
+        def promote_terminal_plan(canary_instance, **keyword_arguments):
+            promote_calls.append(canary_instance.skill_dir)
+            return _promote_terminal_plan(
+                canary_instance,
+                **keyword_arguments,
+            )
+
+        monkeypatch.setattr(
+            "xskill.canary.AtomCanary.plan_decision",
+            promote_terminal_plan,
+        )
+
+        watcher._check_canary_decisions()
+
+        assert promote_calls == [skill_path]
+        ingester = CCSessionIngester(
+            tmp_path / "trajectories",
+            home_root=home_root,
+            skill_dir=skill_dir,
+            target_root=home_root,
+            history_path=history_path,
+            assignments_path=tmp_path / "assignments.jsonl",
+            registry_db_path=tmp_path / "registry.db",
+        )
+        assert _staging_skills_under(skill_dir) == []
+        assert ingester.run_once() == []
+        assert ingester.stats["errors"] == 0
+        assert not canary_path.exists()
+        assert (
+            home_root
+            / ".claude"
+            / "skills"
+            / skill_path.name
+            / "SKILL.md"
+        ).read_text(encoding="utf-8") == "v2-staging"
+
+    def test_promotion_git_failure_has_no_success_or_repeated_telemetry(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Git 任一步失败时返回失败；只有完整成功后才记录一次遥测。"""
+        import xskill.canary as canary_module
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        skill_path = _init_repo(skill_dir / "git-failure")
+        _make_staging(skill_path)
+        canary_path = skill_dir / ".canary" / skill_path.name
+        canary_path.mkdir(parents=True)
+        (canary_path / "SKILL.md").write_text(
+            "v2-staging",
+            encoding="utf-8",
+        )
+        decision = {
+            "action": "promoted",
+            "main_sha": canary_module.main_sha(skill_path),
+            "staging_sha": canary_module.staging_sha(skill_path),
+        }
+        original_run_git = canary_module.run_git
+        telemetry_decisions = []
+
+        def record_telemetry(*arguments, **keyword_arguments):
+            telemetry_decisions.append((arguments, keyword_arguments))
+
+        monkeypatch.setattr(
+            canary_module,
+            "_record_decision",
+            record_telemetry,
+        )
+
+        def fail_branch_delete(args, cwd):
+            if args == ["branch", "-D", "staging"]:
+                return 1, "", "injected branch delete failure"
+            return original_run_git(args, cwd=cwd)
+
+        monkeypatch.setattr(
+            canary_module,
+            "run_git",
+            fail_branch_delete,
+        )
+        failed = canary_module.apply_decision(skill_path, decision)
+
+        assert failed["action"] == "merge_failed"
+        assert canary_module.has_staging(skill_path)
+        assert canary_path.is_dir()
+        assert telemetry_decisions == []
+
+        monkeypatch.setattr(
+            canary_module,
+            "run_git",
+            original_run_git,
+        )
+        succeeded = canary_module.apply_decision(skill_path, decision)
+        repeated = canary_module.apply_decision(skill_path, decision)
+
+        assert succeeded["action"] == "promoted"
+        assert repeated["action"] == "merge_failed"
+        assert len(telemetry_decisions) == 1
+        assert not canary_path.exists()
+
+    def test_terminal_git_failure_recovers_receipt_and_telemetry_once(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """终态 Git 中途失败后由 applying journal 收敛且不重复遥测。"""
+        import xskill.canary as canary_module
+
+        from xskill.ecosystems._history import InstallHistory
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        skill_path = _init_repo(skill_dir / "git-recovery")
+        _make_staging(skill_path)
+        canary_path = skill_dir / ".canary" / skill_path.name
+        canary_path.mkdir(parents=True)
+        (canary_path / "SKILL.md").write_text(
+            "v2-staging",
+            encoding="utf-8",
+        )
+        history = InstallHistory(tmp_path / "install_history.jsonl")
+        watcher = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={"canary": {}},
+            install_history_path=history.path,
+            home_root=tmp_path,
+            server_mode=True,
+        )
+        original_run_git = canary_module.run_git
+        telemetry_decisions = []
+
+        def empty_model_share(**_kwargs):
+            return []
+
+        def record_telemetry(*arguments, **keyword_arguments):
+            telemetry_decisions.append((arguments, keyword_arguments))
+
+        def fail_branch_delete(args, cwd):
+            if args == ["branch", "-D", "staging"]:
+                return 1, "", "injected branch delete failure"
+            return original_run_git(args, cwd=cwd)
+
+        monkeypatch.setattr(
+            "xskill.pipeline.registry.model_share",
+            empty_model_share,
+        )
+        monkeypatch.setattr(
+            "xskill.canary.AtomCanary.plan_decision",
+            _promote_terminal_plan,
+        )
+        monkeypatch.setattr(
+            canary_module,
+            "_record_decision",
+            record_telemetry,
+        )
+        monkeypatch.setattr(
+            canary_module,
+            "run_git",
+            fail_branch_delete,
+        )
+
+        watcher._check_canary_decisions()
+
+        assert canary_module.has_staging(skill_path)
+        assert canary_path.is_dir()
+        assert telemetry_decisions == []
+        assert history.has_pending_recovery(
+            skill_path.name,
+            "canary_state",
+        )
+        assert not any(
+            record.get("action") == "terminal_decision"
+            for record in history.all_records()
+        )
+
+        monkeypatch.setattr(
+            canary_module,
+            "run_git",
+            original_run_git,
+        )
+        watcher._check_canary_decisions()
+        watcher._check_canary_decisions()
+
+        records = history.all_records()
+        assert not canary_module.has_staging(skill_path)
+        assert not canary_path.exists()
+        assert len([
+            record
+            for record in records
+            if record.get("action") == "terminal_decision"
+        ]) == 1
+        assert len(telemetry_decisions) == 1
+        assert not history.has_pending_recovery(
+            skill_path.name,
+            "canary_state",
+        )

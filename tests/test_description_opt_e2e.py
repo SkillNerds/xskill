@@ -8,6 +8,7 @@ archival 落齐、触发率入库；并验证 commit 工具内部确实调了优
 from __future__ import annotations
 
 import json
+from unittest.mock import Mock
 
 import pytest
 from agno.exceptions import StopAgentRun
@@ -245,7 +246,7 @@ def test_commit_baby_to_main_runs_optimization(tmp_path, monkeypatch):
     # 测试 monkeypatch 成 stub 探针工厂。
     monkeypatch.setattr(
         "xskill.agents.agno_factory.make_default_factory",
-        lambda _config: StubProbeFactory(_log_judge),
+        Mock(return_value=StubProbeFactory(_log_judge)),
     )
 
     skill_root = tmp_path / "skill"
@@ -261,8 +262,14 @@ def test_commit_baby_to_main_runs_optimization(tmp_path, monkeypatch):
     )
     llm = ScriptedLLM(
         _CASES, "Use this skill to analyze and parse log files and error traces.")
-    monkeypatch.setattr("xskill.utils.llm.create_llm_client", lambda _config: llm)
-    monkeypatch.setattr("xskill.utils.llm.create_embed_client", lambda _config: _DummyEmbed())
+    monkeypatch.setattr(
+        "xskill.utils.llm.create_llm_client",
+        Mock(return_value=llm),
+    )
+    monkeypatch.setattr(
+        "xskill.utils.llm.create_embed_client",
+        Mock(return_value=_DummyEmbed()),
+    )
     agent_tools.init_skill_authoring_tool_context(
         skill_root, skill_root,
         {"skill_opt": {"runs_per_case": 1, "max_iters": 1, "seed": 42}},
@@ -299,8 +306,14 @@ def test_commit_optimization_failure_does_not_block_commit(tmp_path, monkeypatch
             del args, kwargs
             raise RuntimeError("network down")
 
-    monkeypatch.setattr("xskill.utils.llm.create_llm_client", lambda _config: _BoomLLM())
-    monkeypatch.setattr("xskill.utils.llm.create_embed_client", lambda _config: _DummyEmbed())
+    monkeypatch.setattr(
+        "xskill.utils.llm.create_llm_client",
+        Mock(return_value=_BoomLLM()),
+    )
+    monkeypatch.setattr(
+        "xskill.utils.llm.create_embed_client",
+        Mock(return_value=_DummyEmbed()),
+    )
     agent_tools.init_skill_authoring_tool_context(
         skill_root, skill_root,
         {"skill_opt": {"runs_per_case": 1, "max_iters": 1}},

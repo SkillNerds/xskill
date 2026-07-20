@@ -130,6 +130,10 @@ def _seed_fake_cc_session(client_home: Path) -> None:
             "message": {"role": "assistant",
                         "content": [{"type": "text", "text": "已配置。"}]},
         }),
+        json.dumps({
+            "type": "last-prompt", "sessionId": sid, "cwd": "/work/demo",
+            "timestamp": "2026-05-14T10:00:02.000Z",
+        }),
     ]
     (proj / f"{sid}.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 

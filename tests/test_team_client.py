@@ -117,16 +117,42 @@ def test_push_user_edits_skips_when_no_real_diff(server_app, tmp_path):
         "push_user_edits 创建了 _useredit 分支——门没挡住，会刷屏")
 
 
+def test_push_user_edits_stops_after_reverse_sync_failure(
+    server_app, tmp_path, monkeypatch,
+):
+    from xskill.agents import user_edit_absorb_agent as user_absorb
+    from xskill.team.client import daemon
+
+    tc = _client(server_app, tmp_path)
+    manifest = tc.sync()
+    tc.reconcile_skill_sides(manifest)
+    monkeypatch.setattr(
+        user_absorb,
+        "reverse_sync_openclaw_dest",
+        lambda *_args, **_kwargs: user_absorb.ReverseSyncStatus.FAILED,
+    )
+
+    def fail_if_git_status_runs(*_args, **_kwargs):
+        raise AssertionError("FAILED 后不得继续 git status/commit/upload")
+
+    monkeypatch.setattr(daemon, "run_git", fail_if_git_status_runs)
+
+    assert tc.push_user_edits() == 0
+
+
 def test_cleanup_removes_skill_not_in_manifest(server_app, tmp_path):
     tc = _client(server_app, tmp_path)
     # 本地有个 manifest 里没有的 stale skill
     stale = tmp_path / "client_home" / ".xskill" / "skill" / "stale-skill"
     stale.mkdir(parents=True)
     (stale / "SKILL.md").write_text("# stale", encoding="utf-8")
+    internal = stale.parent / ".repo_locks"
+    internal.mkdir()
     manifest = tc.sync()
     tc.reconcile_skill_sides(manifest)
     tc.cleanup(manifest)
     assert not stale.exists()
+    assert internal.is_dir()
     assert (tmp_path / "client_home" / ".xskill" / "skill" / "fix-foo").is_dir()   # manifest 里的保留
 
 

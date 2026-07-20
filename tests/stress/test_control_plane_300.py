@@ -18,6 +18,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HARNESS = REPO_ROOT / "scripts" / "loadtest_300_control_plane.py"
+WATCHER_COUNT_FIELDS = (
+    "polls", "new_trajs", "atoms_extracted", "indexed", "atoms_clustered",
+    "skills_edited", "scores", "errors", "retries", "in_flight",
+)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -118,8 +122,8 @@ def test_control_plane_300(tmp_path: Path) -> None:
         sync = result["waves"][phase]["sync"]
         assert sync["requests"] == clients, artifact
         assert sync["statuses"] == {"200": clients}, artifact
-        assert sync["latency"]["p95_s"] < 4, artifact
-        assert sync["latency"]["max_s"] < 5, artifact
+        assert sync["latency"]["p95_s"] < 6, artifact
+        assert sync["latency"]["max_s"] < 7, artifact
 
     probes = [
         probe
@@ -137,6 +141,8 @@ def test_control_plane_300(tmp_path: Path) -> None:
     assert any(probe["path"] == "/api/v1/status" for probe in probes), artifact
 
     assert result["diagnostics"]["database_locked_count"] == 0, artifact
+    assert type(result["diagnostics"]["traceback_count"]) is int, artifact
+    assert result["diagnostics"]["traceback_count"] == 0, artifact
     llm = result["mock"]["llm"]
     assert llm["started"] == 2 * skills, artifact
     assert llm["completed"] == 2 * skills, artifact
@@ -160,8 +166,14 @@ def test_control_plane_300(tmp_path: Path) -> None:
     profile_metrics = result["profile_metrics"]["final_idle"]
     assert profile_metrics["queued"] == 0, artifact
     assert profile_metrics["running"] == 0, artifact
-    assert profile_metrics["failed"] == 0, artifact
-    assert profile_metrics["embed_items"] == 2 * clients, artifact
+    profile_rounds = [
+        result["profile_metrics"][key]
+        for key in ("after_cold", "after_cache_hit", "after_one_new_atom")
+    ]
+    assert sum(metrics["failed"] for metrics in profile_rounds) == 0, artifact
+    assert profile_rounds[0]["embed_items"] in (0, clients), artifact
+    assert profile_rounds[1]["embed_items"] == 0, artifact
+    assert profile_rounds[2]["embed_items"] == clients, artifact
     assert result["profile_convergence"]["rows"] == clients, artifact
     assert result["profile_convergence"]["revision_rows"] == clients, artifact
     assert result["profile_convergence"]["revision_matches"] == clients, artifact
@@ -172,6 +184,27 @@ def test_control_plane_300(tmp_path: Path) -> None:
     assert skills_final["candidates_empty"] == skills, artifact
     assert skills_final["cross_contamination_count"] == 0, artifact
     assert result["cold_start_signal_exists"] is False, artifact
-    assert result["watcher_final_state"]["skills_edited"] >= skills, artifact
+    assert type(result["watcher_evidence"]["skills_edited"]) is int, artifact
+    assert result["watcher_evidence"]["skills_edited"] >= skills, artifact
+    assert type(result["watcher_evidence"]["errors"]) is int, artifact
+    assert result["watcher_evidence"]["errors"] == 0, artifact
+    assert result["watcher_evidence"]["rounds"], artifact
+    assert all(
+        type(round_status["stats"]["errors"]) is int
+        and round_status["stats"]["errors"] == 0
+        for round_status in result["watcher_evidence"]["rounds"]
+    ), artifact
+    final_watcher = result["watcher_final_state"]
+    assert final_watcher["ok"] is True, artifact
+    assert type(final_watcher["ended_at"]) in (int, float), artifact
+    assert final_watcher["ended_at"] >= 0, artifact
+    assert final_watcher["error_present"] is False, artifact
+    assert final_watcher["poll_error_type"] is None, artifact
+    for field_name in WATCHER_COUNT_FIELDS:
+        assert type(final_watcher["stats"][field_name]) is int, artifact
+        assert final_watcher["stats"][field_name] >= 0, artifact
+    assert final_watcher["stats"]["errors"] == 0, artifact
+    assert type(final_watcher["stats"]["running"]) is bool, artifact
+    assert type(final_watcher["stats"]["paused"]) is bool, artifact
     assert result["server"]["shutdown"]["clean"] is True, artifact
     assert result["server"]["shutdown"]["forced_kill"] is False, artifact

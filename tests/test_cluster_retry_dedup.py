@@ -44,7 +44,7 @@ class _R:
 
 
 class _TransientFailStub:
-    """前 N 次 cluster 调用整批抛异常，之后正常逐个 add_task_to_skill。"""
+    """前 N 次 cluster 调用整批抛异常，之后批量写入全部 atom。"""
     calls = 0
     fail_first_n = 1
     target = "auto-skill"
@@ -62,17 +62,28 @@ class _TransientFailStub:
             type(self).calls += 1
             if type(self).calls <= type(self).fail_first_n:
                 raise RuntimeError(f"stub LLM 402 (call {type(self).calls})")
-            for aid in re.findall(r"atom_id:\s*(\S+)", user_msg):
-                if "new_skill_folder" in self.tools:
-                    _call_tool(self.tools["new_skill_folder"], type(self).target, "stub desc")
-                if "add_task_to_skill" in self.tools:
-                    _call_tool(self.tools["add_task_to_skill"], type(self).target, aid, 3)
+            atom_ids = re.findall(r"atom_id:\s*(\S+)", user_msg)
+            if "new_skill_folder" in self.tools:
+                _call_tool(
+                    self.tools["new_skill_folder"],
+                    type(self).target,
+                    "stub desc",
+                )
+            if "add_tasks_to_skill" in self.tools:
+                _call_tool(
+                    self.tools["add_tasks_to_skill"],
+                    type(self).target,
+                    [
+                        {"atom_id": atom_id, "weightscore": 3}
+                        for atom_id in atom_ids
+                    ],
+                )
             return _R("clustered")
         return _R("stub")
 
 
 class _CountingClusterStub:
-    """每次 cluster 调用记录送进的 atom_id；逐个 add_task_to_skill 给 auto-skill。"""
+    """每次 cluster 调用记录 atom_id，并批量写入 auto-skill。"""
     sent: list[str] = []
     target = "auto-skill"
 
@@ -86,12 +97,23 @@ class _CountingClusterStub:
             autosplit_submit(user_msg, self.tools)
             return _R("split")
         if "TaskClusterAgent" in head:
-            for aid in re.findall(r"atom_id:\s*(\S+)", user_msg):
-                type(self).sent.append(aid)
-                if "new_skill_folder" in self.tools:
-                    _call_tool(self.tools["new_skill_folder"], type(self).target, "stub desc")
-                if "add_task_to_skill" in self.tools:
-                    _call_tool(self.tools["add_task_to_skill"], type(self).target, aid, 3)
+            atom_ids = re.findall(r"atom_id:\s*(\S+)", user_msg)
+            type(self).sent.extend(atom_ids)
+            if "new_skill_folder" in self.tools:
+                _call_tool(
+                    self.tools["new_skill_folder"],
+                    type(self).target,
+                    "stub desc",
+                )
+            if "add_tasks_to_skill" in self.tools:
+                _call_tool(
+                    self.tools["add_tasks_to_skill"],
+                    type(self).target,
+                    [
+                        {"atom_id": atom_id, "weightscore": 3}
+                        for atom_id in atom_ids
+                    ],
+                )
             return _R("clustered")
         return _R("stub")
 
@@ -237,7 +259,7 @@ class TestPerAtomLog:
         assert len(atom_lines) == 2  # _TRAJ_MD 2 atoms
 
     def test_silent_drop_emits_warning(self, tmp_path, caplog):
-        """cluster agent 不调 add_task_to_skill（silent drop）→ WARNING。"""
+        """cluster agent 不调候选添加工具（silent drop）→ WARNING。"""
         class _DropAllStub:
             def __init__(self, *, instructions, tools):
                 self.instructions = instructions

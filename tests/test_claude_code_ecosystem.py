@@ -17,6 +17,7 @@ import pytest
 from xskill import canary
 from xskill.ecosystems import adapt_trajectory, submit_trajectory
 from xskill.ecosystems import install_all_to_claude_code, install_to_claude_code
+from xskill.ecosystems.claude_code import _session_content_used_skill
 from xskill.pipeline.trajectory import Trajectory
 from xskill.skill.frontmatter import parse as fm_parse
 from xskill.skill.frontmatter import serialize as fm_serialize
@@ -67,6 +68,32 @@ CC_JSONL_SAMPLE = "\n".join([
         "sessionId": "sess-abc",
     }),
 ])
+
+
+def test_session_used_skill_scans_past_unrelated_assistant_turns():
+    """前一条 assistant 的 content 为列表时，后续 Skill 调用仍能被识别。"""
+    content = "\n".join([
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "先检查环境。"}],
+            },
+        }),
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "name": "Skill",
+                    "input": {"skill": "list-py-files"},
+                }],
+            },
+        }),
+    ])
+
+    assert _session_content_used_skill(content, "list-py-files") is True
 
 
 # CC session where every user turn ships content as a LIST of {"type":"text"}
@@ -185,6 +212,45 @@ class TestClaudeCodeJsonlAdapter:
         assert meta["category"] == "claude_code_session"
         # 至少抽到一个 sessionId 或一些 timeline 事件之一
         assert meta.get("session_id") or meta["total_turns"] > 0
+
+    def test_zero_settle_waits_for_last_prompt_before_seen(self, tmp_path):
+        """低延迟扫描不应把仍在续写的 session 永久标记为已处理。"""
+        from xskill.ecosystems._shared import JsonlIngester
+        from xskill.ecosystems.claude_code import CC_SPEC
+
+        home_root = tmp_path / "home"
+        session_dir = home_root / ".claude" / "projects" / "project"
+        session_dir.mkdir(parents=True)
+        session_path = session_dir / "session-live.jsonl"
+        session_path.write_text(CC_JSONL_SAMPLE, encoding="utf-8")
+        target_dir = tmp_path / "bridged"
+        seen_sessions: set[str] = set()
+        ingester = JsonlIngester(CC_SPEC, settle_seconds=0)
+
+        first_result = ingester.scan_and_bridge(
+            target_dir,
+            home_root=home_root,
+            seen_sessions=seen_sessions,
+        )
+
+        assert first_result == []
+        assert seen_sessions == set()
+
+        with session_path.open("a", encoding="utf-8") as session_file:
+            session_file.write("\n")
+            session_file.write(json.dumps({
+                "type": "last-prompt",
+                "sessionId": "session-live",
+            }))
+            session_file.write("\n")
+        second_result = ingester.scan_and_bridge(
+            target_dir,
+            home_root=home_root,
+            seen_sessions=seen_sessions,
+        )
+
+        assert len(second_result) == 1
+        assert seen_sessions == {"session-live"}
 
 
 # ──────────────────────────────────────────────────────

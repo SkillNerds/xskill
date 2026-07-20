@@ -169,12 +169,31 @@ class TestSettleBarrier:
         assert "SOLUTION_MARKER" in md
 
     def test_settle_zero_disables_barrier(self, cc_home, tmp_path):
-        """settle_seconds=0 → 出现即入库（评测场景可用配置关掉屏障）。"""
-        _session_path(cc_home).write_text(_half_session(), encoding="utf-8")
+        """settle=0 只禁时间屏障；明确完成前不入 seen，完成后下一轮入库。"""
+        session_path = _session_path(cc_home)
+        session_path.write_text(_half_session(), encoding="utf-8")
         target = tmp_path / "bridge"
         ing = JsonlIngester(CC_SPEC, settle_seconds=0)
-        out = ing.scan_and_bridge(target, home_root=cc_home, seen_sessions=set())
-        assert len(out) == 1
+        seen: set[str] = set()
+
+        assert ing.scan_and_bridge(
+            target,
+            home_root=cc_home,
+            seen_sessions=seen,
+        ) == []
+        assert SID not in seen
+
+        with session_path.open("a", encoding="utf-8") as session_file:
+            session_file.write(
+                _full_tail() + json.dumps({"type": "last-prompt"}) + "\n"
+            )
+        completed = ing.scan_and_bridge(
+            target,
+            home_root=cc_home,
+            seen_sessions=seen,
+        )
+        assert len(completed) == 1
+        assert SID in seen
 
 
 # ──────────────────────────────────────────────────────
@@ -245,7 +264,12 @@ class TestRegrowthRebridge:
 # ──────────────────────────────────────────────────────
 
 class TestRebridgeResetsAtoms:
-    def test_rebridge_resets_traj_atoms_and_status(self, cc_home, tmp_path):
+    def test_rebridge_resets_traj_atoms_and_status(
+        self, cc_home, tmp_path, monkeypatch,
+    ):
+        from unittest.mock import Mock
+
+        from xskill.pipeline import registry as registry_module
         from xskill.pipeline.registry import (
             discover_trajectories, register_dir, update_traj_status,
             get_status_counts,
@@ -256,7 +280,18 @@ class TestRebridgeResetsAtoms:
         _backdate(sp, 7200)
 
         target = tmp_path / "bridge"
-        ing = JsonlIngester(CC_SPEC, settle_seconds=60)
+        instance_db_path = tmp_path / "instance" / "registry.db"
+        global_db_path = tmp_path / "global" / "registry.db"
+        monkeypatch.setattr(
+            registry_module,
+            "get_registry_db_path",
+            Mock(return_value=global_db_path),
+        )
+        ing = JsonlIngester(
+            CC_SPEC,
+            settle_seconds=60,
+            registry_db_path=instance_db_path,
+        )
         seen: set[str] = set()
         out1 = ing.scan_and_bridge(target, home_root=cc_home, seen_sessions=seen)
         md_path = Path(out1[0]["path"])
@@ -265,9 +300,20 @@ class TestRebridgeResetsAtoms:
         _backdate(md_path, 7000)
 
         # 模拟 watcher 已经处理完这条残骸轨迹：登记 + 标 done + 拆出 atom + 建索引
-        wd_id = register_dir(target, ecosystem="claude_code")
-        discover_trajectories(wd_id, target)
-        update_traj_status(wd_id, md_path.name, "done")
+        wd_id = register_dir(
+            target,
+            ecosystem="claude_code",
+            db_path=instance_db_path,
+        )
+        discover_trajectories(
+            wd_id, target, db_path=instance_db_path
+        )
+        update_traj_status(
+            wd_id,
+            md_path.name,
+            "done",
+            db_path=instance_db_path,
+        )
         atom_file = target / traj_id / "tasks" / "atom_0001.json"
         atom_file.parent.mkdir(parents=True)
         atom_file.write_text("{}", encoding="utf-8")
@@ -281,9 +327,12 @@ class TestRebridgeResetsAtoms:
 
         assert not atom_file.exists()
         assert not (target / "index.pkl").exists()
-        counts = get_status_counts(wd_id)
+        counts = get_status_counts(
+            wd_id, db_path=instance_db_path
+        )
         assert counts.get("discovered", 0) == 1
         assert counts.get("done", 0) == 0
+        assert not global_db_path.exists()
 
 
 # ──────────────────────────────────────────────────────

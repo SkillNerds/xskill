@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future
 import time
+from unittest.mock import Mock
 
 from xskill.pipeline.atom import AtomTaskStore
 from xskill.pipeline.registry import (
@@ -27,7 +28,7 @@ def _call_tool(tool, *args):
 class _StubAgno:
     """根据 sysprompt 头分发：
     - split agent (AtomTask 拆分员) → 扫 [line:N] 标记逐个 submit_atom
-    - cluster agent → 调 new_skill_folder + add_task_to_skill 给 auto-skill 打 10 分
+    - cluster agent → 调 new_skill_folder + add_tasks_to_skill 批量打 10 分
     - edit agent (baby)  → 写 SKILL.md + commit_baby_to_main
     - edit agent (main)  → 写 SKILL.md + commit_to_staging
     - absorb agent → 调 absorb_user_edit_to_main
@@ -51,11 +52,21 @@ class _StubAgno:
             _t.sleep(0.03)
             # 跨轨迹批处理：一次调用可能拿到多个 atom 的位置，逐个归类。
             atom_ids = re.findall(r"atom_id:\s*(\S+)", user_msg)
-            for atom_id in atom_ids:
-                if "new_skill_folder" in self.tools:
-                    _call_tool(self.tools["new_skill_folder"], "auto-skill", "stub desc")
-                if "add_task_to_skill" in self.tools:
-                    _call_tool(self.tools["add_task_to_skill"], "auto-skill", atom_id, 10)
+            if "new_skill_folder" in self.tools:
+                _call_tool(
+                    self.tools["new_skill_folder"],
+                    "auto-skill",
+                    "stub desc",
+                )
+            if "add_tasks_to_skill" in self.tools:
+                _call_tool(
+                    self.tools["add_tasks_to_skill"],
+                    "auto-skill",
+                    [
+                        {"atom_id": atom_id, "weightscore": 10}
+                        for atom_id in atom_ids
+                    ],
+                )
         elif "SkillEditAgent" in head:
             import re
             m = re.search(r"目标 SKILL\.md 路径:\s*(\S+)", user_msg)
@@ -689,7 +700,7 @@ class TestInterestFiltering:
         update_traj_status(watch_dir_id, "traj_done.md", "done", db_path=db_path)
         monkeypatch.setattr(
             "xskill.pipeline.runner.read_interests_config",
-            lambda: ["new"],
+            Mock(return_value=["new"]),
         )
         watcher = DirectoryWatcher(
             llm=_AutoSplitLLM(),

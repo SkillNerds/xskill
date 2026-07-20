@@ -24,6 +24,7 @@ import json
 from pathlib import Path
 
 import pytest
+from dulwich import porcelain
 
 from xskill.ecosystems import (
     adapt_trajectory,
@@ -294,8 +295,17 @@ class TestInstallToOpenClawCopyMode:
     def test_install_ignores_dot_git_in_source(self, tmp_path):
         """源仓有 .git 时 install 不应把 .git 拷到 dest（dest 不是 git 仓）。"""
         skill_path = _build_skill(tmp_path / "src")
-        (skill_path / ".git").mkdir()
-        (skill_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        repo = porcelain.init(str(skill_path), bare=False)
+        try:
+            porcelain.add(repo)
+            porcelain.commit(
+                repo,
+                message=b"test source",
+                author=b"test <test@example.com>",
+                committer=b"test <test@example.com>",
+            )
+        finally:
+            repo.close()
         fake_home = tmp_path / "home"
         dest_md = install_to_openclaw(skill_path, target_root=fake_home)
         assert not (dest_md.parent / ".git").exists()
@@ -322,16 +332,24 @@ class TestReverseSyncOpenClawDest:
         return sk
 
     def test_no_user_edit_returns_false(self, tmp_path):
-        from xskill.agents.user_edit_absorb_agent import reverse_sync_openclaw_dest
+        from xskill.agents.user_edit_absorb_agent import (
+            ReverseSyncStatus,
+            reverse_sync_openclaw_dest,
+        )
         sk = self._build_real_skill_repo(tmp_path)
         home = tmp_path / "home"
         dest_md = install_to_openclaw(sk, target_root=home)
         # dest 刚装出来，没用户改 → reverse_sync False
-        assert reverse_sync_openclaw_dest(dest_md.parent, sk, quiet_seconds=0) is False
+        assert reverse_sync_openclaw_dest(
+            dest_md.parent, sk, quiet_seconds=0,
+        ) == ReverseSyncStatus.NO_EDIT
 
     def test_user_edit_in_dest_synced_back_to_source(self, tmp_path):
         import time as _t
-        from xskill.agents.user_edit_absorb_agent import reverse_sync_openclaw_dest
+        from xskill.agents.user_edit_absorb_agent import (
+            ReverseSyncStatus,
+            reverse_sync_openclaw_dest,
+        )
         sk = self._build_real_skill_repo(tmp_path)
         home = tmp_path / "home"
         dest_md = install_to_openclaw(sk, target_root=home)
@@ -344,7 +362,7 @@ class TestReverseSyncOpenClawDest:
         (dest_dir / "scripts" / "go.sh").write_text("#!/bin/sh\necho run\n")
 
         synced = reverse_sync_openclaw_dest(dest_dir, sk, quiet_seconds=0)
-        assert synced is True
+        assert synced == ReverseSyncStatus.SYNCED
         assert "USER MODIFIED IN DEST" in (sk / "SKILL.md").read_text()
         assert (sk / "scripts" / "go.sh").is_file()
         # install-meta 不应被灌回源仓
@@ -353,7 +371,9 @@ class TestReverseSyncOpenClawDest:
     def test_install_meta_skipped_during_sync(self, tmp_path):
         """install-meta 不算用户改，本身的 mtime 不应触发回流。"""
         from xskill.agents.user_edit_absorb_agent import (
-            reverse_sync_openclaw_dest, has_pending_dest_edit,
+            ReverseSyncStatus,
+            has_pending_dest_edit,
+            reverse_sync_openclaw_dest,
         )
         sk = self._build_real_skill_repo(tmp_path)
         home = tmp_path / "home"
@@ -365,7 +385,9 @@ class TestReverseSyncOpenClawDest:
         meta.write_text(meta.read_text() + "\n")  # bump mtime
         # has_pending_dest_edit 只看用户文件，不看 install-meta → False
         assert has_pending_dest_edit(dest_md.parent, quiet_seconds=0) is False
-        assert reverse_sync_openclaw_dest(dest_md.parent, sk, quiet_seconds=0) is False
+        assert reverse_sync_openclaw_dest(
+            dest_md.parent, sk, quiet_seconds=0,
+        ) == ReverseSyncStatus.NO_EDIT
 
 
 class TestInstallToOpenClawProtectsPendingDestEdits:

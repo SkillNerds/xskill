@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from xskill.pipeline import registry as R
 from xskill.team.server import api as server_api
 from xskill.team.server.client_registry import ClientRegistry
 
@@ -94,6 +95,81 @@ def test_unknown_client_rejected(client):
     hdr = {"X-Xskill-Token": "secret-token", "X-Xskill-Client": "ghost"}
     r = client.get("/api/v1/team/sync", headers=hdr)
     assert r.status_code == 403
+
+
+def test_paused_upload_is_accepted_and_backlog_is_discovered_after_resume(
+    tmp_path,
+):
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    traj_root = tmp_path / "team_traj"
+    registry_db = tmp_path / "registry.db"
+    clients = ClientRegistry(tmp_path / "clients.db")
+
+    def configure_watch_dir(path: Path, label: str, auto_index: bool) -> None:
+        R.register_dir(
+            path,
+            label=label,
+            auto_index=auto_index,
+            ecosystem="team_client",
+            db_path=registry_db,
+        )
+
+    server_api.init_team_context(
+        join_token="secret-token",
+        client_registry=clients,
+        skill_dir=skill_dir,
+        traj_root=traj_root,
+        register_dir=lambda path, label: configure_watch_dir(path, label, True),
+        configure_watch_dir=configure_watch_dir,
+    )
+    app = FastAPI()
+    app.include_router(server_api.router)
+    http = TestClient(app)
+    registered = http.post(
+        "/api/v1/team/register",
+        json={"token": "secret-token", "user_name": "alice"},
+    )
+    client_id = registered.json()["client_id"]
+    clients.set_ingest_paused(client_id, True, actor="boss", reason="review")
+
+    content = "# paused trajectory"
+    response = http.post(
+        "/api/v1/team/upload",
+        headers={
+            "X-Xskill-Token": "secret-token",
+            "X-Xskill-Client": client_id,
+        },
+        json={
+            "trajectories": [{
+                "traj_id": "traj_cc_paused_001",
+                "content": content,
+                "sha256": _sha(content),
+            }],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "accepted": ["traj_cc_paused_001"],
+        "rejected": [],
+    }
+    sessions_dir = traj_root / "clients" / "alice" / "sessions"
+    assert (sessions_dir / "traj_cc_paused_001.md").read_text() == content
+    watch_dir = R.get_watch_dir(sessions_dir, db_path=registry_db)
+    assert watch_dir["auto_index"] == 0
+    with R.pooled_connection(registry_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM trajectories").fetchone()[0] == 0
+
+    # 模拟 watcher 的真实入口：暂停目录不会被调度；恢复只翻执行开关，
+    # backlog 文件保持原位并在下一轮可被处理。
+    clients.set_ingest_paused(client_id, False, actor="boss")
+    state = server_api.reconcile_client_ingest_watch_dir(client_id)
+    assert state["ingest_paused"] is False
+    assert R.get_watch_dir(sessions_dir, db_path=registry_db)["auto_index"] == 1
+    assert R.discover_trajectories(
+        watch_dir["id"], sessions_dir, db_path=registry_db,
+    ) == ["traj_cc_paused_001.md"]
 
 
 def test_sync_auth_uses_current_token_and_delete_revokes_immediately(client):

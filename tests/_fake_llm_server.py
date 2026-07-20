@@ -25,7 +25,7 @@ import json
 import socket
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 import uvicorn
@@ -391,6 +391,45 @@ def make_openai_chat_response(text: str, model: str = "fake-model") -> dict:
             }
         ],
         "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+    }
+
+
+def make_openai_tool_call_response(
+    tool_calls: list[tuple[str, dict]],
+    model: str = "fake-model",
+) -> dict:
+    """Build one OpenAI-compatible assistant response with function calls."""
+    calls = []
+    for index, (name, arguments) in enumerate(tool_calls, 1):
+        calls.append({
+            "id": f"call_fake_{index}",
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": json.dumps(arguments, ensure_ascii=False),
+            },
+        })
+    return {
+        "id": "chatcmpl-fake-tools",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": calls,
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 10,
+            "total_tokens": 20,
+        },
     }
 
 

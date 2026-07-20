@@ -3,7 +3,66 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
+
+
+def test_absorb_preserves_candidate_added_while_agent_runs(
+    tmp_path,
+    monkeypatch,
+):
+    from xskill.agents.user_edit_absorb_agent import UserEditAbsorbAgent
+    from xskill.skill import candidates
+    from xskill.skill import git as skill_git
+
+    skill_dir = tmp_path / "edited-skill"
+    skill_dir.mkdir()
+    candidates.add_atom_contributions(
+        skill_dir,
+        [("before-absorb", 4, "")],
+    )
+
+    def fake_run_git(args, cwd):
+        assert cwd == str(skill_dir)
+        if args[0] == "diff":
+            return 0, "diff --git a/SKILL.md b/SKILL.md", ""
+        if args[0] == "status":
+            return 0, " M SKILL.md", ""
+        if args[0] == "log":
+            return 0, "absorb user edit: update instructions", ""
+        raise AssertionError(f"unexpected git command: {args}")
+
+    class FakeAgent:
+        def run(self, _message):
+            candidates.add_atom_contributions(
+                skill_dir,
+                [("during-absorb", 7, "")],
+            )
+
+    def fake_agent_factory(**_kwargs):
+        return FakeAgent()
+
+    def fake_current_branch(_repo):
+        return "main"
+
+    monkeypatch.setattr(skill_git, "run_git", fake_run_git)
+    monkeypatch.setattr(
+        skill_git,
+        "current_branch",
+        fake_current_branch,
+    )
+    absorb_agent = UserEditAbsorbAgent(
+        skill_dir=skill_dir,
+        agno_agent_factory=fake_agent_factory,
+        llm_cfg={},
+    )
+
+    assert absorb_agent.run() is True
+    remaining_ids = {
+        candidate["atom_id"]
+        for candidate in candidates.load_candidates(
+            skill_dir,
+        )["candidates"]
+    }
+    assert remaining_ids == {"during-absorb"}
 
 
 def test_freshly_inited_baby_skill_is_not_user_edit(tmp_path):
