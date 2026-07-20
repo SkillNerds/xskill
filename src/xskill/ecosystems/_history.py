@@ -506,28 +506,20 @@ class InstallHistory:
     ) -> InstallHistoryFileSignature:
         inode = int(stat_result.st_ino) if stat_result.st_ino else None
         device = int(stat_result.st_dev) if stat_result.st_dev else None
-        changed_time_ns = int(stat_result.st_ctime_ns)
-        if os.name == "nt":
-            changed_time_ns = int(
-                getattr(
-                    stat_result,
-                    "st_birthtime_ns",
-                    stat_result.st_ctime_ns,
-                )
-            )
         return InstallHistoryFileSignature(
             device=device,
             inode=inode,
             size=int(stat_result.st_size),
             modified_time_ns=int(stat_result.st_mtime_ns),
-            changed_time_ns=changed_time_ns,
+            changed_time_ns=int(stat_result.st_ctime_ns),
             cursor=cursor,
         )
 
     def current_signature(self) -> Optional[InstallHistoryFileSignature]:
         """O(1) 获取当前路径版本；无文件时返回 ``None``。"""
         try:
-            stat_result = self.path.stat()
+            with self.path.open("rb") as history_file:
+                stat_result = os.fstat(history_file.fileno())
         except FileNotFoundError:
             return None
         return self._file_signature(
