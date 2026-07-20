@@ -88,7 +88,7 @@ markers = [
     # ``--ignore=tests/live``）；CI live-agent-e2e job + 本地手动跑用
     # ``pytest -m live_agent`` 触发。
     "live_agent: real codex/opencode process + mock LLM end-to-end (slow, optional)",
-    "stress: release-gating real-process load tests (slow, excluded by default)",
+    "stress: slow real-process load and smoke tests (excluded by default)",
 ]
 addopts = "--ignore=tests/live --ignore=tests/stress"
 asyncio_mode = "strict"

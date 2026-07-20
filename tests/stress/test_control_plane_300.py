@@ -1,8 +1,8 @@
-"""Release-gating 300x300 control-plane stress test.
+"""Nightly 300x300 control-plane stress test.
 
-The defaults are the release acceptance scale and real backend delays.  Local
-debugging may set the documented ``XSKILL_STRESS_*`` environment variables;
-CI and release workflows intentionally do not override them.
+The defaults are the production acceptance scale and real backend delays.
+Local debugging may set the documented ``XSKILL_STRESS_*`` environment
+variables; the nightly workflow intentionally does not override them.
 """
 from __future__ import annotations
 

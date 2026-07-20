@@ -1,7 +1,7 @@
 # CI workflow — see docs/dev-plan/ci-workflow-draft.yml and docs/dev-plan/testing-strategy.md
 #
 # Phase status:
-#   P1            — ut-it (3 OS × 2 py) + verify-build live.
+#   P1            — ut-it (3 OS × 4 py) + verify-build live.
 #   P2/P3         — Codex / OpenCode adapters add tests but don't change this file.
 #   P4 (this PR)  — smoke-e2e body filled: install codex/opencode CLI (real npm)
 #                   + run `pytest tests/e2e/test_smoke.py -k <agent>`.
@@ -11,9 +11,10 @@
 #                   secrets don't break the run).
 #
 # Trigger matrix:
-#   pull_request                  → ut-it + verify-build + smoke-e2e
-#   push to main                  → same + real-llm-e2e (graceful skip without secret)
-#   workflow_dispatch / schedule  → also live-agent-e2e (graceful skip without secret)
+#   pull_request         → ut-it + verify-build + smoke/connect/live-agent E2E
+#   push to main         → same + real-llm-e2e (graceful skip without secret)
+#   workflow_dispatch / schedule → same as push to main
+#   300×300 control-plane stress runs only in the dedicated nightly workflow.
 
 name: CI
 
@@ -102,34 +103,6 @@ jobs:
         run: pip install -e .[dev]
       - name: Connect lifecycle E2E (local stub, no network)
         run: pytest tests/e2e/test_connect_lifecycle_e2e.py -v
-
-  control-plane-stress:
-    name: control-plane stress (300x300, py3.11)
-    if: github.event_name != 'pull_request'
-    needs: ut-it
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install package with dev extras
-        run: pip install -e .[dev]
-      - name: Run 300x300 control-plane stress test
-        run: >-
-          pytest tests/stress/test_control_plane_300.py -v
-          --override-ini="addopts=" -m stress
-          --basetemp=.stress-artifacts
-      - name: Upload stress-test evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: control-plane-stress-${{ github.run_id }}
-          path: .stress-artifacts/**
-          if-no-files-found: warn
-          retention-days: 14
 
   real-llm-e2e:
     name: real-llm-e2e (linux)

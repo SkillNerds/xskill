@@ -1,6 +1,8 @@
 # Release: triggered by pushing a version tag (v*).
 # Tag is the source of truth; setuptools-scm derives the package version from it.
 # Pre-release tags (e.g. v0.4.0a1, v0.4.0rc1) are supported.
+# Publishing is gated by the test matrix and SkillHub search smoke test.
+# The 300×300 control-plane stress test runs independently in the nightly workflow.
 
 name: Release
 
@@ -30,33 +32,6 @@ jobs:
         run: pip install -e .[dev]
       - name: Run pytest
         run: pytest tests/ -q
-
-  stress:
-    name: control-plane stress (300x300, py3.11)
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install package with dev extras
-        run: pip install -e .[dev]
-      - name: Run 300x300 control-plane stress test
-        run: >-
-          pytest tests/stress/test_control_plane_300.py -v
-          --override-ini="addopts=" -m stress
-          --basetemp=.stress-artifacts
-      - name: Upload stress-test evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-control-plane-stress-${{ github.run_id }}
-          path: .stress-artifacts/**
-          if-no-files-found: warn
-          include-hidden-files: true
-          retention-days: 30
 
   skillhub-search-smoke:
     name: skillhub search smoke (py3.11)
@@ -88,7 +63,7 @@ jobs:
   publish:
     name: build and publish
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, stress, skillhub-search-smoke]
+    needs: [test, skillhub-search-smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
