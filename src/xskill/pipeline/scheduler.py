@@ -23,8 +23,15 @@ logger = logging.getLogger("xskill.pipeline.scheduler")
 class IntervalSubprocessScheduler:
     """每隔 ``interval`` 秒 spawn 一次 ``command`` 短命子进程,算完即退。"""
 
-    def __init__(self, name: str, command: list[str], *, interval: float,
-                 timeout: float):
+    def __init__(
+        self,
+        name: str,
+        command: list[str],
+        *,
+        interval: float,
+        timeout: float,
+        persistent: bool = False,
+    ):
         if interval <= 0:
             raise ValueError("interval 必须 > 0")
         if timeout <= 0:
@@ -33,8 +40,11 @@ class IntervalSubprocessScheduler:
         self._command = list(command)
         self._interval = float(interval)
         self._timeout = float(timeout)
+        self._persistent = bool(persistent)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._process: subprocess.Popen | None = None
+        self._process_lock = threading.Lock()
 
     def start(self) -> None:
         """幂等启动调度 daemon 线程。"""
@@ -49,10 +59,33 @@ class IntervalSubprocessScheduler:
     def stop(self, timeout: float = 5.0) -> None:
         """竖停机旗、中断 wait,并有界 join 调度线程。"""
         self._stop.set()
+        with self._process_lock:
+            process = self._process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                logger.warning(
+                    "常驻调度任务 %s 停止时 terminate 失败",
+                    self._name,
+                    exc_info=True,
+                )
         if self._thread is not None:
             self._thread.join(timeout)
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                logger.warning(
+                    "常驻调度任务 %s 停止时 kill 失败",
+                    self._name,
+                    exc_info=True,
+                )
 
     def _loop(self) -> None:
+        if self._persistent:
+            self._persistent_loop()
+            return
         # 先等一个周期再首跑:避免 startup 瞬间与其它初始化抢资源(照 AutoUpdater)。
         # Event.wait 返回 True 表示被 stop 竖旗中断 → 退出循环。
         while not self._stop.wait(self._interval):
@@ -63,6 +96,65 @@ class IntervalSubprocessScheduler:
             except Exception:  # noqa: BLE001 — 顶层任务边界,吞掉但必须落日志
                 logger.warning("调度任务 %s 本轮异常,下轮继续", self._name,
                                exc_info=True)
+
+    def _persistent_loop(self) -> None:
+        """守护一个常驻轻量子进程；退出后有界退避重启。"""
+        while not self._stop.is_set():
+            try:
+                process = subprocess.Popen(
+                    self._command,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    **windowless_subprocess_kwargs(),
+                )
+            except OSError:
+                logger.warning(
+                    "常驻调度任务 %s 启动子进程失败",
+                    self._name,
+                    exc_info=True,
+                )
+                if self._stop.wait(self._interval):
+                    return
+                continue
+            with self._process_lock:
+                self._process = process
+            while process.poll() is None:
+                if self._stop.wait(min(self._interval, 0.5)):
+                    try:
+                        process.terminate()
+                    except OSError:
+                        logger.warning(
+                            "常驻调度任务 %s terminate 失败",
+                            self._name,
+                            exc_info=True,
+                        )
+                    try:
+                        process.wait(timeout=self._timeout)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            process.kill()
+                            process.wait()
+                        except OSError:
+                            logger.warning(
+                                "常驻调度任务 %s kill 失败",
+                                self._name,
+                                exc_info=True,
+                            )
+                    break
+            return_code = process.poll()
+            with self._process_lock:
+                if self._process is process:
+                    self._process = None
+            if self._stop.is_set():
+                return
+            logger.warning(
+                "常驻调度任务 %s 退出码=%s，%.1fs 后重启",
+                self._name,
+                return_code,
+                self._interval,
+            )
+            if self._stop.wait(self._interval):
+                return
 
     def _run_once(self) -> None:
         try:

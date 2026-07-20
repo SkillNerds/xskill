@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from xskill.dashboard.auth import require_admin, require_user
 from xskill.dashboard.metrics import SingleFlightTtlCache
@@ -203,6 +203,11 @@ class DeleteSkillRequest(BaseModel):
 
 class EventsReadRequest(BaseModel):
     last_id: int           # 已读游标推进到的事件 id(只前进不后退)
+
+
+class IngestControlRequest(BaseModel):
+    paused: bool
+    reason: str = Field(default="", max_length=500)
 
 
 class ConfigPayload(BaseModel):
@@ -467,9 +472,14 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
             n_exp = sum(r["exposures"] for r in rt)
             n_trig = sum(r["triggers"] for r in rt)
             rows.append({
+                "client_id": client["client_id"],
                 "user": user,
                 "client_version": client.get("client_version") or "",
                 "last_seen": client.get("last_seen") or "",
+                "ingest_paused": bool(client.get("ingest_paused")),
+                "ingest_paused_at": client.get("ingest_paused_at") or "",
+                "ingest_paused_by": client.get("ingest_paused_by") or "",
+                "ingest_pause_reason": client.get("ingest_pause_reason") or "",
                 "exposures": n_exp,
                 "triggers": n_trig,
                 "rate": round(n_trig / n_exp, 3) if n_exp else None,
@@ -483,6 +493,54 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
                        if pref_row["user_key"] == GLOBAL_PREF_KEY
                        and pref_row["pref"] == "pinned"]
         return {"users": rows, "global_pinned": global_pins}
+
+    @router.put("/admin/client/{client_id}/ingest")
+    def admin_client_ingest(
+        client_id: str,
+        req: IngestControlRequest,
+        ident=Depends(require_admin),
+    ):
+        """暂停或恢复指定 client 的后续轨迹处理；显式目标状态保证幂等。"""
+        ctx = _require_team_ctx()
+        try:
+            row = ctx.client_registry.set_ingest_paused(
+                client_id,
+                req.paused,
+                actor=ident["user"],
+                reason=req.reason,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        try:
+            from xskill.team.server.api import reconcile_client_ingest_watch_dir
+            watch_state = reconcile_client_ingest_watch_dir(client_id)
+        except Exception as exc:
+            logger.exception(
+                "同步 client 轨迹暂停状态失败: client_id=%s paused=%s",
+                client_id,
+                req.paused,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="暂停状态已保存，但 watch_dir 同步失败；可安全重试",
+            ) from exc
+
+        logger.info(
+            "admin %s set client %s ingest_paused=%s",
+            ident["user"],
+            client_id,
+            req.paused,
+        )
+        return {
+            "client_id": client_id,
+            "user": row.get("user_name") or client_id,
+            "ingest_paused": bool(row.get("ingest_paused")),
+            "ingest_paused_at": row.get("ingest_paused_at") or "",
+            "ingest_paused_by": row.get("ingest_paused_by") or "",
+            "ingest_pause_reason": row.get("ingest_pause_reason") or "",
+            "auto_index": not watch_state["ingest_paused"],
+        }
 
     @router.get("/admin/user/{user_key}/prefs")
     def admin_user_prefs(user_key: str, _=Depends(require_admin)):

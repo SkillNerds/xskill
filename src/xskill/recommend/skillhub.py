@@ -19,7 +19,7 @@ import pickle
 import re
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from datetime import datetime
 from pathlib import Path
 
@@ -48,6 +48,13 @@ RRF_RANK_CONSTANT = 60
 QUERY_VECTOR_CACHE_CAPACITY = 256
 QUERY_EMBED_FAILURE_COOLDOWN_SECONDS = 5.0
 UX_AVG_CACHE_TTL_SECONDS = 60.0
+SKILL_FILE_IO_RETRY_COOLDOWN_SECONDS = 30.0
+INVALID_SKILL_RECHECK_COOLDOWN_SECONDS = 60.0
+INVALID_SKILL_RECHECK_LIMIT = 32
+
+
+class SkillFileSchemaError(TypeError):
+    """A SKILL.md frontmatter field has a known-invalid type."""
 
 
 def _normalize(v: np.ndarray) -> np.ndarray:
@@ -91,8 +98,21 @@ class SkillHub:
         self.scan_ttl_seconds = float(scan_ttl_seconds)
         self.search_max_embed = int(search_max_embed)
         self.search_timeout_s = float(search_timeout_s)
-        # L3 备忘录：SKILL.md 路径 → (st_mtime_ns, st_size, sha16, display_name, description)。
-        self._file_memo: dict[Path, tuple[int, int, str, str, str]] = {}
+        # L3 备忘录：SKILL.md 路径 →
+        # (st_mtime_ns, st_size, sha16, display_name | None,
+        #  description | None, retry_after)。display_name/description 均为 None
+        # 表示该内容版本解码或字段校验失败；按限额定期重验可发现 metadata 未变
+        # 的原位修复，sha16 则避免同一坏内容重复刷 warning。
+        self._file_memo: dict[
+            Path, tuple[int, int, str, str | None, str | None, float]
+        ] = {}
+        # stat/read 的 OSError 可能是瞬时故障，独立短时限频但不写入内容失败
+        # 备忘录；冷却到期自动重试，成功或文件删除后清理。
+        self._file_io_retry_after: dict[Path, float] = {}
+        # 稳定内容错误的重验使用去重队列轮转；每轮只检查固定数量，既不集中
+        # 重读全部坏文件，也不会让目录排序靠后的文件长期得不到重验。
+        self._invalid_recheck_queue: deque[Path] = deque()
+        self._invalid_recheck_paths: set[Path] = set()
         # L1 快照：require_description=False 的全集（不含 vec），single-flight 保护。
         self._scan_snapshot_entries: list[dict] | None = None
         self._scan_snapshot_expires_at: float = 0.0
@@ -134,54 +154,226 @@ class SkillHub:
             search_timeout_s=search_cfg["search_timeout_s"],
         )
 
+    def _queue_invalid_recheck(self, skill_file: Path) -> None:
+        if skill_file not in self._invalid_recheck_paths:
+            self._invalid_recheck_paths.add(skill_file)
+            self._invalid_recheck_queue.append(skill_file)
+
+    def _read_skill_file(
+        self, skill_file: Path, skill_dir: Path, relative_path: str,
+        stat_result: os.stat_result, scan_time: float,
+        memo: tuple[int, int, str, str | None, str | None, float] | None,
+    ) -> bool:
+        try:
+            raw_bytes = skill_file.read_bytes()
+        except OSError as scan_error:
+            self._file_io_retry_after[skill_file] = (
+                scan_time + SKILL_FILE_IO_RETRY_COOLDOWN_SECONDS
+            )
+            logger.warning(
+                "skillhub scan skipped SKILL.md path=%s error_type=%s",
+                f"{relative_path}/SKILL.md" if relative_path != "." else "SKILL.md",
+                type(scan_error).__name__,
+            )
+            return False
+        self._file_io_retry_after.pop(skill_file, None)
+        refreshed_content_sha = hashlib.sha256(raw_bytes).hexdigest()[:16]
+        previous_invalid_sha = (
+            memo[2] if memo is not None and memo[3] is None else None
+        )
+        try:
+            decoded_text = raw_bytes.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as decode_error:
+            self._file_memo[skill_file] = (
+                stat_result.st_mtime_ns, stat_result.st_size,
+                refreshed_content_sha, None, None,
+                scan_time + INVALID_SKILL_RECHECK_COOLDOWN_SECONDS,
+            )
+            self._queue_invalid_recheck(skill_file)
+            if previous_invalid_sha != refreshed_content_sha:
+                invalid_bytes = raw_bytes[
+                    decode_error.start:min(
+                        len(raw_bytes), decode_error.start + 4,
+                    )
+                ].hex()
+                logger.warning(
+                    "skillhub scan skipped invalid UTF-8 SKILL.md "
+                    "path=%s offset=%d bytes=%s",
+                    f"{relative_path}/SKILL.md"
+                    if relative_path != "." else "SKILL.md",
+                    decode_error.start, invalid_bytes,
+                )
+            return False
+        frontmatter, _body = fm_parse(decoded_text)
+        raw_name = frontmatter.get("name", skill_dir.name)
+        raw_description = frontmatter.get("description", "")
+        try:
+            if not isinstance(raw_name, str):
+                raise SkillFileSchemaError(
+                    "frontmatter name must be a string"
+                )
+            if not isinstance(raw_description, str):
+                raise SkillFileSchemaError(
+                    "frontmatter description must be a string"
+                )
+        except SkillFileSchemaError as schema_error:
+            self._file_memo[skill_file] = (
+                stat_result.st_mtime_ns, stat_result.st_size,
+                refreshed_content_sha, None, None,
+                scan_time + INVALID_SKILL_RECHECK_COOLDOWN_SECONDS,
+            )
+            self._queue_invalid_recheck(skill_file)
+            if previous_invalid_sha != refreshed_content_sha:
+                logger.warning(
+                    "skillhub scan skipped SKILL.md path=%s error_type=%s",
+                    f"{relative_path}/SKILL.md"
+                    if relative_path != "." else "SKILL.md",
+                    type(schema_error).__name__,
+                )
+            return False
+        display_name = raw_name.strip() or skill_dir.name
+        self._file_memo[skill_file] = (
+            stat_result.st_mtime_ns, stat_result.st_size,
+            refreshed_content_sha, display_name, raw_description.strip(), 0.0,
+        )
+        self._invalid_recheck_paths.discard(skill_file)
+        return True
+
+    def _recheck_invalid_files(self, scan_time: float) -> None:
+        checks_remaining = min(
+            INVALID_SKILL_RECHECK_LIMIT, len(self._invalid_recheck_queue),
+        )
+        for _index in range(checks_remaining):
+            skill_file = self._invalid_recheck_queue.popleft()
+            if skill_file not in self._invalid_recheck_paths:
+                continue
+            self._invalid_recheck_paths.remove(skill_file)
+            try:
+                memo = self._file_memo.get(skill_file)
+                if memo is None or memo[3] is not None:
+                    continue
+                if scan_time < memo[5]:
+                    continue
+                io_retry_after = self._file_io_retry_after.get(skill_file)
+                if io_retry_after is not None and scan_time < io_retry_after:
+                    continue
+                skill_dir = skill_file.parent
+                try:
+                    relative_path = skill_dir.relative_to(self.dir).as_posix()
+                except ValueError:
+                    self._file_memo.pop(skill_file, None)
+                    self._file_io_retry_after.pop(skill_file, None)
+                    continue
+                try:
+                    stat_result = skill_file.stat()
+                except FileNotFoundError:
+                    self._file_memo.pop(skill_file, None)
+                    self._file_io_retry_after.pop(skill_file, None)
+                    continue
+                except OSError as scan_error:
+                    self._file_io_retry_after[skill_file] = (
+                        scan_time + SKILL_FILE_IO_RETRY_COOLDOWN_SECONDS
+                    )
+                    logger.warning(
+                        "skillhub scan skipped SKILL.md path=%s error_type=%s",
+                        f"{relative_path}/SKILL.md"
+                        if relative_path != "." else "SKILL.md",
+                        type(scan_error).__name__,
+                    )
+                    continue
+                self._file_io_retry_after.pop(skill_file, None)
+                self._read_skill_file(
+                    skill_file, skill_dir, relative_path,
+                    stat_result, scan_time, memo,
+                )
+            finally:
+                refreshed_memo = self._file_memo.get(skill_file)
+                if refreshed_memo is not None and refreshed_memo[3] is None:
+                    self._queue_invalid_recheck(skill_file)
+
     def _walk_snapshot(self) -> list[dict]:
         """L2 剪枝遍历 + L3 备忘录，产出 require_description=False 的全集（无 vec）。"""
         entries: list[dict] = []
         seen_paths: set[Path] = set()
+        scan_time = time.monotonic()
+        self._recheck_invalid_files(scan_time)
         for dirpath, dirnames, filenames in os.walk(self.dir):
             dirnames[:] = [name for name in dirnames if not name.startswith(".")]
             if "SKILL.md" not in filenames:
                 continue
-            sub = Path(dirpath)
-            md = sub / "SKILL.md"
+            skill_dir = Path(dirpath)
+            skill_file = skill_dir / "SKILL.md"
             try:
-                rel = sub.relative_to(self.dir).as_posix()
+                relative_path = skill_dir.relative_to(self.dir).as_posix()
             except ValueError:
                 continue
-            if any(part.startswith(".") for part in Path(rel).parts):
+            if any(part.startswith(".") for part in Path(relative_path).parts):
                 continue
-            stat_result = md.stat()
-            seen_paths.add(md)
-            memo = self._file_memo.get(md)
-            if (memo is not None and memo[0] == stat_result.st_mtime_ns
-                    and memo[1] == stat_result.st_size):
-                _mtime, _size, content_sha, display_name, description = memo
-            else:
-                raw_bytes = md.read_bytes()
-                content_sha = hashlib.sha256(raw_bytes).hexdigest()[:16]
-                frontmatter, _body = fm_parse(raw_bytes.decode("utf-8"))
-                raw_name = frontmatter.get("name") or sub.name
-                display_name = str(raw_name).strip() or sub.name
-                description = (frontmatter.get("description") or "").strip()
-                self._file_memo[md] = (
-                    stat_result.st_mtime_ns, stat_result.st_size,
-                    content_sha, display_name, description,
+            seen_paths.add(skill_file)
+            io_retry_after = self._file_io_retry_after.get(skill_file)
+            if io_retry_after is not None and scan_time < io_retry_after:
+                continue
+            try:
+                stat_result = skill_file.stat()
+            except OSError as scan_error:
+                self._file_io_retry_after[skill_file] = (
+                    scan_time + SKILL_FILE_IO_RETRY_COOLDOWN_SECONDS
                 )
-            path_hash = _path_hash(rel)
+                logger.warning(
+                    "skillhub scan skipped SKILL.md path=%s error_type=%s",
+                    f"{relative_path}/SKILL.md"
+                    if relative_path != "." else "SKILL.md",
+                    type(scan_error).__name__,
+                )
+                continue
+            self._file_io_retry_after.pop(skill_file, None)
+            memo = self._file_memo.get(skill_file)
+            memo_matches_metadata = (
+                memo is not None
+                and memo[0] == stat_result.st_mtime_ns
+                and memo[1] == stat_result.st_size
+            )
+            if memo_matches_metadata and memo[3] is None:
+                continue
+            if not memo_matches_metadata:
+                if not self._read_skill_file(
+                    skill_file, skill_dir, relative_path,
+                    stat_result, scan_time, memo,
+                ):
+                    continue
+                memo = self._file_memo[skill_file]
+            (
+                _mtime, _size, content_sha, display_name, description,
+                _retry_after,
+            ) = memo
+            path_hash = _path_hash(relative_path)
             skill_id = f"{safe_id_part(display_name)}@{path_hash}"
             entries.append({
                 "source": "skillhub",
                 "name": skill_id,
                 "skill_id": skill_id,
                 "display_name": display_name,
-                "source_path": rel,
+                "source_path": relative_path,
                 "path_hash": path_hash,
                 "content_sha": content_sha,
                 "description": description,
-                "path": sub,
+                "path": skill_dir,
             })
-        for stale_path in [path for path in self._file_memo if path not in seen_paths]:
+        stale_memo_paths = [
+            path for path in self._file_memo if path not in seen_paths
+        ]
+        for stale_path in stale_memo_paths:
             del self._file_memo[stale_path]
+            self._invalid_recheck_paths.discard(stale_path)
+        for stale_path in [
+            path for path in self._file_io_retry_after if path not in seen_paths
+        ]:
+            del self._file_io_retry_after[stale_path]
+        if len(self._invalid_recheck_queue) != len(self._invalid_recheck_paths):
+            self._invalid_recheck_queue = deque(
+                path for path in self._invalid_recheck_queue
+                if path in self._invalid_recheck_paths
+            )
         entries.sort(key=lambda entry: entry["source_path"])
         return entries
 
@@ -845,6 +1037,9 @@ class SkillHub:
             with self._scan_lock:
                 self._scan_snapshot_expires_at = 0.0
                 self._file_memo.clear()
+                self._file_io_retry_after.clear()
+                self._invalid_recheck_queue.clear()
+                self._invalid_recheck_paths.clear()
         # strong_index / display_unique 做 O(1) 定位，语义与旧线性扫等价：
         # 强键(skill_id / name / source_path)唯一，命中即定；display_name 仅在
         # 全局唯一时作兜底，重名一律 None(与旧代码 len(matches)!=1 → 无强键匹配

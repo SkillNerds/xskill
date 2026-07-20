@@ -29,12 +29,15 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from xskill.ecosystems._fallback import install_dir
+from xskill.ecosystems.installation import (
+    InstallSafetyError,
+    read_skill_head_sha,
+)
 from xskill.ecosystems._shared import (
     EcosystemSpec,
     JsonlIngester,
     _agents_skills_path,
     _install_all_with,
-    _read_skill_head_sha,
     _source_md_for_side,
 )
 
@@ -109,35 +112,43 @@ def install_to_openclaw(
     # 的默认 quiet_seconds（180s）—— flip 节奏远比 180s 快。``install_dir``
     # 的 auto_reset 路径里也会再尝试一次（默认 quiet 检查通常返回 False
     # no-op），是安全网不是主路径。
+    reverse_status = None
     if dest.is_dir() and not dest.is_symlink():
-        try:
-            from xskill.agents.user_edit_absorb_agent import reverse_sync_openclaw_dest
-            reverse_sync_openclaw_dest(dest, skill_path)
-        except Exception:
-            logger.warning(
-                "install_to_openclaw(%s): reverse_sync before copy failed; "
-                "proceeding with overwrite",
-                name, exc_info=True,
-            )
+        from xskill.agents.user_edit_absorb_agent import (
+            ReverseSyncStatus,
+            reverse_sync_openclaw_dest,
+        )
+        reverse_status = reverse_sync_openclaw_dest(dest, skill_path)
+        if reverse_status == ReverseSyncStatus.RECENT_EDIT:
+            raise InstallSafetyError("REVERSE_SYNC_RECENT_EDIT") from None
+        if reverse_status == ReverseSyncStatus.FAILED:
+            raise InstallSafetyError("REVERSE_SYNC_FAILED") from None
 
     # 强制 copy + auto_reset 一站式：
     # 1. ``_maybe_reverse_sync_before_overwrite`` —— 二次回流保护（默认
     #    quiet=180s），上面已经显式跑过一次，这里通常 no-op。
-    # 2. ``_reset_dest`` 用 ``_is_link_or_junction`` 判 dest 是否为 link/junction，
+    # 2. 显式回流结果传给 install_dir，避免重复检查产生竞态；只有 NO_EDIT /
+    #    SYNCED 才进入 ``_reset_dest``。它用 ``_is_link_or_junction`` 判 dest，
     #    避免 issue #35 的 ``shutil.rmtree(junction)`` 抛 OSError 死循环——
     #    例如同一 ``~/.agents/skills/<name>`` 之前被 codex/opencode install 装了
     #    junction（Windows non-DevMode），此时 openclaw 跑要清掉它换 copy 装。
     # 3. ``force_mode="copy"`` 跳过 symlink/junction 直接 copytree——openclaw
     #    discovery 对 resolved 路径做安全检查会拒收 symlink。
     # 4. 自动写新位置 install-meta（``dest.parent`` 旁）给后续 reverse_sync 用。
-    install_dir(src_dir, dest, force_mode="copy", auto_reset=True)
+    install_dir(
+        src_dir,
+        dest,
+        force_mode="copy",
+        auto_reset=True,
+        preflight_reverse_sync_status=reverse_status,
+    )
 
     # 额外落 openclaw 专属老位置 meta（``dest/.xskill-install-meta.json``）：
     # 含 ``source_sha`` / ``side`` 字段，给 ``make_openclaw_canary_flip_hook``
     # 比对当前装的 side。``_fallback`` 写的新位置 meta 只跟踪 mode/source/ts，
     # 不带 sha/side。两份 meta 并存：新位置（``dest.parent``）由 ``_fallback``
     # 管理用于 reverse_sync；老位置（``dest`` 内部）保留供 canary flip 比对。
-    source_sha = _read_skill_head_sha(skill_path)
+    source_sha = read_skill_head_sha(skill_path) or ""
     legacy_meta = {
         "source_sha": source_sha,
         "side": side,

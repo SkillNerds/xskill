@@ -876,8 +876,12 @@ def create_app(home_root: Path | str | None = None,
                    开 server_mode。
     """
     global _home_root_override
-    if home_root is not None:
-        _home_root_override = Path(home_root).expanduser().resolve()
+    _home_root_override = (
+        Path(home_root).expanduser().resolve()
+        if home_root is not None
+        else None
+    )
+    ecosystem_home_root = _home_root().resolve()
     _ensure_loaded()
     """Create and configure the FastAPI application."""
     app = FastAPI(
@@ -994,10 +998,12 @@ def create_app(home_root: Path | str | None = None,
         create_embed_client(_config)
         # data_dir 在 server 端点路径上不被消费（trajectory 搜索走 Registry），
         # 传 _skill_dir 占位即可——同 core.py 的 tool context 初始化。
+        from xskill.config import XSKILL_HOME as current_xskill_home
         init_skill_authoring_tool_context(
             skill_dir=_skill_dir,
             data_dir=_skill_dir,
             config=_config,
+            spill_root=current_xskill_home / "tmp" / "spill",
         )
         logger.info(
             "xskill server ready  skill_dir=%s  llm=ok  embed=ok",
@@ -1010,10 +1016,15 @@ def create_app(home_root: Path | str | None = None,
 
         # team server：初始化 team 上下文 + 注册 traj_root 为 watch_dir 基。
         if team_server:
+            client_registry = None
+            profile_scheduler = None
+            recommend_engine_attached = False
+            team_sync_executor_cleanup_required = False
             try:
                 from xskill.team.server.client_registry import ClientRegistry
                 from xskill.team.server.api import (
                     init_team_context,
+                    reconcile_client_ingest_watch_dir,
                     start_team_sync_executor,
                 )
                 from xskill.pipeline.scheduler import IntervalSubprocessScheduler
@@ -1034,6 +1045,16 @@ def create_app(home_root: Path | str | None = None,
                     # team_client 生态标签：watcher 的 CS 归因靠 wd.label 反查 client
                     _register_dir(path, label=label, ecosystem="team_client")
 
+                def _team_configure_watch_dir(path, label, auto_index):
+                    # clients.ingest_paused 是权威状态；每次上传/导入都据此重放，
+                    # 修复 team_clients.db 与 registry.db 跨库写入可能留下的漂移。
+                    _register_dir(
+                        path,
+                        label=label,
+                        auto_index=auto_index,
+                        ecosystem="team_client",
+                    )
+
                 # §5 构造 SkillRecommendEngine 并注入 manifest（staging 优先达量 + 画像推荐）
                 from xskill.config import XSKILL_HOME as _xhome
                 from xskill.recommend.engine import SkillRecommendEngine
@@ -1046,6 +1067,7 @@ def create_app(home_root: Path | str | None = None,
                     client_registry=client_registry,
                 )
                 set_recommend_engine(_engine)
+                recommend_engine_attached = True
 
                 init_team_context(
                     join_token=join_token,
@@ -1053,9 +1075,13 @@ def create_app(home_root: Path | str | None = None,
                     skill_dir=_skill_dir,
                     traj_root=traj_root,
                     register_dir=_team_register_dir,
+                    configure_watch_dir=_team_configure_watch_dir,
                     skillhub=_engine.skillhub,
                     profile_refresh_service=None,
                 )
+                for client_row in client_registry.list():
+                    reconcile_client_ingest_watch_dir(client_row["client_id"])
+                team_sync_executor_cleanup_required = True
                 start_team_sync_executor(
                     app,
                     max_workers=team_sync_cfg["workers"],
@@ -1078,28 +1104,52 @@ def create_app(home_root: Path | str | None = None,
                     traj_root, profile_refresh_cfg["interval"],
                 )
             except Exception:
-                try:
-                    from xskill.team.server.api import stop_team_sync_executor
-                    stop_team_sync_executor(app)
-                except Exception:  # pylint: disable=broad-exception-caught
-                    logger.warning("failed to stop partial team sync executor",
-                                   exc_info=True)
+                if team_sync_executor_cleanup_required:
+                    try:
+                        from xskill.team.server.api import stop_team_sync_executor
+                        stop_team_sync_executor(app)
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        logger.warning("failed to stop partial team sync executor",
+                                       exc_info=True)
+                if profile_scheduler is not None and profile_scheduler not in _schedulers:
+                    try:
+                        profile_scheduler.stop()
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        logger.warning("failed to stop partial profile scheduler",
+                                       exc_info=True)
                 for scheduler in _schedulers:
-                    scheduler.stop()
+                    try:
+                        scheduler.stop()
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        logger.warning("failed to stop partial team scheduler",
+                                       exc_info=True)
                 _schedulers.clear()
+                registry_owned_by_context = False
                 try:
-                    from xskill.team.server.api import clear_team_context
+                    from xskill.team.server.api import clear_team_context, team_context
+                    registry_owned_by_context = (
+                        client_registry is not None
+                        and team_context().client_registry is client_registry
+                    )
                     clear_team_context(profile_refresh_shutdown_timeout=0)
                 except Exception:  # pylint: disable=broad-exception-caught
                     logger.warning("failed to clear partial team context",
                                    exc_info=True)
-                try:
-                    from xskill.team.server.skill_manifest import set_recommend_engine
-                    set_recommend_engine(None)
-                except Exception:  # pylint: disable=broad-exception-caught
-                    logger.warning("failed to detach recommend engine after "
-                                   "partial team init", exc_info=True)
-                logger.warning("team server context init failed", exc_info=True)
+                if client_registry is not None and not registry_owned_by_context:
+                    try:
+                        client_registry.close()
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        logger.warning("failed to close unattached client registry",
+                                       exc_info=True)
+                if recommend_engine_attached:
+                    try:
+                        from xskill.team.server.skill_manifest import set_recommend_engine
+                        set_recommend_engine(None)
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        logger.warning("failed to detach recommend engine after "
+                                       "partial team init", exc_info=True)
+                logger.exception("team server context init failed")
+                raise
 
         # watcher 拆为定时短命子进程(python -m xskill._workers sweep):每轮 spawn 一个子进程跑一轮
         # 采集/拆分/聚类/灰度即退,重计算(含 30 线程池)全在独立子进程,GIL 与 web 事件
@@ -1108,18 +1158,48 @@ def create_app(home_root: Path | str | None = None,
         # done)靠调度器按 poll_interval 反复 spawn 逐轮推进,与旧 daemon 逐 poll 等价。
         from xskill.pipeline.scheduler import IntervalSubprocessScheduler as _SweepSched
         poll_interval = float(_config.get("watcher", {}).get("poll_interval", 30))
+        sweep_timeout = float(
+            _config.get("server", {}).get("sweep_timeout", 1800)
+        )
         sweep_command = [_sys.executable, "-m", "xskill._workers", "sweep"]
         if team_server:
             sweep_command.append("--server")
+        else:
+            sweep_command.extend(["--home", str(ecosystem_home_root)])
         sweep_scheduler = _SweepSched(
             "sweep", sweep_command,
             interval=poll_interval,
-            timeout=float(_config.get("server", {}).get("sweep_timeout", 1800)),
+            timeout=sweep_timeout,
         )
         sweep_scheduler.start()
         _schedulers.append(sweep_scheduler)
         logger.info("sweep scheduler started (team_server=%s, every %.0fs via subprocess)",
                     team_server, poll_interval)
+        if not team_server:
+            ingest_interval = min(poll_interval, 1.0)
+            ingest_scheduler = _SweepSched(
+                "ecosystem-ingest",
+                [
+                    _sys.executable,
+                    "-m",
+                    "xskill._workers",
+                    "ecosystem-ingest",
+                    "--home",
+                    str(ecosystem_home_root),
+                    "--loop",
+                    "--interval",
+                    "0.5",
+                ],
+                interval=max(ingest_interval, 1.0),
+                timeout=5.0,
+                persistent=True,
+            )
+            ingest_scheduler.start()
+            _schedulers.append(ingest_scheduler)
+            logger.info(
+                "ecosystem ingest scheduler started "
+                "(persistent subprocess, poll every 0.5s)",
+            )
 
         # 依赖初始化全部成功后才创建线程池；如果 startup 在此之前
         # 失败，不会留下需要额外回收的非 daemon 线程。

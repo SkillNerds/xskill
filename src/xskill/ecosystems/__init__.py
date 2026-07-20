@@ -43,6 +43,7 @@ from xskill.ecosystems._shared import (
 from xskill.ecosystems.claude_code import (
     CC_SPEC,
     CCSessionIngester,
+    ensure_claude_code_install,
     install_to_claude_code,
     install_all_to_claude_code,
     ingest_claude_code_sessions,
@@ -113,6 +114,25 @@ from xskill.ecosystems.ngagent import (
     _ngagent_db_path,
     _ngagent_skills_path,
 )
+from xskill.ecosystems.installation import (
+    COPY_INSTALL_MARKER_NAME,
+    GitHeadError,
+    InstallSafetyError,
+    InstallMode,
+    InstallationMetadataError,
+    copy_install_identity_matches,
+    copy_install_is_current,
+    ensure_link_install_metadata,
+    install_metadata_path,
+    installed_mode,
+    is_link_or_junction,
+    link_install_metadata_is_current,
+    read_copy_install_baseline,
+    read_install_metadata,
+    read_install_metadata_file,
+    read_skill_head_sha,
+    write_install_metadata,
+)
 
 # sqlite-back 生态 id → spec 映射（`xskill read` / 上传入库按 --eco 选 spec）。
 # 只含 source_kind="sqlite" 的生态；JSONL 生态（cc/codex/...）不在此表。
@@ -128,6 +148,7 @@ __all__ = [
     "SQLITE_SPEC_BY_ECO", "bridge_dir_for",
     "JsonlIngester", "SqliteIngester", "CCSessionIngester",
     "detect_known_ecosystems",
+    "ensure_claude_code_install",
     "install_to_claude_code", "install_to_codex", "install_to_nga3",
     "install_to_cursor",
     "install_to_trae",
@@ -142,4 +163,15 @@ __all__ = [
     "TraeIngester", "detect_trae_record",
     "make_openclaw_canary_flip_hook",
     "adapt_trajectory", "submit_trajectory", "generate_traj_id",
+    "COPY_INSTALL_MARKER_NAME", "GitHeadError", "InstallMode",
+    "InstallSafetyError",
+    "InstallationMetadataError",
+    "copy_install_identity_matches", "copy_install_is_current",
+    "install_metadata_path", "installed_mode",
+    "ensure_link_install_metadata",
+    "is_link_or_junction", "read_install_metadata",
+    "read_copy_install_baseline",
+    "read_install_metadata_file", "read_skill_head_sha",
+    "link_install_metadata_is_current",
+    "write_install_metadata",
 ]

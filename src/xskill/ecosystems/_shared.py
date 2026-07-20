@@ -16,7 +16,7 @@ Trae / OpenClaw / OpenCode），并把这些生态的原生会话轨迹桥接回
 - ``adapt_trajectory`` / ``submit_trajectory`` / ``generate_traj_id`` —— 轨迹格式
   适配 + 提交分发层（``adapt_trajectory`` 按 format 字符串分发到各平台 ``_adapt_*``）
 - ``_agents_skills_path`` —— ``~/.agents/skills`` 跨生态共享 skill 目录
-- 各类被多平台共用的 helper（``_sanitize_for_filename`` / ``_session_start_t`` 等）
+- 各类被多平台共用的 helper（``_sanitize_for_filename`` / ``session_start_time`` 等）
 
 只装稳定侧（``main`` 分支）。Canary / staging 是内部 A/B 机制；某个 staging
 变体胜出后落 ``main``，下次 ``install_*`` 才会把它推给宿主 agent。
@@ -35,9 +35,12 @@ from pathlib import Path
 from typing import Callable, Iterable, Literal, Optional
 
 from xskill.config import get_traj_dir, ingest_config
-from xskill.ecosystems._fallback import (
-    InstallMode, _copy_install_is_current, _is_link_or_junction,
-    _read_skill_head_sha, install_dir,
+from xskill.ecosystems._fallback import install_dir
+from xskill.ecosystems.installation import (
+    InstallMode,
+    copy_install_is_current,
+    ensure_link_install_metadata,
+    is_link_or_junction,
 )
 
 logger = logging.getLogger("xskill.ecosystems")
@@ -105,6 +108,7 @@ class EcosystemSpec:
     traj_id_prefix: str
     skills_install_path: Callable[[Path], Path]
     label: str
+    is_session_complete: Optional[Callable[[str], bool]] = None
 
 
 @dataclass(frozen=True)
@@ -322,22 +326,23 @@ def _install_skill_into(
     skills_root.mkdir(parents=True, exist_ok=True)
     dest = skills_root / name
 
-    # 已有 symlink/junction 且指向正确：no-op。``_is_link_or_junction``
+    # 已有 symlink/junction 且指向正确：no-op。``is_link_or_junction``
     # 而非 ``is_symlink`` —— pathlib 在 Windows 对 junction 返回 False
     # （issue #35 同源 bug），统一处理 link/junction 两种 reparse point。
-    if _is_link_or_junction(dest):
+    if is_link_or_junction(dest):
         try:
             cur = dest.resolve(strict=False)
         except OSError:
             cur = None
         if cur == src_dir:
+            ensure_link_install_metadata(dest, src_dir)
             return dest / "SKILL.md"
         # 指向别处的 link/junction 或断链 → ``unlink`` 删 reparse 本体
         # （不递归动 target）
         dest.unlink()
     elif dest.exists():
         # copy 模式且源未变：no-op——避免每轮 reconcile 重拷 + 重试 junction（Windows 弹 cmd 窗）
-        if _copy_install_is_current(src_dir, dest):
+        if copy_install_is_current(src_dir, dest):
             return dest / "SKILL.md"
         # 旧 install 留下的真实目录或文件 → 删（保留备份避免误删用户手写）。
         # ``.replaced-by-symlink`` 备份保留——这是用户手写 skill 目录的保护机制，
@@ -404,7 +409,7 @@ def _parse_iso_to_epoch(s: str) -> Optional[float]:
         return None
 
 
-def _session_start_t(jsonl_path: Path) -> Optional[float]:
+def session_start_time(jsonl_path: Path) -> Optional[float]:
     """读 session JSONL 第一条带 timestamp 的事件，转 epoch float。
 
     queue-operation / file-history-snapshot 等元事件也带 timestamp，取第一条
@@ -413,8 +418,21 @@ def _session_start_t(jsonl_path: Path) -> Optional[float]:
     """
     if not jsonl_path.is_file():
         return None
-    for line in jsonl_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = line.strip()
+    return session_start_time_from_content(
+        jsonl_path.read_text(encoding="utf-8", errors="ignore")
+    )
+
+
+def session_start_time_from_content(content: str) -> Optional[float]:
+    """从已读取的 JSONL 快照取开始时间，不复制整份 splitlines 列表。"""
+    line_start = 0
+    content_length = len(content)
+    while line_start < content_length:
+        line_end = content.find("\n", line_start)
+        if line_end < 0:
+            line_end = content_length
+        line = content[line_start:line_end].strip()
+        line_start = line_end + 1
         if not line:
             continue
         try:
@@ -726,6 +744,7 @@ class JsonlIngester:
         poll_interval: float = 10.0,
         on_new_sessions: Callable[[list[dict]], None] | None = None,
         settle_seconds: float | None = None,
+        registry_db_path: Path | str | None = None,
     ):
         if spec.source_kind != "jsonl":
             # SQLite ingester 用单独的 SqliteIngester；早 fail 避免走错路。
@@ -743,6 +762,11 @@ class JsonlIngester:
         # detect_known_ecosystems 每轮实测同一设计）；显式传值用于测试 /
         # SDK 调用方覆盖。
         self.settle_seconds = settle_seconds
+        self.registry_db_path = (
+            Path(registry_db_path)
+            if registry_db_path is not None
+            else None
+        )
         # on_new_sessions: 可选 hook，每轮 scan 桥接到新 session 后调
         # 一次（参数是 submitted records）。openclaw 用这个 hook 做 canary
         # flip——发现新 session → pick_side → 跟 install_history 对比 →
@@ -847,6 +871,16 @@ class JsonlIngester:
         *,
         home_root: Path | None = None,
         seen_sessions: Optional[set[str]] = None,
+        registry_db_path: Path | str | None = None,
+        candidate_paths: Optional[Iterable[Path]] = None,
+        bridged_markdown_index: Optional[dict[str, Path]] = None,
+        force_rebridge_sessions: Optional[set[str]] = None,
+        before_bridge: Optional[
+            Callable[[Path, str, str, Optional[float]], None]
+        ] = None,
+        after_bridge: Optional[
+            Callable[[dict, Path, str, str, Optional[float]], None]
+        ] = None,
     ) -> list[dict]:
         """单次扫盘 + 桥接。
 
@@ -855,6 +889,13 @@ class JsonlIngester:
             home_root: 用户 HOME；为 ``None`` 时用 ``Path.home()``。测试时用 tmp_path
                 做隔离
             seen_sessions: 已处理 session id 集合；in-place 更新
+            candidate_paths: 已由长跑调用方增量发现的源文件；传入后不再全量 glob
+            bridged_markdown_index: 调用方维护的 sid 前缀到轨迹路径索引；传入后
+                不再扫描目标目录
+            force_rebridge_sessions: 已确认源 identity/size 变化或缺 receipt 的
+                sid；绕过不可靠的源/目标 mtime 比较，强制覆盖既有轨迹
+            before_bridge: 完整源即将落盘前的持久化屏障；回调失败则不 bridge
+            after_bridge: trajectory 落盘后的持久化确认；在 seen 更新前调用
 
         Returns:
             每条新桥接 / 重转换 session 的 submission 结果（含 ``session_id`` /
@@ -874,6 +915,11 @@ class JsonlIngester:
         重拆。
         """
         target_traj_dir.mkdir(parents=True, exist_ok=True)
+        effective_registry_db_path = (
+            Path(registry_db_path)
+            if registry_db_path is not None
+            else self.registry_db_path
+        )
         root = Path(home_root) if home_root else Path.home()
         sessions_root = self.spec.sessions_path(root)
         if not sessions_root.is_dir():
@@ -882,11 +928,20 @@ class JsonlIngester:
         settle = (self.settle_seconds if self.settle_seconds is not None
                   else ingest_config()["settle_seconds"])
         now = time.time()
-        bridged_md = self._bridged_md_by_sid8(target_traj_dir)
+        bridged_md = (
+            bridged_markdown_index
+            if bridged_markdown_index is not None
+            else self.bridged_markdown_by_session_prefix(target_traj_dir)
+        )
 
         seen = seen_sessions if seen_sessions is not None else set()
         submitted: list[dict] = []
-        for jsonl_path in sorted(sessions_root.glob(self.spec.sessions_glob)):
+        source_paths = (
+            sorted(candidate_paths)
+            if candidate_paths is not None
+            else sorted(sessions_root.glob(self.spec.sessions_glob))
+        )
+        for jsonl_path in source_paths:
             sid = self.spec.session_id_from_path(jsonl_path)
             try:
                 src_mtime = jsonl_path.stat().st_mtime
@@ -902,16 +957,36 @@ class JsonlIngester:
                     _sanitize_for_filename(sid, maxlen=8) or "nosid")
                 if md_path is None:
                     continue  # 见过但 bridge 目录无 md（如 assignments 记录）→ 不回头
-                try:
-                    if src_mtime <= md_path.stat().st_mtime:
-                        continue  # 转换之后源没再增长——幂等跳过
-                except OSError:
-                    continue
+                if not (
+                    force_rebridge_sessions is not None
+                    and sid in force_rebridge_sessions
+                ):
+                    try:
+                        if src_mtime <= md_path.stat().st_mtime:
+                            continue  # 转换之后源没再增长——幂等跳过
+                    except OSError:
+                        continue
                 rebridged = True  # 源在转换后又增长 → 全量重转换覆盖
 
             content = jsonl_path.read_text(encoding="utf-8", errors="ignore")
             if not content.strip():
                 continue
+            if (
+                self.spec.is_session_complete is not None
+                and settle <= 0
+                and not self.spec.is_session_complete(content)
+            ):
+                # settle=0 的低延迟模式不能把刚创建、仍在续写的 session
+                # 永久记 seen；有明确完成事件后才桥接并触发 side 轮转。
+                continue
+            session_start_t = session_start_time_from_content(content)
+            if before_bridge is not None:
+                before_bridge(
+                    jsonl_path,
+                    sid,
+                    content,
+                    session_start_t,
+                )
             traj_id = self._make_traj_id(content, sid)
             result = submit_trajectory(
                 content=content,
@@ -921,14 +996,25 @@ class JsonlIngester:
             )
             result["session_id"] = sid
             result["source_jsonl"] = str(jsonl_path)
-            result["session_start_t"] = _session_start_t(jsonl_path)
+            result["session_start_t"] = session_start_t
             result["ecosystem"] = self.spec.name
+            if after_bridge is not None:
+                after_bridge(
+                    result,
+                    jsonl_path,
+                    sid,
+                    content,
+                    session_start_t,
+                )
             if rebridged:
                 result["rebridged"] = True
                 # 旧残骸轨迹拆出的 atom / 索引 / DB 状态作废，从头重拆。
                 # 函数内 import：registry 依赖 config，模块级 import 会成环。
                 from xskill.pipeline.registry import reset_trajectories
-                reset_row_ids = reset_trajectories(traj_id=traj_id)
+                reset_row_ids = reset_trajectories(
+                    traj_id=traj_id,
+                    db_path=effective_registry_db_path,
+                )
                 logger.info(
                     "JsonlIngester(%s): source grew after bridge, re-bridged "
                     "%s (reset %d trajectory row(s))",
@@ -936,9 +1022,15 @@ class JsonlIngester:
                 )
             submitted.append(result)
             seen.add(sid)
+            bridged_md[
+                _sanitize_for_filename(sid, maxlen=8) or "nosid"
+            ] = Path(result["path"])
         return submitted
 
-    def _bridged_md_by_sid8(self, target_traj_dir: Path) -> dict[str, Path]:
+    def bridged_markdown_by_session_prefix(
+        self,
+        target_traj_dir: Path,
+    ) -> dict[str, Path]:
         """bridge 目录里已有的 ``traj_*.md``，按文件名尾段 sid8 建索引。
 
         traj_id 形如 ``<prefix><project>_<sid8>``（见 ``_make_traj_id``）——

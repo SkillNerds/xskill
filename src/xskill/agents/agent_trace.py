@@ -8,7 +8,7 @@ look 了哪、submit 了什么"排查。这里给每次 ``agent.run()`` 开一�
 （线程本地），由工厂在 ``model.invoke`` 外层每轮把 ``reasoning_content`` / ``content``
 / ``tool_calls`` 流式 append 进去。``tail -f`` 就能实时看某条 traj 的拆分推理。
 
-路径由调用方决定（落在 ``get_logs_dir()/agents/`` 下）：
+路径由调用方通过当前 XSkill 实例的 ``logs_dir`` 显式决定：
   task_agents/<traj_id>.log
   task_cluster_agents/<traj_id>/<atom_id>.log
   skill_edit_agents/skills/<skill>_<ts>.log
@@ -18,49 +18,93 @@ sink 互不串（同一次 run 内的多轮 invoke 都在同一线程 → 同一
 """
 from __future__ import annotations
 
+import hashlib
+import logging
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 _STATE = threading.local()
+_WARNING_CACHE_LIMIT = 2048
+_WARNED_FAILURES: OrderedDict[tuple[str, str], None] = OrderedDict()
+_WARNING_LOCK = threading.Lock()
+logger = logging.getLogger("xskill.agent_trace")
 
 
 def _sink() -> "Path | None":
     return getattr(_STATE, "sink", None)
 
 
+def _warn_io_failure(exc: OSError, sink: Path) -> None:
+    """Emit one path-redacted warning for each sink/error-type pair."""
+    sink_hash = hashlib.sha256(
+        str(sink).encode("utf-8", errors="replace"),
+    ).hexdigest()[:12]
+    error_type = type(exc).__name__
+    warning_key = (sink_hash, error_type)
+    with _WARNING_LOCK:
+        if warning_key in _WARNED_FAILURES:
+            _WARNED_FAILURES.move_to_end(warning_key)
+            return
+        _WARNED_FAILURES[warning_key] = None
+        if len(_WARNED_FAILURES) > _WARNING_CACHE_LIMIT:
+            _WARNED_FAILURES.popitem(last=False)
+    # Keep the message path- and exception-text-free. Logging does not call
+    # ``record`` and therefore cannot recurse into the trace sink.
+    logger.warning(
+        "agent trace I/O failed error_type=%s sink_hash=%s",
+        error_type,
+        sink_hash,
+    )
+
+
 def set_sink(path) -> None:
     """设当前线程的 trace sink；每次 run 开头清空同名文件（覆盖上一次）。"""
     if path is None:
         _STATE.sink = None
+        _STATE.round = 0
         return
     p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("", encoding="utf-8")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("", encoding="utf-8")
+    except OSError as exc:
+        _warn_io_failure(exc, p)
+        _STATE.sink = None
+        _STATE.round = 0
+        return
     _STATE.sink = p
     _STATE.round = 0
 
 
 def clear_sink() -> None:
     _STATE.sink = None
+    _STATE.round = 0
 
 
 class trace_to:
     """``with trace_to(path): agent.run(...)`` —— 这次 run 的每轮 LLM 交互写进 path。
 
-    path 为 None → no-op（不 trace，普通 agent 调用不受影响）。
+    path 为 None → 在该作用域显式禁用 trace，退出后恢复外层 sink。
     """
 
     def __init__(self, path):
         self.path = path
+        self._previous_sink: Path | None = None
+        self._previous_round = 0
 
     def __enter__(self) -> "trace_to":
-        if self.path is not None:
-            set_sink(self.path)
+        self._previous_sink = _sink()
+        self._previous_round = getattr(_STATE, "round", 0)
+        set_sink(self.path)
         return self
 
     def __exit__(self, *exc) -> bool:
-        clear_sink()
+        # Direct restoration is intentional: calling set_sink here would
+        # truncate an outer trace file when nested scopes unwind.
+        _STATE.sink = self._previous_sink
+        _STATE.round = self._previous_round
         return False
 
 
@@ -80,7 +124,7 @@ def _extract(resp: Any):
     msg: Any
     try:
         msg = resp.choices[0].message
-    except Exception:  # pylint: disable=broad-exception-caught
+    except (AttributeError, IndexError, KeyError, TypeError):
         msg = resp
     rc = getattr(msg, "reasoning_content", None)
     ct = getattr(msg, "content", None)
@@ -100,7 +144,8 @@ def _extract(resp: Any):
 def record(messages, resp) -> None:
     """工厂 invoke 包装层每轮调一次：把这轮 reasoning/content/tool_calls append 进 sink。
 
-    没设 sink（普通调用）→ 直接返回，零开销。写盘失败吞掉，绝不影响主流程。
+    没设 sink（普通调用）→ 直接返回，零开销。预期的文件系统错误会限频告警后
+    继续主流程；未知程序错误会向上传播。
     """
     sink = _sink()
     if sink is None:
@@ -119,5 +164,5 @@ def record(messages, resp) -> None:
     try:
         with open(sink, "a", encoding="utf-8") as f:
             f.write("\n".join(out) + "\n")
-    except OSError:
-        pass
+    except OSError as exc:
+        _warn_io_failure(exc, sink)

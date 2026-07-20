@@ -88,6 +88,10 @@ CREATE TABLE IF NOT EXISTS clients (
     hostname       TEXT DEFAULT '',
     user_name      TEXT DEFAULT '',
     client_version TEXT DEFAULT '',
+    ingest_paused  INTEGER NOT NULL DEFAULT 0,
+    ingest_paused_at TEXT,
+    ingest_paused_by TEXT DEFAULT '',
+    ingest_pause_reason TEXT DEFAULT '',
     joined_at      TEXT NOT NULL,
     last_seen      TEXT NOT NULL
 );
@@ -109,6 +113,7 @@ class ClientRegistry:
         self._touch_flush_lock = threading.Lock()
         self._client_ids: set[str] = set()
         self._client_user_names: dict[str, str] = {}
+        self._paused_client_ids: set[str] = set()
         self._pending_touches: dict[str, tuple[str, str | None]] = {}
         self._touch_timer: threading.Timer | None = None
         self._closed = False
@@ -141,6 +146,17 @@ class ClientRegistry:
                     # P2-2.2(Q2a):dashboard 登录凭证,--name 注册时发放并回传打印
                     conn.execute(
                         "ALTER TABLE clients ADD COLUMN dashboard_token TEXT DEFAULT ''")
+                ingest_columns = (
+                    ("ingest_paused", "INTEGER NOT NULL DEFAULT 0"),
+                    ("ingest_paused_at", "TEXT"),
+                    ("ingest_paused_by", "TEXT DEFAULT ''"),
+                    ("ingest_pause_reason", "TEXT DEFAULT ''"),
+                )
+                for column, definition in ingest_columns:
+                    if column not in cols:
+                        conn.execute(
+                            f"ALTER TABLE clients ADD COLUMN {column} {definition}"
+                        )
                 conn.commit()
             finally:
                 conn.close()
@@ -150,7 +166,7 @@ class ClientRegistry:
         conn = self._conn()
         try:
             rows = conn.execute(
-                "SELECT client_id, user_name FROM clients"
+                "SELECT client_id, user_name, ingest_paused FROM clients"
             ).fetchall()
         finally:
             conn.close()
@@ -159,20 +175,29 @@ class ClientRegistry:
             self._client_user_names = {
                 row["client_id"]: row["user_name"] or "" for row in rows
             }
+            self._paused_client_ids = {
+                row["client_id"] for row in rows if bool(row["ingest_paused"])
+            }
 
     def _remember_client(self, client_id: str) -> None:
         conn = self._conn()
         try:
             row = conn.execute(
-                "SELECT user_name FROM clients WHERE client_id=?", (client_id,),
+                "SELECT user_name, ingest_paused FROM clients WHERE client_id=?",
+                (client_id,),
             ).fetchone()
             user_name = (row["user_name"] or "") if row else ""
+            ingest_paused = bool(row["ingest_paused"]) if row else False
         finally:
             conn.close()
         with self._state_lock:
             if not self._closed:
                 self._client_ids.add(client_id)
                 self._client_user_names[client_id] = user_name
+                if ingest_paused:
+                    self._paused_client_ids.add(client_id)
+                else:
+                    self._paused_client_ids.discard(client_id)
 
     def _raise_if_closed(self) -> None:
         """拒绝关闭后的新注册。"""
@@ -510,6 +535,7 @@ class ClientRegistry:
             with self._state_lock:
                 self._client_ids.discard(client_id)
                 self._client_user_names.pop(client_id, None)
+                self._paused_client_ids.discard(client_id)
                 self._pending_touches.pop(client_id, None)
         return cursor.rowcount > 0
 
@@ -555,6 +581,62 @@ class ClientRegistry:
             if self._closed or client_id not in self._client_ids:
                 raise ValueError(f"unknown client_id: {client_id}")
             return self._client_user_names.get(client_id, "")
+
+    def is_ingest_paused(self, client_id: str) -> bool:
+        """从内存快照读取该 client 是否暂停后续轨迹处理。"""
+        with self._state_lock:
+            if self._closed or client_id not in self._client_ids:
+                raise ValueError(f"unknown client_id: {client_id}")
+            return client_id in self._paused_client_ids
+
+    def set_ingest_paused(
+        self,
+        client_id: str,
+        paused: bool,
+        *,
+        actor: str = "",
+        reason: str = "",
+    ) -> dict:
+        """幂等更新轨迹处理开关，并与认证快照按同一锁顺序发布。"""
+        desired = bool(paused)
+        actor = str(actor or "").strip()
+        reason = str(reason or "").strip()
+        with self._write_lock:
+            self._raise_if_closed()
+            conn = self._conn()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM clients WHERE client_id=?", (client_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"unknown client_id: {client_id}")
+                if bool(row["ingest_paused"]) != desired:
+                    if desired:
+                        conn.execute(
+                            "UPDATE clients SET ingest_paused=1,"
+                            " ingest_paused_at=?, ingest_paused_by=?,"
+                            " ingest_pause_reason=? WHERE client_id=?",
+                            (_now(), actor, reason, client_id),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE clients SET ingest_paused=0,"
+                            " ingest_paused_at=NULL, ingest_paused_by='',"
+                            " ingest_pause_reason='' WHERE client_id=?",
+                            (client_id,),
+                        )
+                    conn.commit()
+                    row = conn.execute(
+                        "SELECT * FROM clients WHERE client_id=?", (client_id,),
+                    ).fetchone()
+            finally:
+                conn.close()
+            with self._state_lock:
+                if desired:
+                    self._paused_client_ids.add(client_id)
+                else:
+                    self._paused_client_ids.discard(client_id)
+            return dict(row)
 
     def list(self) -> list[dict]:
         conn = self._conn()

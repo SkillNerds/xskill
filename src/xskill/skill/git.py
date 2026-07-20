@@ -25,15 +25,17 @@ v2 (AtomTask 流水线) 引入 baby 分支：ClusterAgent 调 new_skill_folder �
 
 from __future__ import annotations
 
+import errno
+import hashlib
 import io
 import logging
 import os
 import stat
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from dulwich import porcelain
 from dulwich.errors import NotGitRepository
@@ -74,6 +76,9 @@ def _write_repo_identity(repo: Repo) -> None:
 #     用，RLock 让其内部的 run_git 调用可重入不死锁。
 _repo_locks: dict[str, threading.RLock] = {}
 _repo_locks_meta = threading.Lock()
+_repo_file_lock_state = threading.local()
+_windows_lock_retry_event = threading.Event()
+_WINDOWS_LOCK_RETRY_SECONDS = 0.05
 
 
 class _GitWriteLimiter:
@@ -134,31 +139,153 @@ def configure_git_write_concurrency(limit: int) -> None:
 def _repo_lock_for(cwd: str | Path) -> threading.RLock:
     key = str(Path(cwd).resolve())
     with _repo_locks_meta:
-        lk = _repo_locks.get(key)
-        if lk is None:
-            lk = threading.RLock()
-            _repo_locks[key] = lk
-        return lk
+        repository_lock = _repo_locks.get(key)
+        if repository_lock is None:
+            repository_lock = threading.RLock()
+            _repo_locks[key] = repository_lock
+        return repository_lock
+
+
+def _repo_lock_file(repo_dir: str | Path) -> Path:
+    """Return a stable lock file outside the repository being protected."""
+    repository_path = Path(repo_dir).resolve()
+    identity = hashlib.sha256(
+        str(repository_path).encode("utf-8"),
+    ).hexdigest()
+    return repository_path.parent / ".repo_locks" / f"{identity}.lock"
+
+
+def _is_windows_lock_contention(error: OSError) -> bool:
+    """Distinguish ordinary file-lock contention from permanent OS errors."""
+    windows_error = getattr(error, "winerror", None)
+    if windows_error is not None:
+        return windows_error in {32, 33}
+    return error.errno in {
+        errno.EACCES,
+        errno.EAGAIN,
+        errno.EDEADLK,
+    }
+
+
+def _acquire_windows_file_lock(lock_file, msvcrt_module) -> None:
+    """Wait for a Windows byte-range lock without the LK_LOCK retry limit."""
+    while True:
+        try:
+            msvcrt_module.locking(
+                lock_file.fileno(),
+                msvcrt_module.LK_NBLCK,
+                1,
+            )
+            return
+        except OSError as error:
+            if not _is_windows_lock_contention(error):
+                raise
+            _windows_lock_retry_event.wait(_WINDOWS_LOCK_RETRY_SECONDS)
 
 
 @contextmanager
-def skill_repo_lock(repo_dir: str | Path):
+def _cross_process_repo_lock(repo_dir: str | Path):
+    """Take one reentrant OS file lock for a repository in this thread."""
+    repository_key = str(Path(repo_dir).resolve())
+    depths = getattr(_repo_file_lock_state, "depths", None)
+    if depths is None:
+        depths = {}
+        _repo_file_lock_state.depths = depths
+    current_depth = depths.get(repository_key, 0)
+    if current_depth:
+        depths[repository_key] = current_depth + 1
+        try:
+            yield
+        finally:
+            depths[repository_key] -= 1
+        return
+
+    lock_path = _repo_lock_file(repo_dir)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        if os.name == "nt":
+            import msvcrt  # pylint: disable=import-error
+
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            _acquire_windows_file_lock(lock_file, msvcrt)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        depths[repository_key] = 1
+        try:
+            yield
+        finally:
+            depths.pop(repository_key, None)
+            if os.name == "nt":
+                import msvcrt  # pylint: disable=import-error
+
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def skill_repo_locks(
+    repo_dirs: Iterable[str | Path],
+    *,
+    use_git_write_limit: bool = True,
+):
+    """Lock repositories in canonical path order across threads and processes.
+
+    Multi-repository mutations must use this context once instead of nesting
+    ``skill_repo_lock`` calls in caller-dependent order. Candidate-buffer
+    writes set ``use_git_write_limit=False`` because they share the repository
+    lock with Git but do not consume a Git write slot.
+    """
+    repository_paths = sorted({
+        Path(repo_dir).resolve()
+        for repo_dir in repo_dirs
+    })
+    limiter = (
+        _git_write_limiter.slot()
+        if use_git_write_limit
+        else nullcontext()
+    )
+    with limiter:
+        with ExitStack() as lock_stack:
+            for repository_path in repository_paths:
+                repository_lock = _repo_lock_for(repository_path)
+                repository_lock.acquire()
+                lock_stack.callback(repository_lock.release)
+                lock_stack.enter_context(
+                    _cross_process_repo_lock(repository_path),
+                )
+            yield
+
+
+@contextmanager
+def skill_repo_lock(
+    repo_dir: str | Path,
+    *,
+    use_git_write_limit: bool = True,
+):
     """串行化一个 skill 子仓的复合 git 操作（add+commit+branch 等必须原子）。
 
-    与 ``run_git`` 用同一把 per-repo RLock——复合操作持锁期间内部的
-    ``run_git`` 调用可重入，不会自死锁。
+    与 ``run_git`` 用同一把 per-repo RLock 和跨进程文件锁。复合操作持锁
+    期间内部的 ``run_git`` 调用可重入，不会自死锁。
     """
-    lk = _repo_lock_for(repo_dir)
     # 锁顺序固定为“全局写许可 -> 仓库锁”。若反过来，一个等待
     # 全局许可的写任务会先占住仓库锁，连同仓的只读请求也会被堵住。
     # limiter 和 RLock 都按线程可重入，复合写操作内嵌 run_git 不会重复
     # 占用许可或自死锁。
-    with _git_write_limiter.slot():
-        lk.acquire()
-        try:
-            yield
-        finally:
-            lk.release()
+    with skill_repo_locks(
+        (repo_dir,),
+        use_git_write_limit=use_git_write_limit,
+    ):
+        yield
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -807,15 +934,17 @@ def run_git(args: list[str], cwd: str) -> tuple[int, str, str]:
     if handler is None:
         return 1, "", f"unsupported git subcommand: {sub}"
 
-    lock = skill_repo_lock(cwd) if _command_writes(args) else _repo_lock_for(cwd)
-    with lock:
-        try:
+    try:
+        with skill_repo_lock(
+            cwd,
+            use_git_write_limit=_command_writes(args),
+        ):
             return handler(rest, cwd)
-        except NotGitRepository as e:
-            return 128, "", f"fatal: not a git repository: {e}"
-        except Exception as e:  # noqa: BLE001
-            logger.exception("dulwich op failed: %s %s @ %s", sub, rest, cwd)
-            return 128, "", f"{type(e).__name__}: {e}"
+    except NotGitRepository as e:
+        return 128, "", f"fatal: not a git repository: {e}"
+    except Exception as e:  # noqa: BLE001
+        logger.exception("dulwich op failed: %s %s @ %s", sub, rest, cwd)
+        return 128, "", f"{type(e).__name__}: {e}"
 
 
 # ── handler 列表 ──────────────────────────────────────────────────

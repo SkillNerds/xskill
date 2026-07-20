@@ -35,8 +35,12 @@ from pathlib import Path
 from typing import Iterable
 
 from xskill._sqlite_connect import connect_with_lock
-from xskill.ecosystems._fallback import (
-    InstallMode, _copy_install_is_current, _is_link_or_junction, install_dir,
+from xskill.ecosystems._fallback import install_dir
+from xskill.ecosystems.installation import (
+    InstallMode,
+    copy_install_is_current,
+    ensure_link_install_metadata,
+    is_link_or_junction,
 )
 from xskill.ecosystems._shared import (
     SqliteEcosystemSpec,
@@ -513,20 +517,21 @@ def install_to_opencode(
     skills_root.mkdir(parents=True, exist_ok=True)
     dest = skills_root / name
 
-    # 已有 link/junction 且指向正确：no-op。``_is_link_or_junction``
+    # 已有 link/junction 且指向正确：no-op。``is_link_or_junction``
     # 而非 ``is_symlink`` —— Windows 对 junction 返回 False（issue #35 同源
     # bug），统一处理 link/junction 两种 reparse point。
-    if _is_link_or_junction(dest):
+    if is_link_or_junction(dest):
         try:
             cur = dest.resolve(strict=False)
         except OSError:
             cur = None
         if cur == src_dir:
+            ensure_link_install_metadata(dest, src_dir)
             return dest / "SKILL.md"
         dest.unlink()
     elif dest.exists():
         # copy 模式且源未变：no-op——避免每轮 reconcile 重拷 + 重试 junction（Windows 弹 cmd 窗）
-        if _copy_install_is_current(src_dir, dest):
+        if copy_install_is_current(src_dir, dest):
             return dest / "SKILL.md"
         if dest.is_dir():
             backup = skills_root / f".{name}.replaced-by-symlink"

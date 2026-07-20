@@ -52,8 +52,15 @@ class SearchSlots:
         return [slot for slot in loaded if isinstance(slot, dict)] \
             if isinstance(loaded, list) else []
 
-    def install(self, result: dict, archive_bytes: bytes, *, query: str) -> Path:
-        """落盘一个 search 命中的 skill，装进生态并滚动淘汰。返回绝对路径。"""
+    def install(
+        self, result: dict, archive_bytes: bytes, *, query: str,
+        return_details: bool = False,
+    ) -> Path | dict:
+        """落盘命中 skill、安装并滚动淘汰。
+
+        默认仍返回绝对路径，兼容既有内部调用；CLI 可用 ``return_details`` 在
+        同一次安装中取得缓存路径和逐 harness 安装结果，避免为展示再次探测或安装。
+        """
         skill_id = result.get("skill_id")
         if not isinstance(skill_id, str) or not _valid_slot_id(skill_id):
             raise ValueError(f"invalid search skill_id: {skill_id!r}")
@@ -79,7 +86,7 @@ class SearchSlots:
             "sha": result["content_sha"],
             "query": query,
             "searched_at": searched_at,
-            "installations": installations,
+            "installations": [dict(record) for record in installations],
         })
         evicted, kept = slots[:-self.capacity], slots[-self.capacity:]
         for stale in evicted:
@@ -100,4 +107,12 @@ class SearchSlots:
         self.ledger_path.write_text(
             json.dumps(kept, ensure_ascii=False, indent=2), encoding="utf-8",
         )
-        return dest_dir.resolve()
+        resolved_path = dest_dir.resolve()
+        if return_details:
+            return {
+                "cache_path": resolved_path,
+                "installations": tuple(
+                    dict(record) for record in installations
+                ),
+            }
+        return resolved_path

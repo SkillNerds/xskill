@@ -154,7 +154,7 @@ class RateLimitExhausted(RuntimeError):
     """限流桶在 timeout 内仍取不到 token —— 上层应捕获或选择降级。"""
 
 
-def _extract_total_tokens(resp: Any) -> Optional[int]:
+def extract_total_tokens(resp: Any) -> Optional[int]:
     """从 OpenAI 兼容 response 提取 total_tokens,缺失返 None。
 
     覆盖以下形态:
@@ -177,6 +177,10 @@ def _extract_total_tokens(resp: Any) -> Optional[int]:
         return None
     tt = getattr(usage, "total_tokens", None)
     return int(tt) if isinstance(tt, (int, float)) else None
+
+
+# Backward-compatible alias for callers predating the public helper name.
+_extract_total_tokens = extract_total_tokens
 
 
 class RateLimitedLLM:
@@ -210,7 +214,7 @@ class RateLimitedLLM:
         resp = self.inner_call(prompt=prompt, **kwargs)
 
         # 4) reconcile by response.usage(缺失则保留估算扣量,不抛错)
-        actual = _extract_total_tokens(resp)
+        actual = extract_total_tokens(resp)
         if actual is not None:
             self.bucket.reconcile_tpm(estimated=estimated, actual=actual)
 

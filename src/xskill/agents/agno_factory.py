@@ -20,9 +20,13 @@ import os
 from typing import Any, Callable
 
 from xskill.utils.logging import StreamLog
-from xskill.utils.llm import _ssl_verify
+from xskill.utils.llm import ssl_verify
 
 logger = logging.getLogger("xskill.agno_factory")
+
+
+def _discard_log(*args, **kwargs) -> None:
+    del args, kwargs
 
 
 def _inject_verify_off_if_requested(model_cls, model_kwargs: dict,
@@ -32,7 +36,7 @@ def _inject_verify_off_if_requested(model_cls, model_kwargs: dict,
     agno 不同版本接受的 kwarg 名不一致（观察到：http_client / client / async_client /
     async_http_client）。用 inspect.signature 只传实际接受的那几个，避免 TypeError。
     """
-    if _ssl_verify():
+    if ssl_verify():
         return
     import httpx
     try:
@@ -52,7 +56,7 @@ def _inject_verify_off_if_requested(model_cls, model_kwargs: dict,
             model_kwargs[name] = async_client
             injected.append(name)
             break
-    msg_log = log or (lambda *a, **kw: None)
+    msg_log = log or _discard_log
     if injected:
         msg_log(f"T2S_SSL_VERIFY=false → {model_cls.__name__} 注入 "
                 f"{'+'.join(injected)} (verify=False)", "step")
@@ -61,7 +65,7 @@ def _inject_verify_off_if_requested(model_cls, model_kwargs: dict,
                 f"kwarg，改用 SSL_CERT_FILE=/path/to/ca.pem", "error")
 
 
-def _wrap_with_context_mgmt(model, llm_cfg: dict):
+def _wrap_with_context_mgmt(model, llm_cfg: dict, *, spill_root=None):
     """把弃窗单趟的上下文自管理（spec §4.5）套到 model.invoke 外层。
 
     - max_context 配置优先,缺省 200K + warning（``resolve_max_context``）。
@@ -74,12 +78,14 @@ def _wrap_with_context_mgmt(model, llm_cfg: dict):
     """
     from xskill.agents.context_budget import ContextManager, resolve_max_context
     max_ctx = resolve_max_context(llm_cfg)
-    cm = ContextManager(max_ctx, config=llm_cfg)
+    cm = ContextManager(max_ctx, spill_root=spill_root, config=llm_cfg)
     model.invoke = cm.wrap(model.invoke)
     return model
 
 
-def _wrap_with_rate_limit(model, llm_cfg: dict):
+def _wrap_with_rate_limit(
+    model, llm_cfg: dict, *, usage_ledger=None,
+):
     """如果 llm_cfg['rate_limit'] 配置存在,monkey-patch model.invoke
     在调用 LLM 前先 acquire 共享桶。
 
@@ -89,6 +95,11 @@ def _wrap_with_rate_limit(model, llm_cfg: dict):
     - reasoning_content / tool_use 等 agno 内部逻辑完全保留
     """
     from xskill.usage import current_step, get_ledger
+    ledger = (
+        usage_ledger
+        if usage_ledger is not None
+        else get_ledger()
+    )
     model_name = llm_cfg.get("model", "?")
     original_invoke = model.invoke
     rl_cfg = llm_cfg.get("rate_limit")
@@ -97,13 +108,13 @@ def _wrap_with_rate_limit(model, llm_cfg: dict):
         # 无限流也要记账(Issue #43):只包一层 record-only wrapper。
         def record_only_invoke(messages, **kwargs):
             resp = original_invoke(messages, **kwargs)
-            get_ledger().record_llm(current_step(), model_name, resp)
+            ledger.record_llm(current_step(), model_name, resp)
             return resp
         model.invoke = record_only_invoke
         return model
 
     from xskill.utils.rate_limit import (
-        get_or_create_bucket, estimate_tokens, _extract_total_tokens,
+        get_or_create_bucket, estimate_tokens, extract_total_tokens,
     )
     bucket = get_or_create_bucket(
         llm_cfg.get("base_url", ""),
@@ -125,18 +136,24 @@ def _wrap_with_rate_limit(model, llm_cfg: dict):
         if wait > 0:
             raise RuntimeError(f"TPM exhausted, wait {wait:.1f}s")
         resp = original_invoke(messages, **kwargs)
-        actual = _extract_total_tokens(resp)
+        actual = extract_total_tokens(resp)
         if actual is not None:
             bucket.reconcile_tpm(estimated=estimated, actual=actual)
         # 旁路记账;record_llm 内部 best-effort,绝不抛。
-        get_ledger().record_llm(current_step(), model_name, resp)
+        ledger.record_llm(current_step(), model_name, resp)
         return resp
 
     model.invoke = rate_limited_invoke
     return model
 
 
-def build_chat_model(llm_cfg: dict, log: StreamLog | None = None):
+def build_chat_model(
+    llm_cfg: dict,
+    log: StreamLog | None = None,
+    *,
+    usage_ledger=None,
+    spill_root=None,
+):
     """根据 ``llm_cfg.base_url`` 路由到合适的 agno model 类。
 
     为什么不一律用 ``OpenAIChat``：DeepSeek 直连（``api.deepseek.com``）的
@@ -190,16 +207,28 @@ def build_chat_model(llm_cfg: dict, log: StreamLog | None = None):
         from agno.models.deepseek import DeepSeek
         _inject_verify_off_if_requested(DeepSeek, common_kwargs, log)
         if log:
-            log(f"使用 agno DeepSeek model class (base_url=api.deepseek.com)", "step")
+            log("使用 agno DeepSeek model class (base_url=api.deepseek.com)", "step")
         model = DeepSeek(**common_kwargs)
-        return _wrap_with_trace(_wrap_with_retry(_wrap_with_context_mgmt(
-            _wrap_with_rate_limit(model, llm_cfg), llm_cfg), llm_cfg))
+        model = _wrap_with_rate_limit(
+            model, llm_cfg, usage_ledger=usage_ledger
+        )
+        model = _wrap_with_context_mgmt(
+            model, llm_cfg, spill_root=spill_root,
+        )
+        model = _wrap_with_retry(model, llm_cfg)
+        return _wrap_with_trace(model)
 
     from agno.models.openai import OpenAIChat
     _inject_verify_off_if_requested(OpenAIChat, common_kwargs, log)
     model = OpenAIChat(**common_kwargs)
-    return _wrap_with_trace(_wrap_with_retry(_wrap_with_context_mgmt(
-        _wrap_with_rate_limit(model, llm_cfg), llm_cfg), llm_cfg))
+    model = _wrap_with_rate_limit(
+        model, llm_cfg, usage_ledger=usage_ledger
+    )
+    model = _wrap_with_context_mgmt(
+        model, llm_cfg, spill_root=spill_root,
+    )
+    model = _wrap_with_retry(model, llm_cfg)
+    return _wrap_with_trace(model)
 
 
 # 瞬时错误特征（可重试）；明确不可重试的(上下文超长/400 invalid)单独排除。
@@ -274,17 +303,16 @@ def _wrap_with_trace(model):
 
     def traced_invoke(messages, **kwargs):
         resp = original_invoke(messages, **kwargs)
-        try:
-            agent_trace.record(messages, resp)
-        except Exception:  # pylint: disable=broad-exception-caught
-            pass
+        agent_trace.record(messages, resp)
         return resp
 
     model.invoke = traced_invoke
     return model
 
 
-def make_default_factory(config: dict) -> Callable[..., Any]:
+def make_default_factory(
+    config: dict, *, usage_ledger=None, spill_root=None,
+) -> Callable[..., Any]:
     """生产环境的 agno Agent 工厂。
 
     返回的 callable 签名 ``(*, instructions, tools) -> agno.agent.Agent``，
@@ -301,7 +329,11 @@ def make_default_factory(config: dict) -> Callable[..., Any]:
     llm_cfg = {**base_cfg, **{k: v for k, v in override_cfg.items() if v}}
 
     def factory(*, instructions, tools, **kwargs):
-        model = build_chat_model(llm_cfg)
+        model = build_chat_model(
+            llm_cfg,
+            usage_ledger=usage_ledger,
+            spill_root=spill_root,
+        )
         # 弃窗单趟拆分必须开重试 + 指数退避：agno 默认 retries=0,限流时工具调用
         # 会静默返回空 submitted（被 TaskAgent 的 0 提交抛错兜住,但白白丢一趟）。
         # 调用方显式传 retries 时尊重其值,否则给安全缺省。

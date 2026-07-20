@@ -20,6 +20,7 @@ import io
 import json
 import logging
 from pathlib import Path
+import secrets
 import shutil
 import tempfile
 import threading
@@ -28,7 +29,7 @@ from typing import Callable
 import zipfile
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from xskill import __version__ as XSKILL_VERSION
@@ -43,6 +44,7 @@ from xskill.team.shared.protocol import (
 from xskill.utils.sanitize import sanitize_trajectory_text
 
 logger = logging.getLogger("xskill.team.server.api")
+server_logger = logging.getLogger("xskill.server")
 router = APIRouter(prefix="/api/v1/team")
 
 _SKILL_ARCHIVE_MAX_FILES = 2048
@@ -63,6 +65,7 @@ class _Ctx:
     skill_dir: Path | None = None
     traj_root: Path | None = None
     register_dir: Callable[[Path, str], None] | None = None
+    configure_watch_dir: Callable[[Path, str, bool], None] | None = None
     skillhub = None
     profile_refresh_service = None
 
@@ -222,6 +225,7 @@ def init_team_context(
     skill_dir: Path,
     traj_root: Path,
     register_dir: Callable[[Path, str], None],
+    configure_watch_dir: Callable[[Path, str, bool], None] | None = None,
     skillhub=None,
     profile_refresh_service=None,
 ) -> None:
@@ -246,6 +250,7 @@ def init_team_context(
     _ctx.skill_dir = Path(skill_dir)
     _ctx.traj_root = Path(traj_root)
     _ctx.register_dir = register_dir
+    _ctx.configure_watch_dir = configure_watch_dir
     _ctx.skillhub = skillhub
     _ctx.profile_refresh_service = profile_refresh_service
 
@@ -276,6 +281,7 @@ def clear_team_context(*, profile_refresh_shutdown_timeout: float = 5.0) -> bool
     _ctx.skill_dir = None
     _ctx.traj_root = None
     _ctx.register_dir = None
+    _ctx.configure_watch_dir = None
     _ctx.skillhub = None
     _ctx.profile_refresh_service = None
     return stopped
@@ -296,6 +302,44 @@ def _auth(token: str | None, client_id: str | None,
     ):
         raise HTTPException(status_code=403, detail="unknown client_id")
     return client_id
+
+
+def reconcile_client_ingest_watch_dir(
+    client_id: str,
+    *,
+    ensure_directory: bool = False,
+) -> dict:
+    """把 clients 中的权威暂停状态同步到该用户 watch_dir。"""
+    if _ctx.client_registry is None or _ctx.traj_root is None:
+        raise RuntimeError("team context not initialized")
+    from xskill.team.server.client_registry import safe_dir_name
+
+    row = _ctx.client_registry.get(client_id)
+    if row is None:
+        raise ValueError(f"unknown client_id: {client_id}")
+    dir_name = safe_dir_name(row.get("user_name") or None, client_id)
+    sessions_dir = _ctx.traj_root / "clients" / dir_name / "sessions"
+    if ensure_directory:
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+    paused = _ctx.client_registry.is_ingest_paused(client_id)
+    configured = sessions_dir.is_dir()
+    if configured:
+        if _ctx.configure_watch_dir is not None:
+            _ctx.configure_watch_dir(sessions_dir, dir_name, not paused)
+        elif paused:
+            raise RuntimeError(
+                "paused client requires configure_watch_dir callback"
+            )
+        elif not paused and _ctx.register_dir is not None:
+            # 兼容只提供旧式 register_dir callback 的嵌入/测试调用方。
+            _ctx.register_dir(sessions_dir, dir_name)
+    return {
+        "client_id": client_id,
+        "dir_name": dir_name,
+        "sessions_dir": sessions_dir,
+        "ingest_paused": paused,
+        "watch_dir_configured": configured,
+    }
 
 
 def _find_server_wheel(package: str = "xskill", version: str | None = None) -> Path | None:
@@ -626,16 +670,10 @@ async def team_upload(
     x_xskill_client: str | None = Header(default=None),
 ) -> UploadResponse:
     client_id = _auth(x_xskill_token, x_xskill_client)
-    # 目录名优先用 user_name 明文（可读），匿名用 client_id；canary/git 分支仍用 client_id
-    from xskill.team.server.client_registry import safe_dir_name
-    _row = _ctx.client_registry.get(client_id)
-    _dir_name = safe_dir_name((_row or {}).get("user_name") or None, client_id)
-    sessions_dir = _ctx.traj_root / "clients" / _dir_name / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    # 该 client 桶首次出现 → 注册成 watch_dir，label=dir_name 让 watcher
-    # 在 CS 归因时能反查 client（dir_name = user_name 明文或 client_id）。
-    if _ctx.register_dir is not None:
-        _ctx.register_dir(sessions_dir, _dir_name)
+    watch_state = reconcile_client_ingest_watch_dir(
+        client_id, ensure_directory=True,
+    )
+    sessions_dir = watch_state["sessions_dir"]
 
     accepted: list[str] = []
     rejected: list[UploadRejection] = []
@@ -688,10 +726,11 @@ async def team_ingest_db(
 
     from xskill.config import get_uploads_dir
     from xskill.pipeline.db_ingest import read_db_files
-    from xskill.team.server.client_registry import safe_dir_name
-
-    _row = _ctx.client_registry.get(client_id)
-    _dir_name = safe_dir_name((_row or {}).get("user_name") or None, client_id)
+    watch_state = reconcile_client_ingest_watch_dir(
+        client_id, ensure_directory=True,
+    )
+    sessions_dir = watch_state["sessions_dir"]
+    dir_name = watch_state["dir_name"]
 
     # 落盘：uploads/<eco>/<client_id>/<安全文件名>
     safe_name = Path(file.filename or "upload.db").name
@@ -701,12 +740,12 @@ async def team_ingest_db(
     dest.write_bytes(await file.read())
 
     # 桥接到该 client 的 sessions 桶，label=dir_name（与 team_upload 一致）
-    sessions_dir = _ctx.traj_root / "clients" / _dir_name / "sessions"
     try:
         # SQLite 解析 + 批量落盘是阻塞调用，卸到线程池，别占事件循环
         summary = await run_in_threadpool(
             read_db_files,
-            dest, eco=eco, target_dir=sessions_dir, register_label=_dir_name,
+            dest, eco=eco, target_dir=sessions_dir, register=False,
+            register_label=dir_name,
         )
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -828,47 +867,81 @@ async def team_skill_hub_search(
     x_xskill_client: str | None = Header(default=None),
 ) -> dict:
     """BM25 + 语义向量混合检索 skillhub；与推荐画像完全无关。"""
-    _auth(x_xskill_token, x_xskill_client)
+    client_id = _auth(x_xskill_token, x_xskill_client)
     hub = _ctx.skillhub
     if hub is None or not getattr(hub, "enabled", False):
         raise HTTPException(status_code=503, detail="skillhub not enabled on server")
     if not query.strip():
         raise HTTPException(status_code=400, detail="empty query")
     bounded_limit = max(1, min(int(limit), 10))
-    # A hot result is a bounded in-memory lookup.  Keep that path on the event
-    # loop instead of creating 50 short-lived AnyIO worker jobs beside CPU-heavy
-    # /sync work; misses and expired snapshots still run entirely off-loop.
-    matches = hub.cached_search(query, bounded_limit)
-    hot_cache_hit = matches is not None
-    if hot_cache_hit:
-        # Fifty cache-hit handlers otherwise contain no suspension point and can
-        # monopolize one event-loop turn.  Yield around result assembly so health
-        # and dashboard requests keep their latency budget during a search burst.
-        await asyncio.sleep(0)
-    else:
-        try:
+    try:
+        # A hot result is a bounded in-memory lookup.  Keep that path on the event
+        # loop instead of creating 50 short-lived AnyIO worker jobs beside CPU-heavy
+        # /sync work; misses and expired snapshots still run entirely off-loop.
+        matches = hub.cached_search(query, bounded_limit)
+        hot_cache_hit = matches is not None
+        if hot_cache_hit:
+            # Fifty cache-hit handlers otherwise contain no suspension point and can
+            # monopolize one event-loop turn.  Yield around result assembly so health
+            # and dashboard requests keep their latency budget during a search burst.
+            await asyncio.sleep(0)
+        else:
             matches = await run_in_threadpool(hub.search, query, bounded_limit)
-        except FileNotFoundError as missing_dir:
-            raise HTTPException(status_code=503, detail=str(missing_dir)) from missing_dir
-    payload = {"results": [
-        {
-            "skill_id": match["skill_id"],
-            "display_name": match["display_name"],
-            "description": match["description"],
-            "content_sha": match["content_sha"],
-            "source_path": match["source_path"],
-            "source": _skillhub_result_source(match["source_path"]),
-            "ux_avg": match.get("ux_avg"),
-            "match": {
-                "bm25_rank": match.get("bm25_rank"),
-                "semantic_rank": match.get("semantic_rank"),
+        payload = {"results": [
+            {
+                "skill_id": match["skill_id"],
+                "display_name": match["display_name"],
+                "description": match["description"],
+                "content_sha": match["content_sha"],
+                "source_path": match["source_path"],
+                "source": _skillhub_result_source(match["source_path"]),
+                "ux_avg": match.get("ux_avg"),
+                "match": {
+                    "bm25_rank": match.get("bm25_rank"),
+                    "semantic_rank": match.get("semantic_rank"),
+                },
+            }
+            for match in matches
+        ]}
+        if hot_cache_hit:
+            await asyncio.sleep(0)
+        return payload
+    except HTTPException:
+        raise
+    except FileNotFoundError:
+        request_id = f"search-{secrets.token_hex(8)}"
+        server_logger.exception(
+            "SkillHub search source unavailable request_id=%s client_id=%s "
+            "limit=%d query_length=%d",
+            request_id, client_id, bounded_limit, len(query),
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "code": "SKILL_HUB_SOURCE_UNAVAILABLE",
+                "message": "SkillHub 数据源暂时不可用",
+                "request_id": request_id,
+                "retryable": True,
             },
-        }
-        for match in matches
-    ]}
-    if hot_cache_hit:
-        await asyncio.sleep(0)
-    return payload
+            headers={"X-Request-ID": request_id},
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+        request_id = f"search-{secrets.token_hex(8)}"
+        server_logger.exception(
+            "SkillHub search failed request_id=%s client_id=%s limit=%d "
+            "query_length=%d",
+            request_id, client_id, bounded_limit, len(query),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": "SKILL_HUB_SEARCH_FAILED",
+                "message": "服务器执行 SkillHub 搜索时发生异常",
+                "request_id": request_id,
+                "retryable": False,
+            },
+            headers={"X-Request-ID": request_id},
+        )
 
 
 def _skillhub_result_source(source_path: str) -> str:

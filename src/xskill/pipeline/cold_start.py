@@ -1,7 +1,7 @@
 """冷启动一次性批量 flush 信号。
 
 冷启动不是可配置的线上状态机，也没有多轮概念。``xskill rebuild`` 把本批被
-重置的轨迹 id 快照写进 ``~/.xskill/COLD_START``，watcher 只等这批轨迹全部
+重置的轨迹 id 快照写进当前 XSkill 实例的 ``COLD_START``，watcher 只等这批轨迹全部
 到达终态（离开 pending 状态）就按既有 ``ATOM_PROMOTION_THRESHOLD`` 做一次
 SkillEdit 扫描并删除该文件——rebuild 之后新进的轨迹不延长等待。
 """
@@ -24,11 +24,11 @@ COLD_START_MAX_HOLD_SECONDS = 24 * 3600
 class ColdStartSignal:
     """管理一次 cold-start flush 的文件信号。"""
 
-    home_root: Path
+    xskill_home: Path
 
     @property
     def file_path(self) -> Path:
-        return self.home_root / COLD_START_FILENAME
+        return self.xskill_home / COLD_START_FILENAME
 
     @property
     def exists(self) -> bool:

@@ -18,9 +18,10 @@ LLM 和 Embedding 分别配置 base_url / model / api_key
 
 from __future__ import annotations
 
-import os, logging
+import logging
+import os
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import numpy as np
 
@@ -29,13 +30,17 @@ EmbedApiStyle = Literal["multimodal", "openai"]
 logger = logging.getLogger(__name__)
 
 
-def _ssl_verify() -> bool:
+def ssl_verify() -> bool:
     """T2S_SSL_VERIFY=false / 0 / no / off → 不校验 SSL 证书。
     场景：企业代理做 MITM，用自签名 CA 重签上游证书，httpx 默认 verify 会抛
     CERTIFICATE_VERIFY_FAILED。更安全的方式是 export SSL_CERT_FILE=/path/to/ca.pem
     让 httpx 信任代理 CA；想快速 demo 可以直接关掉。"""
     v = os.environ.get("T2S_SSL_VERIFY", "").lower()
     return v not in ("false", "0", "no", "off")
+
+
+# Backward-compatible alias for callers predating the public helper name.
+_ssl_verify = ssl_verify
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -58,10 +63,13 @@ class LLMClient:
     # 限流配置；None = 不限流(快路径)。结构: {rpm, tpm, burst} 任一可缺。
     # 详见 src/xskill/utils/rate_limit.py 与 docs/adr/0001。
     rate_limit_cfg: "Optional[dict]" = field(default=None)
-    _client: object = field(default=None, repr=False)
+    usage_ledger: Any = field(default=None, repr=False)
+    _client: Any = field(default=None, repr=False)
 
     @classmethod
-    def from_config(cls, cfg: dict) -> "LLMClient":
+    def from_config(
+        cls, cfg: dict, *, usage_ledger=None,
+    ) -> "LLMClient":
         base_url = cfg.get("base_url", "").rstrip("/")
         model = cfg.get("model", "")
         api_key = (
@@ -72,7 +80,12 @@ class LLMClient:
         )
         if not base_url or not model:
             raise ValueError("llm.base_url 和 llm.model 必须配置")
-        kwargs = dict(base_url=base_url, model=model, api_key=api_key)
+        kwargs = dict(
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            usage_ledger=usage_ledger,
+        )
         # 允许 config 覆盖 max_tokens / temperature（缺省则用 dataclass 默认）。
         # 之前这里不读 max_tokens，导致 yaml 配了也不生效。
         if "max_tokens" in cfg:
@@ -87,7 +100,7 @@ class LLMClient:
         if self._client is None:
             from openai import OpenAI
             kwargs = {"base_url": self.base_url, "api_key": self.api_key or "no-key", "timeout": 60.0}
-            if not _ssl_verify():
+            if not ssl_verify():
                 import httpx
                 kwargs["http_client"] = httpx.Client(verify=False, timeout=60.0)
                 logger.warning("T2S_SSL_VERIFY=false → LLM HTTPS 证书验证已关闭")
@@ -118,7 +131,12 @@ class LLMClient:
     def _record(self, resp) -> None:
         """旁路记账(Issue #43);best-effort,绝不抛。"""
         from xskill.usage import current_step, get_ledger
-        get_ledger().record_llm(current_step(), self.model, resp)
+        ledger = (
+            self.usage_ledger
+            if self.usage_ledger is not None
+            else get_ledger()
+        )
+        ledger.record_llm(current_step(), self.model, resp)
 
     def _raw_chat(self, *, prompt: str, system: str = ""):
         """原始 LLM 调用,返回完整 response 对象(供 wrapper reconcile usage)。"""
@@ -200,10 +218,13 @@ class EmbedClient:
     api_key: str
     dim: int = 0  # 0 = 未探测
     api_style: EmbedApiStyle = "openai"
-    _client: object = field(default=None, repr=False)
+    usage_ledger: Any = field(default=None, repr=False)
+    _client: Any = field(default=None, repr=False)
 
     @classmethod
-    def from_config(cls, cfg: dict) -> "EmbedClient":
+    def from_config(
+        cls, cfg: dict, *, usage_ledger=None,
+    ) -> "EmbedClient":
         base_url = cfg.get("base_url", "").rstrip("/")
         model = cfg.get("model", "")
         api_key = (
@@ -216,14 +237,19 @@ class EmbedClient:
             raise ValueError("embedding.base_url 和 embedding.model 必须配置")
         api_style = _resolve_embed_api_style(cfg, model)
         inst = cls(
-            base_url=base_url, model=model, api_key=api_key, dim=dim, api_style=api_style,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            dim=dim,
+            api_style=api_style,
+            usage_ledger=usage_ledger,
         )
         return inst
 
     def _get_session(self):
         if self._client is None:
             import httpx
-            verify = _ssl_verify()
+            verify = ssl_verify()
             self._client = httpx.Client(timeout=60, verify=verify)
             if not verify:
                 logger.warning("T2S_SSL_VERIFY=false → Embedding HTTPS 证书验证已关闭")
@@ -256,7 +282,12 @@ class EmbedClient:
         )
         # 旁路记账(Issue #43);embeddings response 自带 usage.total_tokens。
         from xskill.usage import get_ledger
-        get_ledger().record_embed(self.model, data)
+        ledger = (
+            self.usage_ledger
+            if self.usage_ledger is not None
+            else get_ledger()
+        )
+        ledger.record_embed(self.model, data)
         items = data.get("data") or []
         if not items:
             raise ValueError(f"embedding response missing data: {data!r}")
@@ -325,20 +356,29 @@ class EmbedClient:
 # 工厂函数
 # ═══════════════════════════════════════════════════════════════════
 
-def create_embed_client(config: dict) -> "EmbedClient":
+def create_embed_client(
+    config: dict, *, usage_ledger=None,
+) -> "EmbedClient":
     """根据配置创建 embedding 客户端，未配置或不可用时直接报错"""
     embed_cfg = config.get("embedding", {})
 
     if not embed_cfg.get("base_url") or not embed_cfg.get("model"):
         raise ValueError("embedding.base_url 和 embedding.model 必须配置")
 
-    client = EmbedClient.from_config(embed_cfg)
+    client = EmbedClient.from_config(
+        embed_cfg, usage_ledger=usage_ledger
+    )
     client.probe_dim()
     logger.info(f"Embedding: {client}")
     return client
 
 
-def create_llm_client(config: dict, role: str = "default") -> "LLMClient | None":
+def create_llm_client(
+    config: dict,
+    role: str = "default",
+    *,
+    usage_ledger=None,
+) -> "LLMClient | None":
     """根据配置创建 LLM 客户端，未配置返回 None。
 
     role:
@@ -364,7 +404,9 @@ def create_llm_client(config: dict, role: str = "default") -> "LLMClient | None"
 
     if merged.get("base_url") and merged.get("model"):
         try:
-            client = LLMClient.from_config(merged)
+            client = LLMClient.from_config(
+                merged, usage_ledger=usage_ledger
+            )
             logger.info(f"LLM[{role}]: {client}")
             return client
         except Exception as e:

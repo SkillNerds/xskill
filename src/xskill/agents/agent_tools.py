@@ -3,19 +3,33 @@ agent_tools.py — xskill agent tools and their runtime configuration
 ═════════════════════════════════════════════════════════════════════
 
 This module owns the Agno tools registered on xskill agents. Runtime dependencies
-are stored in ``agent_tool_config`` so callers can initialize once and tools can
-read the current project/AtomTask dependencies through properties. LLM and
-embedding clients are intentionally not stored here; non-tool workflows create
-those from config at their own boundary.
+live in an immutable ``AgentToolContext`` bound through ``ContextVar`` so
+concurrent instances do not share project paths or ledgers. ``agent_tool_config``
+is only a stateless property facade for existing callers. LLM and embedding
+clients are intentionally not stored here; non-tool workflows create those from
+config at their own boundary.
 """
 
 from __future__ import annotations
 
-import json, logging, os, re, shutil, subprocess, tempfile
+import contextlib
+import contextvars
+import copy
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
+from types import MappingProxyType
+from typing import Any
 
 from agno.tools import tool
+from pydantic import BaseModel, ConfigDict, Field
 
 from xskill.skill.frontmatter import (
     parse as fm_parse,
@@ -27,83 +41,251 @@ from xskill.utils.proc import windowless_subprocess_kwargs
 
 logger = logging.getLogger("xskill.agent_tools")
 
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
+
+
+def _similarity_score(result: dict) -> float:
+    return float(result.get("similarity", 0))
+
+
+def _freeze_config(value):
+    """Copy a config tree into recursively immutable containers."""
+    if isinstance(value, _MAPPING_PROXY_TYPE):
+        return value
+    if isinstance(value, Mapping):
+        return MappingProxyType({
+            key: _freeze_config(item)
+            for key, item in value.items()
+        })
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_config(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze_config(item) for item in value)
+    return copy.deepcopy(value)
+
+
+@dataclass(frozen=True)
+class AgentToolContext:
+    """Dependencies visible to tools in one task execution context."""
+
+    configured: bool = False
+    skill_dir: Path | None = None
+    data_dir: Path | None = None
+    config: Mapping[str, Any] | None = None
+    atom_skill_dir: Path | None = None
+    atom_store: Any = None
+    default_traj_root: Path | None = None
+    spill_root: Path | None = None
+    usage_ledger: Any = None
+    grep_fallback_warned: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "config",
+            _freeze_config(self.config or {}),
+        )
+
+
+_EMPTY_AGENT_TOOL_CONTEXT = AgentToolContext()
+_AGENT_TOOL_CONTEXT: contextvars.ContextVar[AgentToolContext] = (
+    contextvars.ContextVar(
+        "xskill_agent_tool_context",
+        default=_EMPTY_AGENT_TOOL_CONTEXT,
+    )
+)
+
+
+def create_agent_tool_context(
+    *,
+    skill_dir=None,
+    data_dir=None,
+    config=None,
+    atom_skill_dir=None,
+    atom_store=None,
+    default_traj_root=None,
+    spill_root=None,
+    usage_ledger=None,
+) -> AgentToolContext:
+    """Create an immutable context without changing the current task."""
+    return AgentToolContext(
+        configured=True,
+        skill_dir=Path(skill_dir) if skill_dir is not None else None,
+        data_dir=Path(data_dir) if data_dir is not None else None,
+        config=config,
+        atom_skill_dir=(
+            Path(atom_skill_dir) if atom_skill_dir is not None else None
+        ),
+        atom_store=atom_store,
+        default_traj_root=(
+            Path(default_traj_root)
+            if default_traj_root is not None
+            else None
+        ),
+        spill_root=Path(spill_root) if spill_root is not None else None,
+        usage_ledger=usage_ledger,
+    )
+
+
+def bind_agent_tool_context(
+    context: AgentToolContext,
+) -> contextvars.Token:
+    """Bind a context to the current task/thread and return its reset token."""
+    if not isinstance(context, AgentToolContext):
+        raise TypeError("context 必须是 AgentToolContext")
+    return _AGENT_TOOL_CONTEXT.set(context)
+
+
+def current_agent_tool_context() -> AgentToolContext:
+    """Return the immutable context bound to the current task/thread."""
+    return _AGENT_TOOL_CONTEXT.get()
+
+
+def reset_agent_tool_context(token: contextvars.Token) -> None:
+    """Restore the context that preceded ``bind_agent_tool_context``."""
+    _AGENT_TOOL_CONTEXT.reset(token)
+
+
+@contextlib.contextmanager
+def use_agent_tool_context(
+    context: AgentToolContext,
+) -> Iterator[AgentToolContext]:
+    """Bind one task context and restore the previous context on every exit."""
+    token = bind_agent_tool_context(context)
+    try:
+        yield context
+    finally:
+        reset_agent_tool_context(token)
+
 
 class AgentToolConfig:
-    """Singleton runtime dependencies for agent tools."""
-
-    def __init__(self):
-        self._skill_dir: Path | None = None
-        self._data_dir: Path | None = None
-        self._config: dict = {}
-        self._atom_skill_dir: Path | None = None
-        self._atom_store = None
-        self._default_traj_root: Path | None = None
-        self.grep_fallback_warned = False
+    """Stateless compatibility facade over the current task's context."""
 
     def configure_skill_authoring(
-        self, skill_dir, data_dir, config,
+        self, skill_dir, data_dir, config, *, spill_root=None,
+        usage_ledger=None,
     ) -> None:
-        self._skill_dir = Path(skill_dir)
-        self._data_dir = Path(data_dir)
-        self._config = config or {}
+        current = _AGENT_TOOL_CONTEXT.get()
+        _AGENT_TOOL_CONTEXT.set(replace(
+            current,
+            configured=True,
+            skill_dir=Path(skill_dir),
+            data_dir=Path(data_dir),
+            config=config,
+            spill_root=(
+                Path(spill_root) if spill_root is not None else None
+            ),
+            usage_ledger=usage_ledger,
+        ))
 
     def configure_atom_task(
         self, *, skill_dir, atom_store, default_traj_root,
+        spill_root=None, usage_ledger=None,
     ) -> None:
-        self._atom_skill_dir = Path(skill_dir)
-        self._atom_store = atom_store
-        self._default_traj_root = Path(default_traj_root)
+        current = _AGENT_TOOL_CONTEXT.get()
+        _AGENT_TOOL_CONTEXT.set(replace(
+            current,
+            configured=True,
+            atom_skill_dir=Path(skill_dir),
+            atom_store=atom_store,
+            default_traj_root=Path(default_traj_root),
+            spill_root=(
+                Path(spill_root) if spill_root is not None else None
+            ),
+            usage_ledger=usage_ledger,
+        ))
 
     def snapshot(self) -> dict:
+        current = _AGENT_TOOL_CONTEXT.get()
         return {
-            "skill_dir": self._skill_dir,
-            "data_dir": self._data_dir,
-            "config": self._config,
-            "atom_skill_dir": self._atom_skill_dir,
-            "atom_store": self._atom_store,
-            "default_traj_root": self._default_traj_root,
+            "skill_dir": current.skill_dir,
+            "configured": current.configured,
+            "data_dir": current.data_dir,
+            "config": current.config,
+            "atom_skill_dir": current.atom_skill_dir,
+            "atom_store": current.atom_store,
+            "default_traj_root": current.default_traj_root,
+            "spill_root": current.spill_root,
+            "usage_ledger": current.usage_ledger,
+            "grep_fallback_warned": current.grep_fallback_warned,
         }
 
     def restore(self, snapshot: dict) -> None:
-        self._skill_dir = snapshot.get("skill_dir")
-        self._data_dir = snapshot.get("data_dir")
-        self._config = snapshot.get("config") or {}
-        self._atom_skill_dir = snapshot.get("atom_skill_dir")
-        self._atom_store = snapshot.get("atom_store")
-        self._default_traj_root = snapshot.get("default_traj_root")
+        _AGENT_TOOL_CONTEXT.set(create_agent_tool_context(
+            skill_dir=snapshot.get("skill_dir"),
+            data_dir=snapshot.get("data_dir"),
+            config=snapshot.get("config"),
+            atom_skill_dir=snapshot.get("atom_skill_dir"),
+            atom_store=snapshot.get("atom_store"),
+            default_traj_root=snapshot.get("default_traj_root"),
+            spill_root=snapshot.get("spill_root"),
+            usage_ledger=snapshot.get("usage_ledger"),
+        ))
+        if not snapshot.get("configured", True):
+            current = _AGENT_TOOL_CONTEXT.get()
+            _AGENT_TOOL_CONTEXT.set(replace(current, configured=False))
+        if snapshot.get("grep_fallback_warned"):
+            current = _AGENT_TOOL_CONTEXT.get()
+            _AGENT_TOOL_CONTEXT.set(replace(
+                current, grep_fallback_warned=True
+            ))
 
     def clear_atom_task(self) -> None:
-        self._atom_skill_dir = None
-        self._atom_store = None
-        self._default_traj_root = None
+        current = _AGENT_TOOL_CONTEXT.get()
+        _AGENT_TOOL_CONTEXT.set(replace(
+            current,
+            atom_skill_dir=None,
+            atom_store=None,
+            default_traj_root=None,
+        ))
 
     @property
     def skill_dir(self) -> Path | None:
-        return self._skill_dir
+        return _AGENT_TOOL_CONTEXT.get().skill_dir
 
     @property
     def data_dir(self) -> Path | None:
-        return self._data_dir
+        return _AGENT_TOOL_CONTEXT.get().data_dir
 
     @property
-    def config(self) -> dict:
-        return self._config or {}
+    def config(self) -> Mapping[str, Any]:
+        return _AGENT_TOOL_CONTEXT.get().config
 
     @property
     def atom_skill_dir(self) -> Path | None:
-        return self._atom_skill_dir
+        return _AGENT_TOOL_CONTEXT.get().atom_skill_dir
 
     @property
     def atom_store(self):
-        return self._atom_store
+        return _AGENT_TOOL_CONTEXT.get().atom_store
 
     @property
     def default_traj_root(self) -> Path | None:
-        return self._default_traj_root
+        return _AGENT_TOOL_CONTEXT.get().default_traj_root
+
+    @property
+    def spill_root(self) -> Path | None:
+        return _AGENT_TOOL_CONTEXT.get().spill_root
+
+    @property
+    def usage_ledger(self):
+        return _AGENT_TOOL_CONTEXT.get().usage_ledger
+
+    @property
+    def grep_fallback_warned(self) -> bool:
+        return _AGENT_TOOL_CONTEXT.get().grep_fallback_warned
+
+    @grep_fallback_warned.setter
+    def grep_fallback_warned(self, value: bool) -> None:
+        current = _AGENT_TOOL_CONTEXT.get()
+        _AGENT_TOOL_CONTEXT.set(replace(
+            current, grep_fallback_warned=bool(value)
+        ))
 
     @property
     def writable_skill_dir(self) -> Path | None:
-        return self._atom_skill_dir or self._skill_dir
+        current = _AGENT_TOOL_CONTEXT.get()
+        return current.atom_skill_dir or current.skill_dir
 
 
 agent_tool_config = AgentToolConfig()
@@ -114,21 +296,29 @@ def init_atom_task_tool_context(
     skill_dir,
     atom_store,
     default_traj_root,
+    spill_root=None,
+    usage_ledger=None,
 ):
     """Initialize tools that read AtomTask JSON and source trajectory text."""
     agent_tool_config.configure_atom_task(
         skill_dir=skill_dir,
         atom_store=atom_store,
         default_traj_root=default_traj_root,
+        spill_root=spill_root,
+        usage_ledger=usage_ledger,
     )
 
 
 def init_skill_authoring_tool_context(
-    skill_dir, data_dir, config,
+    skill_dir, data_dir, config, *, spill_root=None, usage_ledger=None,
 ):
     """Initialize general skill-authoring and description optimization tools."""
     agent_tool_config.configure_skill_authoring(
-        skill_dir, data_dir, config,
+        skill_dir,
+        data_dir,
+        config,
+        spill_root=spill_root,
+        usage_ledger=usage_ledger,
     )
 
 
@@ -157,13 +347,16 @@ SENSITIVE_NAME_TOKENS = frozenset({
 
 def _allowed_read_roots() -> list[Path]:
     """探索类工具（read_file / list_files / grep_files）共用的只读根集合。"""
-    from xskill.config import XSKILL_HOME
     roots: list[Path] = []
     configured_root = agent_tool_config.skill_dir or agent_tool_config.atom_skill_dir
     if configured_root is not None:
         roots.append(Path(configured_root).parent.resolve())
-    roots.append(XSKILL_HOME.resolve())
-    roots.append((Path(tempfile.gettempdir()) / "xskill" / "skilleditagent").resolve())
+    elif not current_agent_tool_context().configured:
+        from xskill.config import XSKILL_HOME
+        roots.append(XSKILL_HOME.resolve())
+    spill_root = current_agent_tool_context().spill_root
+    if spill_root is not None:
+        roots.append(Path(spill_root).resolve())
     return list(dict.fromkeys(roots))
 
 
@@ -251,19 +444,19 @@ def search_similar_trajs(query: str, top_k: int = 5, filter: str = "all") -> str
         except Exception as e:
             logger.warning(f"search failed on {d.name}: {e}")
 
-    results.sort(key=lambda x: x.get("similarity", 0), reverse=True)
+    results.sort(key=_similarity_score, reverse=True)
     results = results[:top_k]
     return json.dumps(results, ensure_ascii=False, indent=2, default=str)
 
 
 @tool(name="read_file")
 def read_file(path: str, offset: int = 1, limit: int = 200) -> str:
-    """Read a file under the skill workspace, ~/.xskill, or the /tmp spill area.
+    """Read a file under the skill workspace or current instance spill area.
 
     Use with list_files / grep_files output: they return paths this tool can
-    read directly. Spill files under /tmp/xskill/skilleditagent hold trimmed
-    raw tool results; reload them in line windows when placeholders are not
-    enough. Secret-bearing files (config.yaml, *token*, *key*, ...) are refused.
+    read directly. Instance-owned spill files hold trimmed raw tool results;
+    reload them in line windows when placeholders are not enough. Secret-bearing
+    files (config.yaml, *token*, *key*, ...) are refused.
 
     Args:
         path: File path under an allowed read root.
@@ -441,12 +634,13 @@ def add_candidate(skill_name: str, pattern: str, pattern_type: str,
         return (f"error: pattern_type must be one of step|warning|decision_branch "
                 f"(got '{pattern_type}')")
 
-    data = C.load_candidates(target)
-    data, was_new = C.add_or_merge(
-        data, pattern, ptype, traj_id,
+    data, was_new = C.add_pattern_candidate(
+        target,
+        pattern,
+        ptype,
+        traj_id,
         attach_to=attach_to or None,
     )
-    C.save_candidates(target, data)
 
     # Look up the current supporter count for this pattern to report back.
     count = 0
@@ -605,7 +799,10 @@ def update_frontmatter_metadata(skill_name: str, source_trajs: list[str] | None 
 
     # LLM-generated 2-sentence summary (for embeddings)
     from xskill.utils.llm import create_llm_client
-    llm_client = create_llm_client(agent_tool_config.config)
+    llm_client = create_llm_client(
+        agent_tool_config.config,
+        usage_ledger=agent_tool_config.usage_ledger,
+    )
     if llm_client:
         skill_text = (fm.get("description", "") + "\n\n" + body)[:4000]
         try:
@@ -796,18 +993,116 @@ def add_task_to_skill(skill_name: str, atom_id: str, weightscore: int) -> str:
     if not target.is_dir():
         return f"error: skill {slug} not found; call new_skill_folder first"
     try:
-        ws = int(weightscore)
+        weightscore_value = int(weightscore)
     except (TypeError, ValueError):
         return f"error: weightscore must be int 1..10 (got {weightscore!r})"
-    if not (1 <= ws <= 10):
-        return f"error: weightscore must be 1..10 (got {ws})"
-    data = C.load_candidates(target)
-    data, was_new = C.add_atom_contribution(data, atom_id, ws)
-    C.save_candidates(target, data)
-    buffer_total = sum(int(c.get("weightscore", 0)) for c in data["candidates"])
+    if not (1 <= weightscore_value <= 10):
+        return (
+            "error: weightscore must be 1..10 "
+            f"(got {weightscore_value})"
+        )
+    new_flags, buffer_total = C.add_atom_contributions(
+        target,
+        [(atom_id, weightscore_value, "")],
+    )
+    was_new = new_flags[0]
     verb = "new" if was_new else "overwrite"
-    return (f"{verb}: skill={slug} atom={atom_id} weightscore={ws} "
-            f"buffer_total={buffer_total}/10")
+    return (
+        f"{verb}: skill={slug} atom={atom_id} "
+        f"weightscore={weightscore_value} "
+        f"buffer_total={buffer_total}/10"
+    )
+
+
+class CandidateTaskInput(BaseModel):
+    """One atom contribution in the batch candidate tool schema."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    atom_id: str = Field(
+        min_length=1,
+        description="Existing AtomTask identifier from the current batch.",
+    )
+    weightscore: int = Field(
+        ge=1,
+        le=10,
+        description="Candidate relevance score from 1 through 10.",
+    )
+    note: str = Field(
+        default="",
+        description="Optional short routing reason.",
+    )
+
+
+@tool(name="add_tasks_to_skill")
+def add_tasks_to_skill(
+    skill_name: str,
+    tasks: list[CandidateTaskInput],
+) -> str:
+    """Batch multiple atoms into one skill with one candidates file write.
+
+    Each item requires ``atom_id`` and ``weightscore``; ``note`` is optional.
+    Use this instead of repeated ``add_task_to_skill`` calls when several atoms
+    in the current cluster batch belong to the same skill.
+    """
+    from xskill.skill import candidates as C
+
+    skill_dir = agent_tool_config.atom_skill_dir
+    if skill_dir is None:
+        return "error: atom task tool context not initialized"
+    slug = _slugify(skill_name)
+    target = skill_dir / slug
+    if not target.is_dir():
+        return f"error: skill {slug} not found; call new_skill_folder first"
+    if not isinstance(tasks, list) or not tasks:
+        return "error: tasks must be a non-empty list"
+
+    contributions: list[tuple[str, int, str]] = []
+    seen_atom_ids: set[str] = set()
+    for task in tasks:
+        if isinstance(task, CandidateTaskInput):
+            task_data = task.model_dump()
+        elif isinstance(task, dict):
+            task_data = task
+        else:
+            return "error: each task must be an object"
+        atom_id = task_data.get("atom_id")
+        if not isinstance(atom_id, str) or not atom_id.strip():
+            return "error: each task.atom_id must be a non-empty string"
+        if atom_id in seen_atom_ids:
+            return f"error: duplicate atom_id in tasks ({atom_id})"
+        seen_atom_ids.add(atom_id)
+        weightscore = task_data.get("weightscore")
+        try:
+            weightscore_value = int(weightscore)
+        except (TypeError, ValueError):
+            return (
+                "error: each task.weightscore must be int 1..10 "
+                f"(got {weightscore!r})"
+            )
+        if not (1 <= weightscore_value <= 10):
+            return (
+                "error: each task.weightscore must be 1..10 "
+                f"(got {weightscore_value})"
+            )
+        note = task_data.get("note", "")
+        if note is None:
+            note = ""
+        if not isinstance(note, str):
+            return "error: each task.note must be a string"
+        contributions.append((atom_id, weightscore_value, note))
+
+    new_flags, buffer_total = C.add_atom_contributions(
+        target,
+        contributions,
+    )
+    new_count = sum(new_flags)
+    overwrite_count = len(new_flags) - new_count
+    return (
+        f"batched: skill={slug} atoms={len(new_flags)} "
+        f"new={new_count} overwrite={overwrite_count} "
+        f"buffer_total={buffer_total}/10"
+    )
 
 
 @tool(name="score_task")
@@ -1061,7 +1356,12 @@ def grep_files(pattern: str, path: str = "", glob: str = "",
     if command is not None:
         try:
             completed = subprocess.run(
-                command, capture_output=True, text=True, timeout=30,
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
                 **windowless_subprocess_kwargs(),
             )
         except subprocess.TimeoutExpired:
@@ -1122,7 +1422,12 @@ def _run_description_optimization(target: Path, slug: str) -> None:
     workflow 内从 config 创建，不从 agent tool context 借对象。
     """
     from xskill.config import get_config
-    config = agent_tool_config.config or get_config()
+    current_context = current_agent_tool_context()
+    config = (
+        current_context.config
+        if current_context.configured
+        else get_config()
+    )
     if not (config.get("skill_opt", {}) or {}).get("enabled", True):
         return
     from xskill.utils.llm import create_embed_client, create_llm_client
@@ -1132,8 +1437,12 @@ def _run_description_optimization(target: Path, slug: str) -> None:
     except ImportError:
         client_init_errors = (ValueError, RuntimeError, OSError)
     try:
-        llm_client = create_llm_client(config)
-        embed_client = create_embed_client(config)
+        llm_client = create_llm_client(
+            config, usage_ledger=agent_tool_config.usage_ledger
+        )
+        embed_client = create_embed_client(
+            config, usage_ledger=agent_tool_config.usage_ledger
+        )
     except client_init_errors as error:
         logger.warning(
             "skip description_opt: client init failed for %s: %s", slug, error,
@@ -1150,7 +1459,11 @@ def _run_description_optimization(target: Path, slug: str) -> None:
         skill_root = agent_tool_config.atom_skill_dir
         optimize_description(
             target, llm=llm_client, config=config,
-            agno_agent_factory=make_default_factory(config),
+            agno_agent_factory=make_default_factory(
+                config,
+                usage_ledger=agent_tool_config.usage_ledger,
+                spill_root=agent_tool_config.spill_root,
+            ),
             embed_client=embed_client, skill_root=skill_root,
         )
     except Exception:
@@ -1193,7 +1506,7 @@ def commit_baby_to_main(skill_name: str, message: str) -> str:
     _run_description_optimization(target, slug)
     ok = commit_baby_to_main_branch(str(target), msg)
     if not ok:
-        return f"error: commit_baby_to_main 失败（不在 baby 分支？看 daemon 日志）"
+        return "error: commit_baby_to_main 失败（不在 baby 分支？看 daemon 日志）"
     return f"graduated baby → main: {slug}"
 
 
@@ -1437,26 +1750,13 @@ def move_task_to(skill_from: str, skill_to: str, atom_id: str) -> str:
     if not to_path.is_dir():
         return f"error: target skill {to_slug} not found"
 
-    from_data = C.load_candidates(from_path)
-    cands_from = from_data.get("candidates", []) or []
-    target_atom = None
-    new_cands_from: list = []
-    for c in cands_from:
-        if c.get("atom_id") == atom_id:
-            target_atom = c
-        else:
-            new_cands_from.append(c)
-    if target_atom is None:
+    weightscore = C.move_atom_contribution(
+        from_path,
+        to_path,
+        atom_id,
+    )
+    if weightscore is None:
         return f"error: atom_id {atom_id} 不在 {from_slug} buffer 中"
-
-    from_data["candidates"] = new_cands_from
-    C.save_candidates(from_path, from_data)
-
-    to_data = C.load_candidates(to_path)
-    weightscore = int(target_atom.get("weightscore", 0))
-    note = target_atom.get("note", "")
-    to_data, _ = C.add_atom_contribution(to_data, atom_id, weightscore, note=note)
-    C.save_candidates(to_path, to_data)
 
     logger.info(f"moved task: atom={atom_id} {from_slug} → {to_slug}")
     return (f"moved: atom={atom_id} from {from_slug} to {to_slug} "

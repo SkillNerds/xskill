@@ -19,6 +19,7 @@ from xskill.pipeline.registry import (
 )
 
 _STATIC = Path(__file__).with_name("static")
+_STANDALONE_SKILL_SOURCES = frozenset(("native", "skillhub"))
 
 
 def _skill_dir_for(db_path: Optional[Path]) -> Path:
@@ -37,9 +38,10 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
                            default_model: Optional[str] = None,
                            expose_sensitive: bool = True) -> APIRouter:
     """``expose_sensitive=False`` = 公网只读实例内容白名单（§1.3）：轨迹原文、
-    原子详情、用户连接状态、skill 文件预览这些内容级端点**物理不注册**（404），
-    只保留聚合数字类端点。这是给独立只读部署（dashboard_standalone）用的闸，
-    不是中间件式拦截——路由根本不存在。serve 内置挂载保持默认 True。"""
+    原子详情、用户连接状态、skill 文件/版本/评测 case 等内容级端点和所有写
+    端点**物理不注册**（404），只保留聚合数字类 GET 端点。这是给独立只读部署
+    （dashboard_standalone）用的闸，不是中间件式拦截——路由根本不存在。
+    serve 内置挂载保持默认 True。"""
     # 看板归类口径：缺 source_harness/source_model 的历史轨迹归到哪个桶。
     # 显式传入优先（serve 挂载从 dashboard_config 传）；否则直接读 config.yaml 的
     # dashboard 段（独立只读实例走这条，不需要 api_key）。留空均退 'unknown'。
@@ -50,6 +52,7 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
         default_model = default_model or attr["model"]
 
     router = APIRouter()
+    sensitive_router = APIRouter()
     skill_dir = _skill_dir_for(db_path)
     metrics = DashboardMetrics(db_path=db_path, skill_dir=skill_dir,
                                unknown_harness=default_harness,
@@ -91,6 +94,12 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
     @router.get("/api/v1/dashboard/dirs")
     def dirs() -> dict:
         rows = list_watch_dirs(db_path=db_path)
+        if not expose_sensitive:
+            return {"dirs": [{
+                "ecosystem": row.get("ecosystem"),
+                "traj_count": row.get("traj_count"),
+                "indexed_count": row.get("indexed_count"),
+            } for row in rows]}
         return {"dirs": [{"ecosystem": r.get("ecosystem"), "path": r.get("path"),
                           "label": r.get("label"), "traj_count": r.get("traj_count"),
                           "indexed_count": r.get("indexed_count")} for r in rows]}
@@ -99,17 +108,22 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
     def canary() -> dict:
         return {"sides": metrics.canary_sides()}
 
-    if expose_sensitive:
-        @router.get("/api/v1/dashboard/users")
-        def users() -> dict:
-            """团队用户(client)列表 + 总数（纯 registry 分析式）。"""
-            u = metrics.users()
-            return {"total": len(u), "users": u}
+    @sensitive_router.get("/api/v1/dashboard/users")
+    def users() -> dict:
+        """团队用户(client)列表 + 总数（纯 registry 分析式）。"""
+        u = metrics.users()
+        return {"total": len(u), "users": u}
 
     @router.get("/api/v1/dashboard/tags")
     def tags() -> dict:
         """标签云/关键词（扫原子 tags 聚合，分析式）。"""
-        return {"tags": metrics.tag_cloud()}
+        tag_rows = metrics.tag_cloud()
+        if not expose_sensitive:
+            return {"tags": [{
+                "tag": row["tag"],
+                "count": row["count"],
+            } for row in tag_rows]}
+        return {"tags": tag_rows}
 
     @router.get("/api/v1/dashboard/skills")
     def skills(limit: int = 0, offset: int = 0, name: str = "") -> dict:
@@ -125,20 +139,34 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
         目录扫描结果按内容指纹缓存,翻页命中缓存不重扫；``total`` / ``by_state`` 在
         构建清单时算一次随缓存复用(O(1) 取),每请求只深拷贝当前页(审计 L9)。
         """
-        return skills_catalog_page(
+        page = skills_catalog_page(
             skill_dir, skillhub=_build_skillhub(),
             limit=limit, offset=offset, name=name)
+        if expose_sensitive:
+            return page
+        for index, row in enumerate(page["skills"]):
+            source = row["source"]
+            if source not in _STANDALONE_SKILL_SOURCES:
+                raise ValueError(f"unknown skill source: {source!r}")
+            page["skills"][index] = {
+                "name": row["name"],
+                "state": row["state"],
+                "source": source,
+                "version": row["version"],
+                "candidates": row["candidates"],
+            }
+        return page
 
-    # ── 单 skill 详情（drill-in）：统计 / 文件树 / 预览 / 版本 / diff ──
+    # 单 skill 详情含用户名、commit 主题和贡献原子；只挂到内置看板。
 
-    @router.get("/api/v1/dashboard/skill/{name}/detail")
+    @sensitive_router.get("/api/v1/dashboard/skill/{name}/detail")
     def skill_detail(name: str) -> dict:
         """该 skill 真实总触发 + 每版本统计(触发/UX/工具/token) + 按用户 + 趋势。"""
         d = metrics.skill_detail(name)
         d["versions_git"] = _git_versions(_skill_path(skill_dir, name))
         return d
 
-    @router.get("/api/v1/dashboard/skill/{name}/graph")
+    @sensitive_router.get("/api/v1/dashboard/skill/{name}/graph")
     def skill_graph(name: str) -> dict:
         """进化图：main/staging/refs-rejected 的 commit DAG + 裁决标注（图①）。"""
         from xskill.dashboard.gitgraph import skill_commit_graph
@@ -147,7 +175,7 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
 
-    @router.get("/api/v1/dashboard/skill/{name}/lineage")
+    @sensitive_router.get("/api/v1/dashboard/skill/{name}/lineage")
     def skill_lineage_ep(name: str) -> dict:
         """血缘：贡献原子 + 用户/模型归因（断链显式标 source_cleaned）。"""
         from xskill.dashboard.explore import skill_lineage
@@ -162,8 +190,7 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
         from xskill.dashboard.explore import skill_ux_daily
         return {"skill": name, "daily": skill_ux_daily(skill_dir, name)}
 
-    if expose_sensitive:
-        _register_explorer_endpoints(router, db_path, skill_dir)
+    _register_explorer_endpoints(sensitive_router, db_path, skill_dir)
 
     @router.get("/api/v1/dashboard/pipeline")
     def pipeline() -> dict:
@@ -171,13 +198,14 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
         from xskill.dashboard.explore import pipeline_progress
         return pipeline_progress(db_path, skill_dir)
 
-    @router.get("/api/v1/dashboard/skill/{name}/tree")
+    # 文件名、文件正文和 diff 都属于 skill 内容；只挂到内置看板。
+    @sensitive_router.get("/api/v1/dashboard/skill/{name}/tree")
     def skill_tree(name: str) -> dict:
         """skill 目录的文件树（相对路径 + 类型 + 大小）。"""
         root = _skill_path(skill_dir, name)
         return {"name": name, "files": _file_tree(root)}
 
-    @router.get("/api/v1/dashboard/skill/{name}/file")
+    @sensitive_router.get("/api/v1/dashboard/skill/{name}/file")
     def skill_file(name: str, path: str) -> dict:
         """读 skill 目录内单文件内容（越权防御：path 必须落在 skill 目录内）。"""
         root = _skill_path(skill_dir, name)
@@ -190,13 +218,14 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
             return {"path": path, "error": "binary or unreadable"}
         return {"path": path, "content": content}
 
-    @router.get("/api/v1/dashboard/skill/{name}/diff")
+    @sensitive_router.get("/api/v1/dashboard/skill/{name}/diff")
     def skill_diff(name: str, sha: str) -> dict:
         """某版本相对其父提交的 unified diff（前端渲染红绿）。"""
         return {"sha": sha, "diff": _git_show(_skill_path(skill_dir, name), sha)}
 
     # ── UX 分查询：版本聚合 + atom 关联（自有 skill / 三方 skill 分端点）──
 
+    # 版本级 UX 聚合可公开；逐条评分及关联原子只挂到内置看板。
     @router.get("/api/v1/dashboard/skill/{name}/ux")
     def skill_ux(name: str, side: Optional[str] = None,
                  days: int = 30) -> dict:
@@ -219,7 +248,7 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
             "current_version": {"main": m_sha, "staging": s_sha},
         }
 
-    @router.get("/api/v1/dashboard/skill/{name}/ux/atoms")
+    @sensitive_router.get("/api/v1/dashboard/skill/{name}/ux/atoms")
     def skill_ux_atoms(name: str, side: Optional[str] = None,
                        commit_sha: Optional[str] = None,
                        days: int = 30) -> dict:
@@ -260,7 +289,7 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
             "current_version": {"content_sha": hub.content_sha(name)},
         }
 
-    @router.get("/api/v1/dashboard/skillhub/{name}/ux/atoms")
+    @sensitive_router.get("/api/v1/dashboard/skillhub/{name}/ux/atoms")
     def skillhub_ux_atoms(name: str, commit_sha: Optional[str] = None,
                           days: int = 30) -> dict:
         """三方 skill 每条 ux 分关联其 atom 内容。同 :func:`skill_ux_atoms`
@@ -280,19 +309,20 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
 
     # ── 离线探针触发率（Phase 2）：历史 / 逐 case / 重跑 action ──────
 
+    # 评测历史是分数聚合；逐 case query 和重跑操作只挂到内置看板。
     @router.get("/api/v1/dashboard/skill/{name}/trigger")
     def skill_trigger(name: str) -> dict:
         """该 skill 的离线探针触发率历史(按 skill/版本)——区别于线上真实使用率。"""
         _skill_path(skill_dir, name)  # 越权校验
         return {"name": name, "history": trigger_eval_for_skill(name, db_path=db_path)}
 
-    @router.get("/api/v1/dashboard/skill/{name}/trigger/cases")
+    @sensitive_router.get("/api/v1/dashboard/skill/{name}/trigger/cases")
     def skill_trigger_cases(name: str, exp: Optional[str] = None) -> dict:
         """某次优化实验的逐 case 明细(默认最新实验)。读盘,不依赖埋点。"""
         root = _skill_path(skill_dir, name)
         return _trigger_cases(root, exp)
 
-    @router.post("/api/v1/dashboard/skill/{name}/trigger/rerun")
+    @sensitive_router.post("/api/v1/dashboard/skill/{name}/trigger/rerun")
     def skill_trigger_rerun(name: str, body: dict) -> dict:
         """用 skill 当前描述对单条 query 重跑探针(action 端点;受控写/算)。
 
@@ -314,6 +344,8 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
         except Exception as exc:  # pylint: disable=broad-exception-caught
             return {"query": query, "error": str(exc)}
 
+    if expose_sensitive:
+        router.include_router(sensitive_router)
     return router
 
 

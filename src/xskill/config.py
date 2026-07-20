@@ -21,7 +21,6 @@ logger = logging.getLogger("xskill.config")
 # ─── 默认根路径 ─────────────────────────────────────────────────
 XSKILL_HOME = Path.home() / ".xskill"
 CONFIG_PATH = XSKILL_HOME / "config.yaml"
-REGISTRY_DB = XSKILL_HOME / "registry.db"
 CHAT_DB = XSKILL_HOME / "chat_sessions.db"
 LOGS_DIR = XSKILL_HOME / "logs"
 
@@ -650,11 +649,23 @@ def allow_anonymous_user(cfg: Optional[dict] = None) -> bool:
     return val
 
 
-def get_skill_dir() -> Path:
+def get_skill_dir(
+    config_data: Optional[dict] = None,
+    *,
+    xskill_home: Optional[Path] = None,
+) -> Path:
     """skill_dir: config.yaml 字段；默认 ~/.xskill/skill/"""
-    cfg = get_config()
-    raw = cfg.get("skill_dir") or str(XSKILL_HOME / "skill")
-    return Path(raw).expanduser()
+    config_source = config_data if config_data is not None else get_config()
+    state_root = (
+        Path(xskill_home) if xskill_home is not None else XSKILL_HOME
+    ).expanduser().resolve()
+    raw_skill_dir = config_source.get("skill_dir")
+    if raw_skill_dir is not None and (
+        not isinstance(raw_skill_dir, str) or not raw_skill_dir.strip()
+    ):
+        raise ValueError("skill_dir 必须是非空字符串路径")
+    skill_dir = Path(raw_skill_dir or "skill").expanduser()
+    return skill_dir if skill_dir.is_absolute() else state_root / skill_dir
 
 
 def get_logs_dir() -> Path:
@@ -694,8 +705,13 @@ def get_uploads_dir() -> Path:
     return d
 
 
-def get_registry_db_path() -> Path:
-    return REGISTRY_DB
+def get_registry_db_path(
+    *, xskill_home: Optional[Path] = None,
+) -> Path:
+    state_root = (
+        Path(xskill_home) if xskill_home is not None else XSKILL_HOME
+    ).expanduser().resolve()
+    return state_root / "registry.db"
 
 
 def get_chat_db_path() -> Path:

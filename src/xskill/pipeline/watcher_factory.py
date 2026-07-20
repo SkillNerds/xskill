@@ -15,33 +15,89 @@ logger = logging.getLogger("xskill.pipeline.watcher_factory")
 
 
 def build_watcher(config: dict, *, home_root: Path | None = None,
+                  xskill_home: Path | None = None,
+                  config_path: Path | None = None,
+                  db_path: Path | None = None,
+                  skill_dir: Path | None = None,
+                  logs_dir: Path | None = None,
+                  spill_root: Path | None = None,
                   server_mode: bool = False, on_poll_hook=None):
     """构造 ``DirectoryWatcher``(读 watcher 段 + 造 llm/embed 客户端)。
 
     与原 web startup 的构造收敛到一处。``on_poll_hook`` 给短命 sweep 传 None
     (生态一次性入库由 ``ingest_detected_ecosystems_once`` 显式调,不走 poll hook)。
     """
-    from xskill.config import get_skill_dir
+    from xskill.config import (
+        XSKILL_HOME,
+        get_registry_db_path,
+        get_skill_dir,
+    )
     from xskill.pipeline.runner import DirectoryWatcher
+    from xskill.usage import UsageLedger, load_price_table
     from xskill.utils.llm import create_embed_client, create_llm_client
 
+    state_root = (
+        Path(xskill_home) if xskill_home is not None else XSKILL_HOME
+    ).expanduser().resolve()
+    resolved_db_path = (
+        Path(db_path)
+        if db_path is not None
+        else get_registry_db_path(xskill_home=state_root)
+    ).expanduser().resolve()
+    resolved_skill_dir = (
+        Path(skill_dir)
+        if skill_dir is not None
+        else get_skill_dir(config, xskill_home=state_root)
+    ).expanduser().resolve()
+    resolved_config_path = (
+        Path(config_path)
+        if config_path is not None
+        else state_root / "config.yaml"
+    ).expanduser().resolve()
+    resolved_logs_dir = (
+        Path(logs_dir)
+        if logs_dir is not None
+        else state_root / "logs"
+    ).expanduser().resolve()
+    resolved_spill_root = (
+        Path(spill_root)
+        if spill_root is not None
+        else state_root / "tmp" / "spill"
+    ).expanduser().resolve()
+    usage_ledger = UsageLedger(
+        load_price_table(
+            config.get("pricing"),
+            cache_path=state_root / "cache" / "model_prices.json",
+        ),
+        db_path=resolved_db_path,
+    )
     watcher_cfg = config.get("watcher", {})
     return DirectoryWatcher(
-        llm=create_llm_client(config),
-        embed_client=create_embed_client(config),
+        llm=create_llm_client(config, usage_ledger=usage_ledger),
+        embed_client=create_embed_client(
+            config, usage_ledger=usage_ledger
+        ),
         config=config,
-        skill_dir=get_skill_dir(),
+        skill_dir=resolved_skill_dir,
         poll_interval=float(watcher_cfg.get("poll_interval", 30)),
         max_concurrent=int(watcher_cfg.get("max_concurrent", 30)),
         cluster_batch_size=int(watcher_cfg.get("cluster_batch_size", 8)),
         server_mode=server_mode,
         home_root=home_root,
+        xskill_home=state_root,
+        config_path=resolved_config_path,
+        db_path=resolved_db_path,
+        logs_dir=resolved_logs_dir,
+        spill_root=resolved_spill_root,
+        usage_ledger=usage_ledger,
         on_poll_hook=on_poll_hook,
     )
 
 
 def ingest_detected_ecosystems_once(config: dict, home_root: Path,
-                                    skill_dir: Path) -> None:
+                                    skill_dir: Path, *,
+                                    registry_db_path: Path,
+                                    install_history_path: Path) -> None:
     """检测本机各生态 → 装 skill → 对每个生态一次性桥接其 session。
 
     替代常驻 ingester 线程:每个生态调 ``ingester.run_once()``(单轮即返回)。整体
@@ -50,13 +106,14 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
     本地轨迹。
     """
     from xskill.canary import CanaryConfig
-    from xskill.config import XSKILL_HOME
     from xskill.ecosystems import (
         CCSessionIngester, JsonlIngester, SqliteIngester, TraeIngester,
         CODEX_SPEC, CURSOR_SPEC, NGA3_SPEC, NGAGENT_SPEC, OPENCLAW_SPEC,
         OPENCODE_SPEC,
         detect_known_ecosystems,
-        install_all_to_claude_code, install_all_to_codex, install_all_to_cursor,
+        ensure_claude_code_install,
+        install_all_to_claude_code,
+        install_all_to_codex, install_all_to_cursor,
         install_all_to_nga3, install_all_to_ngagent, install_all_to_opencode,
         install_all_to_openclaw, install_all_to_trae,
         make_openclaw_canary_flip_hook,
@@ -64,7 +121,6 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
     from xskill.ecosystems._history import InstallHistory
     from xskill.pipeline.registry import register_dir
 
-    install_history_path = XSKILL_HOME / "install_history.jsonl"
     install_history = InstallHistory(install_history_path)
     poll_interval = float(config.get("watcher", {}).get("poll_interval", 10))
 
@@ -78,15 +134,57 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
         eco = det["ecosystem"]
         bridge: Path = det["bridge"]
         bridge.mkdir(parents=True, exist_ok=True)
-        register_dir(bridge, label=f"{eco} sessions", ecosystem=eco)
+        register_dir(
+            bridge,
+            label=f"{eco} sessions",
+            ecosystem=eco,
+            db_path=registry_db_path,
+        )
 
         if eco == "claude_code":
             try:
-                installed = install_all_to_claude_code(skill_dir, target_root=home_root)
-                for dest in installed:
-                    install_history.record(skill=dest.parent.name, side="main", sha="")
+                skill_paths = [
+                    skill_path
+                    for skill_path in sorted(skill_dir.iterdir())
+                    if skill_path.is_dir()
+                    and (skill_path / "SKILL.md").is_file()
+                ]
+                staging_names = {
+                    skill_path.name
+                    for skill_path in skill_paths
+                    if (
+                        skill_path.parent
+                        / ".canary"
+                        / skill_path.name
+                        / "SKILL.md"
+                    ).is_file()
+                }
+                main_names = [
+                    skill_path.name
+                    for skill_path in skill_paths
+                    if skill_path.name not in staging_names
+                ]
+                install_all_to_claude_code(
+                    skill_dir,
+                    target_root=home_root,
+                    names=main_names,
+                )
+                ensured_count = 0
+                for skill_path in skill_paths:
+                    if skill_path.name not in staging_names:
+                        continue
+                    ensure_claude_code_install(
+                        install_history,
+                        skill_path,
+                        target_root=home_root,
+                    )
+                    ensured_count += 1
+                logger.info(
+                    "Claude Code installations ensured without side reset: %d",
+                    ensured_count,
+                )
             except Exception as exc:
-                logger.warning("install_all_to_claude_code failed", exc_info=True)
+                logger.warning("ensure_claude_code_install failed", exc_info=True)
                 install_history.record_fail(skill="<startup_all>", agent="claude_code",
                                             reason=str(exc)[:200])
             CCSessionIngester(
@@ -94,6 +192,7 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
                 poll_interval=poll_interval, skill_dir=skill_dir,
                 target_root=home_root, history_path=install_history_path,
                 assignments_path=skill_dir / "session_assignments.jsonl",
+                registry_db_path=registry_db_path,
             ).run_once()
 
         elif eco == "codex":
@@ -104,7 +203,8 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
                 install_history.record_fail(skill="<startup_all>", agent="codex",
                                             reason=str(exc)[:200])
             JsonlIngester(CODEX_SPEC, target_traj_dir=bridge, home_root=home_root,
-                          poll_interval=poll_interval).run_once()
+                          poll_interval=poll_interval,
+                          registry_db_path=registry_db_path).run_once()
 
         elif eco == "nga3":
             try:
@@ -116,7 +216,8 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
                 install_history.record_fail(skill="<startup_all>", agent="nga3",
                                             reason=str(exc)[:200])
             JsonlIngester(NGA3_SPEC, target_traj_dir=bridge, home_root=home_root,
-                          poll_interval=poll_interval).run_once()
+                          poll_interval=poll_interval,
+                          registry_db_path=registry_db_path).run_once()
 
         elif eco == "opencode":
             try:
@@ -154,7 +255,8 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
             )
             JsonlIngester(OPENCLAW_SPEC, target_traj_dir=bridge, home_root=home_root,
                           poll_interval=poll_interval,
-                          on_new_sessions=flip_hook).run_once()
+                          on_new_sessions=flip_hook,
+                          registry_db_path=registry_db_path).run_once()
 
         elif eco == "cursor":
             try:
@@ -166,7 +268,8 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
                 install_history.record_fail(skill="<startup_all>", agent="cursor",
                                             reason=str(exc)[:200])
             JsonlIngester(CURSOR_SPEC, target_traj_dir=bridge, home_root=home_root,
-                          poll_interval=poll_interval).run_once()
+                          poll_interval=poll_interval,
+                          registry_db_path=registry_db_path).run_once()
 
         elif eco == "trae":
             try:

@@ -20,13 +20,17 @@ Design notes
 from __future__ import annotations
 
 import logging
+import os
 import re
+import tempfile
+from collections.abc import Iterable
 from datetime import date, datetime
 from pathlib import Path
 
 import yaml
 
 from xskill.skill.frontmatter import parse as fm_parse, serialize as fm_serialize
+from xskill.skill.git import skill_repo_lock, skill_repo_locks
 
 logger = logging.getLogger("xskill.candidates")
 
@@ -55,30 +59,84 @@ def _candidates_path(skill_dir: Path) -> Path:
     return Path(skill_dir) / CANDIDATES_FILENAME
 
 
-def load_candidates(skill_dir: Path) -> dict:
-    """Read .candidates.yml or return a fresh empty structure."""
-    p = _candidates_path(skill_dir)
-    if not p.exists():
+def _load_candidates_unlocked(skill_dir: Path) -> dict:
+    candidate_path = _candidates_path(skill_dir)
+    if not candidate_path.exists():
         return {"candidates": []}
     try:
-        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    except Exception as e:
-        logger.warning(f"failed to parse {p}: {e}; starting empty")
+        raw_data = candidate_path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw_data)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        logger.exception("failed to load candidates file %s", candidate_path)
+        raise
+    if data is None:
         return {"candidates": []}
-    if not isinstance(data, dict) or "candidates" not in data:
-        return {"candidates": []}
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"candidates file must contain a mapping: {candidate_path}",
+        )
     if data.get("candidates") is None:
         data["candidates"] = []
+    if not isinstance(data["candidates"], list):
+        raise ValueError(
+            f"candidates field must be a list: {candidate_path}",
+        )
+    for index, candidate in enumerate(data["candidates"]):
+        if not isinstance(candidate, dict):
+            raise ValueError(
+                "candidate entry must be a mapping: "
+                f"{candidate_path} index={index}",
+            )
     return data
 
 
-def save_candidates(skill_dir: Path, data: dict) -> None:
-    p = _candidates_path(skill_dir)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
+def load_candidates(skill_dir: Path) -> dict:
+    """Read a complete candidates snapshot or raise on invalid data."""
+    return _load_candidates_unlocked(skill_dir)
+
+
+def _atomic_save_candidates_unlocked(skill_dir: Path, data: dict) -> None:
+    candidate_path = _candidates_path(skill_dir)
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = yaml.safe_dump(
+        data,
+        allow_unicode=True,
+        sort_keys=False,
     )
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=candidate_path.parent,
+            prefix=f".{candidate_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            temporary_file.write(serialized)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, candidate_path)
+        temporary_path = None
+        if os.name != "nt":
+            directory_fd = os.open(
+                candidate_path.parent,
+                os.O_RDONLY | os.O_DIRECTORY,
+            )
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def save_candidates(skill_dir: Path, data: dict) -> None:
+    """Atomically replace one candidate snapshot under its repository lock."""
+    with skill_repo_lock(skill_dir, use_git_write_limit=False):
+        _atomic_save_candidates_unlocked(skill_dir, data)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -152,6 +210,27 @@ def add_or_merge(
     return data, True
 
 
+def add_pattern_candidate(
+    skill_dir: Path,
+    pattern: str,
+    pattern_type: str,
+    traj_id: str,
+    attach_to: str | None = None,
+) -> tuple[dict, bool]:
+    """Atomically add or merge one legacy pattern candidate."""
+    with skill_repo_lock(skill_dir, use_git_write_limit=False):
+        data = _load_candidates_unlocked(skill_dir)
+        data, was_new = add_or_merge(
+            data,
+            pattern,
+            pattern_type,
+            traj_id,
+            attach_to=attach_to,
+        )
+        _atomic_save_candidates_unlocked(skill_dir, data)
+        return data, was_new
+
+
 # ═══════════════════════════════════════════════════════════════════
 # v2 schema — atom_id + weightscore 累计
 # ═══════════════════════════════════════════════════════════════════
@@ -197,6 +276,52 @@ def add_atom_contribution(
     return data, True
 
 
+def add_atom_contributions(
+    skill_dir: Path,
+    contributions: Iterable[tuple[str, int, str]],
+) -> tuple[list[bool], int]:
+    """Add a batch with one load and one atomic save.
+
+    Each tuple is ``(atom_id, weightscore, note)``. Return one ``was_new`` flag
+    per input and the final buffer score.
+    """
+    contribution_list = list(contributions)
+    if not contribution_list:
+        raise ValueError("contributions must not be empty")
+    with skill_repo_lock(skill_dir, use_git_write_limit=False):
+        data = _load_candidates_unlocked(skill_dir)
+        candidate_buffer = data.setdefault("candidates", [])
+        candidate_by_atom_id = {
+            candidate.get("atom_id"): candidate
+            for candidate in candidate_buffer
+            if candidate.get("atom_id")
+        }
+        new_flags: list[bool] = []
+        for atom_id, weightscore, note in contribution_list:
+            candidate = candidate_by_atom_id.get(atom_id)
+            if candidate is not None:
+                candidate["weightscore"] = int(weightscore)
+                if note:
+                    candidate["note"] = note
+                new_flags.append(False)
+                continue
+            candidate = {
+                "atom_id": atom_id,
+                "weightscore": int(weightscore),
+            }
+            if note:
+                candidate["note"] = note
+            candidate_buffer.append(candidate)
+            candidate_by_atom_id[atom_id] = candidate
+            new_flags.append(True)
+        _atomic_save_candidates_unlocked(skill_dir, data)
+        buffer_total = sum(
+            int(candidate.get("weightscore", 0))
+            for candidate in candidate_buffer
+        )
+        return new_flags, buffer_total
+
+
 def ready_for_promotion_v2(
     data: dict, threshold: int = ATOM_PROMOTION_THRESHOLD,
 ) -> list[dict]:
@@ -218,7 +343,12 @@ def clear_candidates(skill_dir: Path) -> None:
     写入 ``{candidates: []}`` 而不是删文件，保留 yaml 形态便于下次 cluster
     直接追加。
     """
-    save_candidates(skill_dir, {"candidates": []})
+    with skill_repo_lock(skill_dir, use_git_write_limit=False):
+        data = _load_candidates_unlocked(skill_dir)
+        _atomic_save_candidates_unlocked(
+            skill_dir,
+            {**data, "candidates": []},
+        )
 
 
 def remove_candidates(skill_dir: Path, atom_ids: set[str]) -> None:
@@ -229,12 +359,65 @@ def remove_candidates(skill_dir: Path, atom_ids: set[str]) -> None:
     maybe_run 处理。取代 ``clear_candidates`` 的整文件清空——那样会把消化
     期间新增的候选一并静默丢掉。
     """
-    data = load_candidates(skill_dir)
-    remaining = [
-        c for c in data.get("candidates", []) or []
-        if c.get("atom_id") not in atom_ids
-    ]
-    save_candidates(skill_dir, {**data, "candidates": remaining})
+    with skill_repo_lock(skill_dir, use_git_write_limit=False):
+        data = _load_candidates_unlocked(skill_dir)
+        remaining = [
+            candidate
+            for candidate in data.get("candidates", []) or []
+            if candidate.get("atom_id") not in atom_ids
+        ]
+        _atomic_save_candidates_unlocked(
+            skill_dir,
+            {**data, "candidates": remaining},
+        )
+
+
+def move_atom_contribution(
+    source_skill_dir: Path,
+    target_skill_dir: Path,
+    atom_id: str,
+) -> int | None:
+    """Move one atom under canonical two-repository locking.
+
+    The target is saved first so an I/O failure cannot silently remove the
+    only durable copy from the source.
+    """
+    if source_skill_dir.resolve() == target_skill_dir.resolve():
+        raise ValueError("source and target skill directories must differ")
+    with skill_repo_locks(
+        (source_skill_dir, target_skill_dir),
+        use_git_write_limit=False,
+    ):
+        source_data = _load_candidates_unlocked(source_skill_dir)
+        target_atom = next(
+            (
+                candidate
+                for candidate in source_data.get("candidates", []) or []
+                if candidate.get("atom_id") == atom_id
+            ),
+            None,
+        )
+        if target_atom is None:
+            return None
+        source_remaining = [
+            candidate
+            for candidate in source_data.get("candidates", []) or []
+            if candidate.get("atom_id") != atom_id
+        ]
+        target_data = _load_candidates_unlocked(target_skill_dir)
+        weightscore = int(target_atom.get("weightscore", 0))
+        target_data, _ = add_atom_contribution(
+            target_data,
+            atom_id,
+            weightscore,
+            note=str(target_atom.get("note") or ""),
+        )
+        _atomic_save_candidates_unlocked(target_skill_dir, target_data)
+        _atomic_save_candidates_unlocked(
+            source_skill_dir,
+            {**source_data, "candidates": source_remaining},
+        )
+        return weightscore
 
 
 def find_atom_in_any_skill(skill_dir: Path, atom_id: str) -> str | None:
@@ -539,13 +722,16 @@ def promote_ready_candidates(skill_dir: Path, threshold: int = 3,
             (skill_dir / "SKILL.md").write_text(fm_serialize(fm, body), encoding="utf-8")
             logger.info("fell back to rule-based promotion for %s", skill_dir.name)
 
-    # Mark all as promoted
-    promoted = []
-    for cand in ready:
-        mark_promoted(data, cand.get("pattern", ""))
-        promoted.append(cand)
-
-    save_candidates(skill_dir, data)
+    # LLM 运行期间不能持仓库锁。完成后在锁内重新读取，避免覆盖并发新增项。
+    promoted = list(ready)
+    with skill_repo_lock(skill_dir, use_git_write_limit=False):
+        current_data = _load_candidates_unlocked(skill_dir)
+        for candidate in ready:
+            mark_promoted(
+                current_data,
+                candidate.get("pattern", ""),
+            )
+        _atomic_save_candidates_unlocked(skill_dir, current_data)
     logger.info("promoted %d candidate(s) in %s", len(promoted), skill_dir.name)
     return promoted
 
@@ -676,7 +862,7 @@ def _run_skill_edit_agent(skill_dir: Path, candidates: list[dict],
     # Run inside a daemon thread with wall-clock timeout. agno's Agent.run is
     # blocking and not cancellable, so on timeout we let the thread leak (it
     # dies with the process) and keep whatever the agent already wrote.
-    err_box: dict = {"err": None}
+    err_box: dict[str, BaseException | None] = {"err": None}
 
     def _runner():
         try:
@@ -693,8 +879,9 @@ def _run_skill_edit_agent(skill_dir: Path, candidates: list[dict],
             timeout_seconds, skill_dir.name,
         )
         return
-    if err_box["err"] is not None:
-        raise err_box["err"]
+    agent_error = err_box["err"]
+    if agent_error is not None:
+        raise agent_error
     logger.info("skill edit agent completed for %s", skill_dir.name)
 
 
@@ -708,44 +895,49 @@ def archive_stale(skill_dir: Path, days: int = 60, threshold: int = 3) -> list[d
     from ``.candidates.yml``. Returns the archived entries.
     """
     skill_dir = Path(skill_dir)
-    data = load_candidates(skill_dir)
-    stale = stale_candidates(data, days=days, threshold=threshold)
-    if not stale:
-        return []
+    with skill_repo_lock(skill_dir, use_git_write_limit=False):
+        data = _load_candidates_unlocked(skill_dir)
+        stale = stale_candidates(data, days=days, threshold=threshold)
+        if not stale:
+            return []
 
-    refs_dir = skill_dir / "references"
-    refs_dir.mkdir(parents=True, exist_ok=True)
-    stale_file = refs_dir / "stale_candidates.md"
+        refs_dir = skill_dir / "references"
+        refs_dir.mkdir(parents=True, exist_ok=True)
+        stale_file = refs_dir / "stale_candidates.md"
 
-    lines: list[str] = []
-    if stale_file.exists():
-        lines.append(stale_file.read_text(encoding="utf-8").rstrip())
+        lines: list[str] = []
+        if stale_file.exists():
+            lines.append(stale_file.read_text(encoding="utf-8").rstrip())
+            lines.append("")
+        else:
+            lines.append("# Stale Candidates")
+            lines.append("")
+            lines.append("Patterns that never gathered enough trajectory support.")
+            lines.append("")
+
+        today = date.today().isoformat()
+        lines.append(f"## Archived {today}")
         lines.append("")
-    else:
-        lines.append("# Stale Candidates")
+        for candidate in stale:
+            supporters = candidate.get("supporting_trajs", []) or []
+            lines.append(
+                f"- [{candidate.get('type', 'step')}] "
+                f"{candidate.get('pattern', '')} "
+                f"(first_seen={candidate.get('first_seen', '?')}, "
+                f"supporters={len(supporters)}: {', '.join(supporters)})"
+            )
         lines.append("")
-        lines.append("Patterns that never gathered enough trajectory support.")
-        lines.append("")
 
-    today = date.today().isoformat()
-    lines.append(f"## Archived {today}")
-    lines.append("")
-    for c in stale:
-        supporters = c.get("supporting_trajs", []) or []
-        lines.append(
-            f"- [{c.get('type', 'step')}] {c.get('pattern', '')} "
-            f"(first_seen={c.get('first_seen', '?')}, "
-            f"supporters={len(supporters)}: {', '.join(supporters)})"
-        )
-    lines.append("")
+        stale_file.write_text("\n".join(lines), encoding="utf-8")
 
-    stale_file.write_text("\n".join(lines), encoding="utf-8")
-
-    # Drop from candidates list
-    stale_patterns = [c.get("pattern", "") for c in stale]
-    data["candidates"] = [
-        c for c in data.get("candidates", [])
-        if not any(_fuzzy_equal(c.get("pattern", ""), sp) for sp in stale_patterns)
-    ]
-    save_candidates(skill_dir, data)
-    return stale
+        stale_candidate_ids = {
+            id(candidate)
+            for candidate in stale
+        }
+        data["candidates"] = [
+            candidate
+            for candidate in data.get("candidates", [])
+            if id(candidate) not in stale_candidate_ids
+        ]
+        _atomic_save_candidates_unlocked(skill_dir, data)
+        return stale

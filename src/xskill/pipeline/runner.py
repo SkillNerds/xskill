@@ -24,6 +24,7 @@ v2 (AtomTask) 流水线下，对一个 atom 的"cluster → 触发 SkillEdit"是
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import threading
 import time
@@ -94,10 +95,15 @@ class DirectoryWatcher:
                  skill_dir=None, poll_interval=30.0, max_concurrent=30,
                  max_retries=3, db_path=None,
                  store=None, agno_agent_factory=None, home_root=None,
+                 xskill_home=None, config_path=None,
+                 logs_dir=None,
+                 spill_root=None,
+                 usage_ledger=None,
                  server_mode=False, install_history_path=None,
                  on_poll_hook=None, cluster_batch_size=8):
         self.llm = llm
         self.embed_client = embed_client
+        self.usage_ledger = usage_ledger
         self.config = config or {}
         self.skill_dir = Path(skill_dir) if skill_dir else None
         # home_root：install_to_claude_code 的 target root。生产 daemon 不
@@ -109,16 +115,36 @@ class DirectoryWatcher:
         # push-edit → user-staging/<client_id> 分支）。只跑 agent 流水线
         # （split/cluster/SkillEdit/canary 判定）+ CS 归因打分。
         self.server_mode = bool(server_mode)
-        # install_history 路径可注入（测试用 tmp，生产回退 ~/.xskill/）。
+        # XSkill 自身状态根与 Agent 生态 home_root 是两类路径，不能混用。
         from xskill.config import XSKILL_HOME
+        xskill_state_root = (
+            Path(xskill_home)
+            if xskill_home is not None
+            else XSKILL_HOME
+        ).expanduser().resolve()
         self.install_history_path = (
             Path(install_history_path) if install_history_path
-            else XSKILL_HOME / "install_history.jsonl"
+            else xskill_state_root / "install_history.jsonl"
         )
         # 冷启动批量 flush：rebuild 写 COLD_START 文件后，watcher 等流水线空闲再
-        # 做一次 SkillEdit 扫描；没有该文件时不改变在线增量路径。
+        # 做一次 SkillEdit 扫描；这是 XSkill 状态，不能跟生态 home_root 混用。
         from xskill.pipeline.cold_start import ColdStartSignal
-        self._cold_start_signal = ColdStartSignal(self.home_root or XSKILL_HOME)
+        self._cold_start_signal = ColdStartSignal(xskill_state_root)
+        self.config_path = (
+            Path(config_path)
+            if config_path is not None
+            else xskill_state_root / "config.yaml"
+        ).expanduser().resolve()
+        self.logs_dir = (
+            Path(logs_dir)
+            if logs_dir is not None
+            else xskill_state_root / "logs"
+        ).expanduser().resolve()
+        self.spill_root = (
+            Path(spill_root)
+            if spill_root is not None
+            else xskill_state_root / "tmp" / "spill"
+        ).expanduser().resolve()
         self.poll_interval = poll_interval
         self.max_concurrent = max_concurrent
         self.max_retries = max_retries
@@ -212,7 +238,7 @@ class DirectoryWatcher:
 
     def _refresh_interests(self):
         """Hot-reload top-level interests without rebuilding LLM/embed clients."""
-        current_interests = read_interests_config()
+        current_interests = read_interests_config(self.config_path)
         current_interest_fingerprint = interests_fingerprint(current_interests)
         if current_interest_fingerprint == self.interest_fingerprint:
             return
@@ -401,25 +427,25 @@ class DirectoryWatcher:
             from xskill.pipeline.atom import MultiAtomTaskStore
             store = MultiAtomTaskStore(stores)
         traj_root = Path(stores[0].root)
-        # 初始化 AtomTask 工具上下文（SkillEditAgent 的 AtomTaskRead/ReadTraj 用）
+        # ContextVar 不会自动跨 ThreadPoolExecutor 传播。这里只构造不可变快照；
+        # 每个 worker 必须在自己的入口 bind，并在 finally 中 reset。
         from xskill.agents import agent_tools
-        agent_tools.init_atom_task_tool_context(
-            skill_dir=self.skill_dir, atom_store=store,
+        tool_context = agent_tools.create_agent_tool_context(
+            skill_dir=self.skill_dir,
+            data_dir=self.skill_dir,
+            config=self.config,
+            atom_skill_dir=self.skill_dir,
+            atom_store=store,
             default_traj_root=traj_root,
-        )
-        # 同时填 skill authoring 工具上下文；commit 前的 description 优化会在
-        # 确定性 workflow 内从 config 创建自己的 LLM/embed client。
-        agent_tools.init_skill_authoring_tool_context(
-            self.skill_dir, self.skill_dir, self.config,
+            spill_root=self.spill_root,
+            usage_ledger=self.usage_ledger,
         )
         # ── 跨技能并行写正文，且不阻塞扫描循环 ──
         # 每个 skill 文件夹是独立 git 仓（skill/git.py 各自 git init），仓锁
         # _repo_lock_for(repo_dir) 是 per-skill 的 → 不同技能 = 不同锁 = 零冲突，
-        # 跨技能并发安全。agent_tools 的配置单例在循环外已用同一个 skill
-        # 根目录初始化好，且只读共享根——maybe_run 期间不再改写它们；write_file /
-        # commit_baby_to_main / commit_to_staging / skill_read 都按 skill_name
-        # 实参解析目标子目录（target = skill_dir / slug），不依赖任何 per-skill
-        # 全局态。因此把每个技能的 maybe_run() 丢进线程池并发跑是安全的。
+        # 跨技能并发安全。每个 future 显式绑定自己的不可变 AgentToolContext；
+        # write_file / commit_baby_to_main / commit_to_staging / skill_read 都从
+        # 当前 task context 取根目录，不共享进程级可变路径。
         #
         # 不在这里 as_completed 等待：SkillEditAgent 现在支持多轮渐进式消化，
         # 单个 skill 的 maybe_run() 可能跑到小时级（buffer 攒了几十上百批候选
@@ -441,19 +467,21 @@ class DirectoryWatcher:
         def _run_one(d):
             """在 pool 工作线程里跑单个 skill 的 maybe_run；返回 (d, promoted)。
             异常吞在这里 log，不抛回 future 以免中断整批收集。"""
-            editor = SkillEditAgent(
-                skill_dir=d, store=store,
-                agno_agent_factory=factory,
-                llm_cfg=self.config.get("llm", {}),
-                traj_root=traj_root,
-                jam_threshold=jam_threshold,
-                **({} if threshold is None else {"threshold": threshold}),
-            )
-            try:
-                return d, bool(editor.maybe_run())
-            except Exception:
-                logger.exception("SkillEditAgent failed: %s", d.name)
-                return d, False
+            with agent_tools.use_agent_tool_context(tool_context):
+                editor = SkillEditAgent(
+                    skill_dir=d, store=store,
+                    agno_agent_factory=factory,
+                    llm_cfg=self.config.get("llm", {}),
+                    traj_root=traj_root,
+                    logs_dir=self.logs_dir,
+                    jam_threshold=jam_threshold,
+                    **({} if threshold is None else {"threshold": threshold}),
+                )
+                try:
+                    return d, bool(editor.maybe_run())
+                except Exception:
+                    logger.exception("SkillEditAgent failed: %s", d.name)
+                    return d, False
 
         skill_edit_in_flight = {
             info.get("skill_dir") for info in self._futures.values()
@@ -518,7 +546,12 @@ class DirectoryWatcher:
         from xskill.api import app as _srv
         return _srv._home_root() if hasattr(_srv, "_home_root") else None
 
-    def _install_skill_to_all_detected(self, skill_path):
+    def _install_skill_to_all_detected(
+        self,
+        skill_path,
+        *,
+        excluded_ecosystems: set[str] | None = None,
+    ):
         """把该 skill 装到**当前 detected 的所有 agent 生态**。
 
         每次调用实时跑 ``detect_known_ecosystems`` 决定要装哪些 agent
@@ -572,11 +605,16 @@ class DirectoryWatcher:
 
         results: dict = {}
         any_ok = False
+        excluded = excluded_ecosystems or set()
+        attempted_count = 0
         for det in detections:
             agent = det["ecosystem"]
+            if agent in excluded:
+                continue
             installer = installer_by_ecosystem.get(agent)
             if installer is None:
                 continue
+            attempted_count += 1
             try:
                 dest = installer(skill_path, target_root=target_root, side="main")
                 results[agent] = dest
@@ -596,15 +634,16 @@ class DirectoryWatcher:
                 "_install_skill_to_all_detected(%s): no agent detected under %s",
                 skill_path.name, detect_root,
             )
-        elif not any_ok:
+        elif attempted_count and not any_ok:
             logger.warning(
-                "_install_skill_to_all_detected(%s): all %d detected agent(s) failed to install",
-                skill_path.name, len(detections),
+                "_install_skill_to_all_detected(%s): all %d attempted agent(s) failed",
+                skill_path.name,
+                attempted_count,
             )
         return results
 
     def _record_install_fail(self, *, skill: str, agent: str, reason: str) -> None:
-        """把一条 install 失败写到 ``~/.xskill/install_history.jsonl``。
+        """把一条 install 失败写到当前 XSkill 实例的 install_history。
 
         失败记录走 ``InstallHistory.record_fail``（带 ``action="fail"``
         字段），与成功 install 记录在同一文件，不分两份避免 source 熵增。
@@ -613,9 +652,7 @@ class DirectoryWatcher:
         """
         try:
             from xskill.ecosystems._history import InstallHistory
-            from xskill.config import XSKILL_HOME
-            history_path = XSKILL_HOME / "install_history.jsonl"
-            InstallHistory(history_path).record_fail(
+            InstallHistory(self.install_history_path).record_fail(
                 skill=skill, agent=agent, reason=reason,
             )
         except Exception:
@@ -643,10 +680,23 @@ class DirectoryWatcher:
         if self.skill_dir is None or not self.skill_dir.is_dir():
             return
         from xskill.agents.user_edit_absorb_agent import (
-            UserEditAbsorbAgent, detect_user_edits, reverse_sync_openclaw_dest,
+            ReverseSyncStatus,
+            UserEditAbsorbAgent,
+            detect_user_edits,
+            reverse_sync_openclaw_dest,
         )
+        from xskill.agents import agent_tools
         target_root = self._resolve_target_root()
         factory = self._factory()
+        tool_context = agent_tools.create_agent_tool_context(
+            skill_dir=self.skill_dir,
+            data_dir=self.skill_dir,
+            config=self.config,
+            atom_skill_dir=self.skill_dir,
+            default_traj_root=self.skill_dir,
+            spill_root=self.spill_root,
+            usage_ledger=self.usage_ledger,
+        )
         for d in sorted(self.skill_dir.iterdir()):
             if not d.is_dir() or d.name.startswith("."):
                 continue
@@ -656,16 +706,60 @@ class DirectoryWatcher:
                 # 下面 detect_user_edits 会立刻看到 pending edit。
                 if target_root is not None:
                     dest_dir = target_root / ".agents" / "skills" / d.name
-                    reverse_sync_openclaw_dest(dest_dir, d)
+                    try:
+                        reverse_status = reverse_sync_openclaw_dest(
+                            dest_dir, d,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "openclaw reverse sync stopped skill_id_hash=%s "
+                            "error_type=REVERSE_SYNC_UNEXPECTED",
+                            hashlib.sha256(
+                                d.name.encode("utf-8"),
+                            ).hexdigest()[:12],
+                        )
+                        continue
+                    if reverse_status in {
+                        ReverseSyncStatus.RECENT_EDIT,
+                        ReverseSyncStatus.FAILED,
+                    }:
+                        logger.warning(
+                            "openclaw reverse sync stopped "
+                            "skill_id_hash=%s error_type=%s",
+                            hashlib.sha256(
+                                d.name.encode("utf-8"),
+                            ).hexdigest()[:12],
+                            (
+                                "REVERSE_SYNC_RECENT_EDIT"
+                                if reverse_status
+                                == ReverseSyncStatus.RECENT_EDIT
+                                else "REVERSE_SYNC_FAILED"
+                            ),
+                        )
+                        continue
+                    if reverse_status not in {
+                        ReverseSyncStatus.NO_EDIT,
+                        ReverseSyncStatus.SYNCED,
+                    }:
+                        logger.warning(
+                            "openclaw reverse sync stopped "
+                            "skill_id_hash=%s "
+                            "error_type=REVERSE_SYNC_INVALID_STATUS",
+                            hashlib.sha256(
+                                d.name.encode("utf-8"),
+                            ).hexdigest()[:12],
+                        )
+                        continue
 
                 if not detect_user_edits(d):
                     continue
                 logger.info("user edit detected (stable for 3+ min): %s", d.name)
-                ok = UserEditAbsorbAgent(
-                    skill_dir=d,
-                    agno_agent_factory=factory,
-                    llm_cfg=self.config.get("llm", {}),
-                ).run()
+                with agent_tools.use_agent_tool_context(tool_context):
+                    ok = UserEditAbsorbAgent(
+                        skill_dir=d,
+                        agno_agent_factory=factory,
+                        llm_cfg=self.config.get("llm", {}),
+                    ).run()
                 if ok:
                     self._install_skill_to_all_detected(d)
             except Exception:
@@ -680,7 +774,17 @@ class DirectoryWatcher:
         """
         if self.skill_dir is None or not self.skill_dir.is_dir():
             return
-        from xskill.canary import AtomCanary, CanaryConfig, eligible_models
+        from xskill.canary import (
+            AtomCanary,
+            CanaryConfig,
+            canary_generation,
+            eligible_models,
+        )
+        from xskill.ecosystems._history import (
+            InstallDecisionContext,
+            InstallDecisionCancelled,
+            InstallPlan,
+        )
         from xskill.pipeline.registry import model_share
         from xskill.skill.git import run_git
         canary_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
@@ -689,6 +793,19 @@ class DirectoryWatcher:
         # 不让纯 unknown 部署的灰度永远卡住。
         weights = eligible_models(model_share(**self._db_kw()),
                                   canary_cfg.scope_top_n) or None
+        history = self._install_history()
+        target_root = self._resolve_target_root()
+        claude_code_detected = (
+            not self.server_mode
+            and self.home_root is not None
+            and target_root is not None
+            and (target_root / ".claude").is_dir()
+        )
+        target = (
+            "claude_code"
+            if claude_code_detected
+            else "canary_state" if self.server_mode else "working_tree"
+        )
         for d in sorted(self.skill_dir.iterdir()):
             if not d.is_dir() or d.name.startswith("."):
                 continue
@@ -696,19 +813,629 @@ class DirectoryWatcher:
                 continue
             code, _, _ = run_git(["rev-parse", "--verify", "staging"], cwd=str(d))
             if code != 0:
+                if history.has_pending_recovery(d.name, target):
+                    try:
+                        self._recover_terminal_transaction(
+                            history=history,
+                            skill_path=d,
+                            target=target,
+                            target_root=target_root,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "terminal transaction recovery failed: %s",
+                            d.name,
+                        )
                 continue  # 无 staging，跳过
             try:
-                decision = AtomCanary(skill_dir=d).check_and_decide(
-                    config=canary_cfg, weights=weights)
+                expected_generation = canary_generation(d)
+
+                def read_generation(*, skill_path=d) -> str:
+                    current_generation = canary_generation(skill_path)
+                    recovery = history._read_recovery(
+                        skill_path.name,
+                        target,
+                    )
+                    if recovery is None or recovery.get("state") not in (
+                        "applying",
+                        "applied",
+                    ):
+                        return current_generation
+                    terminal_records = [
+                        record
+                        for record in recovery["records"]
+                        if record.get("action") == "terminal_decision"
+                    ]
+                    expected = recovery["expected"]
+                    if (
+                        len(terminal_records) == 1
+                        and terminal_records[0].get("terminal_action")
+                        == "promoted"
+                        and expected.get("sha")
+                        and current_generation
+                        == f"{expected['sha']}:{expected['sha']}"
+                    ):
+                        return recovery["source_generation"]
+                    return current_generation
+
+                def decide_terminal(
+                    context: InstallDecisionContext,
+                    _pending_ids: tuple[str, ...],
+                    *,
+                    skill_path=d,
+                    source_generation=expected_generation,
+                    decision_target=target,
+                    installation_root=target_root,
+                ) -> InstallPlan:
+                    decision = AtomCanary(
+                        skill_dir=skill_path,
+                    ).plan_decision(
+                        config=canary_cfg,
+                        weights=weights,
+                    )
+                    action = decision.get("action", "")
+                    if action not in (
+                        "promoted",
+                        "rejected",
+                        "timeout_discarded",
+                    ):
+                        return InstallPlan(value=decision)
+                    planned_main_sha = str(
+                        decision.get("main_sha", "")
+                    )
+                    planned_staging_sha = str(
+                        decision.get("staging_sha", "")
+                    )
+                    if (
+                        not planned_main_sha
+                        or not planned_staging_sha
+                        or (
+                            f"{planned_main_sha}:"
+                            f"{planned_staging_sha}"
+                        ) != source_generation
+                    ):
+                        raise InstallDecisionCancelled(
+                            "canary generation changed while planning terminal "
+                            f"decision for {skill_path.name!r}"
+                        )
+                    if action == "promoted":
+                        from dulwich.graph import find_merge_base
+                        from dulwich.repo import Repo
+                        with Repo(str(skill_path)) as repository:
+                            merge_bases = find_merge_base(
+                                repository,
+                                [
+                                    planned_main_sha.encode("ascii"),
+                                    planned_staging_sha.encode("ascii"),
+                                ],
+                            )
+                        if (
+                            planned_main_sha.encode("ascii")
+                            not in merge_bases
+                        ):
+                            return InstallPlan(value={
+                                **decision,
+                                "action": "merge_failed",
+                                "attempted_action": action,
+                            })
+                        expected_main_sha = planned_staging_sha
+                    else:
+                        expected_main_sha = planned_main_sha
+                    expected_terminal_generation = (
+                        f"{expected_main_sha}:"
+                    )
+                    records = [{
+                        "action": "terminal_decision",
+                        "terminal_action": action,
+                        "source_generation": context.current_generation or "",
+                        "generation": expected_terminal_generation,
+                        "decision_ids": [
+                            f"terminal:{source_generation}",
+                        ],
+                        "decision": decision,
+                    }]
+
+                    def apply_terminal_state() -> None:
+                        self._apply_terminal_state(
+                            skill_path=skill_path,
+                            decision=decision,
+                            source_generation=source_generation,
+                            expected_main_sha=expected_main_sha,
+                            expected_generation=(
+                                expected_terminal_generation
+                            ),
+                            target=decision_target,
+                            target_root=installation_root,
+                        )
+
+                    return InstallPlan(
+                        side="main",
+                        sha=expected_main_sha,
+                        generation=expected_terminal_generation,
+                        records=records,
+                        apply=apply_terminal_state,
+                        value=decision,
+                    )
+
+                def read_terminal_state(
+                    *,
+                    skill_path=d,
+                ) -> tuple[str, str, str]:
+                    return self._terminal_installed_state(
+                        skill_path=skill_path,
+                        target=target,
+                        target_root=target_root,
+                    )
+
+                def recover_terminal_state(
+                    recovery: dict,
+                    *,
+                    skill_path=d,
+                ) -> None:
+                    self._apply_terminal_recovery(
+                        recovery=recovery,
+                        skill_path=skill_path,
+                        target=target,
+                        target_root=target_root,
+                    )
+
+                recovery_telemetry = (
+                    self._terminal_recovery_telemetry_candidate(
+                        history=history,
+                        skill=d.name,
+                        target=target,
+                    )
+                )
+                outcome = history.transact(
+                    skill=d.name,
+                    target=target,
+                    decision_ids=(f"terminal:{expected_generation}",),
+                    operation=decide_terminal,
+                    expected_generation=expected_generation,
+                    generation_reader=read_generation,
+                    installed_state_reader=read_terminal_state,
+                    recovery_operation=recover_terminal_state,
+                )
+                decision = outcome.value or {}
                 action = decision.get("action", "")
+                self._record_committed_terminal_telemetry(
+                    history=history,
+                    skill_path=d,
+                    target=target,
+                    outcome_records=outcome.records,
+                    recovery_candidate=recovery_telemetry,
+                )
                 if action in ("promoted", "rejected", "timeout_discarded"):
                     logger.info("canary decision %s: %s — %s",
                                 d.name, action, decision)
-                    # promote 成功 → 重新 install symlink (内容已变)
-                    if action == "promoted":
-                        self._install_skill_to_all_detected(d)
             except Exception:
                 logger.exception("check_and_decide failed: %s", d.name)
+
+    @staticmethod
+    def _terminal_recovery_telemetry_candidate(
+        *,
+        history,
+        skill: str,
+        target: str,
+    ) -> tuple[str, dict] | None:
+        """读取 applying/applied journal 中尚未确认提交的终态遥测。"""
+        recovery = history._read_recovery(skill, target)
+        if recovery is None or recovery.get("state") not in (
+            "applying",
+            "applied",
+        ):
+            return None
+        terminal_records = [
+            record
+            for record in recovery["records"]
+            if record.get("action") == "terminal_decision"
+        ]
+        if len(terminal_records) != 1:
+            return None
+        terminal_record = terminal_records[0]
+        record_id = terminal_record.get("record_id")
+        decision = terminal_record.get("decision")
+        if not isinstance(record_id, str) or not isinstance(decision, dict):
+            return None
+        return record_id, decision
+
+    @staticmethod
+    def _record_committed_terminal_telemetry(
+        *,
+        history,
+        skill_path: Path,
+        target: str,
+        outcome_records,
+        recovery_candidate: tuple[str, dict] | None,
+    ) -> None:
+        """仅在 terminal receipt 已提交后记录一次裁决遥测。"""
+        decision = None
+        for record in outcome_records:
+            if record.get("action") == "terminal_decision":
+                candidate = record.get("decision")
+                if isinstance(candidate, dict):
+                    decision = candidate
+                    break
+        if decision is None and recovery_candidate is not None:
+            record_id, candidate = recovery_candidate
+            if (
+                not history.has_pending_recovery(skill_path.name, target)
+                and record_id in history.index().record_ids
+            ):
+                decision = candidate
+        if decision is None:
+            return
+        from xskill.canary import record_decision_telemetry
+        record_decision_telemetry(skill_path, decision)
+
+    def _recover_terminal_transaction(
+        self,
+        *,
+        history,
+        skill_path: Path,
+        target: str,
+        target_root: Path | None,
+    ) -> None:
+        """staging 已删除后仍按 journal 补齐 terminal/安装 receipts。"""
+        from xskill.canary import canary_generation
+        from xskill.ecosystems._history import InstallPlan
+
+        def no_new_plan(_context, _pending_ids) -> InstallPlan | None:
+            return None
+
+        def read_generation() -> str:
+            return canary_generation(skill_path)
+
+        def read_terminal_state() -> tuple[str, str, str]:
+            return self._terminal_installed_state(
+                skill_path=skill_path,
+                target=target,
+                target_root=target_root,
+            )
+
+        def recover_terminal_state(recovery: dict) -> None:
+            self._apply_terminal_recovery(
+                recovery=recovery,
+                skill_path=skill_path,
+                target=target,
+                target_root=target_root,
+            )
+
+        recovery_telemetry = self._terminal_recovery_telemetry_candidate(
+            history=history,
+            skill=skill_path.name,
+            target=target,
+        )
+        outcome = history.transact(
+            skill=skill_path.name,
+            target=target,
+            decision_ids=(f"recovery-probe:{skill_path.name}",),
+            operation=no_new_plan,
+            generation_reader=read_generation,
+            invoke_when_consumed=True,
+            installed_state_reader=read_terminal_state,
+            recovery_operation=recover_terminal_state,
+        )
+        self._record_committed_terminal_telemetry(
+            history=history,
+            skill_path=skill_path,
+            target=target,
+            outcome_records=outcome.records,
+            recovery_candidate=recovery_telemetry,
+        )
+
+    @staticmethod
+    def _terminal_marker_path(skill_path: Path) -> Path:
+        return skill_path / ".git" / "xskill-terminal-generation"
+
+    def _terminal_installed_state(
+        self,
+        *,
+        skill_path: Path,
+        target: str,
+        target_root: Path | None,
+    ) -> tuple[str, str, str]:
+        """终态 Git、主目标和全生态完成标记的可恢复联合状态。"""
+        from xskill.canary import (
+            canary_generation,
+            has_staging,
+            main_sha,
+            staging_sha,
+        )
+        from xskill.ecosystems.claude_code import (
+            claude_code_installed_state,
+        )
+
+        if target == "claude_code":
+            if target_root is None:
+                raise RuntimeError(
+                    "Claude Code terminal state requires target root"
+                )
+            physical_state = claude_code_installed_state(
+                skill_path,
+                target_root=target_root,
+            )
+        elif target == "working_tree":
+            physical_state = self._working_tree_installed_state(skill_path)
+        elif target == "canary_state":
+            generation = canary_generation(skill_path)
+            if has_staging(skill_path):
+                side = "staging"
+                commit_sha = staging_sha(skill_path) or ""
+            else:
+                side = "main"
+                commit_sha = main_sha(skill_path) or ""
+            if not commit_sha:
+                raise RuntimeError(
+                    f"terminal Git state has no commit for {skill_path.name!r}"
+                )
+            physical_state = (side, commit_sha, generation)
+        else:
+            raise RuntimeError(f"unknown terminal target: {target!r}")
+        marker_path = self._terminal_marker_path(skill_path)
+        try:
+            marked_generation = marker_path.read_text(
+                encoding="ascii",
+            ).strip()
+        except FileNotFoundError:
+            marked_generation = ""
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"terminal completion marker is unreadable for "
+                f"{skill_path.name!r}"
+            ) from exc
+        if marked_generation != physical_state[2]:
+            return (physical_state[0], physical_state[1], "")
+        return physical_state
+
+    def _apply_terminal_recovery(
+        self,
+        *,
+        recovery: dict,
+        skill_path: Path,
+        target: str,
+        target_root: Path | None,
+    ) -> None:
+        """按 terminal journal 幂等重放 Git 终态及所有已检测生态安装。"""
+        terminal_records = [
+            record
+            for record in recovery["records"]
+            if record.get("action") == "terminal_decision"
+        ]
+        if len(terminal_records) != 1:
+            raise RuntimeError(
+                "terminal recovery requires exactly one decision record"
+            )
+        terminal_record = terminal_records[0]
+        decision = terminal_record.get("decision")
+        source_generation = terminal_record.get("source_generation")
+        expected = recovery["expected"]
+        if (
+            not isinstance(decision, dict)
+            or decision.get("action") not in (
+                "promoted",
+                "rejected",
+                "timeout_discarded",
+            )
+            or not isinstance(source_generation, str)
+            or not source_generation
+            or expected.get("side") != "main"
+            or not isinstance(expected.get("sha"), str)
+            or not expected["sha"]
+            or not isinstance(expected.get("generation"), str)
+            or expected["generation"] != f"{expected['sha']}:"
+        ):
+            raise RuntimeError("invalid terminal recovery decision")
+        self._apply_terminal_state(
+            skill_path=skill_path,
+            decision=decision,
+            source_generation=source_generation,
+            expected_main_sha=expected["sha"],
+            expected_generation=expected["generation"],
+            target=target,
+            target_root=target_root,
+        )
+
+    def _apply_terminal_state(
+        self,
+        *,
+        skill_path: Path,
+        decision: dict,
+        source_generation: str,
+        expected_main_sha: str,
+        expected_generation: str,
+        target: str,
+        target_root: Path | None,
+    ) -> None:
+        """journal 已进入 applying 后，幂等应用终态并最后写完成标记。"""
+        from xskill.canary import (
+            apply_decision,
+            canary_generation,
+            has_staging,
+            main_sha,
+            staging_sha,
+        )
+        from xskill.ecosystems.claude_code import install_to_claude_code
+        from xskill.skill.git import skill_repo_lock
+        import shutil
+
+        action = decision.get("action", "")
+        if action not in ("promoted", "rejected", "timeout_discarded"):
+            raise RuntimeError(f"invalid terminal action: {action!r}")
+        with skill_repo_lock(skill_path):
+            current_main_sha = main_sha(skill_path) or ""
+            current_staging_sha = staging_sha(skill_path) or ""
+            if current_staging_sha:
+                current_generation = (
+                    f"{current_main_sha}:{current_staging_sha}"
+                )
+                promotion_partially_applied = (
+                    action == "promoted"
+                    and current_main_sha == expected_main_sha
+                    and current_staging_sha == expected_main_sha
+                )
+                if (
+                    current_generation != source_generation
+                    and not promotion_partially_applied
+                ):
+                    raise RuntimeError(
+                        "terminal Git generation changed before apply for "
+                        f"{skill_path.name!r}"
+                    )
+                applied_decision = apply_decision(
+                    skill_path,
+                    decision,
+                    record_telemetry=False,
+                )
+                if applied_decision.get("action") != action:
+                    raise RuntimeError(
+                        "terminal Git action failed for "
+                        f"{skill_path.name!r}: "
+                        f"{applied_decision.get('action', '')}"
+                    )
+            elif current_main_sha != expected_main_sha:
+                raise RuntimeError(
+                    "terminal Git main does not match journal for "
+                    f"{skill_path.name!r}"
+                )
+            if (
+                has_staging(skill_path)
+                or main_sha(skill_path) != expected_main_sha
+                or canary_generation(skill_path) != expected_generation
+            ):
+                raise RuntimeError(
+                    f"terminal Git state did not converge for "
+                    f"{skill_path.name!r}"
+                )
+            canary_copy = (
+                skill_path.parent
+                / ".canary"
+                / skill_path.name
+            )
+            if canary_copy.is_symlink() or (
+                canary_copy.exists() and not canary_copy.is_dir()
+            ):
+                raise RuntimeError(
+                    f"terminal canary copy is unsafe for "
+                    f"{skill_path.name!r}"
+                )
+            if canary_copy.is_dir():
+                shutil.rmtree(canary_copy)
+            if target == "working_tree":
+                (
+                    skill_path
+                    / ".git"
+                    / "xskill-active-side"
+                ).write_text("main", encoding="ascii")
+            if target == "claude_code":
+                if target_root is None:
+                    raise RuntimeError(
+                        "Claude Code terminal apply requires target root"
+                    )
+                install_to_claude_code(
+                    skill_path,
+                    target_root=target_root,
+                    side="main",
+                )
+            install_results = self._install_skill_to_all_detected(
+                skill_path,
+                excluded_ecosystems=(
+                    {"claude_code"} if target == "claude_code" else None
+                ),
+            )
+            failed_ecosystems = sorted(
+                ecosystem
+                for ecosystem, result in install_results.items()
+                if isinstance(result, Exception)
+            )
+            if failed_ecosystems:
+                raise RuntimeError(
+                    "terminal ecosystem install failed for "
+                    f"{skill_path.name!r}: "
+                    f"{','.join(failed_ecosystems)}"
+                )
+            if (
+                has_staging(skill_path)
+                or main_sha(skill_path) != expected_main_sha
+                or canary_generation(skill_path) != expected_generation
+            ):
+                raise RuntimeError(
+                    "terminal Git state changed during ecosystem install for "
+                    f"{skill_path.name!r}"
+                )
+            if canary_copy.is_symlink() or canary_copy.exists():
+                raise RuntimeError(
+                    "terminal canary copy reappeared during ecosystem install "
+                    f"for {skill_path.name!r}"
+                )
+            self._terminal_marker_path(skill_path).write_text(
+                expected_generation,
+                encoding="ascii",
+            )
+
+    @staticmethod
+    def _working_tree_installed_state(
+        skill_path: Path,
+    ) -> tuple[str, str, str]:
+        """读取工作树 SHA 与显式 side marker，二者共同构成物理状态。"""
+        from xskill.canary import canary_generation
+        from xskill.skill.git import run_git
+
+        code, current_sha, error = run_git(
+            ["rev-parse", "HEAD"],
+            cwd=str(skill_path),
+        )
+        if code != 0 or not current_sha:
+            raise RuntimeError(
+                "cannot read working-tree install state for "
+                f"{skill_path.name!r}: {error}"
+            )
+        marker_path = skill_path / ".git" / "xskill-active-side"
+        try:
+            active_side = marker_path.read_text(
+                encoding="ascii"
+            ).strip()
+        except OSError as exc:
+            raise RuntimeError(
+                "working-tree side marker is unavailable for "
+                f"{skill_path.name!r}"
+            ) from exc
+        if active_side not in ("main", "staging"):
+            raise RuntimeError(
+                f"invalid working-tree side marker: {active_side!r}"
+            )
+        return (
+            active_side,
+            current_sha.strip(),
+            canary_generation(skill_path),
+        )
+
+    @staticmethod
+    def _recover_working_tree_install(
+        *,
+        history,
+        skill_path: Path,
+        recovery: dict,
+    ) -> None:
+        """把工作树精确恢复到 journal 的 side/SHA 并更新 side marker。"""
+        from xskill.team.shared.reconcile import reconcile_skill_side
+
+        expected = recovery["expected"]
+        result = reconcile_skill_side(
+            repo_dir=skill_path,
+            target_side=expected["side"],
+            target_sha=expected["sha"],
+            history=history,
+            on_changed=None,
+            record_history=False,
+        )
+        if result not in ("already_aligned", "checked_out"):
+            raise RuntimeError(
+                f"working-tree recovery failed with result {result!r}"
+            )
+        (
+            skill_path / ".git" / "xskill-active-side"
+        ).write_text(expected["side"], encoding="ascii")
 
     def _install_history(self):
         from xskill.ecosystems._history import InstallHistory
@@ -733,8 +1460,27 @@ class DirectoryWatcher:
         if self.skill_dir is None or not self.skill_dir.is_dir():
             return
         from xskill.canary import (
-            CanaryConfig, has_staging, main_sha, pick_side, staging_sha,
+            CanaryConfig,
+            canary_generation,
+            has_staging,
+            main_sha,
+            pick_side,
+            staging_sha,
         )
+        from xskill.agents.user_edit_absorb_agent import has_pending_user_edit
+        from xskill.ecosystems._history import (
+            InstallDecisionCancelled,
+            InstallDecisionContext,
+            InstallPlan,
+            InstallTransactionRequest,
+        )
+        from xskill.ecosystems.claude_code import (
+            claude_code_installed_state,
+            claude_code_install_is_current,
+            install_to_claude_code,
+            recover_claude_code_install,
+        )
+        from xskill.skill.git import run_git
         from xskill.team.shared.reconcile import reconcile_skill_side
 
         canary_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
@@ -752,6 +1498,13 @@ class DirectoryWatcher:
         # 时间窗 id：同一窗口内同一 skill 的伪随机决定一致，跨窗口重新掷。
         window_id = int(now // rotate_interval) if rotate_interval > 0 else 0
         history = self._install_history()
+        target_root = self._resolve_target_root()
+        claude_code_detected = (
+            self.home_root is not None
+            and target_root is not None
+            and (target_root / ".claude").is_dir()
+        )
+        transaction_requests: list[InstallTransactionRequest] = []
 
         for d in sorted(self.skill_dir.iterdir()):
             if not d.is_dir() or d.name.startswith("."):
@@ -760,16 +1513,273 @@ class DirectoryWatcher:
                 continue
             if not has_staging(d):
                 continue
-            # 步骤 1：时间窗伪随机定 target side（单机 bucket = window_id）
-            side = pick_side(str(window_id), d.name, canary_cfg.probability)
-            target_sha = staging_sha(d) if side == "staging" else main_sha(d)
-            if not target_sha:
+            decision_id = f"window:{window_id}"
+            expected_generation = canary_generation(d)
+
+            def read_generation(
+                *,
+                skill_path=d,
+            ) -> str:
+                return canary_generation(skill_path)
+
+            if claude_code_detected:
+                def apply_claude_code_rotation(
+                    context: InstallDecisionContext,
+                    pending_ids: tuple[str, ...],
+                    *,
+                    skill_path=d,
+                ) -> InstallPlan | None:
+                    if has_pending_user_edit(skill_path):
+                        return None
+                    selected_side = pick_side(
+                        str(window_id),
+                        skill_path.name,
+                        canary_cfg.probability,
+                    )
+                    selected_sha = (
+                        staging_sha(skill_path)
+                        if selected_side == "staging"
+                        else main_sha(skill_path)
+                    )
+                    if not selected_sha:
+                        return None
+                    if (
+                        selected_side == "staging"
+                        and not (
+                            skill_path.parent
+                            / ".canary"
+                            / skill_path.name
+                            / "SKILL.md"
+                        ).is_file()
+                    ):
+                        return None
+                    needs_install = not claude_code_install_is_current(
+                        skill_path,
+                        target_root=target_root,
+                        side=selected_side,
+                    )
+
+                    def install_selected_side() -> None:
+                        install_to_claude_code(
+                            skill_path,
+                            target_root=target_root,
+                            side=selected_side,
+                        )
+
+                    previous_side = (
+                        context.latest.get("side")
+                        if context.latest is not None
+                        else None
+                    )
+
+                    def restore_previous_side() -> None:
+                        if previous_side not in ("main", "staging"):
+                            raise RuntimeError("previous side is unknown")
+                        install_to_claude_code(
+                            skill_path,
+                            target_root=target_root,
+                            side=previous_side,
+                        )
+
+                    return InstallPlan(
+                        side=selected_side,
+                        sha=selected_sha,
+                        generation=context.current_generation or "",
+                        install_decision_ids=pending_ids,
+                        apply=install_selected_side if needs_install else None,
+                        rollback=(
+                            restore_previous_side
+                            if needs_install and previous_side is not None
+                            else None
+                        ),
+                    )
+
+                def read_claude_code_state(
+                    *,
+                    skill_path=d,
+                ) -> tuple[str, str, str]:
+                    return claude_code_installed_state(
+                        skill_path,
+                        target_root=target_root,
+                    )
+
+                def recover_claude_code_target(
+                    recovery: dict,
+                    *,
+                    skill_path=d,
+                ) -> None:
+                    recover_claude_code_install(
+                        recovery,
+                        skill_path=skill_path,
+                        target_root=target_root,
+                    )
+
+                transaction_requests.append(InstallTransactionRequest(
+                    skill=d.name,
+                    target="claude_code",
+                    decision_ids=(decision_id,),
+                    operation=apply_claude_code_rotation,
+                    decision_kind="window",
+                    decision_sequence=window_id,
+                    expected_generation=expected_generation,
+                    generation_reader=read_generation,
+                    installed_state_reader=read_claude_code_state,
+                    recovery_operation=recover_claude_code_target,
+                ))
                 continue
-            # 步骤 2/3/4：共享调谐助手
-            reconcile_skill_side(
-                repo_dir=d, target_side=side, target_sha=target_sha,
-                history=history, on_changed=None,
-            )
+
+            def apply_working_tree_rotation(
+                context: InstallDecisionContext,
+                pending_ids: tuple[str, ...],
+                *,
+                skill_path=d,
+            ) -> InstallPlan | None:
+                if has_pending_user_edit(skill_path):
+                    return None
+                selected_side = pick_side(
+                    str(window_id),
+                    skill_path.name,
+                    canary_cfg.probability,
+                )
+                selected_sha = (
+                    staging_sha(skill_path)
+                    if selected_side == "staging"
+                    else main_sha(skill_path)
+                )
+                if not selected_sha:
+                    return None
+                code, previous_sha, _error = run_git(
+                    ["rev-parse", "HEAD"],
+                    cwd=str(skill_path),
+                )
+                if code != 0 or not previous_sha:
+                    raise RuntimeError(
+                        f"cannot read current HEAD for {skill_path.name!r}"
+                    )
+                previous_side = (
+                    context.latest.get("side")
+                    if context.latest is not None
+                    else "main"
+                )
+
+                def reconcile_selected_side() -> None:
+                    result = reconcile_skill_side(
+                        repo_dir=skill_path,
+                        target_side=selected_side,
+                        target_sha=selected_sha,
+                        history=history,
+                        on_changed=None,
+                        record_history=False,
+                    )
+                    if result == "skipped_user_edit":
+                        raise InstallDecisionCancelled(
+                            "user edit appeared during reconcile"
+                        )
+                    if result not in ("already_aligned", "checked_out"):
+                        raise RuntimeError(
+                            f"reconcile failed with result {result!r}"
+                        )
+                    (
+                        skill_path / ".git" / "xskill-active-side"
+                    ).write_text(selected_side, encoding="ascii")
+
+                def restore_previous_head() -> None:
+                    result = reconcile_skill_side(
+                        repo_dir=skill_path,
+                        target_side=previous_side,
+                        target_sha=previous_sha.strip(),
+                        history=history,
+                        on_changed=None,
+                        record_history=False,
+                    )
+                    if result not in ("already_aligned", "checked_out"):
+                        raise RuntimeError(
+                            f"rollback reconcile failed with result {result!r}"
+                        )
+                    (
+                        skill_path / ".git" / "xskill-active-side"
+                    ).write_text(previous_side, encoding="ascii")
+
+                return InstallPlan(
+                    side=selected_side,
+                    sha=selected_sha,
+                    generation=context.current_generation or "",
+                    install_decision_ids=pending_ids,
+                    apply=reconcile_selected_side,
+                    rollback=restore_previous_head,
+                )
+
+            def read_working_tree_state(
+                *,
+                skill_path=d,
+            ) -> tuple[str, str, str]:
+                code, current_sha, error = run_git(
+                    ["rev-parse", "HEAD"],
+                    cwd=str(skill_path),
+                )
+                if code != 0 or not current_sha:
+                    raise RuntimeError(
+                        "cannot read working-tree install state for "
+                        f"{skill_path.name!r}: {error}"
+                    )
+                marker_path = (
+                    skill_path / ".git" / "xskill-active-side"
+                )
+                try:
+                    active_side = marker_path.read_text(
+                        encoding="ascii"
+                    ).strip()
+                except OSError as exc:
+                    raise RuntimeError(
+                        "working-tree side marker is unavailable for "
+                        f"{skill_path.name!r}"
+                    ) from exc
+                if active_side not in ("main", "staging"):
+                    raise RuntimeError(
+                        f"invalid working-tree side marker: {active_side!r}"
+                    )
+                return (
+                    active_side,
+                    current_sha.strip(),
+                    canary_generation(skill_path),
+                )
+
+            def recover_working_tree_target(
+                recovery: dict,
+                *,
+                skill_path=d,
+            ) -> None:
+                expected = recovery["expected"]
+                result = reconcile_skill_side(
+                    repo_dir=skill_path,
+                    target_side=expected["side"],
+                    target_sha=expected["sha"],
+                    history=history,
+                    on_changed=None,
+                    record_history=False,
+                )
+                if result not in ("already_aligned", "checked_out"):
+                    raise RuntimeError(
+                        "working-tree recovery failed with result "
+                        f"{result!r}"
+                    )
+                (
+                    skill_path / ".git" / "xskill-active-side"
+                ).write_text(expected["side"], encoding="ascii")
+
+            transaction_requests.append(InstallTransactionRequest(
+                skill=d.name,
+                target="working_tree",
+                decision_ids=(decision_id,),
+                operation=apply_working_tree_rotation,
+                decision_kind="window",
+                decision_sequence=window_id,
+                expected_generation=expected_generation,
+                generation_reader=read_generation,
+                installed_state_reader=read_working_tree_state,
+                recovery_operation=recover_working_tree_target,
+            ))
+        history.transact_many(transaction_requests)
 
     # ───────────────────────────────────────────────────────────
     # 收割：检查所有 in-flight futures
@@ -966,7 +1976,11 @@ class DirectoryWatcher:
             return self.agno_agent_factory
         from xskill.agents.agno_factory import make_default_factory
         if not hasattr(self, "_default_factory_cache"):
-            self._default_factory_cache = make_default_factory(self.config)
+            self._default_factory_cache = make_default_factory(
+                self.config,
+                usage_ledger=self.usage_ledger,
+                spill_root=self.spill_root,
+            )
         return self._default_factory_cache
 
     # ───────────────────────────────────────────────────────────
@@ -1005,14 +2019,27 @@ class DirectoryWatcher:
         t0 = time.monotonic()
         current_interests = list(self.interests)
         current_interest_fingerprint = self.interest_fingerprint
+        from xskill.agents import agent_tools
+        tool_context = agent_tools.create_agent_tool_context(
+            skill_dir=self.skill_dir,
+            data_dir=self.skill_dir,
+            config=self.config,
+            atom_skill_dir=self.skill_dir,
+            atom_store=store,
+            default_traj_root=dir_path,
+            spill_root=self.spill_root,
+            usage_ledger=self.usage_ledger,
+        )
         try:
-            atoms = TaskAgent(
-                agno_agent_factory=self._factory(),
-                store=store,
-                traj_root=dir_path,
-                skill_dir=self.skill_dir,
-                interests=current_interests,
-            ).run(traj_id=traj_id, traj_path=md_path)
+            with agent_tools.use_agent_tool_context(tool_context):
+                atoms = TaskAgent(
+                    agno_agent_factory=self._factory(),
+                    store=store,
+                    traj_root=dir_path,
+                    skill_dir=self.skill_dir,
+                    interests=current_interests,
+                    logs_dir=self.logs_dir,
+                ).run(traj_id=traj_id, traj_path=md_path)
         except TrajectoryNotFit as not_fit_error:
             logger.info(
                 "⊘ split not_fit %s（interest_fingerprint=%s）: %s",
@@ -1102,6 +2129,10 @@ class DirectoryWatcher:
             store=store,
             embed_client=self.embed_client,
             agno_agent_factory=factory,
+            db_path=self.db_path,
+            usage_ledger=self.usage_ledger,
+            logs_dir=self.logs_dir,
+            spill_root=self.spill_root,
         )
 
     # ───────────────────────────────────────────────────────────
@@ -1478,7 +2509,42 @@ _process_logger = logging.getLogger("xskill.process")
 
 
 def process_atom_task(*, atom_id: str, config: dict, skill_dir: Path,
-                      store, embed_client, agno_agent_factory) -> dict:
+                      store, embed_client, agno_agent_factory,
+                      db_path: Path | None = None,
+                      usage_ledger=None,
+                      logs_dir: Path | None = None,
+                      spill_root: Path | None = None) -> dict:
+    """Run one atom with an isolated AgentToolContext."""
+    from xskill.agents import agent_tools
+
+    tool_context = agent_tools.create_agent_tool_context(
+        skill_dir=skill_dir,
+        data_dir=skill_dir,
+        config=config,
+        atom_skill_dir=skill_dir,
+        atom_store=store,
+        default_traj_root=store.root,
+        spill_root=spill_root,
+        usage_ledger=usage_ledger,
+    )
+    with agent_tools.use_agent_tool_context(tool_context):
+        return _process_atom_task_bound(
+            atom_id=atom_id,
+            config=config,
+            skill_dir=skill_dir,
+            store=store,
+            embed_client=embed_client,
+            agno_agent_factory=agno_agent_factory,
+            db_path=db_path,
+            logs_dir=logs_dir,
+        )
+
+
+def _process_atom_task_bound(*, atom_id: str, config: dict,
+                             skill_dir: Path, store, embed_client,
+                             agno_agent_factory,
+                             db_path: Path | None = None,
+                             logs_dir: Path | None = None) -> dict:
     """处理一个 AtomTask：只跑 cluster，**不跑 edit**。
 
     edit 触发由 watcher 每轮独立扫描所有 skill 目录完成（见
@@ -1506,17 +2572,12 @@ def process_atom_task(*, atom_id: str, config: dict, skill_dir: Path,
     del embed_client  # kept for API compatibility; cluster tools no longer use it
 
     atom = store.load(atom_id)
-    traj_root = store.root
-
-    agent_tools.init_atom_task_tool_context(
-        skill_dir=skill_dir, atom_store=store,
-        default_traj_root=traj_root,
-    )
 
     cluster = TaskClusterAgent(
         skill_dir=skill_dir, store=store,
         agno_agent_factory=agno_agent_factory,
         llm_cfg=config.get("llm", {}),
+        logs_dir=logs_dir,
         tools=[
             agent_tools.atom_task_read, agent_tools.read_traj,
             agent_tools.skill_read, agent_tools.read_skill_tasks,
@@ -1548,7 +2609,8 @@ def process_atom_task(*, atom_id: str, config: dict, skill_dir: Path,
         try:
             from xskill.pipeline.registry import record_atom_adoption
             record_atom_adoption(atom_id=atom_id, skill=skill_name,
-                                 weightscore=weightscore or 0, was_new=True)
+                                 weightscore=weightscore or 0, was_new=True,
+                                 db_path=db_path)
         except Exception:  # pylint: disable=broad-exception-caught
             logger.debug("atom adoption telemetry skipped", exc_info=True)
 
@@ -1562,7 +2624,42 @@ def process_atom_task(*, atom_id: str, config: dict, skill_dir: Path,
 
 
 def process_atom_batch(*, atom_ids: list[str], config: dict, skill_dir: Path,
-                       store, embed_client, agno_agent_factory) -> list[dict]:
+                       store, embed_client, agno_agent_factory,
+                       db_path: Path | None = None,
+                       usage_ledger=None,
+                       logs_dir: Path | None = None,
+                       spill_root: Path | None = None) -> list[dict]:
+    """Run one atom batch with an isolated AgentToolContext."""
+    from xskill.agents import agent_tools
+
+    tool_context = agent_tools.create_agent_tool_context(
+        skill_dir=skill_dir,
+        data_dir=skill_dir,
+        config=config,
+        atom_skill_dir=skill_dir,
+        atom_store=store,
+        default_traj_root=store.root,
+        spill_root=spill_root,
+        usage_ledger=usage_ledger,
+    )
+    with agent_tools.use_agent_tool_context(tool_context):
+        return _process_atom_batch_bound(
+            atom_ids=atom_ids,
+            config=config,
+            skill_dir=skill_dir,
+            store=store,
+            embed_client=embed_client,
+            agno_agent_factory=agno_agent_factory,
+            db_path=db_path,
+            logs_dir=logs_dir,
+        )
+
+
+def _process_atom_batch_bound(*, atom_ids: list[str], config: dict,
+                              skill_dir: Path, store, embed_client,
+                              agno_agent_factory,
+                              db_path: Path | None = None,
+                              logs_dir: Path | None = None) -> list[dict]:
     """批量版 ``process_atom_task``：一次 LLM 会话覆盖**多个 atom 的位置**，只跑 cluster。
 
     与单 atom 版语义等价，只是把"逐 atom 一次往返"压成"一批一次往返"——
@@ -1584,21 +2681,16 @@ def process_atom_batch(*, atom_ids: list[str], config: dict, skill_dir: Path,
 
     atoms = [store.load(aid) for aid in atom_ids]
     atom_by_id = {a.atom_id: a for a in atoms}
-    traj_root = store.root
-
-    agent_tools.init_atom_task_tool_context(
-        skill_dir=skill_dir, atom_store=store,
-        default_traj_root=traj_root,
-    )
 
     cluster = TaskClusterAgent(
         skill_dir=skill_dir, store=store,
         agno_agent_factory=agno_agent_factory,
         llm_cfg=config.get("llm", {}),
+        logs_dir=logs_dir,
         tools=[
             agent_tools.atom_task_read, agent_tools.read_traj,
             agent_tools.skill_read, agent_tools.read_skill_tasks,
-            agent_tools.new_skill_folder, agent_tools.add_task_to_skill,
+            agent_tools.new_skill_folder, agent_tools.add_tasks_to_skill,
             agent_tools.rename_skill, agent_tools.move_task_to,
             agent_tools.score_task,
         ],
@@ -1620,7 +2712,8 @@ def process_atom_batch(*, atom_ids: list[str], config: dict, skill_dir: Path,
             try:
                 from xskill.pipeline.registry import record_atom_adoption
                 record_atom_adoption(atom_id=aid, skill=skill_name,
-                                     weightscore=weightscore or 0, was_new=True)
+                                     weightscore=weightscore or 0, was_new=True,
+                                     db_path=db_path)
             except Exception:  # pylint: disable=broad-exception-caught
                 logger.debug("atom adoption telemetry skipped", exc_info=True)
         results.append({

@@ -43,6 +43,8 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from functools import partial
+from operator import attrgetter
 from pathlib import Path
 from typing import Any, Callable
 
@@ -199,9 +201,16 @@ PRIOR_ATOM_TEMPLATE = """\
 """
 
 
+def _template_value(
+    match: re.Match[str], *, values: dict[str, str],
+) -> str:
+    return values[match.group(1)]
+
+
 def _inject(template: str, **vals: str) -> str:
     """把模板里的 ``{name}`` 占位一次性替成 vals[name]（单遍,不重扫注入值）。"""
-    return re.sub(r"\{(\w+)\}", lambda m: vals[m.group(1)], template)
+    replacement = partial(_template_value, values=vals)
+    return re.sub(r"\{(\w+)\}", replacement, template)
 
 
 def _is_user_header(body: str) -> bool:
@@ -315,6 +324,7 @@ class TaskAgent:
     skill_dir: Path | None = None
     # 顶层 config.interests 规范化后传入；空列表禁用兴趣过滤。
     interests: list[str] | None = None
+    logs_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if self.traj_root is None:
@@ -323,6 +333,8 @@ class TaskAgent:
             self.traj_root = Path(self.traj_root)
         if self.skill_dir is not None:
             self.skill_dir = Path(self.skill_dir)
+        if self.logs_dir is not None:
+            self.logs_dir = Path(self.logs_dir)
         self.interests = interests_config({"interests": self.interests or []})
 
     @property
@@ -431,8 +443,10 @@ class TaskAgent:
         续拆场景下 [1, resume) 已由历史 atom 覆盖,本次只校验
         [resume_line, total_lines+1) 这段被新 atom 无缝铺满。
         """
-        atoms = sorted(self.store.list_by_traj(traj_id),
-                       key=lambda a: a.offset_start)
+        atoms = sorted(
+            self.store.list_by_traj(traj_id),
+            key=attrgetter("offset_start"),
+        )
         # 取覆盖 [resume, ...) 的尾段（新 atom 起点 ≥ floor=resume 或并入首 atom）。
         floor = resume_line
         seg = [a for a in atoms if a.offset_end > floor]
@@ -489,8 +503,11 @@ class TaskAgent:
         )
         # 把这次拆分的逐轮 CoT/工具调用流式写进 logs/agents/task_agents/<traj_id>.log
         from xskill.agents.agent_trace import trace_to
-        from xskill.config import get_logs_dir
-        sink = get_logs_dir() / "agents" / "task_agents" / f"{traj_id}.log"
+        sink = (
+            self.logs_dir / "agents" / "task_agents" / f"{traj_id}.log"
+            if self.logs_dir is not None
+            else None
+        )
         with trace_to(sink):
             run_response = agent.run(user_msg)
         self._check_run_status(traj_id, run_response)

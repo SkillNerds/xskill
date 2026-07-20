@@ -24,12 +24,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import shutil
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from xskill.skill.git import run_git, skill_repo_lock
 
@@ -131,6 +132,12 @@ def main_sha(skill_dir: Path) -> str | None:
 
 def staging_sha(skill_dir: Path) -> str | None:
     return _rev_parse(skill_dir, STAGING_BRANCH)
+
+
+def canary_generation(skill_dir: Path) -> str:
+    """以 main/staging 两个不可变提交标识当前灰度代次。"""
+    with skill_repo_lock(skill_dir):
+        return f"{main_sha(skill_dir) or ''}:{staging_sha(skill_dir) or ''}"
 
 
 def _parse_git_iso(iso: str) -> datetime:
@@ -236,7 +243,15 @@ def merge_staging_to_main(skill_dir: Path) -> bool:
         if not has_staging(skill_dir):
             return False
 
-        run_git(["checkout", "main"], cwd=cwd)
+        checkout_code, _, checkout_error = run_git(
+            ["checkout", "main"],
+            cwd=cwd,
+        )
+        if checkout_code != 0:
+            logger.error(
+                f"{skill_dir.name}: checkout main failed: {checkout_error}"
+            )
+            return False
         code, _, err = run_git(
             ["merge", "--ff", STAGING_BRANCH, "-m", "canary: promote staging to main"],
             cwd=cwd,
@@ -250,7 +265,24 @@ def merge_staging_to_main(skill_dir: Path) -> bool:
             if code2 != 0:
                 logger.error(f"{skill_dir.name}: merge staging failed: {err or err2}")
                 return False
-        run_git(["branch", "-D", STAGING_BRANCH], cwd=cwd)
+        delete_code, _, delete_error = run_git(
+            ["branch", "-D", STAGING_BRANCH],
+            cwd=cwd,
+        )
+        if delete_code != 0:
+            logger.error(
+                f"{skill_dir.name}: delete staging failed: {delete_error}"
+            )
+            return False
+    canary_copy = skill_dir.parent / ".canary" / skill_dir.name
+    if canary_copy.is_symlink() or (
+        canary_copy.exists() and not canary_copy.is_dir()
+    ):
+        raise RuntimeError(
+            f"{skill_dir.name}: unsafe materialized staging path"
+        )
+    if canary_copy.is_dir():
+        shutil.rmtree(canary_copy)
     logger.info(f"{skill_dir.name}: staging merged to main and deleted")
     return True
 
@@ -265,16 +297,38 @@ def discard_staging(skill_dir: Path) -> bool:
         s_sha = staging_sha(skill_dir)
         if s_sha:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            run_git(["update-ref", f"refs/rejected/{stamp}-{s_sha[:12]}", s_sha],
-                    cwd=cwd)
-        run_git(["checkout", "main"], cwd=cwd)
+            ref_code, _, ref_error = run_git(
+                ["update-ref", f"refs/rejected/{stamp}-{s_sha[:12]}", s_sha],
+                cwd=cwd,
+            )
+            if ref_code != 0:
+                logger.error(
+                    f"{skill_dir.name}: preserve rejected ref failed: "
+                    f"{ref_error}"
+                )
+                return False
+        checkout_code, _, checkout_error = run_git(
+            ["checkout", "main"],
+            cwd=cwd,
+        )
+        if checkout_code != 0:
+            logger.error(
+                f"{skill_dir.name}: checkout main failed: {checkout_error}"
+            )
+            return False
         code, _, err = run_git(["branch", "-D", STAGING_BRANCH], cwd=cwd)
         if code != 0:
             logger.error(f"{skill_dir.name}: discard staging failed: {err}")
             return False
     # 清理物化目录（materialize_staging 留下的 .canary/<name>/）
     canary_copy = skill_dir.parent / ".canary" / skill_dir.name
-    if canary_copy.exists():
+    if canary_copy.is_symlink() or (
+        canary_copy.exists() and not canary_copy.is_dir()
+    ):
+        raise RuntimeError(
+            f"{skill_dir.name}: unsafe materialized staging path"
+        )
+    if canary_copy.is_dir():
         shutil.rmtree(canary_copy)
     logger.info(f"{skill_dir.name}: staging discarded")
     return True
@@ -532,9 +586,11 @@ def _cohort_weighted(scores: list[dict], weights: dict[str, float]
     return weighted, {m: len(v) for m, v in by_model.items()}
 
 
-def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None,
-                     *, weights: dict[str, float] | None = None) -> dict:
-    """每次新体验分入库后调用。返回结果字典，action 字段含义：
+def plan_decision(skill_dir: Path, config: CanaryConfig | None = None,
+                  *, weights: dict[str, float] | None = None) -> dict:
+    """只读计算灰度决策，不修改 Git、物化目录或裁决记录。
+
+    返回结果字典的 ``action`` 字段含义：
 
     - no_staging     :  该 skill 无 staging 分支，什么都不做
     - waiting        :  样本不足，继续收集
@@ -588,12 +644,9 @@ def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None,
 
     if not enough:
         if age_days is not None and age_days >= cfg.max_days_hold:
-            discard_staging(skill_dir)
-            _record_decision(skill_dir, "timeout_discarded", 0.0, 0.0,
-                             main_n, staging_n, age_days,
-                             main_sha=m_sha, staging_sha=s_sha)
             return {"action": "timeout_discarded", "age_days": age_days,
-                    "main_samples": main_n, "staging_samples": staging_n}
+                    "main_samples": main_n, "staging_samples": staging_n,
+                    "main_sha": m_sha, "staging_sha": s_sha}
         return {"action": "waiting", "age_days": age_days,
                 "main_samples": main_n, "staging_samples": staging_n, "need": need}
 
@@ -611,20 +664,67 @@ def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None,
         "main_cohorts": main_cohorts,
         "staging_cohorts": staging_cohorts,
         "age_days": age_days,
+        "main_sha": m_sha,
+        "staging_sha": s_sha,
     }
 
     if staging_w >= main_w:
-        ok = merge_staging_to_main(skill_dir)
-        if ok:
-            _record_decision(skill_dir, "promoted", main_w, staging_w,
-                             main_n, staging_n, age_days,
-                             main_sha=m_sha, staging_sha=s_sha)
-        return {"action": "promoted" if ok else "merge_failed", **summary}
-    discard_staging(skill_dir)
-    _record_decision(skill_dir, "rejected", main_w, staging_w,
-                     main_n, staging_n, age_days,
-                     main_sha=m_sha, staging_sha=s_sha)
+        return {"action": "promoted", **summary}
     return {"action": "rejected", **summary}
+
+
+def record_decision_telemetry(skill_dir: Path, decision: dict) -> None:
+    """在终态完整收敛后记录一次裁决遥测。"""
+    action = decision.get("action", "")
+    if action not in ("promoted", "rejected", "timeout_discarded"):
+        return
+    _record_decision(
+        Path(skill_dir),
+        action,
+        float(decision.get("main_avg", 0.0)),
+        float(decision.get("staging_avg", 0.0)),
+        int(decision.get("main_samples", 0)),
+        int(decision.get("staging_samples", 0)),
+        decision.get("age_days"),
+        main_sha=str(decision.get("main_sha", "")),
+        staging_sha=str(decision.get("staging_sha", "")),
+    )
+
+
+def apply_decision(
+    skill_dir: Path,
+    decision: dict,
+    *,
+    record_telemetry: bool = True,
+) -> dict:
+    """应用 :func:`plan_decision` 的终态，并在成功后记录裁决遥测。"""
+    action = decision.get("action", "")
+    if action not in ("promoted", "rejected", "timeout_discarded"):
+        return decision
+    skill_dir = Path(skill_dir)
+    if action == "promoted":
+        if not merge_staging_to_main(skill_dir):
+            return {
+                **decision,
+                "action": "merge_failed",
+                "attempted_action": action,
+            }
+    elif not discard_staging(skill_dir):
+        return {
+            **decision,
+            "action": "discard_failed",
+            "attempted_action": action,
+        }
+    if record_telemetry:
+        record_decision_telemetry(skill_dir, decision)
+    return decision
+
+
+def check_and_decide(skill_dir: Path, config: CanaryConfig | None = None,
+                     *, weights: dict[str, float] | None = None) -> dict:
+    """计算并立即应用灰度决策；事务调用方应改用 :func:`plan_decision`。"""
+    decision = plan_decision(skill_dir, config=config, weights=weights)
+    return apply_decision(skill_dir, decision)
 
 
 def _record_decision(skill_dir, action: str, main_avg: float, staging_avg: float,
@@ -747,6 +847,11 @@ class AtomCanary:
         """
         return check_and_decide(self.skill_dir, config=config, weights=weights)
 
+    def plan_decision(self, *, config: "CanaryConfig | None" = None,
+                      weights: "dict[str, float] | None" = None) -> dict:
+        """只读计算判定，供先持久化事务日志、后修改 Git 的调用方使用。"""
+        return plan_decision(self.skill_dir, config=config, weights=weights)
+
 
 # =============================================================================
 # SessionAssignments —— CC session → (side, sha, used_skill) 持久化映射
@@ -781,23 +886,107 @@ class SessionAssignments:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._cache: dict[str, dict] = {}
+        self._offset = 0
         self._load()
 
     def _load(self) -> None:
-        if not self.path.is_file():
-            return
-        for line in self.path.read_text(encoding="utf-8").splitlines():
+        from xskill.ecosystems._history import exclusive_path_lock
+
+        assignment_lock_path = self.path.with_name(
+            f"{self.path.name}.lock"
+        )
+        with self._lock, exclusive_path_lock(assignment_lock_path):
+            self._refresh_locked()
+
+    def _parse_payload(self, payload: bytes) -> list[dict]:
+        try:
+            lines = payload.decode("utf-8", errors="strict").splitlines()
+        except UnicodeDecodeError as exc:
+            raise RuntimeError(
+                f"session assignments are not UTF-8: {self.path}"
+            ) from exc
+        records: list[dict] = []
+        for line in lines:
             line = line.strip()
             if not line:
                 continue
             try:
                 rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"invalid session assignment JSON: {self.path}"
+                ) from exc
             sid = rec.get("sid")
             if sid:
-                # 后写覆盖前写（同一 sid 重复 record 时取最新）
-                self._cache[sid] = rec
+                records.append(rec)
+        return records
+
+    def _consume_payload(self, payload: bytes) -> None:
+        for record in self._parse_payload(payload):
+            # 后写覆盖前写（同一 sid 重复 record 时取最新）
+            self._cache[record["sid"]] = record
+
+    def _repair_tail_locked(
+        self,
+        payload: bytes,
+        *,
+        payload_offset: int,
+    ) -> None:
+        """只截断最后一条不完整 append；更早的坏行必须 fail loud。"""
+        from xskill.ecosystems._history import fsync_directory
+
+        tail_start = payload.rfind(b"\n") + 1
+        complete_payload = payload[:tail_start]
+        complete_records = self._parse_payload(complete_payload)
+        tail = payload[tail_start:]
+        try:
+            tail_records = self._parse_payload(tail + b"\n")
+        except RuntimeError:
+            repaired_size = payload_offset + tail_start
+            with self.path.open("r+b") as assignment_file:
+                assignment_file.truncate(repaired_size)
+                assignment_file.flush()
+                os.fsync(assignment_file.fileno())
+            logger.warning(
+                "truncated incomplete session assignment tail path=%s "
+                "offset=%d",
+                self.path,
+                repaired_size,
+            )
+            consumed_records = complete_records
+            self._offset = repaired_size
+        else:
+            with self.path.open("ab") as assignment_file:
+                assignment_file.write(b"\n")
+                assignment_file.flush()
+                os.fsync(assignment_file.fileno())
+            consumed_records = [*complete_records, *tail_records]
+            self._offset = payload_offset + len(payload) + 1
+        fsync_directory(self.path.parent)
+        for record in consumed_records:
+            self._cache[record["sid"]] = record
+
+    def _refresh_locked(self) -> None:
+        if not self.path.is_file():
+            self._offset = 0
+            return
+        file_size = self.path.stat().st_size
+        if file_size < self._offset:
+            self._cache.clear()
+            self._offset = 0
+        if file_size == self._offset:
+            return
+        with self.path.open("rb") as assignment_file:
+            assignment_file.seek(self._offset)
+            payload = assignment_file.read()
+        if payload and not payload.endswith(b"\n"):
+            self._repair_tail_locked(
+                payload,
+                payload_offset=self._offset,
+            )
+            return
+        self._consume_payload(payload)
+        self._offset += len(payload)
 
     def record(
         self,
@@ -812,11 +1001,70 @@ class SessionAssignments:
             "sid": sid, "side": side, "sha": sha,
             "used_skill": used_skill, "t": t,
         }
-        with self._lock:
+        from xskill.ecosystems._history import exclusive_path_lock
+        assignment_lock_path = self.path.with_name(
+            f"{self.path.name}.lock"
+        )
+        with self._lock, exclusive_path_lock(assignment_lock_path):
+            self._refresh_locked()
+            existing = self._cache.get(sid)
+            if existing == rec:
+                return existing
+            path_existed = self.path.exists()
             with self.path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            if not path_existed:
+                from xskill.ecosystems._history import fsync_directory
+                fsync_directory(self.path.parent)
             self._cache[sid] = rec
+            self._offset = self.path.stat().st_size
         return rec
+
+    def record_many(self, records: Iterable[dict]) -> None:
+        """单锁、单次追加物化一批 history assignment。"""
+        normalized_records = [
+            {
+                "sid": str(record["sid"]),
+                "side": str(record["side"]),
+                "sha": str(record.get("sha", "")),
+                "used_skill": bool(record.get("used_skill", False)),
+                "t": float(record["t"]),
+            }
+            for record in records
+        ]
+        if not normalized_records:
+            return
+        from xskill.ecosystems._history import exclusive_path_lock
+        assignment_lock_path = self.path.with_name(
+            f"{self.path.name}.lock"
+        )
+        with self._lock, exclusive_path_lock(assignment_lock_path):
+            self._refresh_locked()
+            pending_by_session: dict[str, dict] = {}
+            for record in normalized_records:
+                session_id = record["sid"]
+                if self._cache.get(session_id) == record:
+                    pending_by_session.pop(session_id, None)
+                else:
+                    pending_by_session[session_id] = record
+            if not pending_by_session:
+                return
+            path_existed = self.path.exists()
+            payload = "".join(
+                json.dumps(record, ensure_ascii=False) + "\n"
+                for record in pending_by_session.values()
+            )
+            with self.path.open("a", encoding="utf-8") as assignment_file:
+                assignment_file.write(payload)
+                assignment_file.flush()
+                os.fsync(assignment_file.fileno())
+            if not path_existed:
+                from xskill.ecosystems._history import fsync_directory
+                fsync_directory(self.path.parent)
+            self._cache.update(pending_by_session)
+            self._offset = self.path.stat().st_size
 
     def get(self, sid: str) -> Optional[dict]:
         return self._cache.get(sid)

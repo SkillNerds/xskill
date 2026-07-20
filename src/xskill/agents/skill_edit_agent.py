@@ -41,6 +41,17 @@ from xskill.skill import candidates as C
 logger = logging.getLogger("xskill.skill_edit_agent")
 
 
+def _candidate_order(candidate: dict) -> tuple[int, str]:
+    return (
+        -int(candidate.get("weightscore", 0) or 0),
+        str(candidate.get("atom_id", "")),
+    )
+
+
+def _candidate_weight(candidate: dict) -> int:
+    return int(candidate.get("weightscore", 0) or 0)
+
+
 # ---------------------------------------------------------------------------
 # 写作指导段（GUIDANCE）—— 白名单 / 反模式 / 泛化闸 / 参数化 / 失败挖掘 /
 # 结构纪律 / 证据纪律 / 长度预算。这一段是**可切换**的：
@@ -322,6 +333,13 @@ class SkillEditAgent:
     traj_root: Path
     threshold: int = C.ATOM_PROMOTION_THRESHOLD
     jam_threshold: int = 50
+    logs_dir: Path | None = None
+
+    def __post_init__(self) -> None:
+        self.skill_dir = Path(self.skill_dir)
+        self.traj_root = Path(self.traj_root)
+        if self.logs_dir is not None:
+            self.logs_dir = Path(self.logs_dir)
 
     def _skill_tree_context_lines(self, max_entries: int = 80) -> list[str]:
         """返回当前 skill 根目录与文件树，供 agent 决定是否 read_file。"""
@@ -558,7 +576,7 @@ class SkillEditAgent:
         ``SKILL_EDIT_BATCH_SIZE`` 条一批。"""
         ordered = sorted(
             ready,
-            key=lambda c: (-int(c.get("weightscore", 0) or 0), str(c.get("atom_id", ""))),
+            key=_candidate_order,
         )
         size = C.SKILL_EDIT_BATCH_SIZE
         return [ordered[i:i + size] for i in range(0, len(ordered), size)]
@@ -587,12 +605,13 @@ class SkillEditAgent:
         logs/agents/skill_edit_agents/skills/<skill><suffix>_<ts>.log。"""
         import time as _time
         from xskill.agents.agent_trace import trace_to
-        from xskill.config import get_logs_dir
 
         _ts = _time.strftime("%Y%m%d-%H%M%S")
         sink = (
-            get_logs_dir() / "agents" / "skill_edit_agents" / "skills"
+            self.logs_dir / "agents" / "skill_edit_agents" / "skills"
             / f"{self.skill_dir.name}{log_suffix}_{_ts}.log"
+            if self.logs_dir is not None
+            else None
         )
         with trace_to(sink):
             agent.run(user_msg)
@@ -688,7 +707,7 @@ class SkillEditAgent:
             *self._skill_tree_context_lines(),
             "# 待合并候选（按 weightscore 倒序）",
         ]
-        for c in sorted(batch, key=lambda x: x.get("weightscore", 0), reverse=True):
+        for c in sorted(batch, key=_candidate_weight, reverse=True):
             note = c.get("note", "")
             lines.append(
                 f"- atom_id={c['atom_id']}  weightscore={c['weightscore']}"
@@ -773,7 +792,7 @@ class SkillEditAgent:
         scenario_lines.extend(self._skill_tree_context_lines())
         scenario_lines.append("")
         scenario_lines.append("# 待整理 candidates（按 weightscore 倒序）")
-        for c in sorted(batch, key=lambda x: x.get("weightscore", 0), reverse=True):
+        for c in sorted(batch, key=_candidate_weight, reverse=True):
             note = c.get("note", "")
             ext = f"  note: {note}" if note else ""
             scenario_lines.append(

@@ -9,7 +9,7 @@
    缺省 **200K** 并打一条 warning（提醒用户按自己模型上限反注释配置）。
 2. **主动剪裁**：每次发请求前,若历史估算 token 到 max_context 的 **85%**,把旧的
    ``look`` 工具结果替换成短标记；把 SkillEdit 的读文件类工具结果 spill 到
-   ``/tmp/xskill/skilleditagent``，message 里只保留摘要 + ``spill_path``。
+   当前 XSkill 实例的隔离目录，message 里只保留摘要 + ``spill_path``。
    从最旧的开始剪,剪到回落 85% 以下为止。
 3. **可选 compact**：如果本轮剪裁后仍超过 ``compact_token_limit``，调用同一个
    model 做一次工作记忆摘要，然后保留 system、首轮 user、摘要和最近完整消息块。
@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import logging
-import tempfile
 import threading
 import time
 import uuid
@@ -38,7 +37,6 @@ logger = logging.getLogger("xskill.context_budget")
 DEFAULT_MAX_CONTEXT = 200_000          # 配置缺省时的兜底上限（spec §4.5）
 TRIM_TRIGGER_RATIO = 0.85              # 到上限 85% 触发主动剪裁
 CHARS_PER_TOKEN = 4                    # 4 字符/token 粗估（仅估未发出去那部分）
-DEFAULT_SPILL_ROOT = Path(tempfile.gettempdir()) / "xskill" / "skilleditagent"
 _TRIMMABLE_TOOLS = (
     "look", "readfile", "read_file", "atom_task_read", "read_traj", "skill_read",
 )
@@ -352,7 +350,7 @@ def _replace_tool_content(msg: Any, content: str) -> bool:
 
 def _trim_old_look_results(messages: list, target_tokens: int,
                            *, force_all: bool = False,
-                           spill_root: Path = DEFAULT_SPILL_ROOT) -> int:
+                           spill_root: Path | None = None) -> int:
     """从最旧的 look/readfile 工具返回开始纯截断,直到估算回落 target 以下。
 
     ``force_all=True`` 时无视估算,把所有可剪的 look/readfile 返回一律剪掉
@@ -369,10 +367,14 @@ def _trim_old_look_results(messages: list, target_tokens: int,
         if _is_already_trimmed(original):
             continue
         name = _tool_name(m)
-        replacement = (
-            _spill_tool_result(m, original, spill_root)
-            if name in _SPILLABLE_TOOLS else _TRIM_MARK
-        )
+        if name in _SPILLABLE_TOOLS:
+            if spill_root is None:
+                raise RuntimeError(
+                    "spill_root 未绑定到当前 XSkill 实例，不能安全落盘工具结果"
+                )
+            replacement = _spill_tool_result(m, original, spill_root)
+        else:
+            replacement = _TRIM_MARK
         if _replace_tool_content(m, replacement):
             trimmed += 1
     return trimmed
@@ -444,7 +446,7 @@ class ContextManager:
     构造时拿 ``max_context``（已 resolve）。``wrap(original_invoke)`` 返回新的
     invoke,生产/测试都能套。剪裁直接改传进来的 ``messages`` 列表里：
     ``look`` 旧结果替换成短标记；SkillEdit 读文件类工具结果先 spill 到
-    ``/tmp/xskill/skilleditagent``，上下文只留摘要和可回读路径。
+    当前 XSkill 实例的 spill 目录，上下文只留摘要和可回读路径。
     """
 
     def __init__(
@@ -457,8 +459,6 @@ class ContextManager:
         config: dict | None = None,
     ):
         cfg = config or {}
-        if spill_root is None and cfg.get("spill_root"):
-            spill_root = cfg.get("spill_root")
         if compact_token_limit is None:
             compact_token_limit = _positive_int_or_none(cfg.get("compact_token_limit"))
         if cfg.get("compact_keep_recent_messages") not in (None, ""):
@@ -468,7 +468,11 @@ class ContextManager:
 
         self.max_context = int(max_context)
         self.trigger = int(self.max_context * TRIM_TRIGGER_RATIO)
-        self.spill_root = Path(spill_root) if spill_root is not None else DEFAULT_SPILL_ROOT
+        self.spill_root = (
+            Path(spill_root).expanduser().resolve()
+            if spill_root is not None
+            else None
+        )
         self.compact_token_limit = (
             int(compact_token_limit) if compact_token_limit is not None else None
         )

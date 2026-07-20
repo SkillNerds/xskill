@@ -156,8 +156,11 @@ class _Bucket:
 class UsageLedger:
     """线程安全的 token/cost 汇聚点。``record_*`` 永不抛错。"""
 
-    def __init__(self, prices: PriceTable):
+    def __init__(
+        self, prices: PriceTable, *, db_path: Path | None = None,
+    ):
         self._prices = prices
+        self.db_path = Path(db_path) if db_path is not None else None
         self._lock = threading.Lock()
         self._by_step: Dict[str, _Bucket] = {}
         self._by_model: Dict[str, _Bucket] = {}
@@ -186,7 +189,14 @@ class UsageLedger:
                 self._total.cost += usd
             logger.debug("[LLM] model=%s step=%s tokens=%d cost=$%.5f src=%s",
                          model, step, usage.total, usd, source)
-            _persist(step, model, usage, usd, source)
+            _persist(
+                step,
+                model,
+                usage,
+                usd,
+                source,
+                db_path=self.db_path,
+            )
         except Exception:  # pylint: disable=broad-exception-caught
             logger.warning("usage ledger record failed (non-fatal)", exc_info=True)
 
@@ -243,13 +253,22 @@ def _read_prices(path: Path) -> Optional[dict]:
         return None
 
 
-def _persist(step: str, model: str, usage: Usage, usd: float, source: str) -> None:
+def _persist(
+    step: str,
+    model: str,
+    usage: Usage,
+    usd: float,
+    source: str,
+    *,
+    db_path: Path | None = None,
+) -> None:
     """best-effort 落 registry llm_usage 表(函数内 import 防环;失败仅 warn)。"""
     try:
         from xskill.pipeline.registry import record_usage
         record_usage(step=step, model=model, prompt=usage.prompt,
                      completion=usage.completion, total=usage.total,
-                     cost_usd=usd, price_source=source)
+                     cost_usd=usd, price_source=source,
+                     db_path=db_path)
     except Exception:  # pylint: disable=broad-exception-caught
         logger.debug("usage persist skipped", exc_info=True)
 

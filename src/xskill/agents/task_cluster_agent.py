@@ -118,7 +118,7 @@ def build_skill_catalog_block(skill_dir: Path, max_chars: int) -> str:
 
     # name 头永远完整保留；desc 按预算压
     head_lines = [f"- {n}[{s}]" for n, s, _ in entries]
-    head_cost = sum(len(l) + 1 for l in head_lines)
+    head_cost = sum(len(line) + 1 for line in head_lines)
     remaining = max_chars - head_cost
     per_desc = remaining // len(entries) if entries else 0
 
@@ -139,8 +139,8 @@ def build_skill_catalog_block(skill_dir: Path, max_chars: int) -> str:
 SYSTEM_PROMPT_TEMPLATE = """你是 TaskClusterAgent。我会给你一个或多个 AtomTask（每个是
 用户的一段完整意图 + agent 的执行复盘）；当给你多个时**逐个独立处理**，互不影响。
 对每个 AtomTask 你决定它是否值得被某个 skill 收录，应该归到哪个已有 skill（用
-add_task_to_skill），或者应该新建一个 skill 容纳它（用 NewSkillFolder 再
-add_task_to_skill）。**每个 AtomTask 都必须 add_task_to_skill，一个都不能漏。**
+add_task_to_skill / add_tasks_to_skill），或者应该新建一个 skill 容纳它（用
+NewSkillFolder 再添加）。**每个 AtomTask 都必须通过添加工具落盘，一个都不能漏。**
 
 # 可用工具
 - AtomTaskRead(atom_id) — 读 atom 完整 JSON（intent / summary / raw_segment 全字段）
@@ -153,6 +153,9 @@ add_task_to_skill）。**每个 AtomTask 都必须 add_task_to_skill，一个都
   必填（2-3 句中文）。**最后才考虑**——能复用就别开新的。
 - add_task_to_skill(skill_name, atom_id, weightscore) — 把 atom 加进 buffer。
   weightscore 1-10 整数。累计满 10 触发 SkillEditAgent 写 SKILL.md。
+- add_tasks_to_skill(skill_name, tasks) — 同一批有多个 atom 归入同一个 skill
+  时优先使用；tasks 每项含 atom_id、weightscore，可选 note。整批只读写一次
+  candidates 文件，不能把不同目标 skill 混进同一次调用。
 - RenameSkill(old_name, new_name) — **仅 baby 状态可改名**。合并近义 slug 的关键
   工具：发现两个 baby 同义但 new_name 还没存在 → 把 less-specific 的改成
   more-specific。如果 new_name 已存在 → 用 MoveTaskTo 而不是 RenameSkill。
@@ -231,7 +234,8 @@ add_task_to_skill）。**每个 AtomTask 都必须 add_task_to_skill，一个都
 
 cluster 在 watcher 层**始终串行**（同一目录同时只跑一个 batch），所以你**逐批**
 看到 catalog 演化，每一批都能看见前一批 cluster 的产物。这避免了并发创建近义
-slug。同一批里如给了多个 atom，也请逐个处理、彼此独立。
+slug。同一批里如给了多个 atom，仍要逐个判断、彼此独立；判断完成后，将归入
+同一个 skill 的 atom 合并成一次 add_tasks_to_skill 调用。
 
 # 硬禁止
 - 不要为了"做点事"乱打高分。低质 atom 就别加，会污染 candidates 触发劣质 skill。
@@ -252,6 +256,12 @@ class TaskClusterAgent:
     # ~20% of 128k token context window（保守起点；DeepSeek v4-flash 实际容量
     # 更大，按 plan 用 20% 作为软门槛）
     sysprompt_budget_chars: int = 25000
+    logs_dir: Path | None = None
+
+    def __post_init__(self) -> None:
+        self.skill_dir = Path(self.skill_dir)
+        if self.logs_dir is not None:
+            self.logs_dir = Path(self.logs_dir)
 
     def process(self, atom: AtomTask) -> str:
         """跑一次 cluster 决策，返回 agent 的 final content（日志用）。"""
@@ -279,9 +289,12 @@ class TaskClusterAgent:
         )
         # 逐轮 CoT/工具调用 → logs/agents/task_cluster_agents/<traj_id>/<atom_id>.log
         from xskill.agents.agent_trace import trace_to
-        from xskill.config import get_logs_dir
-        sink = (get_logs_dir() / "agents" / "task_cluster_agents"
-                / atom.traj_id / f"{atom.atom_id}.log")
+        sink = (
+            self.logs_dir / "agents" / "task_cluster_agents"
+            / atom.traj_id / f"{atom.atom_id}.log"
+            if self.logs_dir is not None
+            else None
+        )
         with trace_to(sink):
             result = agent.run(user_msg)
         return getattr(result, "content", "") or ""
@@ -291,7 +304,8 @@ class TaskClusterAgent:
 
         与 ``process``（单 atom）共用同一 system prompt；user 消息把整批 atom 的
         **位置**（atom_id / traj_id / intent / summary / tags / 行号）逐条列出，
-        要求 agent 逐个 ``add_task_to_skill``。atom 的完整内容仍由 agent 按需用
+        要求 agent 逐个判断，再按目标 skill 组批调用 ``add_tasks_to_skill``。
+        atom 的完整内容仍由 agent 按需用
         ``AtomTaskRead`` / ``ReadTraj`` 工具拉取——批量的是"位置"而非"内容"，
         把"逐 atom 一次 LLM 往返"压成"一批一次往返"。
 
@@ -302,7 +316,13 @@ class TaskClusterAgent:
         catalog = build_skill_catalog_block(
             self.skill_dir, self.sysprompt_budget_chars,
         )
-        sysprompt = SYSTEM_PROMPT_TEMPLATE.format(skill_catalog=catalog)
+        sysprompt = (
+            SYSTEM_PROMPT_TEMPLATE.format(skill_catalog=catalog)
+            + "\n\n# 本次批量调用限制\n"
+            "本次只提供 add_tasks_to_skill，不提供逐条 add_task_to_skill。"
+            "先逐个判断，再按目标 skill 分组；每组只调用一次 "
+            "add_tasks_to_skill，确保每个 atom_id 恰好出现一次。"
+        )
 
         blocks: list[str] = []
         for i, atom in enumerate(atoms, 1):
@@ -319,7 +339,8 @@ class TaskClusterAgent:
             )
         user_msg = (
             f"待分类 AtomTask 共 {len(atoms)} 个，请**逐个**按系统指令处理，每个都必须"
-            f" add_task_to_skill（任何分数都不允许跳过、不能静默漏掉任何一个）：\n\n"
+            " 出现在某次 add_tasks_to_skill 调用中（任何分数都不允许跳过、"
+            "不能静默漏掉任何一个）：\n\n"
             + "\n\n".join(blocks)
         )
 
@@ -328,11 +349,14 @@ class TaskClusterAgent:
             tools=self.tools,
         )
         from xskill.agents.agent_trace import trace_to
-        from xskill.config import get_logs_dir
         # 批量可能跨轨迹——按首 atom 的 traj_id 归档，文件名带 batch 标识与规模。
         first = atoms[0]
-        sink = (get_logs_dir() / "agents" / "task_cluster_agents"
-                / first.traj_id / f"batch_{first.atom_id}_n{len(atoms)}.log")
+        sink = (
+            self.logs_dir / "agents" / "task_cluster_agents"
+            / first.traj_id / f"batch_{first.atom_id}_n{len(atoms)}.log"
+            if self.logs_dir is not None
+            else None
+        )
         with trace_to(sink):
             result = agent.run(user_msg)
         return getattr(result, "content", "") or ""

@@ -20,7 +20,8 @@ def _team_registry_provider():
 
 def mount_dashboard(app, cfg: dict, *, db_path: Optional[Path] = None,
                     serve_builtin: bool = True) -> None:
-    """``serve_builtin=False`` = 独立只读实例（D4）：登录/写路由物理不挂载。"""
+    """``serve_builtin=False`` = 独立只读实例（D4）：只挂聚合 GET 端点；
+    登录、写操作及内容级敏感路由均物理不挂载。"""
     dc = dashboard_config(cfg)
     if not dc["enabled"]:
         return

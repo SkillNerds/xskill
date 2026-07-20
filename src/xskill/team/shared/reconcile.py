@@ -31,6 +31,7 @@ def reconcile_skill_side(
     target_sha: str,
     history: InstallHistory,
     on_changed: Callable[[Path], None] | None = None,
+    record_history: bool = True,
 ) -> ReconcileResult:
     """把一个 skill 仓的工作树对齐到 (target_side, target_sha)。
 
@@ -56,7 +57,12 @@ def reconcile_skill_side(
         # 记录，下游 lookup 全 None。"不动"指不动工作区，不指不记账。
         code, cur, _ = run_git(["rev-parse", "HEAD"], cwd=str(repo_dir))
         if code == 0 and cur.strip() == target_sha:
-            history.record(skill=repo_dir.name, side=target_side, sha=target_sha)
+            if record_history:
+                history.record(
+                    skill=repo_dir.name,
+                    side=target_side,
+                    sha=target_sha,
+                )
             return "already_aligned"
 
         # 步骤 4：checkout 到 target + 记账
@@ -65,7 +71,12 @@ def reconcile_skill_side(
             logger.warning("reconcile checkout failed: %s -> %s: %s",
                            repo_dir.name, target_sha[:8], err)
             return "error"
-        history.record(skill=repo_dir.name, side=target_side, sha=target_sha)
+        if record_history:
+            history.record(
+                skill=repo_dir.name,
+                side=target_side,
+                sha=target_sha,
+            )
         logger.info("reconcile: %s -> %s (%s)", repo_dir.name, target_side, target_sha[:8])
     if on_changed is not None:
         on_changed(repo_dir)

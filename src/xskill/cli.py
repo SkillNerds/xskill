@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 
 from xskill import __version__
@@ -686,6 +687,168 @@ def _team_client_http_and_headers():
     return http, headers
 
 
+def _write_search_output(text: str, *, to_stderr: bool = False) -> None:
+    """仅为 search 子命令做终端编码安全写入，不改变其他 CLI 输出。"""
+    stream = sys.stderr if to_stderr else sys.stdout
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    safe_text = text.encode(
+        encoding, errors="backslashreplace",
+    ).decode(encoding, errors="strict")
+    stream.write(safe_text)
+    if not safe_text.endswith("\n"):
+        stream.write("\n")
+
+
+def _render_search_results(installed: list[dict], query: str) -> None:
+    """以实际安装结果渲染人读搜索输出，不重新探测本机生态。"""
+    harness_names = {
+        "claude_code": "Claude Code",
+        "codex": "Codex",
+        "opencode": "OpenCode",
+        "openclaw": "OpenClaw",
+        "ngagent": "NGAgent",
+        "nga3": "CodeAgent3 / NGA3",
+        "cursor": "Cursor",
+        "trae": "Trae",
+    }
+    output_lines = [
+        f"搜索：{query}",
+        f"找到 {len(installed)} 个 skill",
+        "=" * 64,
+    ]
+    successful_installations = 0
+    for index, row in enumerate(installed, start=1):
+        if index > 1:
+            output_lines.append("-" * 64)
+        output_lines.append(f"[{index}/{len(installed)}] {row['name']}")
+        output_lines.append(f"ID：{row['skill_id']}")
+
+        description = " ".join(str(row.get("description") or "").split())
+        if len(description) > 180:
+            description = f"{description[:177].rstrip()}..."
+        output_lines.append(f"描述：{description or '（无描述）'}")
+
+        source = str(row.get("source") or "")
+        source_path = str(row.get("source_path") or "")
+        path_parts = source_path.replace("\\", "/").split("/")
+        if source == "repo":
+            source_label = "XSkill 自蒸馏生成"
+        elif source.startswith("上传者:"):
+            source_label = f"{source}（用户上传）"
+        elif len(path_parts) >= 2 and path_parts[0] == "user_skill_hub":
+            source_label = f"用户上传（{path_parts[1]}）"
+        else:
+            source_label = "SkillHub"
+        output_lines.append(f"来源: {source_label}")
+        if source_path:
+            output_lines.append(f"  {source_path}")
+
+        match = row.get("match")
+        match_parts: list[str] = []
+        if isinstance(match, dict) and match.get("bm25_rank") is not None:
+            match_parts.append(f"关键词排名 #{match['bm25_rank']}")
+        if isinstance(match, dict) and match.get("semantic_rank") is not None:
+            match_parts.append(f"语义排名 #{match['semantic_rank']}")
+        if row.get("ux_avg") is not None:
+            match_parts.append(f"ux {row['ux_avg']}")
+        if match_parts:
+            output_lines.append(f"匹配：{'    '.join(match_parts)}")
+
+        installation_records = row.get("installations")
+        if not isinstance(installation_records, list):
+            installation_records = []
+        successful_groups: dict[tuple[str, str], list[str]] = {}
+        failed_records: list[dict] = []
+        for record in installation_records:
+            if not isinstance(record, dict):
+                continue
+            ecosystem = str(record.get("ecosystem") or "")
+            harness_name = harness_names.get(ecosystem, ecosystem)
+            if record.get("status") == "installed":
+                group_key = (
+                    str(record.get("target") or ""),
+                    str(record.get("mode") or ""),
+                )
+                names = successful_groups.setdefault(group_key, [])
+                if harness_name and harness_name not in names:
+                    names.append(harness_name)
+                successful_installations += 1
+            elif record.get("status") == "failed":
+                failed_record = dict(record)
+                failed_record["harness_name"] = harness_name
+                failed_records.append(failed_record)
+        if successful_groups or failed_records:
+            output_lines.append("已安装到：")
+        for (target, mode), names in successful_groups.items():
+            output_lines.append(f"  [成功] {' / '.join(names)} [{mode}]")
+            output_lines.append(f"    {target}")
+        for record in failed_records:
+            error_text = " ".join(str(record.get("error") or "").split())
+            output_lines.append(
+                f"  [失败] {record['harness_name']} 安装失败"
+            )
+            output_lines.append(
+                f"    目标：{record.get('target') or '（未知）'}"
+            )
+            output_lines.append(
+                f"    原因：{error_text or '安装器未提供错误信息'}"
+            )
+    output_lines.append("=" * 64)
+    output_lines.append(
+        f"完成：{len(installed)} 个 skill，"
+        f"{successful_installations} 条 harness 安装记录"
+    )
+    _write_search_output("\n".join(output_lines))
+
+
+def _safe_search_http_error(response) -> dict:
+    """只从已知结构化错误中提取安全字段，绝不回显原始响应。"""
+    canonical_messages = {
+        "SKILL_HUB_SOURCE_UNAVAILABLE": "SkillHub 数据源暂时不可用",
+        "SKILL_HUB_SEARCH_FAILED": "服务器执行 SkillHub 搜索时发生异常",
+    }
+    try:
+        response_payload = response.json()
+    except (TypeError, ValueError) as parse_error:
+        error_type = (
+            "TypeError" if isinstance(parse_error, TypeError) else "ValueError"
+        )
+        logging.getLogger("xskill.cli").warning(
+            "search error JSON parse failed http_status=%s error_type=%s",
+            int(response.status_code), error_type,
+        )
+        response_payload = {}
+    if not isinstance(response_payload, dict):
+        response_payload = {}
+    raw_code = response_payload.get("code")
+    code = raw_code if raw_code in canonical_messages else "HTTP_ERROR"
+    message = canonical_messages.get(
+        code, "服务器未提供可安全展示的结构化错误信息",
+    )
+    raw_request_id = response_payload.get("request_id")
+    response_headers = getattr(response, "headers", {})
+    header_request_id = (
+        response_headers.get("X-Request-ID")
+        if hasattr(response_headers, "get") else None
+    )
+    request_id = None
+    if (
+        isinstance(raw_request_id, str)
+        and re.fullmatch(r"search-[0-9a-f]{16}", raw_request_id) is not None
+        and header_request_id == raw_request_id
+    ):
+        request_id = raw_request_id
+    safe_error = {
+        "http_status": int(response.status_code),
+        "code": code,
+        "message": message[:200],
+        "request_id": request_id,
+    }
+    if isinstance(response_payload.get("retryable"), bool):
+        safe_error["retryable"] = response_payload["retryable"]
+    return safe_error
+
+
 def cmd_search_hub(args, http=None, headers=None) -> int:
     """`xskill search <query>` —— 搜 server skillhub，命中的拉到本地滚动槽位。
 
@@ -710,16 +873,34 @@ def cmd_search_hub(args, http=None, headers=None) -> int:
                         params={"query": query, "limit": args.top_k},
                         headers=headers)
         if resp.status_code == 404:
-            print("error: server 版本过旧，不支持 skillhub 搜索（需 ≥0.6.17），"
-                  "请管理员先升级 server", file=sys.stderr)
+            _write_search_output(
+                "error: server 版本过旧，不支持 skillhub 搜索（需 ≥0.6.17），"
+                "请管理员先升级 server",
+                to_stderr=True,
+            )
             return 1
         if resp.status_code != 200:
-            print(f"error: 搜索失败 HTTP {resp.status_code}: {resp.text[:300]}",
-                  file=sys.stderr)
+            safe_error = _safe_search_http_error(resp)
+            if args.json:
+                _write_search_output(_json.dumps(
+                    {"error": safe_error}, ensure_ascii=True, indent=2,
+                ))
+            else:
+                error_lines = [
+                    f"error: 搜索失败 HTTP {safe_error['http_status']}",
+                    f"  原因: {safe_error['message']}",
+                ]
+                if safe_error["request_id"]:
+                    error_lines.append(
+                        f"  错误编号: {safe_error['request_id']}"
+                    )
+                _write_search_output(
+                    "\n".join(error_lines), to_stderr=True,
+                )
             return 1
         results = resp.json().get("results", [])
         if not results:
-            print("skillhub 无匹配 skill")
+            _write_search_output("skillhub 无匹配 skill")
             return 0
         slots = SearchSlots(xskill_home=XSKILL_HOME)
         installed = []
@@ -727,32 +908,38 @@ def cmd_search_hub(args, http=None, headers=None) -> int:
             bundle = http.get(f"/api/v1/team/skill/{result['skill_id']}/bundle",
                               headers=headers)
             if bundle.status_code != 200:
-                print(f"warning: 拉取 {result['skill_id']} 失败 "
-                      f"HTTP {bundle.status_code}", file=sys.stderr)
+                _write_search_output(
+                    f"warning: 拉取 {result['skill_id']} 失败 "
+                    f"HTTP {bundle.status_code}",
+                    to_stderr=True,
+                )
                 continue
-            local_path = slots.install(result, bundle.content, query=query)
+            slot_result = slots.install(
+                result, bundle.content, query=query, return_details=True,
+            )
+            local_path = slot_result["cache_path"]
             # 原样透传 server 返回的所有字段，再补本机安装信息
             installed_entry = dict(result)
             installed_entry["name"] = result["display_name"]
             installed_entry["path"] = str(local_path)
+            installed_entry["cache_path"] = str(local_path)
+            installed_entry["installations"] = [
+                dict(record) for record in slot_result["installations"]
+            ]
             installed.append(installed_entry)
     except (httpx.HTTPError, OSError) as network_error:
-        print(f"error: 无法连接 team server（{type(network_error).__name__}: "
-              f"{network_error}），server 可能未响应，请检查网络或联系管理员",
-              file=sys.stderr)
+        _write_search_output(
+            f"error: 无法连接 team server（{type(network_error).__name__}），"
+            "server 可能未响应，请检查网络或联系管理员",
+            to_stderr=True,
+        )
         return 1
     if args.json:
-        print(_json.dumps(installed, ensure_ascii=False, indent=2))
+        _write_search_output(_json.dumps(
+            installed, ensure_ascii=True, indent=2,
+        ))
         return 0
-    for row in installed:
-        name_line = f"{row['name']}  ({row['skill_id']})"
-        if row.get("ux_avg") is not None:
-            name_line += f" ux {row['ux_avg']}"
-        if row.get("source"):
-            name_line += f" 来源: {row['source']}"
-        print(name_line)
-        print(f"  {row['description']}")
-        print(f"  {row['path']}")
+    _render_search_results(installed, query)
     return 0
 
 

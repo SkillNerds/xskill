@@ -65,128 +65,36 @@ UserEditAbsorbAgent 才能 round-trip 收编。但 symlink 不是所有 OS 都�
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import platform
 import shutil
 import subprocess
-import time
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING
+
+from xskill.ecosystems.installation import (
+    COPY_INSTALL_MARKER_NAME,
+    InstallSafetyError,
+    InstallMode,
+    copy_install_is_current,
+    install_metadata_path,
+    is_link_or_junction,
+    read_install_metadata,
+    read_skill_head_sha,
+    write_install_metadata,
+)
 
 logger = logging.getLogger("xskill.install_fallback")
 
-InstallMode = Literal["symlink", "junction", "copy"]
+if TYPE_CHECKING:
+    from xskill.agents.user_edit_absorb_agent import ReverseSyncStatus
 
-# install-meta 文件名前缀；完整名为 ``.xskill-install-meta-<dest.name>.json``。
-# 写到 dest.parent（而非 dest 内部）——link/junction dest 内部就是 source 仓，
-# 写进去会污染源；copy 模式 dest 内部也排除掉这个名字避免反向灌回 source。
-_INSTALL_META_PREFIX = ".xskill-install-meta-"
-
-
-def _install_meta_path(dest: Path) -> Path:
-    """meta 文件路径：``dest.parent / .xskill-install-meta-<dest.name>.json``。
-
-    统一所有模式都写到 dest.parent——避免 link vs copy 的分支判断；下游
-    清理 dest 时也不需要单独处理 meta（meta 不在 dest 内部）。
-    """
-    return dest.parent / f"{_INSTALL_META_PREFIX}{dest.name}.json"
-
-
-def _read_skill_head_sha(skill_path: Path) -> str:
-    """读 skill 仓当前 HEAD 的 sha。读不到（非 git 仓 / 没有 HEAD）就返回空串——
-    用于 install-meta 记录，缺失不影响 install 本身。
-    """
-    head = skill_path / ".git" / "HEAD"
-    if not head.is_file():
-        return ""
-    try:
-        ref = head.read_text(encoding="utf-8").strip()
-        if ref.startswith("ref: "):
-            ref_path = skill_path / ".git" / ref[5:]
-            if ref_path.is_file():
-                return ref_path.read_text(encoding="utf-8").strip()
-        return ref  # detached HEAD
-    except OSError:
-        return ""
-
-
-def _write_install_meta(dest: Path, source: Path, mode: InstallMode) -> None:
-    """install_dir 落地成功后写一份 meta。失败仅 warn（meta 缺失不影响主流程）。"""
-    meta = {
-        "mode": mode,
-        "source": str(source.resolve()),
-        "source_sha": _read_skill_head_sha(source),
-        "installed_at": time.time(),
-    }
-    try:
-        _install_meta_path(dest).write_text(
-            json.dumps(meta, indent=2), encoding="utf-8",
-        )
-    except OSError as e:
-        logger.warning("failed to write install-meta for %s: %s", dest, e)
-
-
-def _is_link_or_junction(p: Path) -> bool:
-    """是否为 symlink 或 Windows directory junction。
-
-    ``Path.is_symlink()`` 在 Windows 上对 junction 返回 False（pathlib 已知
-    行为）——junction 的 reparse tag 是 ``IO_REPARSE_TAG_MOUNT_POINT``，
-    不是 symlink 标签。但 ``shutil.rmtree`` 内部依赖 ``is_symlink()`` 判定
-    会误把 junction 当真目录处理而抛 OSError（issue #35）。
-
-    这里把 symlink 与 junction 统一当"link"处理：清理 dest 用 ``unlink``
-    而不是 ``rmtree``——``unlink`` 对 junction 也工作（删除 reparse point
-    本身，不递归动 target 目录）。
-    """
-    try:
-        if p.is_symlink():
-            return True
-    except OSError:
-        return False
-    if os.name == "nt":
-        try:
-            import stat
-            return bool(p.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
-        except (OSError, AttributeError):
-            return False
-    return False
-
-
-def _copy_install_is_current(src_dir: Path, dest: Path) -> bool:
-    """dest 已是同源且源内容未变的 copy 安装 → True（调用方可跳过重装）。
-
-    源未变的判定：git 源比 HEAD sha 与 meta 记录；skillhub 源比
-    ``.xskill_skillhub.json`` 的 sha；两者都不可用 → False（保守重装）。
-    """
-    meta_path = _install_meta_path(dest)
-    if not dest.is_dir() or not meta_path.is_file():
-        return False
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    if meta.get("mode") != "copy" or meta.get("source") != str(src_dir):
-        return False
-    if "source_sha" not in meta:
-        # 老版本 meta 没记 sha，无法判定源是否变过
-        return False
-    recorded_sha = meta["source_sha"]
-    if recorded_sha:
-        return _read_skill_head_sha(src_dir) == recorded_sha
-    source_hub_meta = src_dir / ".xskill_skillhub.json"
-    dest_hub_meta = dest / ".xskill_skillhub.json"
-    if not (source_hub_meta.is_file() and dest_hub_meta.is_file()):
-        return False
-    try:
-        source_hub_sha = json.loads(
-            source_hub_meta.read_text(encoding="utf-8")).get("sha")
-        dest_hub_sha = json.loads(
-            dest_hub_meta.read_text(encoding="utf-8")).get("sha")
-    except (OSError, ValueError):
-        return False
-    return bool(source_hub_sha) and source_hub_sha == dest_hub_sha
+# 兼容历史内部调用；真实实现只存在于公开 installation 模块。
+_install_meta_path = install_metadata_path
+_read_skill_head_sha = read_skill_head_sha
+_write_install_meta = write_install_metadata
+_is_link_or_junction = is_link_or_junction
+_copy_install_is_current = copy_install_is_current
 
 
 def _try_symlink(src_dir: Path, dest: Path) -> bool:
@@ -197,8 +105,11 @@ def _try_symlink(src_dir: Path, dest: Path) -> bool:
     try:
         dest.symlink_to(src_dir, target_is_directory=True)
         return True
-    except (OSError, NotImplementedError) as e:
-        logger.debug("symlink failed for %s -> %s: %s", dest, src_dir, e)
+    except (OSError, NotImplementedError) as link_error:
+        logger.debug(
+            "symlink failed for %s -> %s: %s",
+            dest, src_dir, link_error,
+        )
         return False
 
 
@@ -218,8 +129,13 @@ def _try_junction(src_dir: Path, dest: Path) -> bool:
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         return True
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
-        logger.debug("junction failed for %s -> %s: %s", dest, src_dir, e)
+    except (
+        subprocess.CalledProcessError, FileNotFoundError, OSError,
+    ) as junction_error:
+        logger.debug(
+            "junction failed for %s -> %s: %s",
+            dest, src_dir, junction_error,
+        )
         return False
 
 
@@ -235,41 +151,39 @@ def _do_copy(src_dir: Path, dest: Path) -> None:
         src_dir, dest,
         ignore=shutil.ignore_patterns(
             ".git", ".git/*", ".xskill-install-meta*",
+            COPY_INSTALL_MARKER_NAME,
         ),
     )
 
 
-def _maybe_reverse_sync_before_overwrite(dest: Path, source: Path) -> None:
+def _maybe_reverse_sync_before_overwrite(
+    dest: Path, source: Path,
+) -> ReverseSyncStatus:
     """install_dir 准备覆盖 dest 前的回流保护。
 
     读 meta：如果上轮是 copy 模式且 dest 有用户改没回流到 source →
     先调 ``reverse_sync_copy_dest`` 灌回，再覆盖。link/junction 模式
     dest = source 自然同步，无需回流。
 
-    meta 缺失（首次 install 或老版本写的 dest）、读取失败、mode 不是 copy、
-    dest 不存在 → 全是 no-op。一切异常仅 warn，不阻塞主流程：reverse_sync
-    本身是"尽力而为"的用户友好特性，不应因为它失败导致 install 链路阻塞。
+    dest 不存在或是 link/junction 时返回 ``NO_EDIT``。真实目录必须能判定为
+    ``NO_EDIT`` 或成功 ``SYNCED`` 才允许后续覆盖；仍在编辑、元数据未知或回流
+    失败都抛安全异常，保留原 dest。
     """
-    meta_path = _install_meta_path(dest)
-    if not meta_path.is_file():
-        return
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return
-    if meta.get("mode") != "copy":
-        return
+    from xskill.agents.user_edit_absorb_agent import ReverseSyncStatus
+
     if not dest.exists() or _is_link_or_junction(dest) or not dest.is_dir():
-        return
+        return ReverseSyncStatus.NO_EDIT
+    meta = read_install_metadata(dest)
+    if meta is not None and meta.get("mode") != "copy":
+        raise InstallSafetyError("REVERSE_SYNC_STATE_FAILED") from None
     # 延迟 import 避免 _fallback ↔ user_edit_absorb_agent 循环
-    try:
-        from xskill.agents.user_edit_absorb_agent import reverse_sync_copy_dest
-        reverse_sync_copy_dest(dest, source)
-    except Exception:
-        logger.warning(
-            "reverse_sync before overwrite failed for %s; proceeding",
-            dest, exc_info=True,
-        )
+    from xskill.agents.user_edit_absorb_agent import reverse_sync_copy_dest
+    reverse_status = reverse_sync_copy_dest(dest, source)
+    if reverse_status == ReverseSyncStatus.RECENT_EDIT:
+        raise InstallSafetyError("REVERSE_SYNC_RECENT_EDIT") from None
+    if reverse_status == ReverseSyncStatus.FAILED:
+        raise InstallSafetyError("REVERSE_SYNC_FAILED") from None
+    return reverse_status
 
 
 def _reset_dest(dest: Path) -> None:
@@ -290,8 +204,10 @@ def _reset_dest(dest: Path) -> None:
     if is_link or dest.is_file():
         try:
             dest.unlink()
-        except OSError as e:
-            logger.warning("failed to unlink %s: %s", dest, e)
+        except OSError as unlink_error:
+            logger.warning(
+                "failed to unlink %s: %s", dest, unlink_error,
+            )
     elif dest.is_dir():
         shutil.rmtree(dest)
     # 删旧 meta（即使 dest 已经清理，遗留 meta 也不该留）
@@ -307,6 +223,7 @@ def install_dir(
     src_dir: Path, dest: Path, *,
     force_mode: InstallMode | None = None,
     auto_reset: bool = False,
+    preflight_reverse_sync_status: ReverseSyncStatus | None = None,
 ) -> InstallMode:
     """把 ``src_dir`` 整目录安装到 ``dest``，按 symlink→junction→copy 顺序尝试。
 
@@ -338,9 +255,25 @@ def install_dir(
             但目前没人用。强制模式失败会把底层异常抛上去。
         auto_reset: 是否自动处理"覆盖旧 dest"。打开后函数会先 reverse_sync
             （若上轮是 copy 且有 pending edit）再 reset_dest，安全覆盖。
+        preflight_reverse_sync_status: 调用方已执行同一目标回流检查时传入其
+            显式结果，避免在破坏性覆盖前重复检查产生竞态。
     """
     if auto_reset:
-        _maybe_reverse_sync_before_overwrite(dest, src_dir)
+        from xskill.agents.user_edit_absorb_agent import ReverseSyncStatus
+        reverse_status = preflight_reverse_sync_status
+        if reverse_status is None:
+            reverse_status = _maybe_reverse_sync_before_overwrite(
+                dest, src_dir,
+            )
+        if reverse_status == ReverseSyncStatus.RECENT_EDIT:
+            raise InstallSafetyError("REVERSE_SYNC_RECENT_EDIT") from None
+        if reverse_status == ReverseSyncStatus.FAILED:
+            raise InstallSafetyError("REVERSE_SYNC_FAILED") from None
+        if reverse_status not in {
+            ReverseSyncStatus.NO_EDIT,
+            ReverseSyncStatus.SYNCED,
+        }:
+            raise InstallSafetyError("REVERSE_SYNC_STATE_FAILED") from None
         _reset_dest(dest)
 
     if force_mode == "copy":

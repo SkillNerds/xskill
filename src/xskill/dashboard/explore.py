@@ -254,7 +254,7 @@ def pipeline_progress(db_path: Optional[Path],
     from xskill.config import get_registry_db_path
     from xskill.pipeline.cold_start import ColdStartSignal
     home = Path(db_path).parent if db_path else get_registry_db_path().parent
-    if ColdStartSignal(home_root=home).exists:
+    if ColdStartSignal(xskill_home=home).exists:
         cold = {"active": True}
     candidates_out: list[dict] = []
     if skill_dir and Path(skill_dir).is_dir():

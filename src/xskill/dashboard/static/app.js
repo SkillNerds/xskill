@@ -179,7 +179,9 @@ const stateBadge = s =>
 const sourceBadge = s => s.source === 'skillhub'
   ? `<span class="ml-2 inline-block px-2 py-0.5 rounded-md text-[11px] font-medium bg-indigo-100 text-indigo-700">第三方 · skillhub</span>`
     + (s.hub ? `<span class="ml-2 inline-block text-[11px] text-slate-400">${esc(s.hub)}</span>` : '')
-  : `<span class="ml-2 inline-block px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-100 text-slate-500">自产</span>`;
+  : s.source === 'native'
+    ? `<span class="ml-2 inline-block px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-100 text-slate-500">自产</span>`
+    : '';
 
 // 海量 skill(如 1 万条)分页:一次只拉/渲一页,别让前端一次性渲 1 万行 DOM 炸锅。
 let skillsPage = 0;
@@ -791,7 +793,7 @@ async function loadDirs() {
     `<tr><td class="py-2"><span class="px-2 py-0.5 rounded-md bg-teal-50 text-teal-700 text-[11px] font-medium">${esc(x.ecosystem || 'manual')}</span></td>`
     + `<td class="text-right tabular-nums">${x.traj_count}</td>`
     + `<td class="text-right tabular-nums">${x.indexed_count}</td>`
-    + `<td class="pl-6 text-slate-500 font-mono text-[11px]">${esc(x.path)}</td></tr>`).join(''),
+    + `<td class="pl-6 text-slate-500 font-mono text-[11px]">${x.path ? esc(x.path) : '独立只读实例隐藏路径'}</td></tr>`).join(''),
     '还没有注册目录');
 }
 
@@ -1125,14 +1127,25 @@ async function loadAdmin() {
   document.getElementById('admin-gpins').innerHTML = um.global_pinned.map(g => `
     <span class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">${g}
       <button class="gpin-del font-bold" data-skill="${g}" title="移除全局 pin">✕</button></span>`).join('') || '<span class="text-slate-400">无</span>';
-  rows('admin-users-body', um.users.map(u => `<tr>
-    <td class="py-2 font-medium">${u.user}</td>
-    <td>${u.client_version || '<span class="text-slate-300">未上报</span>'}</td>
-    <td class="text-right tabular-nums">${u.exposures}</td>
-    <td class="text-right tabular-nums">${u.rate === null ? '—' : pctf(u.rate)}</td>
-    <td class="text-right tabular-nums">${u.pinned} · ${u.blocked}</td>
-    <td class="pl-6">${u.stale_advice.map(a => `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 mr-2">${a.skill}</span>`).join('') || '<span class="text-slate-300">—</span>'}</td>
-    <td class="text-right"><button class="adm-cfg text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50" data-user="${u.user}">配置…</button></td></tr>`).join(''),
+  rows('admin-users-body', um.users.map(u => {
+    const pauseDetail = [u.ingest_paused_at, u.ingest_paused_by, u.ingest_pause_reason]
+      .filter(Boolean).join(' · ');
+    const ingestState = u.ingest_paused
+      ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title="${esc(pauseDetail)}">已暂停</span>`
+      : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">处理中</span>';
+    return `<tr>
+      <td class="py-2 font-medium">${esc(u.user)}</td>
+      <td>${u.client_version ? esc(u.client_version) : '<span class="text-slate-300">未上报</span>'}</td>
+      <td class="text-right tabular-nums">${u.exposures}</td>
+      <td class="text-right tabular-nums">${u.rate === null ? '—' : pctf(u.rate)}</td>
+      <td class="text-right tabular-nums">${u.pinned} · ${u.blocked}</td>
+      <td class="pl-6">${ingestState}</td>
+      <td class="pl-6">${u.stale_advice.map(a => `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 mr-2">${esc(a.skill)}</span>`).join('') || '<span class="text-slate-300">—</span>'}</td>
+      <td class="text-right whitespace-nowrap">
+        <button class="adm-ingest text-[11px] px-2 py-0.5 rounded ring-1 ${u.ingest_paused ? 'ring-emerald-200 text-emerald-700 hover:bg-emerald-50' : 'ring-amber-200 text-amber-700 hover:bg-amber-50'}" data-client-id="${esc(u.client_id)}" data-paused="${u.ingest_paused ? '1' : '0'}">${u.ingest_paused ? '恢复轨迹' : '暂停轨迹'}</button>
+        <button class="adm-cfg text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50 ml-1" data-user="${esc(u.user)}">配置…</button>
+      </td></tr>`;
+  }).join(''),
     '暂无 client');
   const ST = { active: ['在役', 'bg-emerald-100 text-emerald-700'], canary: ['灰度中', 'bg-amber-100 text-amber-700'], retired: ['已下线', 'bg-rose-100 text-rose-700'] };
   rows('admin-skills-body', sk.skills.map(s => {
@@ -1166,6 +1179,28 @@ async function openAdminDrawer(user) {
     </div>`;
 }
 document.addEventListener('click', async e => {
+  const ingest = e.target.closest('.adm-ingest');
+  if (ingest) {
+    const paused = ingest.dataset.paused === '1';
+    const nextPaused = !paused;
+    let reason = '';
+    if (nextPaused) {
+      const entered = prompt('暂停后仍会接收并保存轨迹，恢复后自动补处理。可填写暂停原因：', '');
+      if (entered === null) return;
+      reason = entered.trim();
+    } else if (!confirm('恢复该用户的轨迹处理？暂停期间积压的轨迹将在下一轮自动处理。')) {
+      return;
+    }
+    try {
+      await jpost(
+        '/api/v1/dashboard/admin/client/' + encodeURIComponent(ingest.dataset.clientId) + '/ingest',
+        { paused: nextPaused, reason },
+        'PUT',
+      );
+      await loadAdmin();
+    } catch (err) { alert(err.message); }
+    return;
+  }
   const cfg = e.target.closest('.adm-cfg');
   if (cfg) { openAdminDrawer(cfg.dataset.user).catch(err => alert(err.message)); return; }
   if (e.target.id === 'adm-drawer-x') { document.getElementById('admin-drawer').classList.add('hidden'); return; }

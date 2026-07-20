@@ -19,10 +19,17 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
+import os
+import secrets
 import shutil
+import stat
+import tempfile
 import time
 from dataclasses import dataclass
+from enum import Enum
+from operator import attrgetter
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -84,6 +91,12 @@ class UserEditAbsorbAgent:
         _, status_out, _ = run_git(["status", "--porcelain"], cwd=str(self.skill_dir))
         if not diff_out and not status_out:
             return False
+        candidate_snapshot = C.load_candidates(self.skill_dir)
+        snapshot_atom_ids = {
+            str(candidate["atom_id"])
+            for candidate in candidate_snapshot.get("candidates", [])
+            if candidate.get("atom_id")
+        }
 
         from xskill.agents import agent_tools
         skill_name = self.skill_dir.name
@@ -109,8 +122,14 @@ class UserEditAbsorbAgent:
         )
         try:
             agent.run(user_msg)
-        except Exception:
-            logger.exception("UserEditAbsorbAgent failed: %s", skill_name)
+        except Exception as absorb_error:
+            logger.warning(
+                "UserEditAbsorbAgent failed skill_id_hash=%s error_type=%s",
+                hashlib.sha256(
+                    skill_name.encode("utf-8"),
+                ).hexdigest()[:12],
+                type(absorb_error).__name__,
+            )
             return False
 
         # 检查是否成功 commit（最新 commit message 含 "absorb user edit"）
@@ -122,10 +141,16 @@ class UserEditAbsorbAgent:
                 skill_name, last_msg[:120],
             )
             return False
-        # 清 candidates buffer——手改是 ground truth，原本 buffer 里的素材
-        # 价值已经被人工版本超越
-        C.clear_candidates(self.skill_dir)
-        logger.info("UserEditAbsorbAgent absorbed user edit: %s", skill_name)
+        # 手改开始前已有的候选已被人工版本超越；LLM/commit 期间新到的候选
+        # 属于后续轨迹，必须保留给下一轮整理。
+        if snapshot_atom_ids:
+            C.remove_candidates(self.skill_dir, snapshot_atom_ids)
+        logger.info(
+            "UserEditAbsorbAgent absorbed user edit skill_id_hash=%s",
+            hashlib.sha256(
+                skill_name.encode("utf-8"),
+            ).hexdigest()[:12],
+        )
         return True
 
 
@@ -239,60 +264,178 @@ _OPENCLAW_INSTALL_META = ".xskill-install-meta.json"
 # 老位置在 ``dest/.xskill-install-meta.json``——只要 dest 还可能存在老 meta
 # （存量 openclaw 装好的 dest 升级前都是老位置），就必须在所有 helper 的默认
 # exclude 里把它排掉，否则 install 时重写 meta 会触发误判 "用户改了 dest"。
-_DEFAULT_REVERSE_SYNC_EXCLUDE = frozenset({".git", _OPENCLAW_INSTALL_META})
+_COPY_INSTALL_IDENTITY_MARKER = ".xskill-install-identity.json"
+_OPEN_SUPPORTS_DIR_FD = os.open in os.supports_dir_fd
+_REVERSE_TRANSACTION_SCHEMA = 1
+_MAX_REVERSE_TRANSACTIONS = 1
+_MAX_REVERSE_MANIFEST_BYTES = 1024 * 1024
+_DEFAULT_REVERSE_SYNC_EXCLUDE = frozenset({
+    ".git",
+    _OPENCLAW_INSTALL_META,
+    _COPY_INSTALL_IDENTITY_MARKER,
+})
 
 
-def _new_install_meta_path(dest_dir: Path) -> Path:
-    """新位置 meta：``dest.parent / .xskill-install-meta-<dest.name>.json``。
+class ReverseSyncStatus(str, Enum):
+    """copy 安装回流的无歧义结果。"""
 
-    与 ``ecosystems._fallback._install_meta_path`` 同源；这里复刻一份
-    避免 user_edit_absorb_agent ↔ ecosystems 的循环 import。
-    """
-    return dest_dir.parent / f".xskill-install-meta-{dest_dir.name}.json"
+    NO_EDIT = "no_edit"
+    RECENT_EDIT = "recent_edit"
+    SYNCED = "synced"
+    FAILED = "failed"
 
 
-def _read_install_meta_ts(dest_dir: Path) -> Optional[float]:
-    """读 dest install-meta 的 installed_at（epoch 秒）；读不到返回 None。
+class _DestEditStatus(str, Enum):
+    NO_EDIT = "no_edit"
+    RECENT_EDIT = "recent_edit"
+    READY = "ready"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class _SafeDestFile:
+    relative_path: Path
+    device: int
+    inode: int
+    mode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+@dataclass(frozen=True)
+class _DestEditAssessment:
+    status: _DestEditStatus
+    files: tuple[_SafeDestFile, ...] = ()
+
+
+def _reverse_sync_path_hash(path: Path) -> str:
+    return hashlib.sha256(
+        os.path.abspath(os.path.normpath(str(path))).encode(
+            "utf-8", errors="surrogatepass",
+        ),
+    ).hexdigest()[:16]
+
+
+def _log_reverse_sync_failure(dest_dir: Path, error_type: str) -> None:
+    logger.warning(
+        "reverse sync failed path_hash=%s error_type=%s",
+        _reverse_sync_path_hash(dest_dir),
+        error_type,
+    )
+
+
+def _read_install_meta_ts(dest_dir: Path) -> tuple[bool, Optional[float]]:
+    """读取 installed_at，返回 ``(读取状态正常, 时间戳)``。
 
     优先读**新位置**（``dest.parent`` 旁边的 ``.xskill-install-meta-<name>.json``）；
     新位置缺失才退到 openclaw 旧位置（``dest/.xskill-install-meta.json``）
     做兼容——存量 openclaw dest 升级前还是老位置；新装的统一在新位置。
     """
-    for meta_path in (_new_install_meta_path(dest_dir),
-                      dest_dir / _OPENCLAW_INSTALL_META):
-        if not meta_path.is_file():
-            continue
-        try:
-            data = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, ValueError):
-            continue
-        ts = data.get("installed_at")
-        if isinstance(ts, (int, float)):
-            return float(ts)
-    return None
+    from xskill.ecosystems.installation import (
+        InstallationMetadataError,
+        read_install_metadata,
+        read_install_metadata_file,
+    )
+
+    try:
+        data = read_install_metadata(dest_dir)
+        if data is None:
+            data = read_install_metadata_file(
+                dest_dir / _OPENCLAW_INSTALL_META,
+                dest_dir,
+            )
+    except InstallationMetadataError:
+        return False, None
+    if data is None:
+        return True, None
+    installed_timestamp = data.get("installed_at")
+    if (
+        isinstance(installed_timestamp, bool)
+        or not isinstance(installed_timestamp, (int, float))
+    ):
+        return False, None
+    return True, float(installed_timestamp)
 
 
-def _dest_user_edit_mtime(dest_dir: Path, exclude: frozenset[str]) -> float:
-    """扫 dest 下所有用户内容文件的 max mtime，跳过 exclude 第一段。
+def _is_reparse_point(file_stat: os.stat_result) -> bool:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    file_attributes = getattr(file_stat, "st_file_attributes", 0)
+    return bool(reparse_flag and file_attributes & reparse_flag)
 
-    .git 跳过——dest 理论上不该有 .git，但万一有（用户自己 git init）也别
-    把 git 内部状态当用户改算。
-    """
-    max_mtime = 0.0
-    for p in dest_dir.rglob("*"):
-        try:
-            rel = p.relative_to(dest_dir)
-            parts = rel.parts
-            if not parts:
-                continue
-            if parts[0] in exclude:
-                continue
-            m = p.stat().st_mtime
-            if m > max_mtime:
-                max_mtime = m
-        except (OSError, ValueError):
-            continue
-    return max_mtime
+
+def _safe_dest_files(
+    dest_dir: Path, exclude: frozenset[str],
+) -> tuple[bool, tuple[_SafeDestFile, ...]]:
+    """nofollow 扫描 dest；任一 symlink/reparse/特殊文件都整体失败。"""
+    scanned_files: list[_SafeDestFile] = []
+    pending_dirs: list[tuple[Path, Path]] = [(dest_dir, Path())]
+    try:
+        root_stat = dest_dir.lstat()
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or _is_reparse_point(root_stat)
+        ):
+            return False, ()
+        while pending_dirs:
+            current_dir, relative_dir = pending_dirs.pop()
+            with os.scandir(current_dir) as entries:
+                for entry in sorted(entries, key=attrgetter("name")):
+                    relative_path = relative_dir / entry.name
+                    if relative_path.parts[0] in exclude:
+                        continue
+                    entry_stat = entry.stat(follow_symlinks=False)
+                    if _is_reparse_point(entry_stat):
+                        return False, ()
+                    if stat.S_ISDIR(entry_stat.st_mode):
+                        pending_dirs.append(
+                            (Path(entry.path), relative_path),
+                        )
+                        continue
+                    if not stat.S_ISREG(entry_stat.st_mode):
+                        return False, ()
+                    scanned_files.append(_SafeDestFile(
+                        relative_path=relative_path,
+                        device=entry_stat.st_dev,
+                        inode=entry_stat.st_ino,
+                        mode=entry_stat.st_mode,
+                        size=entry_stat.st_size,
+                        mtime_ns=entry_stat.st_mtime_ns,
+                        ctime_ns=entry_stat.st_ctime_ns,
+                    ))
+    except (OSError, ValueError):
+        return False, ()
+    return True, tuple(scanned_files)
+
+
+def _dest_edit_status(
+    dest_dir: Path, *, quiet_seconds: int,
+    exclude: frozenset[str],
+) -> _DestEditAssessment:
+    try:
+        if not dest_dir.is_dir():
+            return _DestEditAssessment(_DestEditStatus.NO_EDIT)
+    except OSError:
+        return _DestEditAssessment(_DestEditStatus.FAILED)
+    metadata_ok, installed_at = _read_install_meta_ts(dest_dir)
+    if not metadata_ok or installed_at is None:
+        return _DestEditAssessment(_DestEditStatus.FAILED)
+    scan_ok, scanned_files = _safe_dest_files(dest_dir, exclude)
+    if not scan_ok:
+        return _DestEditAssessment(_DestEditStatus.FAILED)
+    max_mtime = max(
+        (file_info.mtime_ns / 1_000_000_000 for file_info in scanned_files),
+        default=0.0,
+    )
+    if max_mtime - installed_at < 1.0:
+        return _DestEditAssessment(
+            _DestEditStatus.NO_EDIT, scanned_files,
+        )
+    if (time.time() - max_mtime) < quiet_seconds:
+        return _DestEditAssessment(
+            _DestEditStatus.RECENT_EDIT, scanned_files,
+        )
+    return _DestEditAssessment(_DestEditStatus.READY, scanned_files)
 
 
 def has_pending_dest_edit(
@@ -300,25 +443,697 @@ def has_pending_dest_edit(
     quiet_seconds: int = USER_EDIT_QUIET_SECONDS,
     exclude: frozenset[str] = _DEFAULT_REVERSE_SYNC_EXCLUDE,
 ) -> bool:
-    """dest 里是否有用户手改、且静默时间已过 quiet_seconds？
+    """dest 是否相对安装基线有文件状态变化且已结束静默期。"""
+    from xskill.ecosystems.installation import read_copy_install_baseline
 
-    判据：
-    - dest 存在
-    - 能读到 install-meta 里的 installed_at
-    - dest 某文件 mtime > installed_at + 1 秒（用户改过）
-    - now - max_mtime >= quiet_seconds（停手 ≥3 分钟）
-    """
-    if not dest_dir.is_dir():
+    assessment = _dest_edit_status(
+        dest_dir,
+        quiet_seconds=quiet_seconds,
+        exclude=exclude,
+    )
+    if assessment.status == _DestEditStatus.FAILED:
         return False
-    installed_at = _read_install_meta_ts(dest_dir)
-    if installed_at is None:
+    if not assessment.files:
         return False
-    max_mtime = _dest_user_edit_mtime(dest_dir, exclude)
-    if max_mtime - installed_at < 1.0:
+    try:
+        baseline_fingerprints = read_copy_install_baseline(dest_dir)
+    except Exception:  # pylint: disable=broad-exception-caught
+        _log_reverse_sync_failure(
+            dest_dir, "REVERSE_SYNC_BASELINE_FAILED",
+        )
         return False
-    if (time.time() - max_mtime) < quiet_seconds:
+    if not _OPEN_SUPPORTS_DIR_FD:
         return False
-    return True
+    try:
+        candidate_files = [
+            file_info
+            for file_info in assessment.files
+            if _hash_verified_file(dest_dir, file_info)
+            != baseline_fingerprints.get(
+                file_info.relative_path.as_posix(),
+            )
+        ]
+    except (OSError, ValueError):
+        _log_reverse_sync_failure(
+            dest_dir, "REVERSE_SYNC_CONTENT_READ_FAILED",
+        )
+        return False
+    if not candidate_files:
+        return False
+    last_change_time = max(
+        max(file_info.mtime_ns, file_info.ctime_ns)
+        / 1_000_000_000
+        for file_info in candidate_files
+    )
+    return time.time() - last_change_time >= quiet_seconds
+
+
+def _ensure_real_directory(root: Path, relative_dir: Path) -> list[Path]:
+    """创建缺失父目录；已有路径必须是真目录且不是 reparse point。"""
+    created_dirs: list[Path] = []
+    current_dir = root
+    for path_part in relative_dir.parts:
+        current_dir = current_dir / path_part
+        try:
+            current_stat = current_dir.lstat()
+        except FileNotFoundError:
+            current_dir.mkdir()
+            created_dirs.append(current_dir)
+            continue
+        if (
+            not stat.S_ISDIR(current_stat.st_mode)
+            or _is_reparse_point(current_stat)
+        ):
+            raise OSError("unsafe directory entry")
+    return created_dirs
+
+
+def _validate_real_directory_prefix(root: Path, relative_dir: Path) -> None:
+    """验证已存在的父目录前缀，遇到首个缺失目录即停止。"""
+    current_dir = root
+    for path_part in relative_dir.parts:
+        current_dir = current_dir / path_part
+        try:
+            current_stat = current_dir.lstat()
+        except FileNotFoundError:
+            return
+        if (
+            not stat.S_ISDIR(current_stat.st_mode)
+            or _is_reparse_point(current_stat)
+        ):
+            raise OSError("unsafe directory entry")
+
+
+def _copy_verified_file_to_stage(
+    dest_root: Path,
+    file_info: _SafeDestFile,
+    staged_path: Path,
+) -> None:
+    """O_NOFOLLOW + fstat 身份校验后把一个普通文件写入受控 staging。"""
+    if not _OPEN_SUPPORTS_DIR_FD:
+        raise OSError("safe directory-relative open unavailable")
+    open_flags = os.O_RDONLY
+    open_flags |= getattr(os, "O_BINARY", 0)
+    open_flags |= getattr(os, "O_NOFOLLOW", 0)
+    open_flags |= getattr(os, "O_NONBLOCK", 0)
+    directory_flags = os.O_RDONLY
+    directory_flags |= getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+    opened_directories: list[int] = []
+    try:
+        current_directory = os.open(dest_root, directory_flags)
+        opened_directories.append(current_directory)
+        for path_part in file_info.relative_path.parent.parts:
+            current_directory = os.open(
+                path_part,
+                directory_flags,
+                dir_fd=current_directory,
+            )
+            opened_directories.append(current_directory)
+        file_descriptor = os.open(
+            file_info.relative_path.name,
+            open_flags,
+            dir_fd=current_directory,
+        )
+    except Exception:
+        for directory_descriptor in reversed(opened_directories):
+            os.close(directory_descriptor)
+        raise
+    try:
+        opened_stat = os.fstat(file_descriptor)
+        expected_identity = (
+            file_info.device,
+            file_info.inode,
+            stat.S_IFMT(file_info.mode),
+        )
+        opened_identity = (
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+            stat.S_IFMT(opened_stat.st_mode),
+        )
+        if (
+            opened_identity != expected_identity
+            or not stat.S_ISREG(opened_stat.st_mode)
+            or _is_reparse_point(opened_stat)
+        ):
+            raise OSError("source identity changed")
+        if os.name != "nt":
+            os.set_blocking(file_descriptor, True)
+        with os.fdopen(
+            os.dup(file_descriptor), "rb", closefd=True,
+        ) as source_file, open(staged_path, "wb") as staged_file:
+            shutil.copyfileobj(source_file, staged_file)
+            staged_file.flush()
+            os.fsync(staged_file.fileno())
+        final_stat = os.fstat(file_descriptor)
+        if (
+            final_stat.st_dev != file_info.device
+            or final_stat.st_ino != file_info.inode
+            or not stat.S_ISREG(final_stat.st_mode)
+            or final_stat.st_size != file_info.size
+            or final_stat.st_mtime_ns != file_info.mtime_ns
+            or final_stat.st_ctime_ns != file_info.ctime_ns
+        ):
+            raise OSError("source changed while reading")
+        os.chmod(staged_path, stat.S_IMODE(file_info.mode))
+        os.utime(
+            staged_path,
+            ns=(file_info.mtime_ns, file_info.mtime_ns),
+        )
+    finally:
+        os.close(file_descriptor)
+        for directory_descriptor in reversed(opened_directories):
+            os.close(directory_descriptor)
+
+
+def _hash_verified_file(
+    root: Path, file_info: _SafeDestFile,
+) -> str:
+    """在目录锚点下 nofollow 读取并校验一个普通文件的内容摘要。"""
+    if not _OPEN_SUPPORTS_DIR_FD:
+        raise OSError("safe directory-relative open unavailable")
+    open_flags = os.O_RDONLY
+    open_flags |= getattr(os, "O_BINARY", 0)
+    open_flags |= getattr(os, "O_NOFOLLOW", 0)
+    open_flags |= getattr(os, "O_NONBLOCK", 0)
+    directory_flags = os.O_RDONLY
+    directory_flags |= getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+    opened_directories: list[int] = []
+    try:
+        current_directory = os.open(root, directory_flags)
+        opened_directories.append(current_directory)
+        for path_part in file_info.relative_path.parent.parts:
+            current_directory = os.open(
+                path_part,
+                directory_flags,
+                dir_fd=current_directory,
+            )
+            opened_directories.append(current_directory)
+        file_descriptor = os.open(
+            file_info.relative_path.name,
+            open_flags,
+            dir_fd=current_directory,
+        )
+    except Exception:
+        for directory_descriptor in reversed(opened_directories):
+            os.close(directory_descriptor)
+        raise
+    try:
+        opened_stat = os.fstat(file_descriptor)
+        expected_identity = (
+            file_info.device,
+            file_info.inode,
+            stat.S_IFMT(file_info.mode),
+        )
+        opened_identity = (
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+            stat.S_IFMT(opened_stat.st_mode),
+        )
+        if (
+            opened_identity != expected_identity
+            or not stat.S_ISREG(opened_stat.st_mode)
+            or _is_reparse_point(opened_stat)
+        ):
+            raise OSError("file identity changed")
+        if os.name != "nt":
+            os.set_blocking(file_descriptor, True)
+        digest = hashlib.sha256()
+        while True:
+            file_chunk = os.read(file_descriptor, 1024 * 1024)
+            if not file_chunk:
+                break
+            digest.update(file_chunk)
+        final_stat = os.fstat(file_descriptor)
+        if (
+            final_stat.st_dev,
+            final_stat.st_ino,
+            stat.S_IFMT(final_stat.st_mode),
+            final_stat.st_size,
+            final_stat.st_mtime_ns,
+            final_stat.st_ctime_ns,
+        ) != (
+            file_info.device,
+            file_info.inode,
+            stat.S_IFMT(file_info.mode),
+            file_info.size,
+            file_info.mtime_ns,
+            file_info.ctime_ns,
+        ):
+            raise OSError("file changed while reading")
+        return digest.hexdigest()
+    finally:
+        os.close(file_descriptor)
+        for directory_descriptor in reversed(opened_directories):
+            os.close(directory_descriptor)
+
+
+def _safe_source_file_info(
+    source_dir: Path, relative_path: Path,
+) -> _SafeDestFile | None:
+    _validate_real_directory_prefix(
+        source_dir, relative_path.parent,
+    )
+    source_path = source_dir / relative_path
+    try:
+        source_stat = source_path.lstat()
+    except FileNotFoundError:
+        return None
+    if (
+        not stat.S_ISREG(source_stat.st_mode)
+        or _is_reparse_point(source_stat)
+    ):
+        raise OSError("unsafe source target")
+    return _SafeDestFile(
+        relative_path=relative_path,
+        device=source_stat.st_dev,
+        inode=source_stat.st_ino,
+        mode=source_stat.st_mode,
+        size=source_stat.st_size,
+        mtime_ns=source_stat.st_mtime_ns,
+        ctime_ns=source_stat.st_ctime_ns,
+    )
+
+
+def _path_signature(path: Path) -> tuple[int, int, int, int, int] | None:
+    try:
+        path_stat = path.lstat()
+    except FileNotFoundError:
+        return None
+    return (
+        path_stat.st_dev,
+        path_stat.st_ino,
+        stat.S_IFMT(path_stat.st_mode),
+        path_stat.st_size,
+        path_stat.st_mtime_ns,
+    )
+
+
+def _fsync_directory(directory: Path) -> None:
+    directory_flags = os.O_RDONLY
+    directory_flags |= getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+    directory_descriptor = os.open(directory, directory_flags)
+    try:
+        directory_stat = os.fstat(directory_descriptor)
+        if (
+            not stat.S_ISDIR(directory_stat.st_mode)
+            or _is_reparse_point(directory_stat)
+        ):
+            raise OSError("unsafe transaction directory")
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
+
+
+def _fsync_regular_file(path: Path) -> None:
+    open_flags = os.O_RDONLY
+    open_flags |= getattr(os, "O_BINARY", 0)
+    open_flags |= getattr(os, "O_NOFOLLOW", 0)
+    file_descriptor = os.open(path, open_flags)
+    try:
+        file_stat = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or _is_reparse_point(file_stat)
+        ):
+            raise OSError("unsafe transaction file")
+        os.fsync(file_descriptor)
+    finally:
+        os.close(file_descriptor)
+
+
+def _atomic_write_reverse_manifest(
+    manifest_path: Path, manifest: dict,
+) -> None:
+    manifest_bytes = json.dumps(
+        manifest,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8", errors="strict")
+    if len(manifest_bytes) > _MAX_REVERSE_MANIFEST_BYTES:
+        raise OSError("reverse transaction manifest too large")
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{manifest_path.name}.tmp-",
+        dir=manifest_path.parent,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "wb") as output:
+            output.write(manifest_bytes)
+            output.flush()
+            os.fsync(output.fileno())
+        temporary_path.replace(manifest_path)
+        _fsync_directory(manifest_path.parent)
+    except Exception:
+        try:
+            temporary_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _reverse_transaction_prefix(source_dir: Path) -> str:
+    source_hash = _reverse_sync_path_hash(source_dir)
+    return f".xskill-reverse-{source_hash}-"
+
+
+def _pending_reverse_manifests(source_dir: Path) -> tuple[Path, ...]:
+    prefix = _reverse_transaction_prefix(source_dir)
+    manifests: list[Path] = []
+    data_names: set[str] = set()
+    temporary_paths: list[Path] = []
+    with os.scandir(source_dir.parent) as entries:
+        for entry in entries:
+            if (
+                entry.name.startswith(prefix)
+                and entry.name.endswith(".json")
+            ):
+                entry_stat = entry.stat(follow_symlinks=False)
+                if (
+                    not stat.S_ISREG(entry_stat.st_mode)
+                    or _is_reparse_point(entry_stat)
+                ):
+                    raise OSError("unsafe reverse transaction manifest")
+                manifests.append(Path(entry.path))
+                continue
+            if (
+                entry.name.startswith(prefix)
+                and entry.name.endswith(".data")
+            ):
+                entry_stat = entry.stat(follow_symlinks=False)
+                if (
+                    not stat.S_ISDIR(entry_stat.st_mode)
+                    or _is_reparse_point(entry_stat)
+                ):
+                    raise OSError("unsafe reverse transaction data")
+                data_names.add(entry.name)
+                continue
+            if (
+                entry.name.startswith(f".{prefix}")
+                and ".json.tmp-" in entry.name
+            ):
+                entry_stat = entry.stat(follow_symlinks=False)
+                if (
+                    not stat.S_ISREG(entry_stat.st_mode)
+                    or _is_reparse_point(entry_stat)
+                ):
+                    raise OSError("unsafe reverse transaction temporary")
+                temporary_paths.append(Path(entry.path))
+    manifests.sort()
+    if len(temporary_paths) > 16:
+        raise OSError("too many reverse transaction temporaries")
+    for temporary_path in temporary_paths:
+        temporary_path.unlink()
+    expected_data_names = {
+        f"{manifest_path.name[:-5]}.data"
+        for manifest_path in manifests
+    }
+    if data_names - expected_data_names:
+        raise OSError("orphan reverse transaction data")
+    return tuple(manifests)
+
+
+def _read_reverse_manifest(
+    source_dir: Path, manifest_path: Path,
+) -> dict:
+    manifest_stat = manifest_path.lstat()
+    if (
+        not stat.S_ISREG(manifest_stat.st_mode)
+        or _is_reparse_point(manifest_stat)
+        or manifest_stat.st_size > _MAX_REVERSE_MANIFEST_BYTES
+    ):
+        raise OSError("unsafe reverse transaction manifest")
+    open_flags = os.O_RDONLY
+    open_flags |= getattr(os, "O_BINARY", 0)
+    open_flags |= getattr(os, "O_NOFOLLOW", 0)
+    file_descriptor = os.open(manifest_path, open_flags)
+    try:
+        opened_stat = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISREG(opened_stat.st_mode)
+            or (
+                opened_stat.st_dev,
+                opened_stat.st_ino,
+                opened_stat.st_size,
+            ) != (
+                manifest_stat.st_dev,
+                manifest_stat.st_ino,
+                manifest_stat.st_size,
+            )
+        ):
+            raise OSError("reverse transaction manifest changed")
+        manifest_chunks: list[bytes] = []
+        remaining = _MAX_REVERSE_MANIFEST_BYTES + 1
+        while remaining > 0:
+            manifest_chunk = os.read(
+                file_descriptor, min(remaining, 8192),
+            )
+            if not manifest_chunk:
+                break
+            manifest_chunks.append(manifest_chunk)
+            remaining -= len(manifest_chunk)
+        raw_manifest = b"".join(manifest_chunks)
+        final_stat = os.fstat(file_descriptor)
+        if (
+            final_stat.st_dev,
+            final_stat.st_ino,
+            final_stat.st_size,
+            final_stat.st_mtime_ns,
+        ) != (
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+            opened_stat.st_size,
+            opened_stat.st_mtime_ns,
+        ):
+            raise OSError("reverse transaction manifest changed")
+    finally:
+        os.close(file_descriptor)
+    if len(raw_manifest) > _MAX_REVERSE_MANIFEST_BYTES:
+        raise OSError("reverse transaction manifest too large")
+    manifest = json.loads(raw_manifest.decode("utf-8", errors="strict"))
+    expected_prefix = _reverse_transaction_prefix(source_dir)
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema_version") != _REVERSE_TRANSACTION_SCHEMA
+        or manifest.get("source_hash") != _reverse_sync_path_hash(source_dir)
+        or manifest.get("state") not in {
+            "initializing", "prepared", "committing", "committed",
+        }
+        or not isinstance(manifest.get("data_name"), str)
+        or not manifest["data_name"].startswith(expected_prefix)
+        or not manifest["data_name"].endswith(".data")
+        or Path(manifest["data_name"]).name != manifest["data_name"]
+        or not isinstance(manifest.get("files"), list)
+    ):
+        raise OSError("invalid reverse transaction manifest")
+    return manifest
+
+
+def _manifest_relative_path(raw_path: object) -> Path:
+    if not isinstance(raw_path, str):
+        raise OSError("invalid reverse transaction path")
+    relative_path = Path(raw_path)
+    if (
+        relative_path.is_absolute()
+        or not relative_path.parts
+        or any(path_part in {"", ".", ".."} for path_part in relative_path.parts)
+    ):
+        raise OSError("invalid reverse transaction path")
+    return relative_path
+
+
+def _manifest_signature(value: object) -> tuple[int, int, int, int, int] | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, list)
+        or len(value) != 5
+        or any(
+            isinstance(item, bool) or not isinstance(item, int)
+            for item in value
+        )
+    ):
+        raise OSError("invalid reverse transaction identity")
+    return tuple(value)
+
+
+def _cleanup_reverse_transaction(
+    manifest_path: Path, data_dir: Path,
+) -> bool:
+    try:
+        data_signature = _path_signature(data_dir)
+        if data_signature is not None:
+            data_stat = data_dir.lstat()
+            if (
+                not stat.S_ISDIR(data_stat.st_mode)
+                or _is_reparse_point(data_stat)
+            ):
+                return False
+            shutil.rmtree(data_dir)
+            _fsync_directory(data_dir.parent)
+        manifest_path.unlink()
+        _fsync_directory(manifest_path.parent)
+        return True
+    except OSError:
+        return False
+
+
+def _rollback_reverse_transaction(
+    source_dir: Path,
+    manifest_path: Path,
+    manifest: dict,
+) -> bool:
+    data_dir = source_dir.parent / manifest["data_name"]
+    rollback_dir = data_dir / "rollback"
+    try:
+        for entry in reversed(manifest["files"]):
+            if not isinstance(entry, dict):
+                return False
+            relative_path = _manifest_relative_path(entry.get("path"))
+            original_signature = _manifest_signature(
+                entry.get("original_signature"),
+            )
+            staged_signature = _manifest_signature(
+                entry.get("staged_signature"),
+            )
+            if staged_signature is None:
+                return False
+            target_path = source_dir / relative_path
+            backup_path = rollback_dir / relative_path
+            current_signature = _path_signature(target_path)
+            backup_signature = _path_signature(backup_path)
+            if backup_signature is not None:
+                if backup_signature != original_signature:
+                    return False
+                if current_signature is not None:
+                    if current_signature != staged_signature:
+                        return False
+                    target_path.unlink()
+                    _fsync_directory(target_path.parent)
+                _ensure_real_directory(
+                    source_dir, relative_path.parent,
+                )
+                backup_path.replace(target_path)
+                _fsync_regular_file(target_path)
+                _fsync_directory(target_path.parent)
+                continue
+            if original_signature is None:
+                if current_signature is None:
+                    continue
+                if current_signature != staged_signature:
+                    return False
+                target_path.unlink()
+                _fsync_directory(target_path.parent)
+                continue
+            if current_signature != original_signature:
+                return False
+        return _cleanup_reverse_transaction(
+            manifest_path, data_dir,
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _recover_pending_reverse_transaction(source_dir: Path) -> bool:
+    try:
+        manifests = _pending_reverse_manifests(source_dir)
+        if len(manifests) > _MAX_REVERSE_TRANSACTIONS:
+            return False
+        if not manifests:
+            return True
+        manifest_path = manifests[0]
+        manifest = _read_reverse_manifest(source_dir, manifest_path)
+        data_dir = source_dir.parent / manifest["data_name"]
+        if manifest["state"] == "committed":
+            return _cleanup_reverse_transaction(
+                manifest_path, data_dir,
+            )
+        if manifest["state"] == "initializing" and not manifest["files"]:
+            return _cleanup_reverse_transaction(
+                manifest_path, data_dir,
+            )
+        return _rollback_reverse_transaction(
+            source_dir, manifest_path, manifest,
+        )
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+
+
+def _create_reverse_transaction(
+    source_dir: Path,
+) -> tuple[Path, Path, dict]:
+    transaction_token = secrets.token_hex(12)
+    transaction_name = (
+        f"{_reverse_transaction_prefix(source_dir)}{transaction_token}"
+    )
+    manifest_path = source_dir.parent / f"{transaction_name}.json"
+    data_dir = source_dir.parent / f"{transaction_name}.data"
+    manifest = {
+        "schema_version": _REVERSE_TRANSACTION_SCHEMA,
+        "source_hash": _reverse_sync_path_hash(source_dir),
+        "data_name": data_dir.name,
+        "state": "initializing",
+        "files": [],
+    }
+    _atomic_write_reverse_manifest(manifest_path, manifest)
+    data_dir.mkdir()
+    (data_dir / "staged").mkdir()
+    (data_dir / "rollback").mkdir()
+    _fsync_directory(data_dir)
+    _fsync_directory(data_dir.parent)
+    return manifest_path, data_dir, manifest
+
+
+def _commit_reverse_transaction(
+    source_dir: Path,
+    manifest_path: Path,
+    data_dir: Path,
+    manifest: dict,
+) -> bool:
+    staged_dir = data_dir / "staged"
+    rollback_dir = data_dir / "rollback"
+    try:
+        manifest["state"] = "committing"
+        _atomic_write_reverse_manifest(manifest_path, manifest)
+        for entry in manifest["files"]:
+            relative_path = _manifest_relative_path(entry["path"])
+            target_path = source_dir / relative_path
+            staged_path = staged_dir / relative_path
+            backup_path = rollback_dir / relative_path
+            original_signature = _manifest_signature(
+                entry["original_signature"],
+            )
+            staged_signature = _manifest_signature(
+                entry["staged_signature"],
+            )
+            if (
+                staged_signature is None
+                or _path_signature(staged_path) != staged_signature
+                or _path_signature(target_path) != original_signature
+            ):
+                raise OSError("reverse transaction precondition changed")
+            _ensure_real_directory(source_dir, relative_path.parent)
+            if original_signature is not None:
+                _ensure_real_directory(
+                    rollback_dir, relative_path.parent,
+                )
+                _fsync_regular_file(target_path)
+                target_path.replace(backup_path)
+                _fsync_directory(target_path.parent)
+                _fsync_directory(backup_path.parent)
+            _fsync_regular_file(staged_path)
+            staged_path.replace(target_path)
+            _fsync_regular_file(target_path)
+            _fsync_directory(target_path.parent)
+        manifest["state"] = "committed"
+        _atomic_write_reverse_manifest(manifest_path, manifest)
+        return _cleanup_reverse_transaction(
+            manifest_path, data_dir,
+        )
+    except (OSError, ValueError):
+        return False
 
 
 def reverse_sync_copy_dest(
@@ -326,73 +1141,224 @@ def reverse_sync_copy_dest(
     *,
     exclude: frozenset[str] = _DEFAULT_REVERSE_SYNC_EXCLUDE,
     quiet_seconds: int = USER_EDIT_QUIET_SECONDS,
-) -> bool:
+) -> ReverseSyncStatus:
     """通用 copy-mode 回流：把 dest 用户改灌回 source。
 
     任何 ``install_dir`` 走到 copy 路径的生态都能用（openclaw / ngagent /
     其它落到 copy fallback 的）。``exclude`` 默认只排 ``.git``；调用方
     可以加更多（如 openclaw 兼容路径加 ``_OPENCLAW_INSTALL_META``）。
 
-    返回 True 表示真有内容被灌回去（这一轮 watcher 下一步应该看到 source
-    有 pending edit）；False 表示 dest 没改 / 还在静默期 / 出错跳过。
+    返回 :class:`ReverseSyncStatus`，明确区分无修改、仍在编辑、同步成功和失败。
 
     流程：
     1. ``has_pending_dest_edit`` 检查（dest 有改且静默 ≥quiet_seconds）
     2. 抢源仓 ``skill_repo_lock``——跟 CC absorb / canary flip 用同一把锁
-    3. 遍历 dest 文件（跳 exclude 第一段路径），对每个文件 copy 到 source
-       对应路径（覆盖；新文件自动 mkdir）
+    3. 遍历 dest 文件（跳 exclude 第一段路径），相对安装基线做三方比较：
+       仅回流 dest 单边变更；source 单边变更保留；同文件双边分叉则失败
     4. 留意：**不删** source 里 dest 没有的文件（避免误删源仓里 ``.canary``
        等 xskill 自己产物；用户要删请在源仓直接删）
-    5. touch source 里 SKILL.md 的 mtime（让 ``_max_workspace_mtime`` 下一轮
-       看到 source 有 pending edit）
+    5. 所有文件都先进入同盘 staging，再逐文件原子替换；中途失败恢复 source
+       原内容，避免留下半写状态。
 
-    并发：copy 期间 dest 也可能被 install 重新覆盖 / 用户继续改。锁只保护
-    source 的一致性。dest 在 copy 中途变了，最坏情况是漏掉这次新改动，
-    下一轮 watcher 再扫到再回流。
+    并发：copy 期间 dest 也可能继续变化。锁只保护 source；任何扫描/复制异常
+    返回 ``FAILED``，调用安装器必须保留 dest，供下一轮安全重试。
     """
-    # 默认 exclude 已含 openclaw 老位置 meta + .git；调用方传别的就用它们。
-    full_exclude = frozenset(exclude)
-    if not has_pending_dest_edit(
-        dest_dir, quiet_seconds=quiet_seconds, exclude=full_exclude,
-    ):
-        return False
-
+    from xskill.ecosystems.installation import read_copy_install_baseline
     from xskill.skill.git import skill_repo_lock
 
-    skill_name = source_dir.name
-    logger.info("reverse_sync_copy_dest start: %s (dest=%s → source=%s)",
-                skill_name, dest_dir, source_dir)
+    try:
+        with skill_repo_lock(source_dir):
+            source_stat = source_dir.lstat()
+            if (
+                not stat.S_ISDIR(source_stat.st_mode)
+                or _is_reparse_point(source_stat)
+                or not _recover_pending_reverse_transaction(source_dir)
+            ):
+                _log_reverse_sync_failure(
+                    dest_dir, "REVERSE_SYNC_RECOVERY_FAILED",
+                )
+                return ReverseSyncStatus.FAILED
 
-    with skill_repo_lock(source_dir):
-        touched_any = False
-        for src_file in dest_dir.rglob("*"):
+            full_exclude = frozenset(exclude)
+            assessment = _dest_edit_status(
+                dest_dir,
+                quiet_seconds=quiet_seconds,
+                exclude=full_exclude,
+            )
+            if assessment.status == _DestEditStatus.FAILED:
+                _log_reverse_sync_failure(
+                    dest_dir, "REVERSE_SYNC_STATE_FAILED",
+                )
+                return ReverseSyncStatus.FAILED
+            if (
+                assessment.status == _DestEditStatus.NO_EDIT
+                and not assessment.files
+            ):
+                return ReverseSyncStatus.NO_EDIT
+            if not _OPEN_SUPPORTS_DIR_FD:
+                _log_reverse_sync_failure(
+                    dest_dir, "REVERSE_SYNC_NO_SAFE_OPEN",
+                )
+                return ReverseSyncStatus.FAILED
+
             try:
-                rel = src_file.relative_to(dest_dir)
-            except ValueError:
-                continue
-            parts = rel.parts
-            if not parts or parts[0] in full_exclude:
-                continue
-            if src_file.is_dir():
-                continue
-            dst_file = source_dir / rel
-            dst_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, dst_file)  # copy2 保 mtime
-            touched_any = True
+                baseline_fingerprints = read_copy_install_baseline(
+                    dest_dir,
+                )
+            except Exception:  # pylint: disable=broad-exception-caught
+                _log_reverse_sync_failure(
+                    dest_dir, "REVERSE_SYNC_BASELINE_FAILED",
+                )
+                return ReverseSyncStatus.FAILED
+            candidate_files: list[tuple[_SafeDestFile, str]] = []
+            for file_info in assessment.files:
+                dest_hash = _hash_verified_file(
+                    dest_dir, file_info,
+                )
+                if dest_hash != baseline_fingerprints.get(
+                    file_info.relative_path.as_posix(),
+                ):
+                    candidate_files.append((file_info, dest_hash))
+            if not candidate_files:
+                return ReverseSyncStatus.NO_EDIT
+            last_change_time = max(
+                max(file_info.mtime_ns, file_info.ctime_ns)
+                / 1_000_000_000
+                for file_info, _ in candidate_files
+            )
+            if time.time() - last_change_time < quiet_seconds:
+                return ReverseSyncStatus.RECENT_EDIT
 
-        if touched_any:
-            # touch source 让 watcher 下一轮看见 (max_mtime > last_commit_ts ≥ 1s)
-            (source_dir / "SKILL.md").touch()
+            changed_files: list[
+                tuple[_SafeDestFile, str, str | None]
+            ] = []
+            for file_info, dest_hash in candidate_files:
+                relative_name = file_info.relative_path.as_posix()
+                baseline_hash = baseline_fingerprints.get(relative_name)
+                source_file_info = _safe_source_file_info(
+                    source_dir, file_info.relative_path,
+                )
+                source_hash = (
+                    _hash_verified_file(source_dir, source_file_info)
+                    if source_file_info is not None
+                    else None
+                )
+                if dest_hash == baseline_hash:
+                    continue
+                if (
+                    source_hash != baseline_hash
+                    and source_hash != dest_hash
+                ):
+                    _log_reverse_sync_failure(
+                        dest_dir, "REVERSE_SYNC_CONTENT_CONFLICT",
+                    )
+                    return ReverseSyncStatus.FAILED
+                if source_hash != dest_hash:
+                    changed_files.append(
+                        (file_info, dest_hash, source_hash),
+                    )
+            if not changed_files:
+                return ReverseSyncStatus.NO_EDIT
 
-    logger.info("reverse_sync_copy_dest done: %s (synced=%s)",
-                skill_name, touched_any)
-    return touched_any
+            manifest_path, data_dir, manifest = (
+                _create_reverse_transaction(source_dir)
+            )
+            staged_dir = data_dir / "staged"
+            for (
+                file_info,
+                expected_dest_hash,
+                expected_source_hash,
+            ) in changed_files:
+                staged_path = staged_dir / file_info.relative_path
+                _ensure_real_directory(
+                    staged_dir, file_info.relative_path.parent,
+                )
+                _copy_verified_file_to_stage(
+                    dest_dir,
+                    file_info,
+                    staged_path,
+                )
+                _fsync_directory(staged_path.parent)
+                staged_signature = _path_signature(staged_path)
+                if staged_signature is None:
+                    raise OSError("staged file missing")
+                staged_file_info = _safe_source_file_info(
+                    staged_dir, file_info.relative_path,
+                )
+                if (
+                    staged_file_info is None
+                    or _hash_verified_file(
+                        staged_dir, staged_file_info,
+                    ) != expected_dest_hash
+                ):
+                    raise OSError("staged content changed")
+                current_source_info = _safe_source_file_info(
+                    source_dir, file_info.relative_path,
+                )
+                current_source_hash = (
+                    _hash_verified_file(
+                        source_dir, current_source_info,
+                    )
+                    if current_source_info is not None
+                    else None
+                )
+                if current_source_hash != expected_source_hash:
+                    raise OSError("source changed during reverse staging")
+                source_signature = _path_signature(
+                    source_dir / file_info.relative_path,
+                )
+                manifest["files"].append({
+                    "path": file_info.relative_path.as_posix(),
+                    "original_signature": (
+                        list(source_signature)
+                        if source_signature is not None
+                        else None
+                    ),
+                    "staged_signature": list(staged_signature),
+                })
+            manifest["state"] = "prepared"
+            _atomic_write_reverse_manifest(manifest_path, manifest)
+
+            rescan_ok, rescanned_files = _safe_dest_files(
+                dest_dir, full_exclude,
+            )
+            if not rescan_ok:
+                _log_reverse_sync_failure(
+                    dest_dir, "REVERSE_SYNC_RESCAN_FAILED",
+                )
+                return ReverseSyncStatus.FAILED
+            if rescanned_files != assessment.files:
+                return ReverseSyncStatus.RECENT_EDIT
+
+            if not _commit_reverse_transaction(
+                source_dir,
+                manifest_path,
+                data_dir,
+                manifest,
+            ):
+                rollback_ok = _recover_pending_reverse_transaction(
+                    source_dir,
+                )
+                _log_reverse_sync_failure(
+                    dest_dir,
+                    (
+                        "REVERSE_SYNC_COMMIT_FAILED"
+                        if rollback_ok
+                        else "REVERSE_SYNC_ROLLBACK_FAILED"
+                    ),
+                )
+                return ReverseSyncStatus.FAILED
+    except Exception:  # pylint: disable=broad-exception-caught
+        _log_reverse_sync_failure(dest_dir, "REVERSE_SYNC_STAGE_FAILED")
+        return ReverseSyncStatus.FAILED
+
+    return ReverseSyncStatus.SYNCED
 
 
 def reverse_sync_openclaw_dest(
     dest_dir: Path, source_dir: Path,
     *, quiet_seconds: int = USER_EDIT_QUIET_SECONDS,
-) -> bool:
+) -> ReverseSyncStatus:
     """已弃用别名，新代码用 ``reverse_sync_copy_dest``。
 
     保留这个名字给外部调用方（team/client/daemon.py、pipeline/runner.py、
