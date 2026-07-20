@@ -68,6 +68,7 @@ PyPI 发布流程。
 | F13 | 0.6.24 `clients.db` 自动增加暂停字段，`registry.db` 不变 | 新功能的兼容迁移 | 纳入 0.6.25 | 源码测试和 wheel 级迁移、重启测试 | 低 | 通过 |
 | F14 | 独立 Dashboard 进一步隐藏目录、内容和写接口 | 0.6.6 只读能力加固 | 纳入 0.6.25 | 独立模式和路由测试 | 中 | 通过 |
 | F15 | usage ledger 多实例隔离和控制面压测严格判定 | 0.6.0 功能加固/测试基础设施 | 纳入 0.6.25 | usage 和 300×300 压测 | 中 | 通过 |
+| F16 | Windows copy 安装、安装历史缓存和用户编辑回写兼容 | 跨平台兼容加固 | 纳入 0.6.25 | Windows Python 3.9–3.12 CI 矩阵 | 高 | 通过 |
 
 ## 已有验证
 
@@ -79,6 +80,8 @@ PyPI 发布流程。
 - 控制面 300 skills × 300 clients 压测：通过；600 次 embedding、600 条
   `point_meta` 完整落库，无 SQLite 锁错误和 traceback。
 - Docker 运行时平台发现与轨迹桥接：Claude Code、OpenClaw 两个场景通过。
+- Windows Python 3.9–3.12 平台矩阵通过：copy 安装基线、安装历史增量缓存、
+  用户编辑回写和异常恢复均纳入现有回归测试。
 - 相对 `v0.6.24` 的 Semgrep 检查通过；Ruff、Pylint 和 Vulture 未增加问题。
 - 全工作区 `git diff --check` 通过。
 - sdist 和 wheel 构建成功，`twine check` 通过。
@@ -113,6 +116,6 @@ PyPI 发布流程。
 
 ## 审批建议
 
-上表 F01–F15 均进入 `v0.6.25`。F06–F09 的并发、事务、回滚和恢复路径已重点
+上表 F01–F16 均进入 `v0.6.25`。F06–F09、F16 的并发、事务、回滚和恢复路径已重点
 验收；发布提交应严格使用明确文件清单，合入主分支并通过 CI 后再创建
 `v0.6.25` 标签，由 Release 工作流发布 PyPI 和 GitHub Release。
