@@ -98,6 +98,23 @@ def _raise_metadata_error(dest: Path, error_type: str) -> NoReturn:
     raise InstallationMetadataError(error_type) from None
 
 
+def _log_metadata_write_cause(
+    dest: Path,
+    stage: str,
+    error: BaseException,
+) -> None:
+    """记录可诊断且不包含底层路径或异常文本的写入失败原因。"""
+    logger.error(
+        "installation metadata write failed path_hash=%s stage=%s "
+        "exception_type=%s errno=%s winerror=%s",
+        _path_hash(dest),
+        stage,
+        type(error).__name__,
+        getattr(error, "errno", None),
+        getattr(error, "winerror", None),
+    )
+
+
 def install_metadata_path(dest: Path) -> Path:
     """返回 target 对应的旁路安装元数据路径。"""
     return dest.parent / f"{_INSTALL_META_PREFIX}{dest.name}.json"
@@ -744,6 +761,7 @@ def write_install_metadata(
         "installation_id": secrets.token_hex(16),
         "content_identity": content_identity,
     }
+    write_stage = "copy_baseline"
     try:
         if mode == "copy":
             file_fingerprints = _safe_copy_file_fingerprints(dest)
@@ -760,6 +778,7 @@ def write_install_metadata(
             ).encode("utf-8", errors="strict")
             if len(metadata_bytes) > _MAX_INSTALL_METADATA_BYTES:
                 raise OSError("installation metadata exceeds size limit")
+            write_stage = "copy_identity_marker"
             _atomic_write_json(
                 dest / COPY_INSTALL_MARKER_NAME,
                 {
@@ -769,8 +788,10 @@ def write_install_metadata(
                     "baseline_identity": metadata["baseline_identity"],
                 },
             )
+        write_stage = "install_sidecar"
         _atomic_write_json(install_metadata_path(dest), metadata)
-    except Exception:  # pylint: disable=broad-exception-caught
+    except Exception as write_error:  # pylint: disable=broad-exception-caught
+        _log_metadata_write_cause(dest, write_stage, write_error)
         _raise_metadata_error(dest, "INSTALL_METADATA_WRITE_FAILED")
     if mode == "copy" and not copy_install_identity_matches(
         dest, source, metadata=metadata,
