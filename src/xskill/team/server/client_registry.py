@@ -146,17 +146,25 @@ class ClientRegistry:
                     # P2-2.2(Q2a):dashboard 登录凭证,--name 注册时发放并回传打印
                     conn.execute(
                         "ALTER TABLE clients ADD COLUMN dashboard_token TEXT DEFAULT ''")
-                ingest_columns = (
-                    ("ingest_paused", "INTEGER NOT NULL DEFAULT 0"),
-                    ("ingest_paused_at", "TEXT"),
-                    ("ingest_paused_by", "TEXT DEFAULT ''"),
-                    ("ingest_pause_reason", "TEXT DEFAULT ''"),
-                )
-                for column, definition in ingest_columns:
-                    if column not in cols:
-                        conn.execute(
-                            f"ALTER TABLE clients ADD COLUMN {column} {definition}"
-                        )
+                if "ingest_paused" not in cols:
+                    conn.execute(
+                        "ALTER TABLE clients ADD COLUMN "
+                        "ingest_paused INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "ingest_paused_at" not in cols:
+                    conn.execute(
+                        "ALTER TABLE clients ADD COLUMN ingest_paused_at TEXT"
+                    )
+                if "ingest_paused_by" not in cols:
+                    conn.execute(
+                        "ALTER TABLE clients ADD COLUMN "
+                        "ingest_paused_by TEXT DEFAULT ''"
+                    )
+                if "ingest_pause_reason" not in cols:
+                    conn.execute(
+                        "ALTER TABLE clients ADD COLUMN "
+                        "ingest_pause_reason TEXT DEFAULT ''"
+                    )
                 conn.commit()
             finally:
                 conn.close()

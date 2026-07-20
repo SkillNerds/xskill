@@ -535,6 +535,10 @@ def test_reverse_sync_fifo_swap_between_lstat_and_open_never_blocks(
     assert (src / "SKILL.md").read_bytes() == source_before
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows uses a validated full-path fallback without dir_fd",
+)
 def test_reverse_sync_fails_closed_without_safe_directory_open(
     tmp_path, monkeypatch,
 ):

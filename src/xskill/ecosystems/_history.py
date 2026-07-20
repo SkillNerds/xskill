@@ -996,8 +996,13 @@ class InstallHistory:
         finally:
             try:
                 temporary_path.unlink()
-            except FileNotFoundError:
-                pass
+            except FileNotFoundError as cleanup_error:
+                logger.debug(
+                    "install history sequence temporary already removed "
+                    "path=%s exception_type=%s",
+                    temporary_path,
+                    type(cleanup_error).__name__,
+                )
 
     def _next_sequence_locked(self, minimum: int) -> int:
         stored: int | None = None

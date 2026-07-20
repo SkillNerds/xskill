@@ -582,7 +582,21 @@ def _lexical_path_key(path: Path) -> str:
 
 def _source_path_key(path: Path) -> str:
     """跟随 link 后的源路径键；Windows 上同时折叠大小写。"""
-    return os.path.normcase(str(path.resolve(strict=False)))
+    if path.is_symlink():
+        link_target = Path(os.readlink(path))
+        if not link_target.is_absolute():
+            link_target = path.parent / link_target
+        resolved_path = os.path.abspath(
+            os.path.normpath(str(link_target)),
+        )
+    else:
+        resolved_path = str(path.resolve(strict=False))
+    if os.name == "nt":
+        if resolved_path.startswith("\\\\?\\UNC\\"):
+            resolved_path = "\\\\" + resolved_path[8:]
+        elif resolved_path.startswith("\\\\?\\"):
+            resolved_path = resolved_path[4:]
+    return os.path.normcase(resolved_path)
 
 
 def _installation_metadata(dest: Path) -> dict | None:
@@ -1040,8 +1054,13 @@ def _atomic_write_removal_record(record_path: Path, record: dict) -> None:
     except Exception:
         try:
             temporary_path.unlink()
-        except OSError:
-            pass
+        except OSError as cleanup_error:
+            logger.warning(
+                "removal record temporary cleanup failed "
+                "target_hash=%s exception_type=%s",
+                _target_path_hash(record_path),
+                type(cleanup_error).__name__,
+            )
         raise
 
 

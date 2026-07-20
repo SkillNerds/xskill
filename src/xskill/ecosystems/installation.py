@@ -580,8 +580,13 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     except Exception:
         try:
             temporary_path.unlink()
-        except OSError:
-            pass
+        except OSError as cleanup_error:
+            logger.warning(
+                "installation metadata temporary cleanup failed "
+                "path_hash=%s exception_type=%s",
+                _path_hash(temporary_path),
+                type(cleanup_error).__name__,
+            )
         raise
 
 

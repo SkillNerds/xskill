@@ -873,8 +873,13 @@ def _atomic_write_reverse_manifest(
     except Exception:
         try:
             temporary_path.unlink()
-        except OSError:
-            pass
+        except OSError as cleanup_error:
+            logger.warning(
+                "reverse manifest temporary cleanup failed "
+                "path_hash=%s exception_type=%s",
+                _reverse_sync_path_hash(temporary_path),
+                type(cleanup_error).__name__,
+            )
         raise
 
 
