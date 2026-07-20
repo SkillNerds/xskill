@@ -797,19 +797,19 @@ def test_remove_target_failure_keeps_transaction_and_retry_succeeds(
     (source / "SKILL.md").write_text("body\n", encoding="utf-8")
     metadata_path = install_metadata_path(target)
     write_install_metadata(target, source, "copy")
-    original_rmtree = daemon.shutil.rmtree
+    original_remove = daemon._rmtree_anchored
     removal_attempts = 0
 
-    def fail_first_remove(path, *_args, **_kwargs):
+    def fail_first_remove(*args, **kwargs):
         nonlocal removal_attempts
         removal_attempts += 1
         if removal_attempts == 1:
             raise PermissionError(
                 "Authorization: Bearer remove-secret /root/private/target"
             )
-        return original_rmtree(path)
+        return original_remove(*args, **kwargs)
 
-    monkeypatch.setattr(daemon.shutil, "rmtree", fail_first_remove)
+    monkeypatch.setattr(daemon, "_rmtree_anchored", fail_first_remove)
 
     assert daemon._remove_owned_install_target(target, source) is False
     assert not target.exists()
@@ -828,6 +828,40 @@ def test_remove_target_failure_keeps_transaction_and_retry_succeeds(
     assert not metadata_path.exists()
     assert not transaction_target.exists()
     assert not transaction_record.exists()
+
+
+def test_copy_uninstall_does_not_require_rmtree_dir_fd(
+    tmp_path, monkeypatch,
+):
+    """Python 3.9/3.10 没有 shutil.rmtree(dir_fd=)，安全删除仍应可用。"""
+    from xskill.ecosystems.installation import write_install_metadata
+    from xskill.team.client import daemon
+
+    target = tmp_path / "skills" / "old-python-remove"
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text("skill\n", encoding="utf-8")
+    (target / "nested").mkdir()
+    (target / "nested" / "data.txt").write_text(
+        "body\n", encoding="utf-8",
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text("skill\n", encoding="utf-8")
+    (source / "nested").mkdir()
+    (source / "nested" / "data.txt").write_text(
+        "body\n", encoding="utf-8",
+    )
+    write_install_metadata(target, source, "copy")
+
+    def reject_dir_fd(_path, *_args, **kwargs):
+        assert "dir_fd" not in kwargs
+        raise AssertionError("anchored removal must not call shutil.rmtree")
+
+    reject_dir_fd.avoids_symlink_attacks = True
+    monkeypatch.setattr(daemon.shutil, "rmtree", reject_dir_fd)
+
+    assert daemon._remove_owned_install_target(target, source) is True
+    assert not target.exists()
 
 
 def test_sidecar_isolation_failure_keeps_canonical_target(
@@ -1279,23 +1313,35 @@ def test_partial_copy_removal_retries_without_identity_marker(
     target.mkdir(parents=True)
     (target / "SKILL.md").write_text("body\n", encoding="utf-8")
     write_install_metadata(target, source, "copy")
-    original_rmtree = daemon.shutil.rmtree
+    original_remove = daemon._rmtree_anchored
     first_attempt = True
 
-    def remove_marker_then_fail(path, *_args, **_kwargs):
+    def remove_marker_then_fail(
+        parent_descriptor,
+        entry_name,
+        expected_identity,
+        display_path,
+    ):
         nonlocal first_attempt
         if (
             first_attempt
-            and Path(path).name.startswith(
+            and display_path.name.startswith(
                 ".xskill-removing-target-partial-remove-",
             )
         ):
             first_attempt = False
-            (path / COPY_INSTALL_MARKER_NAME).unlink()
+            (display_path / COPY_INSTALL_MARKER_NAME).unlink()
             raise PermissionError("partial recursive delete")
-        return original_rmtree(path)
+        return original_remove(
+            parent_descriptor,
+            entry_name,
+            expected_identity,
+            display_path,
+        )
 
-    monkeypatch.setattr(daemon.shutil, "rmtree", remove_marker_then_fail)
+    monkeypatch.setattr(
+        daemon, "_rmtree_anchored", remove_marker_then_fail,
+    )
 
     assert daemon._remove_owned_install_target(target, source) is False
     active_transaction = daemon._active_removal_transaction(target)

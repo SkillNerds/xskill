@@ -1244,6 +1244,67 @@ def _target_authorized_for_removal(
     )
 
 
+def _rmtree_anchored(
+    parent_descriptor: int,
+    entry_name: str,
+    expected_identity: tuple[int, int, int],
+    display_path: Path,
+) -> None:
+    """递归删除 parent fd 下的目录，不依赖 Python 3.11 的 rmtree(dir_fd=)。
+
+    项目支持 Python 3.9+，但 ``shutil.rmtree(..., dir_fd=...)`` 到 3.11
+    才提供。这里沿用标准库安全实现的做法：每层目录都以 ``O_NOFOLLOW``
+    打开并核对 inode，再只用相对该 fd 的 unlink/rmdir，避免回退到可被
+    并发改成符号链接的完整路径删除。
+    """
+    directory_flags = os.O_RDONLY
+    directory_flags |= getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(
+        entry_name,
+        directory_flags,
+        dir_fd=parent_descriptor,
+    )
+    try:
+        opened_stat = os.fstat(descriptor)
+        opened_identity = (
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+            stat.S_IFMT(opened_stat.st_mode),
+        )
+        if opened_identity != expected_identity:
+            raise OSError("directory identity changed during removal")
+
+        with os.scandir(descriptor) as entries:
+            names = [entry.name for entry in entries]
+        for name in names:
+            try:
+                entry_stat = os.stat(
+                    name,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                continue
+            entry_identity = (
+                entry_stat.st_dev,
+                entry_stat.st_ino,
+                stat.S_IFMT(entry_stat.st_mode),
+            )
+            if stat.S_ISDIR(entry_stat.st_mode):
+                _rmtree_anchored(
+                    descriptor,
+                    name,
+                    entry_identity,
+                    display_path / name,
+                )
+            else:
+                os.unlink(name, dir_fd=descriptor)
+    finally:
+        os.close(descriptor)
+    os.rmdir(entry_name, dir_fd=parent_descriptor)
+
+
 def _remove_transaction_target(
     dest: Path,
     transaction_target: Path,
@@ -1287,9 +1348,11 @@ def _remove_transaction_target(
                     )
                     if anchored_identity != expected_identity:
                         return False
-                    shutil.rmtree(
+                    _rmtree_anchored(
+                        parent_descriptor,
                         transaction_target.name,
-                        dir_fd=parent_descriptor,
+                        expected_identity,
+                        transaction_target,
                     )
                 finally:
                     os.close(parent_descriptor)
