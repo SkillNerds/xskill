@@ -279,6 +279,7 @@ def test_engine_init_failure_closes_unattached_registry_once(
     monkeypatch, tmp_path, _stub_loaded, caplog,
 ):
     """engine 构造失败时局部 registry 尚未注入 context，也必须且只能关闭一次。"""
+    from xskill import config as config_module
     from xskill.api import app as srv
     from xskill.recommend import engine as recommend_engine
     from xskill.team.server import api as server_api
@@ -311,6 +312,11 @@ def test_engine_init_failure_closes_unattached_registry_once(
     monkeypatch.setattr(srv, "create_embed_client", MagicMock(return_value=object()))
     monkeypatch.setattr(srv, "init_skill_authoring_tool_context", MagicMock())
     monkeypatch.setattr(server_state, "ensure_join_token", MagicMock(return_value="token"))
+    monkeypatch.setattr(
+        config_module,
+        "get_team_trajectories_dir",
+        MagicMock(return_value=tmp_path / "team_trajectories"),
+    )
     monkeypatch.setattr(registry_module, "ClientRegistry", TrackedRegistry)
     monkeypatch.setattr(recommend_engine, "SkillRecommendEngine", FailingEngine)
     caplog.set_level(logging.ERROR, logger="xskill.server")
@@ -333,6 +339,7 @@ def test_profile_scheduler_start_failure_cleans_attached_resources(
     monkeypatch, tmp_path, _stub_loaded, caplog,
 ):
     """context/executor/engine 已接线后再失败，startup 回滚必须逐项且不重复清理。"""
+    from xskill import config as config_module
     from xskill.api import app as srv
     from xskill.pipeline import scheduler as scheduler_module
     from xskill.recommend import engine as recommend_engine
@@ -378,6 +385,11 @@ def test_profile_scheduler_start_failure_cleans_attached_resources(
     monkeypatch.setattr(srv, "create_embed_client", MagicMock(return_value=object()))
     monkeypatch.setattr(srv, "init_skill_authoring_tool_context", MagicMock())
     monkeypatch.setattr(server_state, "ensure_join_token", MagicMock(return_value="token"))
+    monkeypatch.setattr(
+        config_module,
+        "get_team_trajectories_dir",
+        MagicMock(return_value=tmp_path / "team_trajectories"),
+    )
     monkeypatch.setattr(registry_module, "ClientRegistry", TrackedRegistry)
     monkeypatch.setattr(recommend_engine, "SkillRecommendEngine", SuccessfulEngine)
     monkeypatch.setattr(
