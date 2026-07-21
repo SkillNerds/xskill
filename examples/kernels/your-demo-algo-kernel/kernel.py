@@ -29,7 +29,7 @@ class YourDemoAlgoKernel(BaseKernel):
         name="Your Demo Algorithm Kernel",
         version="0.1.0",
         description="Runnable template for your own XSkill algorithm kernel.",
-        triggers=("scheduled", "manual", "evaluation"),
+        triggers=("scheduled", "manual"),
         api_version=2,
     )
 

@@ -50,7 +50,7 @@ class RuleBasedDemoKernel(BaseKernel):
             "Opt-in deterministic example; processes metadata.kernel_demo=true "
             "trajectories without an LLM."
         ),
-        triggers=("scheduled", "manual", "evaluation"),
+        triggers=("scheduled", "manual"),
     )
 
     _DEFAULT_CONFIG = {

@@ -28,7 +28,7 @@ class OpenEarthKernel(BaseKernel):
         name="OpenEarth",
         version=getattr(openearth, "__version__", "unknown"),
         description="OpenEarth SDK bridge example.",
-        triggers=("scheduled", "manual", "evaluation"),
+        triggers=("scheduled", "manual"),
         api_version=2,
     )
 

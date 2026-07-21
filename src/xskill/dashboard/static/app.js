@@ -1277,7 +1277,7 @@ async function loadKernels() {
     <td class="text-right tabular-nums">${e.input_count} / ${e.output_count}</td>
     <td class="text-right tabular-nums">${e.skills_owned}</td>
     <td class="text-right tabular-nums">${e.avg_ux == null ? '—' : e.avg_ux.toFixed(2) + ` <span class="text-[10px] text-slate-400">(${e.ux_samples})</span>`}</td>
-    <td class="pl-6"><span class="text-[10px] px-1.5 py-0.5 rounded ${e.last_status === 'error' ? 'bg-rose-100 text-rose-700' : e.last_status === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}">${esc(e.last_status || '尚未运行')}</span><div class="text-[10px] text-slate-400 mt-0.5">${esc(e.last_run_at || '')}</div></td></tr>`).join(''), '暂无评价数据');
+    <td class="pl-6"><span class="text-[10px] px-1.5 py-0.5 rounded ${e.last_status === 'error' ? 'bg-rose-100 text-rose-700' : e.last_status === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}">${esc(e.last_status || '尚未运行')}</span><div class="text-[10px] text-slate-400 mt-0.5">${esc(e.last_run_at || '')}</div></td></tr>`).join(''), '暂无运行与用户反馈数据');
 
   rows('kernel-runs-body', data.recent_runs.map(r => `<tr>
     <td class="py-2 text-[11px]">${esc(r.started_at)}</td><td class="font-medium">${esc(r.kernel_id)} <span class="text-[10px] text-slate-400">v${esc(r.kernel_version)}</span></td>

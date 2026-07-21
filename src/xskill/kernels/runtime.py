@@ -1,4 +1,4 @@
-"""Kernel execution, run attribution, and algorithm-level evaluation."""
+"""Kernel execution, run attribution, and operational reporting."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ class KernelRunRecord:
 
 @dataclass(frozen=True)
 class KernelExecutionLayout:
-    """Optional per-run filesystem layout, used by isolated evaluations."""
+    """Optional per-run filesystem layout, used by isolated executions."""
 
     skill_dir: Path
     registry_db_path: Path

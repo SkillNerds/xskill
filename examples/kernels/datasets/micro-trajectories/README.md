@@ -1,5 +1,4 @@
 # micro-trajectories
 
-Four deterministic, API-free trajectories for kernel contract smoke tests.
-They measure execution and publication behavior only; they are not a quality
-benchmark and must not be reported as SpreadsheetBench or simulated UX.
+Four deterministic, API-free trajectories for trying the offline distillation
+command and checking generated Skills.

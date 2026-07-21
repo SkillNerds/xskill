@@ -764,8 +764,8 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
             ),
             "recent_runs": store.list_runs(limit=20),
             "evaluation_scope": (
-                "live operational runs and delayed downstream UX; controlled "
-                "benchmark comparison requires the same dataset_id"
+                "live operational runs, version-bound downstream UX, and "
+                "canary outcomes"
             ),
         }
 

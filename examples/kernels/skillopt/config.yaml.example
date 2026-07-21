@@ -1,5 +1,5 @@
 # Owned and parsed only by examples/kernels/skillopt/kernel.py.
-# XSkill never interprets this file and never copies it into eval artifacts.
+# XSkill does not interpret this file or copy it into offline artifacts.
 skill_name: spreadsheet-skillopt
 description: Spreadsheet manipulation strategy optimized by SkillOpt.
 

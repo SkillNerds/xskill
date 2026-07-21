@@ -219,8 +219,8 @@ def test_trajectory_reader_exposes_registered_roots_for_batch_tools(tmp_path):
     registry_db = tmp_path / "registry.db"
     register_dir(
         trajectory_dir,
-        label="benchmark",
-        ecosystem="evaluation",
+        label="offline-input",
+        ecosystem="offline-distill",
         db_path=registry_db,
     )
     reader = TrajectoryReader(registry_db)

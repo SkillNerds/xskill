@@ -2,7 +2,8 @@
 """
 cli.py — xskill 紧凑 CLI
 ═══════════════════════════════════════════════════════
-仅 5 个子命令（无 --no-watch / --no-ui / --skill-dir / --llm-* 这类散 flag）：
+主要子命令：
+    xskill distill --kernel <id> --trajectory-dir <path>
     xskill serve [--host] [--port]
     xskill registry add|remove|list <path>
     xskill search <关键词...> [--top-k]
@@ -29,17 +30,17 @@ logger = logging.getLogger("xskill.cli")
 # 子命令
 # ═══════════════════════════════════════════════════════════════
 
-def cmd_eval(args) -> int:
-    """Run one kernel against an isolated local trajectory dataset."""
+def cmd_distill(args) -> int:
+    """Turn one local trajectory directory into Skills with a kernel."""
     import json
     from pathlib import Path
 
     import yaml
 
     from xskill.config import CONFIG_PATH, XSKILL_HOME
-    from xskill.kernels.evaluation import (
-        render_report_table,
-        run_local_evaluation,
+    from xskill.kernels.distillation import (
+        render_distillation_table,
+        run_offline_distillation,
     )
 
     plugin_dir = Path(args.plugin_dir).expanduser().resolve() if args.plugin_dir else None
@@ -58,18 +59,12 @@ def cmd_eval(args) -> int:
             ).resolve()
     plugin_dir = plugin_dir or (XSKILL_HOME / "kernels").resolve()
     try:
-        report = run_local_evaluation(
+        report = run_offline_distillation(
             kernel_id=args.kernel_id,
-            dataset=Path(args.dataset),
+            trajectory_dir=Path(args.trajectory_dir),
             plugin_dir=plugin_dir,
             xskill_home=XSKILL_HOME,
-            sample=args.sample,
-            seed=args.seed,
             output_dir=Path(args.output).expanduser() if args.output else None,
-            benchmark_manifest=(
-                Path(args.benchmark).expanduser() if args.benchmark else None
-            ),
-            benchmark_timeout_s=args.benchmark_timeout,
             json_output=args.json,
             no_progress=args.no_progress,
         )
@@ -85,7 +80,7 @@ def cmd_eval(args) -> int:
     if args.json:
         print(json.dumps(report.as_dict(), ensure_ascii=False))
     else:
-        print(render_report_table(report))
+        print(render_distillation_table(report))
     return 0
 
 def cmd_serve(args, xskill) -> int:
@@ -1219,41 +1214,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--quiet", action="store_true", help="quiet mode")
     sub = p.add_subparsers(dest="command")
 
-    p_eval = sub.add_parser(
-        "eval",
-        help="离线运行算法内核（隔离 trajectory/skill/workspace，不启动 serve）",
+    p_distill = sub.add_parser(
+        "distill",
+        help="用算法内核离线消化指定目录中的轨迹并产出 Skills",
     )
-    p_eval.add_argument(
+    p_distill.add_argument(
         "--kernel", dest="kernel_id", required=True,
-        help="要评测的算法内核 ID",
+        help="要运行的算法内核 ID",
     )
-    p_eval.add_argument(
-        "--dataset", required=True,
-        help="包含 traj_*.md 的标准数据集目录",
+    p_distill.add_argument(
+        "--trajectory-dir", required=True,
+        help="包含 traj_*.md 的轨迹目录",
     )
-    p_eval.add_argument(
-        "--sample", type=float, default=1.0,
-        help="确定性抽样比例，范围 (0, 1]（默认 1.0）",
-    )
-    p_eval.add_argument("--seed", type=int, default=42, help="抽样 seed")
-    p_eval.add_argument("--output", default=None, help="artifact 输出目录")
-    p_eval.add_argument(
-        "--benchmark", default=None,
-        help="可信外部评测器 benchmark.json；内核运行后自动执行",
-    )
-    p_eval.add_argument(
-        "--benchmark-timeout", type=int, default=None,
-        help="覆盖 benchmark.json 中的超时秒数",
-    )
-    p_eval.add_argument(
+    p_distill.add_argument("--output", default=None, help="产物输出目录")
+    p_distill.add_argument(
         "--plugin-dir", default=None,
         help=(
             "kernel 根目录；省略时读取 config.kernel.plugin_dir，"
             "否则使用 ~/.xskill/kernels"
         ),
     )
-    p_eval.add_argument("--json", action="store_true", help="只输出稳定 JSON")
-    p_eval.add_argument(
+    p_distill.add_argument("--json", action="store_true", help="只输出稳定 JSON")
+    p_distill.add_argument(
         "--no-progress", action="store_true", help="关闭 tqdm 阶段进度",
     )
 
@@ -1499,10 +1481,10 @@ def main() -> int:
     if args.command == "stats":
         return cmd_stats(args)
 
-    # eval 是离线隔离命令：只读 kernel 选择路径，不校验平台 LLM/embedding
+    # distill 是离线隔离命令：只读 kernel 选择路径，不校验平台 LLM/embedding
     # key，也不构造 XSkill facade，更不要求先启动 serve。
-    if args.command == "eval":
-        return cmd_eval(args)
+    if args.command == "distill":
+        return cmd_distill(args)
 
     # read / rebuild 只动 registry + 文件，不需要 llm.api_key / facade——
     # 重跑由运行中的 watcher 完成，本命令只做"重置/桥接"。

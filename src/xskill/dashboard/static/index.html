@@ -333,7 +333,7 @@
               <div class="text-[11px] text-slate-400">当前算法内核</div>
               <div id="kernel-active" class="text-lg font-semibold text-teal-700 mt-1">—</div>
               <div id="kernel-active-desc" class="text-[12.5px] text-slate-500 mt-1">—</div>
-              <button id="kernel-export" class="mt-3 px-3 py-1.5 rounded-lg ring-1 ring-teal-200 text-[11px] font-medium text-teal-700 hover:bg-teal-50" disabled>导出当前内核评测 JSON</button>
+              <button id="kernel-export" class="mt-3 px-3 py-1.5 rounded-lg ring-1 ring-teal-200 text-[11px] font-medium text-teal-700 hover:bg-teal-50" disabled>导出当前内核运行与反馈 JSON</button>
             </div>
             <div class="text-right text-[11px] text-slate-400">
               <div>插件目录</div><div id="kernel-plugin-dir" class="font-mono text-slate-600 mt-1">—</div>
@@ -351,8 +351,8 @@
 
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
           <div class="flex items-baseline justify-between">
-            <h2 class="font-semibold text-sm">算法评价</h2>
-            <span class="text-[11px] text-slate-400">运行指标即时；技能 UX 是延迟反馈，同 dataset_id 才适合横向比较</span>
+            <h2 class="font-semibold text-sm">算法运行与用户反馈</h2>
+            <span class="text-[11px] text-slate-400">运行指标来自实际任务；平均 UX 来自各 Skill 版本的线上评价</span>
           </div>
           <div class="overflow-x-auto"><table class="w-full mt-2 text-[12.5px]">
             <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">内核</th><th class="text-right font-medium">成功率</th><th class="text-right font-medium">平均耗时</th><th class="text-right font-medium">输入 / 输出</th><th class="text-right font-medium">归属技能</th><th class="text-right font-medium">平均 UX</th><th class="text-left font-medium pl-6">最近运行</th></tr></thead>
@@ -360,9 +360,9 @@
         </div>
 
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
-          <h2 class="font-semibold text-sm">最近运行 <span class="font-normal text-[11px] text-slate-400 ml-2">run_id / dataset_id 保留算法归因</span></h2>
+          <h2 class="font-semibold text-sm">最近运行 <span class="font-normal text-[11px] text-slate-400 ml-2">run_id / 输入集合 ID 保留算法归因</span></h2>
           <div class="overflow-x-auto"><table class="w-full mt-2 text-[12.5px]">
-            <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">时间</th><th class="text-left font-medium">内核</th><th class="text-left font-medium">触发 / 数据集</th><th class="text-right font-medium">输入 / 输出</th><th class="text-right font-medium">耗时</th><th class="text-left font-medium pl-6">状态</th></tr></thead>
+            <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">时间</th><th class="text-left font-medium">内核</th><th class="text-left font-medium">触发 / 输入集合</th><th class="text-right font-medium">输入 / 输出</th><th class="text-right font-medium">耗时</th><th class="text-left font-medium pl-6">状态</th></tr></thead>
             <tbody id="kernel-runs-body" class="divide-y divide-slate-50"><tr><td colspan="6" class="py-2 text-slate-400">加载中…</td></tr></tbody></table></div>
         </div>
       </div>

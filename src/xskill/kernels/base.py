@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 KERNEL_API_VERSION = 2
-KernelTrigger = Literal["scheduled", "trajectory_changed", "manual", "evaluation"]
+KernelTrigger = Literal["scheduled", "trajectory_changed", "manual"]
 _KERNEL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
@@ -64,9 +64,9 @@ class KernelInvocation:
     """Platform-created identity and input scope for one bounded ``run`` call.
 
     The invocation lives inside :class:`KernelContext`; it is not a second
-    provider-facing argument.  Most kernels only need ``context.run_id`` and
-    the capability objects, while evaluators can additionally use dataset and
-    trigger metadata for reproducibility.
+    provider-facing argument. Most kernels only need ``context.run_id`` and
+    the capability objects; input-set and trigger metadata are available when
+    the algorithm needs reproducible processing.
     """
 
     run_id: str
@@ -100,7 +100,7 @@ class PublishedSkill:
 
 @dataclass(frozen=True)
 class KernelRunResult:
-    """Operational result recorded by XSkill for algorithm evaluation."""
+    """Operational result recorded by XSkill for one algorithm run."""
 
     processed_trajectory_ids: tuple[str, ...] = ()
     submitted_skills: tuple[str, ...] = ()

@@ -1,8 +1,8 @@
 """Real SkillOpt SDK bridge for XSkill.
 
-This example intentionally imports and calls SkillOpt itself.  SkillOpt's
-benchmark/model configuration stays private in this directory; XSkill only
-provides the invocation workspace and managed Skill publication gateway.
+This example intentionally imports and calls SkillOpt itself. SkillOpt's model
+and task configuration stays private in this directory; XSkill only provides
+the invocation workspace and managed Skill publication gateway.
 """
 
 from __future__ import annotations
@@ -40,10 +40,10 @@ class SkillOptKernel(BaseKernel):
         name="SkillOpt",
         version=str(getattr(skillopt, "__version__", "unknown")),
         description=(
-            "Real SkillOpt SpreadsheetBench SDK bridge (evaluation adapter; "
+            "Real SkillOpt SpreadsheetBench SDK bridge (offline adapter; "
             "not yet an online trajectory-equivalent kernel)."
         ),
-        triggers=("manual", "evaluation"),
+        triggers=("manual",),
         api_version=2,
     )
 
@@ -115,8 +115,8 @@ class SkillOptKernel(BaseKernel):
             submitted_skills=(name,),
             metrics=safe_metrics,
             notes=(
-                "SkillOpt consumes the benchmark configured in its private "
-                "config; this bridge is evaluation-only and does not claim "
+                "SkillOpt consumes the task configured in its private config; "
+                "this bridge is offline-only and does not claim "
                 "online trajectory parity."
             ),
         )

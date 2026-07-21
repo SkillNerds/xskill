@@ -1,4 +1,4 @@
 interface:
-  display_name: "XSkill Kernel"
-  short_description: "Build, evaluate, and diagnose XSkill algorithm kernels"
-  default_prompt: "Use $xskill-kernel to create and evaluate an algorithm kernel."
+  display_name: "XSkill 算法内核"
+  short_description: "接入算法 SDK、离线生成 Skills 并诊断内核问题"
+  default_prompt: "使用 $xskill-kernel 接入我的算法 SDK，并离线消化指定目录中的轨迹。"

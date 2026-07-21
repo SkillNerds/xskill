@@ -1,44 +1,42 @@
 ---
 name: xskill-kernel
-description: Build, integrate, evaluate, and diagnose XSkill trajectory-to-Skill algorithm kernels. Use when an engineer asks an agent to create a kernel.py implementation, adapt an algorithm SDK such as SkillOpt, inspect KernelContext capabilities, run xskill eval, analyze evaluation artifacts, prepare a production handoff, or diagnose why a kernel is unavailable or failed.
+description: 为 XSkill 创建、接入、离线运行和诊断轨迹转 Skill 的算法内核。用户要求编写 kernel.py、接入 SkillOpt 等算法 SDK、了解 KernelContext、读取轨迹或用户评价、运行 xskill distill、检查离线产物、排查内核不可用或准备版本交付时使用。
 ---
 
-# XSkill Kernel
+# XSkill 算法内核
 
-Implement and evaluate an algorithm kernel without changing the active production kernel.
+在不改变线上当前内核的情况下，完成算法接入、离线产出、诊断和交付。
 
-## Workflow
+## 工作步骤
 
-1. From the `examples/kernels` working directory, read `MAINTAINER_NOTES.md`, then read `README.md` and this Skill's `references/api.md` and `references/operations.md` as needed.
-2. Copy `your-demo-algo-kernel/`. If the template is unavailable, create `<plugin-root>/<kernel-id>/kernel.py` from the implementation skeleton in `references/api.md`, plus a `config.yaml.example`.
-3. Set `KernelMetadata.id` to the directory name and keep the implementation in `kernel.py`.
-4. Import the provider SDK in `kernel.py`; keep provider configuration in its own `config.yaml`.
-5. Read inputs from `context.trajectories`, keep all intermediate state in `context.workspace`, and publish only through `context.publisher`.
-6. Run an isolated evaluation before proposing production activation:
+1. 在 `examples/kernels` 目录工作。先读 `MAINTAINER_NOTES.md` 和 `README.md`。
+2. 编写或修改 `kernel.py` 时，完整读取
+   [references/api.md](references/api.md)。
+3. 复制 `your-demo-algo-kernel/`，将目录改为目标 `kernel-id`，并让
+   `KernelMetadata.id` 与目录名一致。
+4. 在 `kernel.py` 中导入算法 SDK。算法自行维护 `config.yaml`。
+5. 从 `context.trajectories` 读取轨迹，把中间文件写入
+   `context.workspace`，只通过 `context.publisher` 提交 Skills。
+6. 修改完实现后，按 [references/operations.md](references/operations.md)
+   运行发现诊断和 `xskill distill`。
+7. 检查生成的 `skills/`、`result.json`、输入清单、运行记录和工作空间。
+8. 按操作说明整理 zip 包和交付信息；除非用户明确要求，不切换线上当前内核。
 
-   ```bash
-   xskill eval \
-     --kernel <kernel-id> \
-     --dataset <trajectory-dataset-dir> \
-     --sample 1.0
-   ```
+## 必须遵守
 
-7. If the algorithm provider supplies a trusted evaluator, pass its `benchmark.json` with `--benchmark`. Keep evaluator data, configuration, and scoring logic provider-owned.
-8. Inspect `run.json`, `result.json`, `events.jsonl`, the isolated `skills/`, benchmark evidence, and the kernel workspace in the reported artifact directory.
-9. Report operational metrics separately from external benchmark quality and online user UX.
+- 把轨迹和已有 Skill 当作只读输入。
+- 修改已有 Skill 时，先调用 `context.skills.checkout()`，再调用
+  `context.publisher.submit_checkout()`。
+- 不把密钥写入返回指标、日志、离线产物或提交的 Skill。
+- 不把算法返回的运行指标描述为能力评分或用户评价。
+- 不修改 `kernel.active`，不启动线上服务，也不改正式 Skill 目录，除非用户明确授权。
+- 只说明当前代码已经实现并实际验证的行为。
 
-## Guardrails
+## 资源
 
-- Treat trajectory paths and existing Skill paths as read-only.
-- Use `context.trajectories.directories()` for `rg`, `find`, DuckDB, or large batch readers.
-- Use `context.skills.checkout()` before editing an existing Skill, then submit it with `context.publisher.submit_checkout()`.
-- Do not copy provider secrets into evaluation artifacts or return them in metrics.
-- Do not switch `kernel.active`, start production services, or modify live Skill repositories unless the user explicitly requests production activation.
-- Do not claim online parity for an adapter that consumes a benchmark format instead of XSkill trajectories.
-- Do not couple public XSkill code or documentation to private benchmark systems inspected during development.
-
-## Resources
-
-- Read [references/api.md](references/api.md) when writing `kernel.py` or using Context, trajectory, Skill, and publication objects.
-- Read [references/operations.md](references/operations.md) when evaluating, diagnosing, or preparing a production handoff.
-- Run `scripts/diagnose_kernel.py` from this Skill directory to check discovery, dependency imports, metadata, triggers, and resolved paths without executing the kernel. It defaults to `~/.xskill/kernels`.
+- 写实现、查询对象字段或发布 Skill：读取
+  [references/api.md](references/api.md)。
+- 诊断、离线运行、检查产物或准备交付：读取
+  [references/operations.md](references/operations.md)。
+- 只检查内核能否被发现和导入：运行
+  `scripts/diagnose_kernel.py`；这个脚本不会执行算法。
