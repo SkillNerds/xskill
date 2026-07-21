@@ -29,6 +29,61 @@ logger = logging.getLogger("xskill.cli")
 # 子命令
 # ═══════════════════════════════════════════════════════════════
 
+def cmd_eval(args) -> int:
+    """Run one kernel against an isolated local trajectory dataset."""
+    import json
+    from pathlib import Path
+
+    import yaml
+
+    from xskill.config import CONFIG_PATH, XSKILL_HOME
+    from xskill.kernels.evaluation import (
+        render_report_table,
+        run_local_evaluation,
+    )
+
+    plugin_dir = Path(args.plugin_dir).expanduser().resolve() if args.plugin_dir else None
+    if plugin_dir is None and CONFIG_PATH.is_file():
+        raw = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        kernel_section = raw.get("kernel", {}) if isinstance(raw, dict) else {}
+        configured = (
+            kernel_section.get("plugin_dir")
+            if isinstance(kernel_section, dict) else None
+        )
+        if configured:
+            candidate = Path(str(configured)).expanduser()
+            plugin_dir = (
+                candidate if candidate.is_absolute()
+                else (XSKILL_HOME / candidate)
+            ).resolve()
+    plugin_dir = plugin_dir or (XSKILL_HOME / "kernels").resolve()
+    try:
+        report = run_local_evaluation(
+            kernel_id=args.kernel_id,
+            dataset=Path(args.dataset),
+            plugin_dir=plugin_dir,
+            xskill_home=XSKILL_HOME,
+            sample=args.sample,
+            seed=args.seed,
+            output_dir=Path(args.output).expanduser() if args.output else None,
+            json_output=args.json,
+            no_progress=args.no_progress,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI renders provider failures
+        if args.json:
+            print(json.dumps({
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }, ensure_ascii=False))
+        else:
+            print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(report.as_dict(), ensure_ascii=False))
+    else:
+        print(render_report_table(report))
+    return 0
+
 def cmd_serve(args, xskill) -> int:
     # --home 用于 debug 模式：生态扫描只看该目录下的 .claude/，不碰真实
     # $HOME。要求顶层 --debug 同时打开，避免生产环境误用。
@@ -1144,6 +1199,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--quiet", action="store_true", help="quiet mode")
     sub = p.add_subparsers(dest="command")
 
+    p_eval = sub.add_parser(
+        "eval",
+        help="离线运行算法内核（隔离 trajectory/skill/workspace，不启动 serve）",
+    )
+    p_eval.add_argument("kernel_id", help="要评测的 kernel manifest id")
+    p_eval.add_argument(
+        "dataset", help="包含 traj_*.md 的标准数据集目录",
+    )
+    p_eval.add_argument(
+        "--sample", default="all",
+        help="确定性样本比例：all、1/4 等（默认 all）",
+    )
+    p_eval.add_argument("--seed", type=int, default=42, help="抽样 seed")
+    p_eval.add_argument("--output", default=None, help="artifact 输出目录")
+    p_eval.add_argument(
+        "--plugin-dir", default=None,
+        help="kernel 根目录；默认只读 config.kernel.plugin_dir",
+    )
+    p_eval.add_argument("--json", action="store_true", help="只输出稳定 JSON")
+    p_eval.add_argument(
+        "--no-progress", action="store_true", help="关闭 tqdm 阶段进度",
+    )
+
     p_serve = sub.add_parser("serve", help="Start daemon (FastAPI + watcher)")
     p_serve.add_argument("--host", default="0.0.0.0")
     p_serve.add_argument("--port", type=int, default=8000)
@@ -1385,6 +1463,11 @@ def main() -> int:
     # stats 只读 registry，不需要 config.yaml / llm.api_key / facade
     if args.command == "stats":
         return cmd_stats(args)
+
+    # eval 是离线隔离命令：只读 kernel 选择路径，不校验平台 LLM/embedding
+    # key，也不构造 XSkill facade，更不要求先启动 serve。
+    if args.command == "eval":
+        return cmd_eval(args)
 
     # read / rebuild 只动 registry + 文件，不需要 llm.api_key / facade——
     # 重跑由运行中的 watcher 完成，本命令只做"重置/桥接"。

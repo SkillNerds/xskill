@@ -14,8 +14,21 @@ def test_index_references_appjs_and_sections():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert "app.js" in html
     assert 'id="pg-overview"' in html   # 分区容器存在
-    for pg in ("pg-skills", "pg-traj", "pg-users", "pg-canary"):
+    for pg in ("pg-skills", "pg-traj", "pg-users", "pg-canary", "pg-kernels"):
         assert f'id="{pg}"' in html
+
+
+def test_kernel_page_exposes_switch_and_evaluation_contract():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert 'data-pg="kernels"' in html
+    assert 'id="kernels-list-body"' in html
+    assert 'id="kernel-eval-body"' in html
+    assert 'id="kernel-runs-body"' in html
+    assert "/api/v1/dashboard/admin/kernels" in js
+    assert "/api/v1/dashboard/admin/kernels/activate" in js
+    assert "loadKernels" in js
 
 
 def test_index_is_fully_vendored():

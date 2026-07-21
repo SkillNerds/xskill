@@ -35,6 +35,7 @@
       <a href="#canary" data-pg="canary" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 1.5h4M7 1.5v4.2L3 12a2 2 0 001.8 3h6.4A2 2 0 0013 12L9 5.7V1.5"/><path d="M4.5 10.5h7"/></svg>灰度 Canary</a>
       <a href="#my" data-pg="my" class="nav-link auth-user hidden flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5.2" r="2.7"/><path d="M2.5 14c.6-3 2.8-4.5 5.5-4.5s4.9 1.5 5.5 4.5"/></svg>我的</a>
       <a href="#admin" data-pg="admin" class="nav-link auth-admin hidden flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5l5.5 2v3.6c0 3.6-2.3 6-5.5 7.4-3.2-1.4-5.5-3.8-5.5-7.4V3.5l5.5-2z"/></svg>管理</a>
+      <a href="#kernels" data-pg="kernels" class="nav-link auth-admin hidden flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3h10v10H3z"/><path d="M1 5h2M1 8h2M1 11h2M13 5h2M13 8h2M13 11h2M5 1v2M8 1v2M11 1v2M5 13v2M8 13v2M11 13v2"/><circle cx="8" cy="8" r="2"/></svg>算法内核</a>
       <a href="#settings" data-pg="settings" class="nav-link auth-admin hidden flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2.2M8 12.3v2.2M1.5 8h2.2M12.3 8h2.2M3.8 3.8l1.5 1.5M10.7 10.7l1.5 1.5M12.2 3.8l-1.5 1.5M5.3 10.7l-1.5 1.5"/></svg>设置</a>
     </nav>
     <div class="mt-auto px-4 py-4 border-t border-slate-100">
@@ -322,13 +323,57 @@
       </div>
     </div>
 
+    <!-- ══ 算法内核（admin） ══ -->
+    <div class="sec-page" id="pg-kernels">
+      <div id="kernels-guard" class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400">仅 admin。请先以 admin 登录（左下角）。</div>
+      <div id="kernels-body" class="hidden">
+        <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5">
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <div class="text-[11px] text-slate-400">当前算法内核</div>
+              <div id="kernel-active" class="text-lg font-semibold text-teal-700 mt-1">—</div>
+              <div id="kernel-active-desc" class="text-[12.5px] text-slate-500 mt-1">—</div>
+            </div>
+            <div class="text-right text-[11px] text-slate-400">
+              <div>插件目录</div><div id="kernel-plugin-dir" class="font-mono text-slate-600 mt-1">—</div>
+            </div>
+          </div>
+          <div class="mt-3 rounded-xl bg-amber-50 ring-1 ring-amber-200 p-3 text-[11.5px] text-amber-700">切换只影响下一轮 sweep，不会中断正在运行的任务。内核的 config.yaml 由内核自己维护，面板只展示路径、不读取也不修改内容。</div>
+        </div>
+
+        <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
+          <h2 class="font-semibold text-sm">可用内核 <span class="font-normal text-[11px] text-slate-400 ml-2">bundled + ~/.xskill/kernels/&lt;id&gt;/kernel.py</span></h2>
+          <div class="overflow-x-auto"><table class="w-full mt-2 text-[12.5px]">
+            <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">内核</th><th class="text-left font-medium">来源 / 触发</th><th class="text-left font-medium">私有空间</th><th class="text-left font-medium">状态</th><th class="text-right font-medium">操作</th></tr></thead>
+            <tbody id="kernels-list-body" class="divide-y divide-slate-50"><tr><td colspan="5" class="py-2 text-slate-400">加载中…</td></tr></tbody></table></div>
+        </div>
+
+        <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
+          <div class="flex items-baseline justify-between">
+            <h2 class="font-semibold text-sm">算法评价</h2>
+            <span class="text-[11px] text-slate-400">运行指标即时；技能 UX 是延迟反馈，同 dataset_id 才适合横向比较</span>
+          </div>
+          <div class="overflow-x-auto"><table class="w-full mt-2 text-[12.5px]">
+            <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">内核</th><th class="text-right font-medium">成功率</th><th class="text-right font-medium">平均耗时</th><th class="text-right font-medium">输入 / 输出</th><th class="text-right font-medium">归属技能</th><th class="text-right font-medium">平均 UX</th><th class="text-left font-medium pl-6">最近运行</th></tr></thead>
+            <tbody id="kernel-eval-body" class="divide-y divide-slate-50"><tr><td colspan="7" class="py-2 text-slate-400">加载中…</td></tr></tbody></table></div>
+        </div>
+
+        <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
+          <h2 class="font-semibold text-sm">最近运行 <span class="font-normal text-[11px] text-slate-400 ml-2">run_id / dataset_id 保留算法归因</span></h2>
+          <div class="overflow-x-auto"><table class="w-full mt-2 text-[12.5px]">
+            <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">时间</th><th class="text-left font-medium">内核</th><th class="text-left font-medium">触发 / 数据集</th><th class="text-right font-medium">输入 / 输出</th><th class="text-right font-medium">耗时</th><th class="text-left font-medium pl-6">状态</th></tr></thead>
+            <tbody id="kernel-runs-body" class="divide-y divide-slate-50"><tr><td colspan="6" class="py-2 text-slate-400">加载中…</td></tr></tbody></table></div>
+        </div>
+      </div>
+    </div>
+
     <!-- ══ 设置（admin） ══ -->
     <div class="sec-page" id="pg-settings">
       <div id="settings-guard" class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400">仅 admin。请先以 admin 登录（左下角）。</div>
       <div id="settings-body" class="hidden bg-white rounded-2xl ring-1 ring-slate-200 p-5">
         <div class="flex items-baseline justify-between">
           <h2 class="font-semibold text-sm">config.yaml <span class="font-normal text-[11px] text-slate-400 ml-2" id="cfg-path"></span></h2>
-          <span class="text-[11px] text-slate-400">dashboard/canary/recommend/skillhub 段热生效;<b>llm/watch_dirs 改动需重启 serve</b></span>
+          <span class="text-[11px] text-slate-400">dashboard/canary/recommend/skillhub/kernel 段热生效;<b>llm/watcher 改动需重启 serve</b></span>
         </div>
         <textarea id="cfg-editor" class="w-full mt-3 ring-1 ring-slate-200 rounded-xl p-3 outline-none focus:ring-teal-500 font-mono text-xs" rows="22" spellcheck="false"></textarea>
         <div class="mt-3 flex items-center gap-2.5">

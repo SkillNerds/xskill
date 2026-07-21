@@ -26,10 +26,15 @@ def run_sweep_once(*, server: bool = False, home: str | None = None) -> int:
     """
     from xskill.config import (
         XSKILL_HOME,
+        get_kernel_evaluation_db_path,
         get_registry_db_path,
         get_skill_dir,
+        kernel_config,
         load_config,
     )
+    from xskill.kernels.base import KernelRunResult
+    from xskill.kernels.catalog import KernelCatalog
+    from xskill.kernels.runtime import KernelEvaluationStore, KernelRuntime
     from xskill.pipeline.watcher_factory import (
         build_watcher,
         ingest_detected_ecosystems_once,
@@ -59,17 +64,50 @@ def run_sweep_once(*, server: bool = False, home: str | None = None) -> int:
                 registry_db_path=registry_db_path,
                 install_history_path=install_history_path,
             )
-        watcher = build_watcher(
-            config,
+        selected = kernel_config(config, xskill_home=XSKILL_HOME)
+        catalog = KernelCatalog(
+            plugin_dir=selected["plugin_dir"],
             xskill_home=XSKILL_HOME,
-            config_path=XSKILL_HOME / "config.yaml",
-            db_path=registry_db_path,
-            skill_dir=skill_dir,
-            home_root=home_root,
-            server_mode=server,
         )
-        watcher.run_once_and_drain()
-        write_status_file(status_path, watcher.stats, ok=True)
+        runtime = KernelRuntime(
+            active_kernel=selected["active"],
+            catalog=catalog,
+            skill_dir=skill_dir,
+            registry_db_path=registry_db_path,
+            evaluation_store=KernelEvaluationStore(
+                get_kernel_evaluation_db_path(xskill_home=XSKILL_HOME)
+            ),
+        )
+
+        def run_native(_request):
+            nonlocal watcher
+            watcher = build_watcher(
+                config,
+                xskill_home=XSKILL_HOME,
+                config_path=XSKILL_HOME / "config.yaml",
+                db_path=registry_db_path,
+                skill_dir=skill_dir,
+                home_root=home_root,
+                server_mode=server,
+            )
+            watcher.run_once_and_drain()
+            return KernelRunResult(metrics=dict(watcher.stats))
+
+        descriptor, result = runtime.run_active(
+            trigger="scheduled",
+            native_runner=run_native,
+        )
+        status_stats = (
+            watcher.stats
+            if watcher is not None
+            else {
+                "kernel_id": descriptor.id,
+                "processed_trajectories": len(result.processed_trajectory_ids),
+                "submitted_skills": len(result.submitted_skills),
+                **dict(result.metrics),
+            }
+        )
+        write_status_file(status_path, status_stats, ok=True)
         return 0
     except Exception as exc:  # noqa: BLE001 — 顶层任务边界,落状态文件+日志后报错
         logger.exception("sweep once failed")

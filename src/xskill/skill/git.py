@@ -970,6 +970,27 @@ def run_git(args: list[str], cwd: str) -> tuple[int, str, str]:
         return 128, "", f"{type(e).__name__}: {e}"
 
 
+def read_bundle_on_ref(skill_dir: str | Path, ref: str) -> dict[str, bytes] | None:
+    """Read every file from an immutable Git tree without branch checkout."""
+    root = Path(skill_dir)
+    with skill_repo_lock(root):
+        with _open_repo(str(root)) as repo:
+            sha = _resolve_rev(repo, ref)
+            if sha is None:
+                return None
+            commit = repo[sha]
+            if not isinstance(commit, Commit):
+                return None
+            result: dict[str, bytes] = {}
+            for relative, blob_sha, _mode in _collect_blobs_under_path(
+                repo, commit.tree, "",
+            ):
+                blob = repo[blob_sha]
+                if isinstance(blob, Blob):
+                    result[relative] = bytes(blob.data)
+            return result
+
+
 # ── handler 列表 ──────────────────────────────────────────────────
 
 def _h_init(_args: list[str], cwd: str) -> tuple[int, str, str]:

@@ -413,6 +413,51 @@ def test_config_validate_and_reload(console_env, tmp_path, monkeypatch):
     assert app_mod._config["canary"]["probability"] == 0.5
 
 
+def test_kernel_catalog_and_targeted_activation(console_env, tmp_path, monkeypatch):
+    import xskill.config as C
+    from xskill.api import app as app_mod
+
+    xskill_home = tmp_path / "xskill-home"
+    xskill_home.mkdir()
+    config_path = xskill_home / "config.yaml"
+    config_path.write_text(
+        "# keep this comment\n"
+        f"skill_dir: {console_env['skills']}\n"
+        "kernel:\n"
+        "  active: native  # selected by admin\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "XSKILL_HOME", xskill_home)
+    monkeypatch.setattr(C, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(app_mod, "_config", {
+        "skill_dir": str(console_env["skills"]),
+        "kernel": {"active": "native"},
+    })
+
+    alice = console_env["alice"]
+    boss = console_env["boss"]
+    assert alice.get("/api/v1/dashboard/admin/kernels").status_code == 403
+    catalog = boss.get("/api/v1/dashboard/admin/kernels")
+    assert catalog.status_code == 200
+    assert catalog.json()["active"] == "native"
+    assert {row["id"] for row in catalog.json()["kernels"]} >= {
+        "native", "rule-based-demo",
+    }
+
+    switched = boss.post(
+        "/api/v1/dashboard/admin/kernels/activate",
+        json={"kernel_id": "rule-based-demo"},
+    )
+    assert switched.status_code == 200
+    assert switched.json()["effective"] == "next_sweep"
+    raw = config_path.read_text(encoding="utf-8")
+    assert "# keep this comment" in raw
+    assert "active: rule-based-demo  # selected by admin" in raw
+    assert app_mod._config["kernel"]["active"] == "rule-based-demo"
+    # XSkill does not create or edit the selected kernel's private config here.
+    assert not (xskill_home / "kernels" / "rule-based-demo" / "config.yaml").exists()
+
+
 def test_reload_slots_only_change_is_hot_not_restart(console_env, tmp_path, monkeypatch):
     """只改 team.server 的槽位子键 = 现取即生效 → 不该被标成"需重启"。
 

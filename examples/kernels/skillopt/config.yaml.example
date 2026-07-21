@@ -1,0 +1,15 @@
+# Owned and parsed only by examples/kernels/skillopt/kernel.py.
+# XSkill never interprets this file and never copies it into eval artifacts.
+skill_name: spreadsheet-skillopt
+description: Spreadsheet manipulation strategy optimized by SkillOpt.
+
+# May be absolute or relative to this file. SkillOpt resolves its own _base_.
+skillopt_config: /path/to/SkillOpt/configs/spreadsheetbench/default.yaml
+
+# Native SkillOpt structured config overrides.
+overrides:
+  - env.split_dir=/path/to/spreadsheetbench/train_split
+  - env.data_root=/path/to/spreadsheetbench/data_root
+  - train.seed=42
+  - train.num_epochs=4
+  - train.train_size=20

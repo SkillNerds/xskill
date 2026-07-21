@@ -874,7 +874,7 @@ async function loadCanary() {
 }
 
 // ── SPA-lite 路由（hash）─────────────────────────────────────────
-const NAMES = { overview: '总览', skills: '技能库', traj: '轨迹 & 原子', users: '用户 & 画像', canary: '灰度 Canary', my: '我的', admin: '管理', settings: '设置' };
+const NAMES = { overview: '总览', skills: '技能库', traj: '轨迹 & 原子', users: '用户 & 画像', canary: '灰度 Canary', my: '我的', admin: '管理', kernels: '算法内核', settings: '设置' };
 function showPage(pg) {
   if (!document.getElementById('pg-' + pg)) pg = 'overview';
   document.querySelectorAll('.sec-page').forEach(s => s.classList.remove('on'));
@@ -1021,6 +1021,8 @@ function applyIdent() {
   document.getElementById('my-body').classList.toggle('hidden', !logged);
   document.getElementById('admin-guard').classList.toggle('hidden', admin);
   document.getElementById('admin-body').classList.toggle('hidden', !admin);
+  document.getElementById('kernels-guard').classList.toggle('hidden', admin);
+  document.getElementById('kernels-body').classList.toggle('hidden', !admin);
   document.getElementById('settings-guard').classList.toggle('hidden', admin);
   document.getElementById('settings-body').classList.toggle('hidden', !admin);
 }
@@ -1029,7 +1031,7 @@ async function initIdent() {
   try { IDENT = await j('/api/v1/dashboard/me'); } catch { IDENT = null; }
   applyIdent();
   if (IDENT) { loadMy().catch(console.error); initEvents(); }
-  if (IDENT && IDENT.role === 'admin') { loadAdmin().catch(console.error); loadSettings().catch(console.error); }
+  if (IDENT && IDENT.role === 'admin') { loadAdmin().catch(console.error); loadKernels().catch(console.error); loadSettings().catch(console.error); }
 }
 
 // 登录弹窗
@@ -1047,7 +1049,7 @@ document.getElementById('login-submit').addEventListener('click', async () => {
     applyIdent();
     loadMy().catch(console.error);
     initEvents();
-    if (IDENT.role === 'admin') { loadAdmin().catch(console.error); loadSettings().catch(console.error); }
+    if (IDENT.role === 'admin') { loadAdmin().catch(console.error); loadKernels().catch(console.error); loadSettings().catch(console.error); }
   } catch (e) { err.textContent = e.message; }
 });
 document.getElementById('login-secret').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('login-submit').click(); });
@@ -1242,7 +1244,54 @@ document.getElementById('gpin-add').addEventListener('click', async () => {
   catch (err) { alert(err.message); }
 });
 
-// ── 设置 ────────────────────────────────────────────────────────
+// ── 算法内核 ────────────────────────────────────────────────────
+async function loadKernels() {
+  if (!IDENT || IDENT.role !== 'admin') return;
+  const data = await j('/api/v1/dashboard/admin/kernels');
+  const active = data.kernels.find(k => k.id === data.active);
+  document.getElementById('kernel-active').textContent = active ? `${active.name} (${active.id})` : data.active;
+  document.getElementById('kernel-active-desc').textContent = active ? active.description : '配置的内核未被发现';
+  document.getElementById('kernel-plugin-dir').textContent = data.plugin_dir;
+  rows('kernels-list-body', data.kernels.map(k => {
+    const state = k.available
+      ? (k.active ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px]">已激活</span>' : '<span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px]">可用</span>')
+      : `<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 text-[10px]" title="${esc(k.error)}">不可用</span>`;
+    const action = k.active
+      ? '<span class="text-[11px] text-slate-400">当前</span>'
+      : (k.available
+        ? `<button class="kernel-activate text-[11px] px-2 py-0.5 rounded ring-1 ring-teal-200 text-teal-700 hover:bg-teal-50" data-kernel="${esc(k.id)}">切换</button>`
+        : '<span class="text-[11px] text-slate-300">修复依赖后可选</span>');
+    return `<tr><td class="py-2"><div class="font-medium">${esc(k.name)} <span class="text-[10px] text-slate-400">v${esc(k.version)}</span></div><div class="text-[11px] text-slate-400 mt-0.5">${esc(k.id)} · ${esc(k.description)}</div></td>
+      <td><div>${esc(k.source)}</div><div class="text-[10px] text-slate-400 mt-0.5">${k.triggers.map(esc).join(' / ') || '—'}</div></td>
+      <td><div class="font-mono text-[10px] text-slate-600">${esc(k.workspace)}</div><div class="font-mono text-[10px] text-slate-400 mt-0.5">config: ${k.config_path ? esc(k.config_path) : '平台内置'}</div></td>
+      <td>${state}</td><td class="text-right">${action}</td></tr>`;
+  }).join(''), '未发现内核');
+
+  rows('kernel-eval-body', data.evaluations.map(e => `<tr>
+    <td class="py-2 font-medium">${esc(e.kernel_id)}</td>
+    <td class="text-right tabular-nums">${e.success_rate == null ? '—' : pctf(e.success_rate)}</td>
+    <td class="text-right tabular-nums">${e.avg_duration_s == null ? '—' : e.avg_duration_s.toFixed(2) + 's'}</td>
+    <td class="text-right tabular-nums">${e.input_count} / ${e.output_count}</td>
+    <td class="text-right tabular-nums">${e.skills_owned}</td>
+    <td class="text-right tabular-nums">${e.avg_ux == null ? '—' : e.avg_ux.toFixed(2) + ` <span class="text-[10px] text-slate-400">(${e.ux_samples})</span>`}</td>
+    <td class="pl-6"><span class="text-[10px] px-1.5 py-0.5 rounded ${e.last_status === 'error' ? 'bg-rose-100 text-rose-700' : e.last_status === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}">${esc(e.last_status || '尚未运行')}</span><div class="text-[10px] text-slate-400 mt-0.5">${esc(e.last_run_at || '')}</div></td></tr>`).join(''), '暂无评价数据');
+
+  rows('kernel-runs-body', data.recent_runs.map(r => `<tr>
+    <td class="py-2 text-[11px]">${esc(r.started_at)}</td><td class="font-medium">${esc(r.kernel_id)} <span class="text-[10px] text-slate-400">v${esc(r.kernel_version)}</span></td>
+    <td>${esc(r.trigger)} <span class="text-[10px] text-slate-400">/ ${esc(r.dataset_id)}</span></td>
+    <td class="text-right tabular-nums">${r.input_count} / ${r.output_count}</td><td class="text-right tabular-nums">${Number(r.duration_s).toFixed(2)}s</td>
+    <td class="pl-6"><span class="text-[10px] px-1.5 py-0.5 rounded ${r.status === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}" title="${esc(r.error || '')}">${esc(r.status)}</span><div class="text-[10px] text-slate-400 font-mono mt-0.5">${esc(r.run_id.slice(0, 12))}</div></td></tr>`).join(''), '还没有内核运行记录');
+}
+document.addEventListener('click', async e => {
+  const button = e.target.closest('.kernel-activate');
+  if (!button) return;
+  if (!confirm(`从下一轮 sweep 开始切换为 ${button.dataset.kernel}？`)) return;
+  try {
+    await jpost('/api/v1/dashboard/admin/kernels/activate', { kernel_id: button.dataset.kernel });
+    await Promise.all([loadKernels(), loadSettings()]);
+  } catch (err) { alert(err.message); }
+});
+
 async function loadSettings() {
   if (!IDENT || IDENT.role !== 'admin') return;
   const c = await j('/api/v1/dashboard/admin/config');

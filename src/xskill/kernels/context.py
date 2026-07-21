@@ -1,0 +1,582 @@
+"""Capability objects exposed to trusted, in-process algorithm kernels."""
+
+from __future__ import annotations
+
+import json
+import shutil
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from types import MappingProxyType
+from typing import Iterable, Iterator, Mapping
+
+from xskill.kernels.base import (
+    KernelInvocation,
+    PublishedSkill,
+    SkillSubmission,
+    validate_kernel_id,
+)
+
+
+_HIDDEN_BUNDLE_PARTS = {
+    ".git", ".canary", ".ux_scores.jsonl", ".candidates.yml",
+    ".description_optimization", ".repo_locks", ".lock",
+}
+
+
+def _safe_bundle_relative(raw_path: str) -> PurePosixPath:
+    relative = PurePosixPath(str(raw_path))
+    if (
+        "\\" in str(raw_path)
+        or "\x00" in str(raw_path)
+        or relative.is_absolute()
+        or not relative.parts
+        or ".." in relative.parts
+        or any(
+            part.startswith(".") or part in _HIDDEN_BUNDLE_PARTS
+            for part in relative.parts
+        )
+    ):
+        raise ValueError(f"unsafe skill bundle path: {raw_path!r}")
+    return relative
+
+
+def _bundle_files(root: Path) -> tuple[Path, ...]:
+    """Return distributable regular files without platform runtime state."""
+    if not root.is_dir():
+        return ()
+    files: list[Path] = []
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            continue
+        relative = path.relative_to(root)
+        if any(
+            part.startswith(".") or part in _HIDDEN_BUNDLE_PARTS
+            for part in relative.parts
+        ):
+            continue
+        if path.is_file():
+            files.append(path)
+    return tuple(sorted(files, key=lambda item: item.relative_to(root).as_posix()))
+
+
+@dataclass(frozen=True)
+class TrajectoryDirectoryResource:
+    """A registered directory the kernel may scan under a read-only contract.
+
+    The V2 Python runner is a trusted in-process plugin boundary.  ``read_only``
+    therefore documents the contract but is not an OS-level sandbox.
+    """
+
+    id: str
+    path: Path
+    label: str
+    ecosystem: str
+    auto_index: bool
+    trajectory_count: int
+    indexed_count: int
+    read_only: bool = True
+
+
+@dataclass(frozen=True)
+class TrajectoryResource:
+    """Read-only reference with a registry-qualified stable ID."""
+
+    id: str
+    trajectory_id: str
+    path: Path
+    watch_dir_id: int
+    watch_dir: Path
+    label: str
+    ecosystem: str
+    status: str | None
+    metadata: Mapping[str, object]
+
+    def read_text(self) -> str:
+        return self.path.read_text(encoding="utf-8")
+
+    def read_raw_json(self) -> dict:
+        raw_path = self.path.with_suffix(".json")
+        if not raw_path.is_file():
+            return {}
+        return json.loads(raw_path.read_text(encoding="utf-8"))
+
+
+class TrajectoryReader:
+    """Read-only facade over this invocation's registered trajectory roots."""
+
+    def __init__(self, db_path: Path):
+        self._db_path = Path(db_path)
+
+    def directories(self) -> tuple[TrajectoryDirectoryResource, ...]:
+        """Expose roots for ``rg``/``find``/DuckDB and other batch readers."""
+        from xskill.pipeline.registry import Registry
+
+        return tuple(
+            TrajectoryDirectoryResource(
+                id=str(item.id),
+                path=item.path,
+                label=item.label,
+                ecosystem=item.ecosystem,
+                auto_index=item.auto_index,
+                trajectory_count=item.traj_count,
+                indexed_count=item.indexed_count,
+            )
+            for item in Registry(self._db_path).list()
+        )
+
+    def iter(
+        self,
+        *,
+        directory_id: str | None = None,
+        statuses: Iterable[str] | None = None,
+    ) -> Iterator[TrajectoryResource]:
+        """Stream resources without materializing the complete corpus."""
+        from xskill.pipeline.registry import Registry
+        from xskill.pipeline.trajectory import Trajectory
+
+        accepted = set(statuses) if statuses is not None else None
+        registry = Registry(self._db_path)
+        for watch_dir in registry.list():
+            if directory_id is not None and str(watch_dir.id) != str(directory_id):
+                continue
+            if not watch_dir.path.is_dir():
+                continue
+            for path in sorted(watch_dir.path.glob("traj_*.md")):
+                trajectory = Trajectory.load(path, registry=registry)
+                status = trajectory.status
+                if accepted is not None and status not in accepted:
+                    continue
+                try:
+                    metadata = trajectory.meta
+                except (OSError, json.JSONDecodeError):
+                    metadata = {}
+                yield TrajectoryResource(
+                    id=f"{watch_dir.id}:{path.name}",
+                    trajectory_id=path.stem,
+                    path=path,
+                    watch_dir_id=watch_dir.id,
+                    watch_dir=watch_dir.path,
+                    label=watch_dir.label,
+                    ecosystem=watch_dir.ecosystem,
+                    status=status,
+                    metadata=MappingProxyType(dict(metadata)),
+                )
+
+    def list(
+        self,
+        *,
+        statuses: Iterable[str] | None = None,
+    ) -> list[TrajectoryResource]:
+        return list(self.iter(statuses=statuses))
+
+    def get(self, resource_id: str) -> TrajectoryResource:
+        for resource in self.iter():
+            if resource.id == resource_id:
+                return resource
+        raise KeyError(f"trajectory not found: {resource_id}")
+
+
+@dataclass(frozen=True)
+class SkillVersionResource:
+    """Version-level user feedback bound to a Git commit."""
+
+    commit_sha: str
+    side: str
+    ux_average: float | None
+    ux_samples: int
+    first_scored_at: str | None
+    last_scored_at: str | None
+
+
+@dataclass(frozen=True)
+class SkillResource:
+    """Read-only main bundle and its main/staging feedback view."""
+
+    name: str
+    description: str
+    path: Path
+    metadata: Mapping[str, object]
+    ux_average: float | None
+    ux_samples: int
+    main_commit_sha: str
+    staging_commit_sha: str | None
+    versions: tuple[SkillVersionResource, ...]
+
+    def list_files(self) -> tuple[str, ...]:
+        return tuple(
+            path.relative_to(self.path).as_posix()
+            for path in _bundle_files(self.path)
+        )
+
+    def read_text(self, relative_path: str = "SKILL.md") -> str:
+        relative = _safe_bundle_relative(relative_path)
+        target = self.path.joinpath(*relative.parts)
+        if not target.is_file() or target.is_symlink():
+            raise FileNotFoundError(relative_path)
+        return target.read_text(encoding="utf-8")
+
+
+@dataclass(frozen=True)
+class SkillDraft:
+    """Editable copy inside the kernel workspace, never the live Skill repo."""
+
+    name: str
+    path: Path
+    base_commit_sha: str
+
+    def list_files(self) -> tuple[str, ...]:
+        return tuple(
+            path.relative_to(self.path).as_posix()
+            for path in _bundle_files(self.path)
+        )
+
+
+class SkillReader:
+    """Version-aware read facade plus managed workspace checkout."""
+
+    def __init__(self, skill_dir: Path, *, workspace: Path):
+        self._skill_dir = Path(skill_dir)
+        self._workspace = Path(workspace).resolve()
+
+    def list(self, *, days: int = 30) -> list[SkillResource]:
+        from xskill import canary
+        from xskill.skill.repo import SkillRepo
+
+        result: list[SkillResource] = []
+        for skill in SkillRepo(self._skill_dir):
+            recent = skill.recent_ux_scores(days=days)
+            main_commit = canary.main_sha(skill.path) or ""
+            staging_commit = canary.staging_sha(skill.path)
+            aggregates = {
+                row["commit_sha"]: row
+                for row in canary.aggregate_ux_by_version(recent)
+            }
+            versions: list[SkillVersionResource] = []
+            for side, commit_sha in (
+                ("main", main_commit), ("staging", staging_commit),
+            ):
+                if not commit_sha:
+                    continue
+                aggregate = aggregates.get(commit_sha, {})
+                versions.append(SkillVersionResource(
+                    commit_sha=commit_sha,
+                    side=side,
+                    ux_average=aggregate.get("avg"),
+                    ux_samples=int(aggregate.get("count", 0)),
+                    first_scored_at=aggregate.get("first_scored_at"),
+                    last_scored_at=aggregate.get("last_scored_at"),
+                ))
+            result.append(SkillResource(
+                name=skill.name,
+                description=skill.description,
+                path=skill.path,
+                metadata=MappingProxyType(dict(
+                    skill.frontmatter.get("metadata", {}) or {}
+                )),
+                ux_average=skill.ux_avg(days=days),
+                ux_samples=sum(
+                    1 for row in recent
+                    if isinstance(row.get("score"), (int, float))
+                    and not isinstance(row.get("score"), bool)
+                ),
+                main_commit_sha=main_commit,
+                staging_commit_sha=staging_commit,
+                versions=tuple(versions),
+            ))
+        return result
+
+    def get(self, name: str, *, days: int = 30) -> SkillResource:
+        for skill in self.list(days=days):
+            if skill.name == name:
+                return skill
+        raise KeyError(f"skill not found: {name}")
+
+    def checkout(self, name: str) -> SkillDraft:
+        """Copy main's full bundle into a deterministic workspace checkout."""
+        resource = self.get(name)
+        if not resource.main_commit_sha:
+            raise RuntimeError(f"skill {name} has no main commit")
+        destination = (
+            self._workspace / "skill_checkouts" / name
+            / resource.main_commit_sha[:12]
+        ).resolve()
+        if self._workspace not in destination.parents:
+            raise ValueError("skill checkout must stay inside kernel workspace")
+        if destination.exists():
+            if not destination.is_dir() or destination.is_symlink():
+                raise RuntimeError(f"unsafe checkout path: {destination}")
+            return SkillDraft(name, destination, resource.main_commit_sha)
+        destination.mkdir(parents=True, exist_ok=False)
+        for source in _bundle_files(resource.path):
+            relative = source.relative_to(resource.path)
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        return SkillDraft(name, destination, resource.main_commit_sha)
+
+
+class SkillPublisher:
+    """Validated, Git-aware write gateway; kernels never write skill_dir."""
+
+    _MAX_BUNDLE_BYTES = 2 * 1024 * 1024
+    _RESERVED_PARTS = _HIDDEN_BUNDLE_PARTS
+
+    def __init__(
+        self,
+        *,
+        skill_dir: Path,
+        kernel_id: str,
+        kernel_version: str,
+        run_id: str,
+    ):
+        self._skill_dir = Path(skill_dir)
+        self._kernel_id = validate_kernel_id(kernel_id)
+        self._kernel_version = str(kernel_version)
+        self._run_id = str(run_id)
+        self._published: list[PublishedSkill] = []
+
+    @property
+    def published(self) -> tuple[PublishedSkill, ...]:
+        return tuple(self._published)
+
+    def submit(self, draft: SkillSubmission) -> PublishedSkill:
+        name, skill_md, files = self._validate_and_attribute(draft)
+        skill_path = self._skill_dir / name
+        self._skill_dir.mkdir(parents=True, exist_ok=True)
+        if skill_path.exists():
+            if not draft.base_commit_sha:
+                raise ValueError(
+                    f"updating skill {name} requires base_commit_sha; "
+                    "use context.skills.checkout()"
+                )
+            published = self._stage_existing(
+                skill_path, name, skill_md, files, draft.message,
+                draft.base_commit_sha,
+            )
+        else:
+            if draft.base_commit_sha is not None:
+                raise ValueError(
+                    f"new skill {name} must not declare base_commit_sha"
+                )
+            published = self._create_new(
+                skill_path, name, skill_md, files, draft.message,
+            )
+        self._published.append(published)
+        return published
+
+    def submit_checkout(
+        self,
+        checkout: SkillDraft,
+        *,
+        message: str,
+        source_trajectory_ids: tuple[str, ...] = (),
+    ) -> PublishedSkill:
+        """Publish an exact UTF-8 text snapshot from a managed checkout."""
+        root = checkout.path.resolve()
+        if not root.is_dir() or root.is_symlink():
+            raise ValueError("skill checkout is not a regular directory")
+        skill_md_path = root / "SKILL.md"
+        if not skill_md_path.is_file() or skill_md_path.is_symlink():
+            raise ValueError("skill checkout must contain SKILL.md")
+        files: dict[str, str] = {}
+        for path in _bundle_files(root):
+            relative = path.relative_to(root).as_posix()
+            if relative == "SKILL.md":
+                continue
+            try:
+                files[relative] = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(
+                    f"kernel bundle file must be UTF-8 text: {relative!r}"
+                ) from exc
+        return self.submit(SkillSubmission(
+            name=checkout.name,
+            skill_md=skill_md_path.read_text(encoding="utf-8"),
+            files=files,
+            source_trajectory_ids=source_trajectory_ids,
+            message=message,
+            base_commit_sha=checkout.base_commit_sha,
+        ))
+
+    def _validate_and_attribute(
+        self,
+        draft: SkillSubmission,
+    ) -> tuple[str, str, dict[str, str]]:
+        from xskill.skill.frontmatter import parse_strict, serialize
+
+        name = validate_kernel_id(draft.name)
+        frontmatter, body = parse_strict(draft.skill_md)
+        declared_name = str(frontmatter.get("name") or "").strip()
+        if declared_name != name:
+            raise ValueError(
+                f"SKILL.md name {declared_name!r} does not match draft {name!r}"
+            )
+        description = frontmatter.get("description")
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError("kernel submission description must not be empty")
+        metadata = frontmatter.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            raise ValueError("SKILL.md metadata must be a mapping")
+        # Per-run attribution belongs to kernel_runs.db; embedding run_id would
+        # make identical algorithm output produce different Skill content.
+        metadata["kernel"] = {
+            "id": self._kernel_id,
+            "version": self._kernel_version,
+        }
+        if draft.source_trajectory_ids:
+            existing = metadata.get("source_trajs") or []
+            if not isinstance(existing, list):
+                raise ValueError("metadata.source_trajs must be a list")
+            metadata["source_trajs"] = list(dict.fromkeys(
+                [str(item) for item in existing]
+                + [str(item) for item in draft.source_trajectory_ids]
+            ))
+
+        files: dict[str, str] = {}
+        total = len(draft.skill_md.encode("utf-8"))
+        for raw_name, contents in draft.files.items():
+            relative = _safe_bundle_relative(str(raw_name))
+            if relative.as_posix() == "SKILL.md":
+                raise ValueError("SKILL.md must be provided through skill_md")
+            if not isinstance(contents, str):
+                raise ValueError(f"kernel bundle file must be text: {raw_name!r}")
+            total += len(contents.encode("utf-8"))
+            files[relative.as_posix()] = contents
+        if total > self._MAX_BUNDLE_BYTES:
+            raise ValueError(
+                f"kernel bundle exceeds {self._MAX_BUNDLE_BYTES} bytes"
+            )
+        return name, serialize(frontmatter, body), files
+
+    @staticmethod
+    def _write_bundle(
+        skill_path: Path,
+        skill_md: str,
+        files: Mapping[str, str],
+    ) -> None:
+        (skill_path / "SKILL.md").write_text(skill_md, encoding="utf-8")
+        for relative, contents in files.items():
+            target = skill_path.joinpath(*PurePosixPath(relative).parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(contents, encoding="utf-8")
+
+    def _create_new(
+        self,
+        skill_path: Path,
+        name: str,
+        skill_md: str,
+        files: Mapping[str, str],
+        message: str,
+    ) -> PublishedSkill:
+        from xskill.canary import main_sha
+        from xskill.skill.frontmatter import parse
+        from xskill.skill.git import (
+            commit_baby_to_main_branch,
+            init_skill_repo_on_baby,
+        )
+
+        frontmatter, _ = parse(skill_md)
+        draft_path = self._skill_dir / ".kernel_drafts" / self._run_id / name
+        init_skill_repo_on_baby(
+            str(draft_path), name, str(frontmatter["description"]),
+        )
+        self._write_bundle(draft_path, skill_md, files)
+        if not commit_baby_to_main_branch(
+            str(draft_path), f"kernel({self._kernel_id}): {message}",
+        ):
+            raise RuntimeError(f"failed to publish new skill: {name}")
+        draft_path.replace(skill_path)
+        return PublishedSkill(
+            name=name, action="created", commit_sha=main_sha(skill_path) or "",
+        )
+
+    def _stage_existing(
+        self,
+        skill_path: Path,
+        name: str,
+        skill_md: str,
+        files: Mapping[str, str],
+        message: str,
+        base_commit_sha: str,
+    ) -> PublishedSkill:
+        from xskill.canary import has_staging, main_sha, staging_sha
+        from xskill.skill.git import (
+            commit_to_staging_branch,
+            current_branch,
+            has_changes,
+            run_git,
+            skill_repo_lock,
+        )
+
+        with skill_repo_lock(skill_path):
+            previous_commit = main_sha(skill_path) or ""
+            if previous_commit != base_commit_sha:
+                raise RuntimeError(
+                    f"skill {name} changed since checkout: expected "
+                    f"{base_commit_sha}, current {previous_commit}"
+                )
+            if current_branch(str(skill_path)) != "main":
+                raise RuntimeError(f"skill {name} is not on main")
+            if has_staging(skill_path):
+                raise RuntimeError(f"skill {name} already has an active staging")
+            if has_changes(str(skill_path)):
+                raise RuntimeError(f"skill {name} has uncommitted changes")
+            original_files = {
+                path.relative_to(skill_path).as_posix()
+                for path in _bundle_files(skill_path)
+            }
+            desired_files = {"SKILL.md", *files.keys()}
+            candidate_only = desired_files - original_files
+            try:
+                for relative in original_files - desired_files:
+                    (skill_path / relative).unlink()
+                self._write_bundle(skill_path, skill_md, files)
+                if not commit_to_staging_branch(
+                    str(skill_path), f"kernel({self._kernel_id}): {message}",
+                ):
+                    raise RuntimeError(f"failed to stage skill: {name}")
+            except BaseException:
+                run_git(["reset", "--hard", "main"], cwd=str(skill_path))
+                self._remove_candidate_only(skill_path, candidate_only)
+                raise
+            self._remove_candidate_only(skill_path, candidate_only)
+        return PublishedSkill(
+            name=name,
+            action="staged",
+            commit_sha=staging_sha(skill_path) or "",
+            previous_commit_sha=previous_commit,
+        )
+
+    @staticmethod
+    def _remove_candidate_only(skill_path: Path, relative_paths: set[str]) -> None:
+        for relative in sorted(relative_paths, reverse=True):
+            target = skill_path / relative
+            if target.is_file() and not target.is_symlink():
+                target.unlink()
+        for directory in sorted(
+            (item for item in skill_path.rglob("*") if item.is_dir()),
+            key=lambda item: len(item.parts),
+            reverse=True,
+        ):
+            if directory.name == ".git" or ".git" in directory.parts:
+                continue
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+
+
+@dataclass(frozen=True)
+class KernelContext:
+    """One bounded invocation plus the provider's small capability surface."""
+
+    invocation: KernelInvocation
+    workspace: Path
+    config_path: Path
+    trajectories: TrajectoryReader
+    skills: SkillReader
+    publisher: SkillPublisher
+
+    @property
+    def run_id(self) -> str:
+        return self.invocation.run_id

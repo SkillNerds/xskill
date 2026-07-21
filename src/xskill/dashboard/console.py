@@ -218,9 +218,13 @@ class ConfigPayload(BaseModel):
     raw: str               # config.yaml 全文(原文编辑器提交)
 
 
+class KernelActivateRequest(BaseModel):
+    kernel_id: str
+
+
 # 热加载范围显式声明(2.9):这些段改完即生效(读方每次现取);
 # llm/watch_dirs 涉及进程级资源(client 连接池/watcher 注册),改动需重启 serve。
-HOT_RELOAD_SECTIONS = ("dashboard", "canary", "recommend", "skillhub")
+HOT_RELOAD_SECTIONS = ("dashboard", "canary", "recommend", "skillhub", "kernel")
 RESTART_SECTIONS = ("llm", "llm_skill", "embedding", "watcher", "team")
 # team 段整体是重启域(join_token/路径/registry 接线),但这几个子键是纯调优数字,
 # 由 api.live_manifest_tuning() 每请求现取 → 改它们不需要重启。只有改到 team
@@ -239,6 +243,8 @@ def _validate_config_text(raw: str) -> dict:
         raise ValueError("config.yaml 顶层必须是 mapping")
     from xskill.config import dashboard_config
     dashboard_config(cfg)  # admins 类型等
+    from xskill.config import kernel_config
+    kernel_config(cfg)
     from xskill.canary import CanaryConfig
     CanaryConfig.from_dict(cfg.get("canary", {}) or {})
     from xskill.config import team_server_slots_config
@@ -269,6 +275,45 @@ def _team_change_is_hot_only(old_cfg: dict, new_cfg: dict) -> bool:
         old_server.pop(key, None)
         new_server.pop(key, None)
     return old_server == new_server
+
+
+def _replace_kernel_active(raw: str, kernel_id: str) -> str:
+    """Targeted YAML edit that preserves comments and unrelated formatting."""
+    import re
+
+    from xskill.kernels.base import validate_kernel_id
+
+    normalized = validate_kernel_id(kernel_id)
+    lines = raw.splitlines(keepends=True)
+    section_indexes = [
+        index for index, line in enumerate(lines)
+        if re.match(r"^kernel:\s*(?:#.*)?(?:\r?\n)?$", line)
+    ]
+    if len(section_indexes) > 1:
+        raise ValueError("config.yaml 包含重复的 kernel 顶层段")
+    if not section_indexes:
+        separator = "" if not raw or raw.endswith(("\n", "\r")) else "\n"
+        return raw + separator + f"\n# Algorithm kernel selector\nkernel:\n  active: {normalized}\n"
+
+    start = section_indexes[0]
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if line.strip() and not line[0].isspace() and not line.lstrip().startswith("#"):
+            end = index
+            break
+    active_pattern = re.compile(
+        r"^(\s+)active\s*:[^#\r\n]*?(\s+#.*)?(\r?\n)?$"
+    )
+    for index in range(start + 1, end):
+        match = active_pattern.match(lines[index])
+        if match:
+            comment = match.group(2) or ""
+            newline = match.group(3) or "\n"
+            lines[index] = f"{match.group(1)}active: {normalized}{comment}{newline}"
+            return "".join(lines)
+    lines.insert(start + 1, f"  active: {normalized}\n")
+    return "".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -681,7 +726,128 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
         logger.info("admin %s deleted skill %s", ident["user"], name)
         return {"ok": True}
 
-    # ── 设置页（admin,2.9） ─────────────────────────────────────────
+    # ── 算法内核（admin） ───────────────────────────────────────────
+
+    @router.get("/admin/kernels")
+    def admin_kernels(_=Depends(require_admin)):
+        """Kernel catalog + operational runs + downstream UX attribution."""
+        from xskill.api import app as app_mod
+        from xskill.config import (
+            XSKILL_HOME,
+            get_kernel_evaluation_db_path,
+            get_skill_dir,
+            kernel_config,
+        )
+        from xskill.kernels.catalog import KernelCatalog
+        from xskill.kernels.runtime import KernelEvaluationStore
+
+        cfg = app_mod._config or {}
+        selected = kernel_config(cfg, xskill_home=XSKILL_HOME)
+        catalog = KernelCatalog(
+            plugin_dir=selected["plugin_dir"],
+            xskill_home=XSKILL_HOME,
+        )
+        descriptors = catalog.list()
+        store = KernelEvaluationStore(
+            get_kernel_evaluation_db_path(xskill_home=XSKILL_HOME)
+        )
+        return {
+            "active": selected["active"],
+            "plugin_dir": str(selected["plugin_dir"]),
+            "kernels": [
+                descriptor.as_dict(active=descriptor.id == selected["active"])
+                for descriptor in descriptors
+            ],
+            "evaluations": store.summaries(
+                kernel_ids=[descriptor.id for descriptor in descriptors],
+                skill_dir=get_skill_dir(cfg, xskill_home=XSKILL_HOME),
+            ),
+            "recent_runs": store.list_runs(limit=20),
+            "evaluation_scope": (
+                "live operational runs and delayed downstream UX; controlled "
+                "benchmark comparison requires the same dataset_id"
+            ),
+        }
+
+    @router.get("/admin/kernels/runs")
+    def admin_kernel_runs(
+        limit: int = 50,
+        kernel_id: str | None = None,
+        _=Depends(require_admin),
+    ):
+        from xskill.config import XSKILL_HOME, get_kernel_evaluation_db_path
+        from xskill.kernels.runtime import KernelEvaluationStore
+
+        try:
+            runs = KernelEvaluationStore(
+                get_kernel_evaluation_db_path(xskill_home=XSKILL_HOME)
+            ).list_runs(limit=limit, kernel_id=kernel_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"runs": runs}
+
+    @router.post("/admin/kernels/activate")
+    def admin_kernel_activate(
+        req: KernelActivateRequest,
+        ident=Depends(require_admin),
+    ):
+        """Switch the next short-lived sweep without touching private config."""
+        from xskill.api import app as app_mod
+        from xskill.config import CONFIG_PATH, XSKILL_HOME, kernel_config
+        from xskill.kernels.catalog import KernelCatalog, KernelLoadError
+
+        current_cfg = app_mod._config or {}
+        selected = kernel_config(current_cfg, xskill_home=XSKILL_HOME)
+        catalog = KernelCatalog(
+            plugin_dir=selected["plugin_dir"],
+            xskill_home=XSKILL_HOME,
+        )
+        try:
+            descriptor = catalog.get(req.kernel_id)
+        except (ValueError, KernelLoadError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if not descriptor.available:
+            raise HTTPException(status_code=409, detail=descriptor.error)
+        if not CONFIG_PATH.is_file():
+            raise HTTPException(
+                status_code=404, detail=f"config 不存在: {CONFIG_PATH}"
+            )
+        try:
+            updated_raw = _replace_kernel_active(
+                CONFIG_PATH.read_text(encoding="utf-8"), descriptor.id,
+            )
+            new_cfg = _validate_config_text(updated_raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        import os
+        import tempfile as _tf
+
+        fd, temporary = _tf.mkstemp(
+            dir=str(CONFIG_PATH.parent), suffix=".yaml.tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(updated_raw)
+            os.replace(temporary, str(CONFIG_PATH))
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+        if app_mod._config is not None:
+            app_mod._config.clear()
+            app_mod._config.update(new_cfg)
+        logger.info(
+            "admin %s activated kernel %s for next sweep",
+            ident["user"], descriptor.id,
+        )
+        return {
+            "ok": True,
+            "active": descriptor.id,
+            "effective": "next_sweep",
+        }
 
     @router.get("/admin/config")
     def admin_config(_=Depends(require_admin)):

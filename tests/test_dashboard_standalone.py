@@ -73,6 +73,9 @@ _BUILTIN_ONLY_OPERATIONS = {
     ("get", "/api/v1/dashboard/admin/config"),
     ("post", "/api/v1/dashboard/admin/config/validate"),
     ("post", "/api/v1/dashboard/admin/config/reload"),
+    ("get", "/api/v1/dashboard/admin/kernels"),
+    ("get", "/api/v1/dashboard/admin/kernels/runs"),
+    ("post", "/api/v1/dashboard/admin/kernels/activate"),
 }
 
 

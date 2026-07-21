@@ -172,6 +172,21 @@ class TestUxScores:
         assert not written2
         assert len(canary.load_ux_scores(sd)) == 1
 
+    def test_same_trajectory_can_score_a_new_commit(self, tmp_path):
+        sd = tmp_path / "skill"
+        sd.mkdir()
+        for commit_sha in ("version-one", "version-two"):
+            assert canary.append_ux_score(
+                sd,
+                traj_id="traj_001",
+                skill_name="s",
+                side="main",
+                commit_sha=commit_sha,
+                score=8,
+                reasons="version-specific",
+            )
+        assert len(canary.load_ux_scores(sd)) == 2
+
     def test_recent_scores_filters_by_sha(self, tmp_path):
         sd = tmp_path / "skill"
         sd.mkdir()

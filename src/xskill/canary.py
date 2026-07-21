@@ -27,12 +27,13 @@ import logging
 import os
 import shutil
 import threading
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
-from xskill.skill.git import run_git, skill_repo_lock
+from xskill.skill.git import read_bundle_on_ref, run_git, skill_repo_lock
 
 logger = logging.getLogger("xskill.canary")
 
@@ -339,17 +340,51 @@ def discard_staging(skill_dir: Path) -> bool:
 # ═══════════════════════════════════════════════════════════════════
 
 def materialize_staging(skill_dir: Path, canary_root: Path) -> Path | None:
-    """将 staging 分支的 SKILL.md 物化到 ``canary_root/{skill_name}/`` 目录。
+    """将 staging 分支的完整 Skill bundle 物化到灰度目录。
 
-    返回物化目录路径，失败返回 None。agent 读此目录即可获得 staging 版本。
+    平台运行时文件和隐藏文件不会被分发。返回物化目录路径，失败返回 None。
     """
-    body = read_skill_on_branch(skill_dir, STAGING_BRANCH)
-    if body is None:
-        logger.warning("%s: staging branch has no SKILL.md, skip materialize", skill_dir.name)
+    tree = read_bundle_on_ref(skill_dir, STAGING_BRANCH)
+    if tree is None:
+        logger.warning("%s: cannot read staging bundle", skill_dir.name)
         return None
-    out = canary_root / skill_dir.name
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "SKILL.md").write_text(body, encoding="utf-8")
+    relative_paths: list[tuple[Path, bytes]] = []
+    for raw, contents in tree.items():
+        relative = Path(raw)
+        if (
+            not raw
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or any(part.startswith(".") for part in relative.parts)
+        ):
+            continue
+        relative_paths.append((relative, contents))
+    if not any(relative == Path("SKILL.md") for relative, _ in relative_paths):
+        logger.warning(
+            "%s: staging branch has no SKILL.md, skip materialize",
+            skill_dir.name,
+        )
+        return None
+
+    canary_root.mkdir(parents=True, exist_ok=True)
+    temporary = canary_root / f".tmp-{skill_dir.name}-{uuid.uuid4().hex}"
+    temporary.mkdir(mode=0o700)
+    try:
+        for relative, body in relative_paths:
+            target = temporary / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(body)
+
+        out = canary_root / skill_dir.name
+        if out.is_symlink() or (out.exists() and not out.is_dir()):
+            raise RuntimeError(f"unsafe materialized staging path: {out}")
+        if out.is_dir():
+            shutil.rmtree(out)
+        temporary.replace(out)
+    except BaseException:
+        if temporary.is_dir():
+            shutil.rmtree(temporary)
+        raise
     logger.info("%s: materialized staging to %s", skill_dir.name, out)
     return out
 
@@ -463,33 +498,36 @@ def append_ux_score(
 ) -> bool:
     """幂等追加一条体验分。
 
-    同一 (traj_id, skill_name, side) 只会写入一次，重复调用跳过。
+    同一 (traj_id, skill_name, side, commit_sha) 只会写入一次。相同用户
+    轨迹可以在新版本上重新评分，main/staging 的历史版本不会互相吞记录。
     返回 True 表示本次确实落盘了一条新纪录。
     """
-    existing = load_ux_scores(skill_dir)
-    for e in existing:
-        if (
-            e.get("traj_id") == traj_id
-            and e.get("skill_name") == skill_name
-            and e.get("side") == side
-        ):
-            return False
+    with skill_repo_lock(skill_dir):
+        existing = load_ux_scores(skill_dir)
+        for e in existing:
+            if (
+                e.get("traj_id") == traj_id
+                and e.get("skill_name") == skill_name
+                and e.get("side") == side
+                and e.get("commit_sha") == commit_sha
+            ):
+                return False
 
-    record = {
-        "traj_id": traj_id,
-        "skill_name": skill_name,
-        "side": side,
-        "commit_sha": commit_sha,
-        "score": float(score),
-        "reasons": reasons,
-        "scored_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    }
+        record = {
+            "traj_id": traj_id,
+            "skill_name": skill_name,
+            "side": side,
+            "commit_sha": commit_sha,
+            "score": float(score),
+            "reasons": reasons,
+            "scored_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
 
-    p = _ux_scores_path(skill_dir)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    return True
+        p = _ux_scores_path(skill_dir)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return True
 
 
 def recent_scores(

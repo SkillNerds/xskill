@@ -114,6 +114,11 @@ xskill upload ./my-skill            # 打包上传一个 skill 目录(含 SKILL.
        alt="xskill 架构：agent 生态 → 轨迹监听 → Atom 切分 → Skill 路由 → Skill 编辑 Agent → Canary A/B → Skill 仓库 ↔ 团队模式">
 </p>
 
+要接入自己的 trajectory-to-skill 算法，请阅读[算法内核开发者 README](examples/kernels/README.md)。
+其中包含真实 SkillOpt bridge、轨迹目录读取、Skill 版本化 checkout，以及无需启动服务的
+`xskill eval <kernel> <dataset>` 隔离评测流程；架构职责与演进方向见
+[算法内核设计文档](docs/algorithm-kernels.md)。
+
 ## 工作原理
 
 几个职责单一的 LLM agent 各管一摊：一个把轨迹切成单一意图的 Atom；一个把每个 Atom 路由到对应 Skill；一个等某个 Skill 攒够素材了就重写它的 `SKILL.md`；一个在真实流量上 A/B 测试新版本，留下赢家。每个 Skill 本身就是一个独立 git 仓库，改了什么、谁改的、能不能回退都有据可查。细节见 [`docs/agent.md`](docs/agent.md)。

@@ -73,6 +73,11 @@
 
 几个职责很窄的 LLM agent 在干活:一个把轨迹拆成单一意图的**原子(Atom)**;一个把每个原子**路由**到某条技能;一个在技能攒够素材后**重写** `SKILL.md`;还有一个在真实流量上对新版本做 **A/B 测试**、留下胜出者。每条技能都是它自己的 git 仓库,所以每一次改动都有版本、可回滚。细节见 [`docs/agent.md`](https://github.com/SkillNerds/xskill/blob/main/docs/agent.md)。
 
+要接入自己的 trajectory-to-skill 算法，请从[算法内核开发者 README](examples/kernels/README.md)
+开始；其中包含真实 SkillOpt bridge、轨迹目录读取、Skill 版本化 checkout，以及无需启动
+服务的 `xskill eval <kernel> <dataset>` 隔离评测流程。
+架构职责与演进方向见[算法内核设计文档](docs/algorithm-kernels.md)。
+
 * * *
 
 ## 🚀 快速开始

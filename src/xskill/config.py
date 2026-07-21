@@ -48,6 +48,14 @@ skill_dir: ~/.xskill/skill            # the single global skill repo
 interests: []                         # optional top-level interest filter;
                                       # non-empty list enables TaskAgent filtering
 
+# ===== Trajectory-to-Skill algorithm kernel =====
+# XSkill only selects/discovers the kernel.  Every non-native kernel owns its
+# own ~/.xskill/kernels/<id>/config.yaml and workspace; XSkill never parses or
+# rewrites that private config.
+kernel:
+  active: native
+  plugin_dir: ~/.xskill/kernels       # <id>/kernel.py local bridge scripts
+
 # ===== LLM (generation / scoring / chat) =====
 # Any OpenAI-compatible chat-completions endpoint works (DeepSeek, OpenAI,
 # Qwen/DashScope, OpenRouter, a local Ollama, ...).
@@ -517,6 +525,39 @@ def skillhub_config(cfg: Optional[dict] = None) -> dict:
     return {"enabled": enabled, "dir": Path(raw_dir).expanduser()}
 
 
+def kernel_config(
+    cfg: Optional[dict] = None,
+    *,
+    xskill_home: Optional[Path] = None,
+) -> dict:
+    """Read the XSkill-owned kernel selector and discovery directory.
+
+    Kernel-private settings deliberately do not appear here.  They live at
+    ``<plugin_dir>/<active>/config.yaml`` and are read only by that kernel.
+    """
+    from xskill.kernels.base import validate_kernel_id
+
+    section = (cfg or {}).get("kernel") or {}
+    if not isinstance(section, dict):
+        raise ValueError(
+            f"kernel 必须是 mapping，got {type(section).__name__}"
+        )
+    active = validate_kernel_id(section.get("active", "native"))
+    state_root = (
+        Path(xskill_home) if xskill_home is not None else XSKILL_HOME
+    ).expanduser().resolve()
+    raw_plugin_dir = section.get("plugin_dir") or str(state_root / "kernels")
+    if not isinstance(raw_plugin_dir, str) or not raw_plugin_dir.strip():
+        raise ValueError("kernel.plugin_dir 必须是非空字符串路径")
+    plugin_dir = Path(raw_plugin_dir).expanduser()
+    if not plugin_dir.is_absolute():
+        plugin_dir = state_root / plugin_dir
+    return {
+        "active": active,
+        "plugin_dir": plugin_dir.resolve(),
+    }
+
+
 def embedding_search_config(cfg: Optional[dict] = None) -> dict:
     """读 config 的 ``embedding`` 段中 skill_hub/search 语义通道的护栏参数。
 
@@ -712,6 +753,15 @@ def get_registry_db_path(
         Path(xskill_home) if xskill_home is not None else XSKILL_HOME
     ).expanduser().resolve()
     return state_root / "registry.db"
+
+
+def get_kernel_evaluation_db_path(
+    *, xskill_home: Optional[Path] = None,
+) -> Path:
+    state_root = (
+        Path(xskill_home) if xskill_home is not None else XSKILL_HOME
+    ).expanduser().resolve()
+    return state_root / "kernel_runs.db"
 
 
 def get_chat_db_path() -> Path:
