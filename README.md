@@ -75,7 +75,8 @@
 
 要接入自己的 trajectory-to-skill 算法，请从[算法内核开发者 README](examples/kernels/README.md)
 开始；其中包含真实 SkillOpt 实现脚本、轨迹目录读取、Skill 版本化 checkout，以及无需启动
-服务的 `xskill eval --kernel <id> --dataset <path>` 隔离评测流程。
+服务的 `xskill eval --kernel <id> --dataset <path>` 隔离评测流程。开发环境还可传入指定的
+`benchmark.json`，自动用算法提供方自己的评价器评价本次生成的 Skills。
 架构职责与演进方向见[算法内核设计文档](docs/algorithm-kernels.md)。
 
 * * *

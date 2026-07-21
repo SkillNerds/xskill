@@ -30,13 +30,11 @@ def _args(**overrides) -> argparse.Namespace:
 
 @pytest.fixture
 def bundled_skill(tmp_path, monkeypatch):
-    """让 ``files('xskill')`` 指向两个带 SKILL.md 的临时 Skill。"""
+    """让 ``files('xskill')`` 指向带 SKILL.md 的临时 Skill。"""
     root = tmp_path / "pkgroot"
-    skill_root = root / "data" / "skill"
-    for name in ("xskill", "xskill-kernel"):
-        skill = skill_root / name
-        skill.mkdir(parents=True)
-        (skill / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+    skill_root = root / "data" / "skill" / "xskill"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text("# xskill\n", encoding="utf-8")
     monkeypatch.setattr("importlib.resources.files", lambda pkg: root)
     return skill_root
 
@@ -70,10 +68,7 @@ def test_skills_only_installs_without_connecting(
     code = cli.cmd_init(_args(skills_only=True))
 
     assert code == 0
-    assert install_recorder == [
-        ("xskill", "claude_code"),
-        ("xskill-kernel", "claude_code"),
-    ]
+    assert install_recorder == [("xskill", "claude_code")]
     assert connect_called == []
 
 

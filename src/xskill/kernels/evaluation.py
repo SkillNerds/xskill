@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from xskill.kernels.base import KernelRunResult
+from xskill.kernels.benchmarks import BenchmarkMetric, run_command_benchmark
 from xskill.kernels.catalog import KernelCatalog
 from xskill.kernels.runtime import (
     KernelEvaluationStore,
@@ -68,8 +69,25 @@ class KernelEvaluationReport:
     artifact_dir: Path
     metrics: dict
     notes: str
+    benchmarks: tuple[BenchmarkMetric, ...] = ()
 
     def as_dict(self) -> dict:
+        benchmark_rows = [metric.as_dict() for metric in self.benchmarks]
+        quality_score = (
+            self.benchmarks[0].score if len(self.benchmarks) == 1 else None
+        )
+        quality_note = (
+            "Reported by the external benchmark evaluator."
+            if len(self.benchmarks) == 1
+            else (
+                "Multiple external benchmark rows are reported separately."
+                if self.benchmarks
+                else (
+                    "No external benchmark was requested. Provider metrics "
+                    "are not interpreted as quality or user UX."
+                )
+            )
+        )
         return {
             "run_id": self.run_id,
             "status": self.status,
@@ -85,11 +103,9 @@ class KernelEvaluationReport:
             "artifact_dir": str(self.artifact_dir),
             "metrics": _redact(self.metrics),
             "notes": self.notes,
-            "quality_score": None,
-            "quality_score_note": (
-                "Local contract evaluation does not simulate user UX or a "
-                "held-out benchmark. Configure a benchmark backend for quality."
-            ),
+            "benchmarks": benchmark_rows,
+            "quality_score": quality_score,
+            "quality_score_note": quality_note,
         }
 
 
@@ -255,6 +271,8 @@ def run_local_evaluation(
     sample: float = 1.0,
     seed: int = 42,
     output_dir: Path | None = None,
+    benchmark_manifest: Path | None = None,
+    benchmark_timeout_s: int | None = None,
     json_output: bool = False,
     no_progress: bool = False,
 ) -> KernelEvaluationReport:
@@ -321,9 +339,14 @@ def run_local_evaluation(
             "provider_owned": bool(config_path == descriptor.config_path),
         },
     }
+    if benchmark_manifest is not None:
+        manifest["benchmark"] = {
+            "manifest": str(Path(benchmark_manifest).expanduser().resolve()),
+        }
     _write_json(manifest_path, manifest)
+    phase_total = 5 if benchmark_manifest is not None else 4
     progress = tqdm(
-        total=4,
+        total=phase_total,
         desc=f"xskill eval {kernel_id}",
         unit="phase",
         disable=no_progress or json_output,
@@ -331,7 +354,7 @@ def run_local_evaluation(
     )
     started = time.monotonic()
     try:
-        _append_event(events_path, phase="snapshot", current=0, total=4,
+        _append_event(events_path, phase="snapshot", current=0, total=phase_total,
                       message="materializing selected trajectories")
         _materialize_selection(
             selection, input_root=input_root, registry_db=registry_db,
@@ -356,7 +379,7 @@ def run_local_evaluation(
         _write_json(input_root / "selection.json", selection_document)
         progress.update(1)
 
-        _append_event(events_path, phase="kernel", current=1, total=4,
+        _append_event(events_path, phase="kernel", current=1, total=phase_total,
                       message="running kernel in isolated layout")
         runtime = KernelRuntime(
             active_kernel=kernel_id,
@@ -390,8 +413,30 @@ def run_local_evaluation(
         )
         progress.update(1)
 
-        _append_event(events_path, phase="report", current=3, total=4,
-                      message="writing standardized result")
+        benchmark_metrics: tuple[BenchmarkMetric, ...] = ()
+        if benchmark_manifest is not None:
+            _append_event(
+                events_path,
+                phase="benchmark",
+                current=2,
+                total=phase_total,
+                message="running external benchmark evaluator",
+            )
+            benchmark_metrics = run_command_benchmark(
+                manifest_path=benchmark_manifest,
+                skills_dir=isolated_skills,
+                artifact_dir=artifact_dir,
+                timeout_override_s=benchmark_timeout_s,
+            )
+            progress.update(1)
+
+        _append_event(
+            events_path,
+            phase="report",
+            current=phase_total - 1,
+            total=phase_total,
+            message="writing standardized result",
+        )
         duration = max(0.0, time.monotonic() - started)
         report = KernelEvaluationReport(
             run_id=run_id,
@@ -406,6 +451,7 @@ def run_local_evaluation(
             artifact_dir=artifact_dir,
             metrics=dict(result.metrics),
             notes=result.notes,
+            benchmarks=benchmark_metrics,
         )
         _write_json(artifact_dir / "result.json", report.as_dict())
         progress.update(1)
@@ -415,7 +461,8 @@ def run_local_evaluation(
             "result": "result.json",
         })
         _write_json(manifest_path, manifest)
-        _append_event(events_path, phase="finalize", current=4, total=4,
+        _append_event(events_path, phase="finalize", current=phase_total,
+                      total=phase_total,
                       message="evaluation complete")
         progress.update(1)
         return report
@@ -426,7 +473,8 @@ def run_local_evaluation(
             "error": f"{type(exc).__name__}: {exc}",
         })
         _write_json(manifest_path, manifest)
-        _append_event(events_path, phase="error", current=progress.n, total=4,
+        _append_event(events_path, phase="error", current=progress.n,
+                      total=phase_total,
                       message=f"{type(exc).__name__}: {exc}")
         raise
     finally:
@@ -447,7 +495,10 @@ def render_report_table(report: KernelEvaluationReport) -> str:
         str(len(report.submitted_skills)),
         report.status,
         f"{report.duration_s:.2f}s",
-        "n/a*",
+        (
+            f"{report.benchmarks[0].score:.2f}%"
+            if len(report.benchmarks) == 1 else "n/a*"
+        ),
         str(report.artifact_dir),
     )
     widths = [max(len(headers[index]), len(row[index])) for index in range(len(row))]
@@ -457,8 +508,35 @@ def render_report_table(report: KernelEvaluationReport) -> str:
     row_line = "  ".join(
         value.ljust(widths[index]) for index, value in enumerate(row)
     )
-    return (
-        f"{header_line}\n{row_line}\n"
-        "* quality/UX is intentionally not inferred from kernel metrics; "
-        "use a benchmark backend."
-    )
+    lines = [header_line, row_line, "", "BENCHMARK METRICS"]
+    if report.benchmarks:
+        metric_headers = ("DATASET", "SPLIT", "SCORE", "PASSED", "SOURCE")
+        metric_rows = [(
+            metric.dataset,
+            metric.split,
+            f"{metric.score:.2f}%",
+            f"{metric.passed}/{metric.total}",
+            metric.source,
+        ) for metric in report.benchmarks]
+        metric_widths = [
+            max(len(metric_headers[index]), *(len(row[index]) for row in metric_rows))
+            for index in range(len(metric_headers))
+        ]
+        lines.append("  ".join(
+            value.ljust(metric_widths[index])
+            for index, value in enumerate(metric_headers)
+        ))
+        for metric_row in metric_rows:
+            lines.append("  ".join(
+                value.ljust(metric_widths[index])
+                for index, value in enumerate(metric_row)
+            ))
+        lines.append(
+            "Benchmark scores come from the external evaluator, not kernel metrics or UX."
+        )
+    else:
+        lines.extend((
+            "No external benchmark requested.",
+            "* quality/UX is intentionally not inferred from kernel metrics.",
+        ))
+    return "\n".join(lines)

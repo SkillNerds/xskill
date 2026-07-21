@@ -4,13 +4,14 @@
 
 - [Discovery diagnostics](#discovery-diagnostics)
 - [Dataset evaluation](#dataset-evaluation)
+- [External benchmark evaluator](#external-benchmark-evaluator)
 - [Artifact review](#artifact-review)
 - [Production handoff](#production-handoff)
 - [Failure triage](#failure-triage)
 
 ## Discovery diagnostics
 
-From the installed Skill directory:
+From the project Skill directory:
 
 ```bash
 python scripts/diagnose_kernel.py \
@@ -35,6 +36,31 @@ xskill eval \
 select the same files; hashes of the selected contents determine the dataset identity.
 Use `--json` in CI and `--output <dir>` for a fixed artifact destination.
 
+This command alone is a kernel contract smoke test. It does not produce an
+independent quality score.
+
+## External benchmark evaluator
+
+Run a provider-owned evaluator automatically after the kernel:
+
+```bash
+xskill eval \
+  --kernel <kernel-id> \
+  --dataset <trajectory-dataset-dir> \
+  --benchmark <evaluator-dir>/benchmark.json
+```
+
+The trajectory dataset is the kernel's distillation input. The benchmark
+manifest separately evaluates the Skills produced by that run. It contains
+a command list and timeout. XSkill executes the command without a shell from
+the manifest directory and supplies Skills, artifact, and result paths through
+documented placeholders and environment variables.
+
+The evaluator writes schema-versioned metric rows with dataset, split, score,
+passed, total, and source. XSkill checks types, ranges, duplicate IDs, and that
+score equals `passed / total * 100`. The evaluator owns its datasets, models,
+credentials, scoring logic, and any container or remote-service integration.
+
 ## Artifact review
 
 Check:
@@ -45,7 +71,8 @@ Check:
 - `result.json`: processed count, Skill names, duration, and redacted provider metrics;
 - `skills/`: isolated published bundles and Git state;
 - `kernel/workspace/`: provider cursor, cache, and intermediate output;
-- `kernel_runs.db`: isolated raw run record.
+- `kernel_runs.db`: isolated raw run record;
+- `benchmarks/<id>/`: manifest copy, evaluator log, and standard metric result when requested.
 
 Do not interpret provider metrics as held-out quality or user satisfaction unless a
 separate evaluator produced those values.

@@ -41,19 +41,24 @@ kernel.py 中的 KERNEL_CLASS
 
 ### 运行示例内核
 
-先在 XSkill 仓库中安装开发版，再复制无外部 API 依赖的示例：
+先在 XSkill 仓库中创建隔离环境并安装开发版，再复制无外部 API 依赖的示例。本演示中的
+`xskill eval` 属于开发版能力，不要用另一个目录中已安装的旧 `xskill`：
 
 ```bash
+python -m venv .venv
+. .venv/bin/activate
 python -m pip install -e '.[dev]'
 mkdir -p "$HOME/.xskill/kernels"
 cp -R examples/kernels/your-demo-algo-kernel \
   "$HOME/.xskill/kernels/your-demo-algo-kernel"
 ```
 
-示例会在首次运行时创建自己的 `config.yaml`。确认脚本能够被发现：
+没有真实配置时，离线 `xskill eval` 只会在本次产物的 `kernel/config.yaml` 创建隔离默认配置；
+以后由业务方正式运行该内核时，示例才会在内核目录创建自己的 `config.yaml`。先确认脚本能够
+被发现：
 
 ```bash
-python src/xskill/data/skill/xskill-kernel/scripts/diagnose_kernel.py \
+python examples/kernels/.agents/skills/xskill-kernel/scripts/diagnose_kernel.py \
   --kernel your-demo-algo-kernel \
   --plugin-dir "$HOME/.xskill/kernels"
 ```
@@ -107,7 +112,7 @@ KERNEL_CLASS = SkillOptKernel
 
 ## 2. 数据集评测与迭代
 
-### 执行隔离评测
+### 执行本地评测
 
 复制示例后，在仓库根目录运行：
 
@@ -124,7 +129,70 @@ xskill eval \
 文件，选中文件的内容哈希决定 `dataset_id`。数据集目录需要包含 `traj_*.md`，可同时带同名
 `.json` 或 `.md.meta` 文件。
 
-该命令不需要启动 `xskill serve`，不会修改线上轨迹、正式 Skill、线上工作空间或当前内核。
+这一步只检查内核能否读取轨迹、生成 Skill 并写出完整产物，不代表算法质量。命令不需要启动
+`xskill serve`，不会修改线上轨迹、正式 Skill、线上工作空间或当前内核。
+
+### 接入算法自己的评价器
+
+只看内核是否成功运行，还不能判断算法生成的 Skill 是否有效。算法提供方可以维护自己的
+验证集和评价脚本，并用一个很小的 `benchmark.json` 告诉 XSkill 怎样启动它。XSkill 不理解
+评价器的私有配置、数据格式或模型，只负责在内核完成后执行命令、校验标准结果并打印指标表。
+
+仓库提供了一个无需外部 API 的评价器示例：
+
+```bash
+xskill eval \
+  --kernel your-demo-algo-kernel \
+  --dataset "$PWD/examples/kernels/datasets/micro-trajectories" \
+  --sample 0.25 \
+  --seed 42 \
+  --benchmark "$PWD/examples/kernels/benchmarks/micro-skill-quality/benchmark.json"
+```
+
+这里有两个互相独立的数据输入：`--dataset` 是提供给算法内核的 `traj_*.md` 训练或蒸馏输入；
+`--benchmark` 是评价本次产出 Skills 的外部命令清单。示例清单内容如下：
+
+```json
+{
+  "schema_version": 1,
+  "id": "micro-skill-quality",
+  "command": ["{python}", "evaluate.py"],
+  "timeout_seconds": 60
+}
+```
+
+命令不经过 shell，工作目录是 `benchmark.json` 所在目录。`{python}` 会替换为当前 XSkill
+使用的 Python；还可在参数中使用 `{skills_dir}`、`{artifact_dir}` 和 `{result_path}`。XSkill
+也会提供同义环境变量 `XSKILL_EVAL_SKILLS_DIR`、`XSKILL_EVAL_ARTIFACT_DIR` 和
+`XSKILL_EVAL_RESULT_PATH`。评价器必须把结果写到指定的 `result_path`：
+
+```json
+{
+  "schema_version": 1,
+  "metrics": [
+    {
+      "id": "spreadsheet-validation",
+      "dataset": "spreadsheet",
+      "split": "validation",
+      "score": 78.5714,
+      "passed": 11,
+      "total": 14,
+      "source": "my-evaluator"
+    }
+  ]
+}
+```
+
+`dataset` 是展示名称，`split` 用来区分训练、验证或测试分片，`source` 标识评分器版本或协议。
+`score` 使用 0 到 100 的百分数，并且必须等于 `passed / total × 100`；不一致的结果会被拒绝。
+评价器可在脚本中导入自己的 package、读取自己的数据与私有配置。XSkill 不读取或复制这些
+数据与配置，只保存清单副本、运行日志和标准指标；评价器可以采用规则判分、模型判分、容器
+或远程服务。`benchmark.json` 会执行代码，只能
+使用经过审查的可信清单。不要把密钥写进清单或命令参数；让评价器从自己的私有配置或环境
+变量读取，并且不要把密钥打印到 `evaluator.log`。
+
+### 查看评测产物
+
 结果默认写入 `~/.xskill/evaluations/` 下的新目录，主要文件包括：
 
 | 文件 | 用途 |
@@ -132,9 +200,10 @@ xskill eval \
 | `run.json` | 算法、数据集、抽样比例和运行状态。 |
 | `input/selection.json` | 实际选中的文件及内容哈希。 |
 | `events.jsonl` | 各阶段进度。 |
-| `result.json` | 处理量、产出量、耗时和已脱敏的算法指标。 |
+| `result.json` | 处理量、产出量、外部 benchmark 行和已脱敏的算法指标。 |
 | `skills/` | 本次运行隔离生成的完整 Skill。 |
 | `kernel/workspace/` | 本次运行的算法工作空间。 |
+| `benchmarks/<id>/` | 清单副本、评价器日志和标准指标结果；仅在指定 benchmark 时生成。 |
 
 使用 `--json` 可获得适合 CI 的单个 JSON 结果，使用 `--output <目录>` 可指定产物目录。
 同一个输出目录不会被覆盖。
@@ -149,8 +218,20 @@ xskill eval \
 - 相同输入下的产物与指标是否可复现；
 - 耗时、资源消耗和算法自报指标是否在预期范围内。
 
-算法自报的 `metrics` 用于运行诊断，不等同于用户满意度或独立质量分。比较两个版本时，
-保持数据内容、`seed`、抽样比例、模型和算法配置一致，并以 `dataset_id` 确认输入相同。
+指定外部 benchmark 后，终端会在运行摘要下打印指标表：
+
+```text
+BENCHMARK METRICS
+DATASET                                  SPLIT  SCORE   PASSED  SOURCE
+micro-skill-quality                      validation  100.00%  1/1     example-evaluator
+```
+
+示例评价器只演示接口和输出形状，不代表真实算法质量。`SCORE` 和 `PASSED` 都来自外部
+evaluator；例如 `11/14` 对应 `78.57%`，不会被显示成不一致
+的 `86%`。没有指定 `--benchmark` 时，终端明确显示 `No external benchmark requested.`。
+算法自报的 `metrics` 只用于运行诊断，不等同于 benchmark、用户满意度或线上 UX。比较两个
+版本时，保持轨迹内容、`seed`、抽样比例、评价数据、模型和算法配置一致，并同时核对
+`dataset_id`、`split` 与 `source`。
 
 ### 发布算法版本
 
@@ -204,21 +285,25 @@ Dashboard 只修改当前选择，不读取或改写内核的私有配置。切�
 
 ## 4. Agent 辅助开发
 
-安装 XSkill 随包提供的 Agent Skills：
+算法内核专用 Agent Skill 已和本 README 放在同一目录树中：
 
-```bash
-xskill init --skills-only
+```text
+examples/kernels/
+├── README.md
+└── .agents/skills/xskill-kernel/
 ```
 
-安装完成后可使用：
+它是项目开发资源，不通过 `xskill init` 安装，也不会打进普通用户的 wheel。让 Agent 在
+`examples/kernels` 目录工作，然后直接使用：
 
 | Skill | 用途 |
 | --- | --- |
 | `/xskill-kernel` | 创建实现脚本、查询公共对象、运行数据集评测、检查产物和诊断加载失败。 |
-| `/xskill` | 查询 XSkill 安装、连接、轨迹、Skill 和平台操作方法。 |
 
 例如，可向 Agent 提出：“使用 `/xskill-kernel`，把我的算法 package 接入 XSkill，并在固定
-数据集上评测。”Agent 会读取详细 API 参考，并可运行随 Skill 提供的只读诊断脚本。
+数据集上评测。”Agent 会先读取本目录的维护笔记和本指南，再按
+[API 参考](.agents/skills/xskill-kernel/references/api.md)与
+[评测操作说明](.agents/skills/xskill-kernel/references/operations.md)工作，并可运行只读诊断脚本。
 
 ## 附录 A：公共对象与读取接口
 
@@ -277,8 +362,8 @@ for version in skill.versions:
     print(version.side, version.commit_sha, version.ux_average, version.ux_samples)
 ```
 
-完整字段与故障定位规则随 `/xskill-kernel` 的 `references/api.md` 和
-`references/operations.md` 一起安装。
+完整字段与故障定位规则位于项目级 `/xskill-kernel` 的 `references/api.md` 和
+`references/operations.md`。
 
 ## 附录 B：Skill 发布与版本评价
 
@@ -337,6 +422,7 @@ main 版本。
 | 配置中的相对 `kernel.plugin_dir` | 相对于 `~/.xskill`。 |
 | 命令行相对 `--plugin-dir` | 相对于执行命令时的 shell 工作目录。 |
 | 相对 `--dataset` | 相对于执行命令时的 shell 工作目录。 |
+| 相对 `--benchmark` | 相对于执行命令时的 shell 工作目录；清单内命令在清单目录运行。 |
 
 平台配置只负责选择内核和发现目录：
 

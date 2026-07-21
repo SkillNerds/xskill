@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "id": "micro-skill-quality",
+  "command": ["{python}", "evaluate.py"],
+  "timeout_seconds": 60
+}

@@ -66,6 +66,10 @@ def cmd_eval(args) -> int:
             sample=args.sample,
             seed=args.seed,
             output_dir=Path(args.output).expanduser() if args.output else None,
+            benchmark_manifest=(
+                Path(args.benchmark).expanduser() if args.benchmark else None
+            ),
+            benchmark_timeout_s=args.benchmark_timeout,
             json_output=args.json,
             no_progress=args.no_progress,
         )
@@ -260,18 +264,13 @@ def cmd_init(args) -> int:
             "cursor": install_to_cursor,
             "trae": install_to_trae,
         }
-        skill_root = Path(str(files("xskill") / "data" / "skill"))
-        skill_sources = [skill_root / name for name in ("xskill", "xskill-kernel")]
-        valid_sources = []
-        for skill_source in skill_sources:
-            if (skill_source / "SKILL.md").is_file():
-                valid_sources.append(skill_source)
-            else:
-                print(
-                    f"warning: 捆绑的 {skill_source.name} skill 缺失"
-                    f"（{skill_source}），跳过",
-                    file=sys.stderr,
-                )
+        skill_source = Path(str(files("xskill") / "data" / "skill" / "xskill"))
+        valid_sources = [skill_source] if (skill_source / "SKILL.md").is_file() else []
+        if not valid_sources:
+            print(
+                f"warning: 捆绑的 xskill skill 缺失（{skill_source}），跳过",
+                file=sys.stderr,
+            )
 
         detections = detect_known_ecosystems(home_root=target_root)
         installed: list[tuple[str, str]] = []
@@ -1238,6 +1237,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_eval.add_argument("--seed", type=int, default=42, help="抽样 seed")
     p_eval.add_argument("--output", default=None, help="artifact 输出目录")
+    p_eval.add_argument(
+        "--benchmark", default=None,
+        help="可信外部评测器 benchmark.json；内核运行后自动执行",
+    )
+    p_eval.add_argument(
+        "--benchmark-timeout", type=int, default=None,
+        help="覆盖 benchmark.json 中的超时秒数",
+    )
     p_eval.add_argument(
         "--plugin-dir", default=None,
         help=(
