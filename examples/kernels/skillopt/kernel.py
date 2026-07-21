@@ -26,7 +26,7 @@ except ImportError as exc:
 from xskill.kernels import (
     BaseKernel,
     KernelContext,
-    KernelManifest,
+    KernelMetadata,
     KernelRunResult,
     SkillSubmission,
 )
@@ -35,7 +35,7 @@ from xskill.kernels import (
 class SkillOptKernel(BaseKernel):
     """Run SkillOpt's SpreadsheetBench trainer and publish its best Skill."""
 
-    manifest = KernelManifest(
+    metadata = KernelMetadata(
         id="skillopt",
         name="SkillOpt",
         version=str(getattr(skillopt, "__version__", "unknown")),

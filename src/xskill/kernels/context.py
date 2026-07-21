@@ -63,7 +63,7 @@ def _bundle_files(root: Path) -> tuple[Path, ...]:
 class TrajectoryDirectoryResource:
     """A registered directory the kernel may scan under a read-only contract.
 
-    The V2 Python runner is a trusted in-process plugin boundary.  ``read_only``
+    The Python runner is a trusted in-process plugin boundary.  ``read_only``
     therefore documents the contract but is not an OS-level sandbox.
     """
 

@@ -1251,6 +1251,9 @@ async function loadKernels() {
   const active = data.kernels.find(k => k.id === data.active);
   document.getElementById('kernel-active').textContent = active ? `${active.name} (${active.id})` : data.active;
   document.getElementById('kernel-active-desc').textContent = active ? active.description : '配置的内核未被发现';
+  const exportButton = document.getElementById('kernel-export');
+  exportButton.disabled = !active;
+  exportButton.dataset.kernel = active ? active.id : '';
   document.getElementById('kernel-plugin-dir').textContent = data.plugin_dir;
   rows('kernels-list-body', data.kernels.map(k => {
     const state = k.available
@@ -1289,6 +1292,19 @@ document.addEventListener('click', async e => {
   try {
     await jpost('/api/v1/dashboard/admin/kernels/activate', { kernel_id: button.dataset.kernel });
     await Promise.all([loadKernels(), loadSettings()]);
+  } catch (err) { alert(err.message); }
+});
+document.getElementById('kernel-export').addEventListener('click', async e => {
+  const kernelId = e.currentTarget.dataset.kernel;
+  if (!kernelId) return;
+  try {
+    const report = await j('/api/v1/dashboard/admin/kernels/export?kernel_id=' + encodeURIComponent(kernelId));
+    const blob = new Blob([JSON.stringify(report, null, 2) + '\n'], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `xskill-kernel-${kernelId}-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
   } catch (err) { alert(err.message); }
 });
 

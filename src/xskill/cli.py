@@ -231,7 +231,7 @@ def cmd_registry_list_client() -> int:
 
 
 def cmd_init(args) -> int:
-    """一站式引导：把 xskill 使用指南 skill 装进各 agent 生态 + 连上 team server。
+    """一站式引导：安装 XSkill Skills 并连接 team server。
 
     交互式（默认）逐项询问缺失的 server/token/工号；带齐 flag 且 ``--yes`` 可无头执行。
     """
@@ -260,28 +260,49 @@ def cmd_init(args) -> int:
             "cursor": install_to_cursor,
             "trae": install_to_trae,
         }
-        skill_source = Path(str(files("xskill") / "data" / "skill" / "xskill"))
-        if not (skill_source / "SKILL.md").is_file():
-            print(f"warning: 捆绑的 xskill skill 缺失（{skill_source}），跳过装 skill",
-                  file=sys.stderr)
-        else:
-            installed_ecosystems = []
-            for detection in detect_known_ecosystems(home_root=target_root):
-                install_fn = installer_by_eco.get(detection["ecosystem"])
-                if install_fn is None:
-                    continue
+        skill_root = Path(str(files("xskill") / "data" / "skill"))
+        skill_sources = [skill_root / name for name in ("xskill", "xskill-kernel")]
+        valid_sources = []
+        for skill_source in skill_sources:
+            if (skill_source / "SKILL.md").is_file():
+                valid_sources.append(skill_source)
+            else:
+                print(
+                    f"warning: 捆绑的 {skill_source.name} skill 缺失"
+                    f"（{skill_source}），跳过",
+                    file=sys.stderr,
+                )
+
+        detections = detect_known_ecosystems(home_root=target_root)
+        installed: list[tuple[str, str]] = []
+        for detection in detections:
+            ecosystem = detection["ecosystem"]
+            install_fn = installer_by_eco.get(ecosystem)
+            if install_fn is None:
+                continue
+            for skill_source in valid_sources:
                 try:
                     install_fn(skill_source, target_root=target_root, side="main")
-                    installed_ecosystems.append(detection["ecosystem"])
+                    installed.append((skill_source.name, ecosystem))
                 except Exception as install_error:  # noqa: BLE001
-                    print(f"warning: 装到 {detection['ecosystem']} 失败：{install_error}",
-                          file=sys.stderr)
-            if installed_ecosystems:
-                print(f"已把 xskill 使用指南装进 {'/'.join(installed_ecosystems)} 的 "
-                      f"skill 目录，在对应 agent 里可直接 /xskill 查用法。")
-            else:
-                print("未检测到已知 agent 生态（claude_code/codex/opencode/cursor/… "
-                      "均未发现），跳过装 skill。")
+                    print(
+                        f"warning: {skill_source.name} 装到 {ecosystem} 失败："
+                        f"{install_error}",
+                        file=sys.stderr,
+                    )
+        if installed:
+            ecosystems = list(dict.fromkeys(item[1] for item in installed))
+            skill_names = list(dict.fromkeys(item[0] for item in installed))
+            commands = "、".join(f"/{name}" for name in skill_names)
+            print(
+                f"已把 {','.join(skill_names)} 装进 {'/'.join(ecosystems)} 的 "
+                f"skill 目录，在对应 agent 里可直接使用 {commands}。"
+            )
+        elif detections:
+            print("没有可安装的捆绑 Skill，已跳过安装。")
+        else:
+            print("未检测到已知 agent 生态（claude_code/codex/opencode/cursor/… "
+                  "均未发现），跳过装 skill。")
 
     if args.skills_only:
         return 0
@@ -1203,19 +1224,26 @@ def build_parser() -> argparse.ArgumentParser:
         "eval",
         help="离线运行算法内核（隔离 trajectory/skill/workspace，不启动 serve）",
     )
-    p_eval.add_argument("kernel_id", help="要评测的 kernel manifest id")
     p_eval.add_argument(
-        "dataset", help="包含 traj_*.md 的标准数据集目录",
+        "--kernel", dest="kernel_id", required=True,
+        help="要评测的算法内核 ID",
     )
     p_eval.add_argument(
-        "--sample", default="all",
-        help="确定性样本比例：all、1/4 等（默认 all）",
+        "--dataset", required=True,
+        help="包含 traj_*.md 的标准数据集目录",
+    )
+    p_eval.add_argument(
+        "--sample", type=float, default=1.0,
+        help="确定性抽样比例，范围 (0, 1]（默认 1.0）",
     )
     p_eval.add_argument("--seed", type=int, default=42, help="抽样 seed")
     p_eval.add_argument("--output", default=None, help="artifact 输出目录")
     p_eval.add_argument(
         "--plugin-dir", default=None,
-        help="kernel 根目录；默认只读 config.kernel.plugin_dir",
+        help=(
+            "kernel 根目录；省略时读取 config.kernel.plugin_dir，"
+            "否则使用 ~/.xskill/kernels"
+        ),
     )
     p_eval.add_argument("--json", action="store_true", help="只输出稳定 JSON")
     p_eval.add_argument(

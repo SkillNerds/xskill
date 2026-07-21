@@ -1,0 +1,4 @@
+interface:
+  display_name: "XSkill Kernel"
+  short_description: "Build, evaluate, and diagnose XSkill algorithm kernels"
+  default_prompt: "Use $xskill-kernel to create and evaluate an algorithm kernel."

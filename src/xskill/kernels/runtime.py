@@ -160,6 +160,96 @@ class KernelEvaluationStore:
             })
         return result
 
+    def export_report(
+        self,
+        *,
+        kernel_id: str,
+        skill_dir: Path,
+        registry_db_path: Path | None = None,
+        limit: int = 500,
+    ) -> dict:
+        """Export auditable runs and downstream feedback for one kernel."""
+        from xskill import canary
+        from xskill.pipeline.registry import pooled_connection
+        from xskill.skill.frontmatter import parse
+
+        runs = self.list_runs(limit=limit, kernel_id=kernel_id)
+        output_names = {
+            str(name)
+            for run in runs
+            for name in run.get("outputs", [])
+        }
+        summary = self.summaries(
+            kernel_ids=[kernel_id], skill_dir=skill_dir,
+        )[0]
+        skills: list[dict] = []
+        skill_names: list[str] = []
+        root = Path(skill_dir)
+        if root.is_dir():
+            for skill_path in sorted(root.iterdir(), key=lambda item: item.name):
+                skill_md = skill_path / "SKILL.md"
+                if not skill_path.is_dir() or not skill_md.is_file():
+                    continue
+                try:
+                    frontmatter, _ = parse(skill_md.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                metadata = frontmatter.get("metadata", {}) or {}
+                kernel_meta = (
+                    metadata.get("kernel", {}) if isinstance(metadata, dict) else {}
+                )
+                owner = (
+                    str(kernel_meta.get("id") or "native")
+                    if isinstance(kernel_meta, dict)
+                    else "native"
+                )
+                if owner != kernel_id and skill_path.name not in output_names:
+                    continue
+                run_versions = sorted({
+                    str(run["kernel_version"])
+                    for run in runs
+                    if skill_path.name in run.get("outputs", [])
+                })
+                skill_names.append(skill_path.name)
+                ux_events = canary.load_ux_scores(skill_path)
+                skills.append({
+                    "name": skill_path.name,
+                    "main_kernel": dict(kernel_meta),
+                    "run_kernel_versions": run_versions,
+                    "main_commit_sha": canary.main_sha(skill_path),
+                    "staging_commit_sha": canary.staging_sha(skill_path),
+                    "ux_by_version": canary.aggregate_ux_by_version(ux_events),
+                    "ux_events": ux_events,
+                })
+
+        decisions: list[dict] = []
+        if registry_db_path is not None and skill_names:
+            placeholders = ",".join("?" for _ in skill_names)
+            with pooled_connection(registry_db_path) as connection:
+                rows = connection.execute(
+                    "SELECT ts,skill,action,main_avg,staging_avg,"
+                    "main_samples,staging_samples,age_days,main_sha,staging_sha "
+                    f"FROM canary_decision WHERE skill IN ({placeholders}) "
+                    "ORDER BY ts DESC",
+                    skill_names,
+                ).fetchall()
+            decisions = [dict(row) for row in rows]
+
+        return {
+            "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "kernel_id": kernel_id,
+            "run_window": {
+                "runs_limit": limit,
+                "runs_returned": len(runs),
+                "summary_limit": 500,
+                "order": "started_at_desc",
+            },
+            "summary": summary,
+            "runs": runs,
+            "skills": skills,
+            "canary_decisions": decisions,
+        }
+
     def _connection(self) -> sqlite3.Connection:
         connection = connect_with_lock(
             sqlite3.connect, str(self.path), timeout=10,
@@ -182,6 +272,22 @@ class KernelEvaluationStore:
         from xskill.skill.frontmatter import parse
 
         grouped: dict[str, dict] = {}
+
+        def owner(skill_md: Path, *, default: str = "native") -> str:
+            try:
+                frontmatter, _ = parse(skill_md.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return default
+            metadata = frontmatter.get("metadata", {}) or {}
+            kernel_meta = (
+                metadata.get("kernel", {}) if isinstance(metadata, dict) else {}
+            )
+            return (
+                str(kernel_meta.get("id") or default)
+                if isinstance(kernel_meta, dict)
+                else default
+            )
+
         root = Path(skill_dir)
         if not root.is_dir():
             return grouped
@@ -189,30 +295,38 @@ class KernelEvaluationStore:
             skill_md = skill_path / "SKILL.md"
             if not skill_path.is_dir() or not skill_md.is_file():
                 continue
-            try:
-                frontmatter, _ = parse(skill_md.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            metadata = frontmatter.get("metadata", {}) or {}
-            kernel_meta = metadata.get("kernel", {}) if isinstance(metadata, dict) else {}
-            kernel_id = (
-                str(kernel_meta.get("id") or "native")
-                if isinstance(kernel_meta, dict)
-                else "native"
-            )
-            bucket = grouped.setdefault(kernel_id, {"skills": 0, "scores": []})
-            bucket["skills"] += 1
-            current_main_sha = canary.main_sha(skill_path)
-            for score in canary.load_ux_scores(skill_path):
-                value = score.get("score")
-                if (
-                    current_main_sha
-                    and score.get("commit_sha") == current_main_sha
-                    and isinstance(value, (int, float))
-                    and not isinstance(value, bool)
-                ):
-                    bucket["scores"].append(float(value))
-        return grouped
+            main_owner = owner(skill_md)
+            versions = [(canary.main_sha(skill_path), main_owner)]
+            current_staging_sha = canary.staging_sha(skill_path)
+            if current_staging_sha:
+                staging_md = root / ".canary" / skill_path.name / "SKILL.md"
+                versions.append((
+                    current_staging_sha,
+                    owner(staging_md, default=main_owner),
+                ))
+            scores = canary.load_ux_scores(skill_path)
+            for commit_sha, kernel_id in versions:
+                if not commit_sha:
+                    continue
+                bucket = grouped.setdefault(
+                    kernel_id, {"skill_names": set(), "scores": []},
+                )
+                bucket["skill_names"].add(skill_path.name)
+                for score in scores:
+                    value = score.get("score")
+                    if (
+                        score.get("commit_sha") == commit_sha
+                        and isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                    ):
+                        bucket["scores"].append(float(value))
+        return {
+            kernel_id: {
+                "skills": len(bucket["skill_names"]),
+                "scores": bucket["scores"],
+            }
+            for kernel_id, bucket in grouped.items()
+        }
 
 
 class KernelRuntime:

@@ -1,125 +1,120 @@
-# XSkill 算法内核抽象层
+# XSkill 算法内核架构说明
 
-第一次接入算法内核时，请先阅读[算法内核开发者 README](../examples/kernels/README.md)。
-本文解释架构和职责边界；开发者 README 提供目录布局、公共对象、轨迹读取、Skill 提交、
-评价、测试和版本发布的完整操作步骤。
+本文说明算法内核抽象层的职责、数据流和安全边界。第一次接入时请先阅读
+[算法内核开发指南](../examples/kernels/README.md)，按其中的最短路径运行示例和数据集评测。
 
-## 结论
+## 系统边界
 
-内核的替换边界是「标准轨迹已经由 XSkill 收集、清洗、归因和登记」之后，「正式
-Skill 进入 Git / Canary / 分发」之前。内核可以自由选择拆分、聚类、生成和进化算法，
-但不能绕开 XSkill 的 Publisher 直接写 Skill 库。
+算法内核位于“轨迹已经进入 XSkill”与“Skill 进入版本管理和分发”之间。它可以替换轨迹
+筛选、聚类、生成和进化算法，但不负责采集用户轨迹，也不能绕过受管理的发布入口直接修改
+正式 Skill。
 
 ```mermaid
 flowchart LR
-    A[轨迹上传 / Agent 适配] --> B[标准 traj_*.md]
-    B --> C[Registry + 用户/来源归因]
-    C --> D{kernel.active}
-    D -->|native| E[AtomTask → Cluster → SkillEdit]
-    D -->|third party| F[Kernel.run context]
-    E --> G[XSkill Skill Publisher]
-    F --> G
-    G --> H[Git main/staging + Canary + 分发]
-    H --> I[UX / trigger / run evaluation]
-    I --> D
+    A[Agent 轨迹] --> B[XSkill 标准轨迹]
+    B --> C[输入作用域]
+    C --> D{当前算法内核}
+    D --> E[内核 run context]
+    E --> F[受管理的 Skill 发布]
+    F --> G[main / staging]
+    G --> H[分发与真实 UX]
+    H --> I[内核运行与版本评价]
 ```
 
 XSkill 负责：
 
-- 轨迹上传、生态适配、脱敏、输入校验和 Registry；
-- 调度、超时（后续子进程化）、运行审计和算法评价；
-- Skill 路径/frontmatter 校验、Git 提交、main/staging、Canary 和分发。
+- 收集、脱敏、校验和登记轨迹；
+- 选择内核、构造输入作用域并记录运行结果；
+- 校验 Skill 内容并管理 main、staging、灰度和分发；
+- 汇总内核运行指标与内核产出 Skill 的后续 UX。
 
 算法内核负责：
 
-- 从标准轨迹中选择输入；
-- 用自己的 SDK、模型、benchmark 和配置执行拆分/聚类/生成/进化；
-- 通过 `context.publisher.submit(...)` 提交 Skill draft；
-- 返回可审计的输入、输出和自定义指标。
+- 解释自己的配置并调用自己的 package、模型或服务；
+- 从允许访问的轨迹中选择和处理输入；
+- 生成新 Skill，或基于现有版本生成更新候选；
+- 维护游标、缓存和中间产物，并保证重试幂等；
+- 返回真实的处理范围、产出和非敏感诊断指标。
 
-## 为什么不使用 `handle_trajectory_change` / `handle_time`
+## 稳定调用接口
 
-事件、定时、手动和离线评测都是「驱动方式」，不是算法接口本身。V2 只保留一个入口：
+算法内核只实现一个同步入口：
 
 ```python
-class MyKernel(BaseKernel):
-    manifest = KernelManifest(...)
+class MyAlgorithmKernel(BaseKernel):
+    metadata = KernelMetadata(...)
 
     def run(self, context: KernelContext) -> KernelRunResult:
         ...
 ```
 
-`context.invocation.trigger` 可以是 `scheduled` / `trajectory_changed` / `manual` /
-`evaluation`。Invocation 身份收进 Context，避免 provider 面对一个常常不用的第二参数。
-因此同一内核不需要为不同驱动方式实现多套回调。当前 daemon 使用 `scheduled`，后续可以
-在不改内核协议的前提下增加手动运行和独立 benchmark runner。
+调度周期、轨迹变化、手动调用和数据集评测属于调用原因，由
+`context.invocation.trigger` 表示。同一算法无需为每种驱动方式实现一套回调。内核在返回前
+完成本次有界工作；异常由调用方记录为失败运行。
 
-## 目录、配置与发现
+## 发现与所有权
 
-XSkill 主配置只保存选择器和插件目录：
-
-```yaml
-kernel:
-  active: native
-  plugin_dir: ~/.xskill/kernels
-```
-
-本地 bridge 的约定布局：
+默认目录为：
 
 ```text
-~/.xskill/kernels/openearth/
-├── kernel.py          # 导入 openearth 包，导出 KERNEL_CLASS
-├── config.yaml       # openearth 自己读写，XSkill 不解析
-└── workspace/        # 持久 cursor/cache/benchmark 产物
+~/.xskill/kernels/<kernel-id>/
+├── kernel.py
+├── config.yaml
+└── workspace/
 ```
 
-一个 bridge 必须导出 `KERNEL_CLASS: type[BaseKernel]`。目录名必须与
-`KERNEL_CLASS.manifest.id` 一致。bridge 的 import 错误会在面板显示为「不可用」，不会
-影响其他内核。
+`kernel.py` 导出 `KERNEL_CLASS: type[BaseKernel]`，目录名与 `KernelMetadata.id` 一致。
+导入算法依赖失败时，该内核会显示为不可用，不影响其他内核。
 
-V2 demo 使用本地 bridge，正式插件发布建议再增加 Python package entry point
-`xskill.kernels`，但保持相同的 `BaseKernel` 协议和工作空间布局。
+XSkill 只把 `config.yaml` 路径交给内核，不解释其中字段。算法提供方拥有配置格式、默认值、
+迁移、密钥和模型端点。`workspace/` 同样归算法提供方使用，适合保存游标、中间索引、缓存和
+算法日志。
 
-## Context 能力
+## 能力对象
 
-`KernelContext` 是任务级对象：
+`KernelContext` 按一次运行提供以下能力：
 
-- `workspace`：该内核的持久工作空间；
-- `config_path`：内核私有配置路径，是 opaque path；
-- `trajectories.iter/list/get`：标准轨迹、meta、来源和 Registry 状态的只读视图；
-- `trajectories.directories`：允许内核直接使用 `rg`、`find`、DuckDB 等批量工具；
-- `skills.list/get/checkout`：读取完整 Skill bundle、Git 版本和版本级 UX；
-- `publisher.submit/submit_checkout`：唯一写入口。新 Skill 进 main，同名更新进 staging。
+- `trajectories`：读取单条标准轨迹，或获取允许扫描的只读目录；
+- `skills`：读取完整 Skill、main/staging 提交和版本级 UX，并创建工作区副本；
+- `publisher`：新建 Skill 或提交已有 Skill 的更新候选；
+- `workspace`：算法可写的状态目录；
+- `config_path`：算法私有配置路径；
+- `invocation`：运行 ID、触发方式、数据集身份和变化输入提示。
 
-不暴露可写 `Registry connection`、`TrajDB`、`SkillDB` 或 skill 根目录。但需注意：
-V2 是进程内 Python 插件，这是 API 边界，不是安全沙箱。只应加载可信代码。轨迹目录的
-只读属性目前是合同；严格 benchmark 需要子进程/容器只读 mount。
+发布入口会校验 Skill 名称、元数据、文件路径、文本编码和更新基线。新 Skill 创建 main；
+已有 Skill 的更新进入 staging，正式版本在真实评价期间保持不变。
 
-## 评价口径
+## 离线与线上评价
 
-`~/.xskill/kernel_runs.db` 保存：
+数据集评测通过 `xskill eval --kernel ... --dataset ...` 在隔离的输入、工作空间和 Skill
+目录中执行，输出输入清单、运行状态、耗时、处理量、产出和算法诊断指标。它适合验证协议、
+稳定性、幂等和固定数据集上的版本变化。
 
-- `run_id / kernel_id / kernel_version / trigger / dataset_id`；
-- 成功/失败、耗时、输入数、输出数、输出 Skill 和错误；
-- 内核返回的 `metrics` JSON。
+线上评价将每次运行归因到内核 ID 和算法版本，并将已发布 Skill 的 UX 绑定到具体提交。
+Dashboard 的导出报告同时包含运行明细、版本级 UX 原始事件和灰度决定。算法优劣应基于
+统一观察窗口、足够样本和多项指标判断，不能把算法自报指标当成独立质量分。
 
-面板同时按 `metadata.kernel.id` 归属已发布 Skill，汇总它们的后续 UX。旧 Skill 没有
-内核标记时归为 `native`。
+严格的保密测试集、公平资源限额和跨内核排行榜需要独立评测环境。当前进程内数据集评测不
+提供这种隔离保证。
 
-这些是「生产运行 + 延迟用户反馈」，不是严格离线 benchmark。`xskill eval <kernel>
-<dataset>` 提供隔离 Registry/Skill/workspace、确定性抽样、进度表和标准 artifacts，但只衡量
-contract/运行健康，不把 provider 自报 metrics 冒充质量分。公平比较两个内核时，
-必须让它们使用相同 `dataset_id`、隔离的输出 Skill repo 和固定评测器。这应该是下一阶段
-Xarena benchmark backend 的责任，不应让两个内核同时写生产 Skill 库。
+## 安全边界
 
-## 运行 demo
+算法内核是可信的进程内 Python 插件。公共对象建立了清晰的读写合同，但不是操作系统安全
+沙箱：算法代码与 XSkill 使用同一账号权限。生产环境只应安装经过审查的内核和依赖，并将
+未知算法放入独立容器或服务中运行。
 
-`starter` 不需要 LLM，但只处理 `.md.meta` 中显式带有
-`{"kernel_demo": true}` 的轨迹。无需切换生产内核即可运行：
+私有配置不会复制进标准离线评测产物，返回的嵌套指标会按敏感字段名脱敏。算法自身仍须
+避免把密钥、用户正文和个人信息写入 `metrics`、`notes`、日志或工作空间交付物。
 
-```bash
-xskill eval starter examples/kernels/datasets/micro-trajectories \
-  --sample 1/4 --plugin-dir examples/kernels
-```
+## 演进边界
 
-真实 SDK 接入参见 [SkillOpt bridge](../examples/kernels/skillopt/kernel.py)。
+以下能力可以在保持 `run(context)` 与能力对象语义不变的前提下扩展：
+
+- 子进程、容器或远程服务执行器；
+- CPU、内存、网络与超时限制；
+- 独立 benchmark 驱动和排行榜；
+- 更细的输入授权和可审计的数据访问；
+- 内核 package 的签名、发布与兼容性检查。
+
+真实 SDK 适配参考 [SkillOpt 示例](../examples/kernels/skillopt/kernel.py)，可直接运行的协议
+模板参考 [your-demo-algo-kernel](../examples/kernels/your-demo-algo-kernel/kernel.py)。

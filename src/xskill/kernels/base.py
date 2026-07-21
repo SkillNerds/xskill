@@ -34,7 +34,7 @@ def validate_kernel_id(kernel_id: str) -> str:
 
 
 @dataclass(frozen=True)
-class KernelManifest:
+class KernelMetadata:
     """Static information safe to show before a kernel is instantiated."""
 
     id: str
@@ -47,16 +47,16 @@ class KernelManifest:
     def __post_init__(self) -> None:
         validate_kernel_id(self.id)
         if not self.name.strip():
-            raise ValueError("kernel manifest name must not be empty")
+            raise ValueError("kernel metadata name must not be empty")
         if not self.version.strip():
-            raise ValueError("kernel manifest version must not be empty")
+            raise ValueError("kernel metadata version must not be empty")
         if self.api_version != KERNEL_API_VERSION:
             raise ValueError(
                 f"unsupported kernel API version {self.api_version}; "
                 f"expected {KERNEL_API_VERSION}"
             )
         if not self.triggers:
-            raise ValueError("kernel manifest must declare at least one trigger")
+            raise ValueError("kernel metadata must declare at least one trigger")
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,7 @@ class KernelRunResult:
 class BaseKernel(ABC):
     """Base class implemented by bundled and third-party kernels."""
 
-    manifest: KernelManifest
+    metadata: KernelMetadata
 
     @abstractmethod
     def run(
@@ -119,3 +119,7 @@ class BaseKernel(ABC):
         context: "KernelContext",
     ) -> KernelRunResult:
         """Complete one bounded invocation and return auditable counters."""
+
+
+# Compatibility alias for integrations written against the initial preview.
+KernelManifest = KernelMetadata

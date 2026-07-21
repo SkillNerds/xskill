@@ -16,14 +16,14 @@ except ImportError as exc:
 
 from xskill.kernels import (
     BaseKernel,
-    KernelManifest,
+    KernelMetadata,
     KernelRunResult,
     SkillSubmission,
 )
 
 
 class OpenEarthKernel(BaseKernel):
-    manifest = KernelManifest(
+    metadata = KernelMetadata(
         id="openearth",
         name="OpenEarth",
         version=getattr(openearth, "__version__", "unknown"),

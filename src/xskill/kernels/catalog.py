@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Type
 
-from xskill.kernels.base import BaseKernel, KernelManifest, validate_kernel_id
+from xskill.kernels.base import BaseKernel, KernelMetadata, validate_kernel_id
 from xskill.kernels.builtin import BUILTIN_KERNELS
 
 
@@ -93,7 +93,7 @@ class KernelCatalog:
     def _discover(self) -> None:
         for kernel_id, kernel_class in BUILTIN_KERNELS.items():
             self._descriptors[kernel_id] = self._descriptor_for(
-                kernel_class.manifest,
+                self._metadata_for(kernel_class),
                 source="builtin",
                 plugin_path=None,
             )
@@ -111,15 +111,15 @@ class KernelCatalog:
                 continue
             try:
                 kernel_class = self._load_class(bridge)
-                manifest = kernel_class.manifest
-                if manifest.id != directory_id:
+                metadata = self._metadata_for(kernel_class)
+                if metadata.id != directory_id:
                     raise KernelLoadError(
-                        f"manifest id {manifest.id!r} must match directory "
+                        f"kernel metadata id {metadata.id!r} must match directory "
                         f"{directory_id!r}"
                     )
                 self._classes[directory_id] = kernel_class
                 self._descriptors[directory_id] = self._descriptor_for(
-                    manifest,
+                    metadata,
                     source="local-script",
                     plugin_path=bridge,
                 )
@@ -140,24 +140,24 @@ class KernelCatalog:
 
     def _descriptor_for(
         self,
-        manifest: KernelManifest,
+        metadata: KernelMetadata,
         *,
         source: str,
         plugin_path: Path | None,
     ) -> KernelDescriptor:
-        root = self.plugin_dir / manifest.id
+        root = self.plugin_dir / metadata.id
         return KernelDescriptor(
-            id=manifest.id,
-            name=manifest.name,
-            version=manifest.version,
-            description=manifest.description,
-            triggers=tuple(manifest.triggers),
+            id=metadata.id,
+            name=metadata.name,
+            version=metadata.version,
+            description=metadata.description,
+            triggers=tuple(metadata.triggers),
             source=source,
             available=True,
             error="",
             plugin_path=plugin_path,
             # Native uses XSkill's platform config; it has no private config.
-            config_path=None if manifest.id == "native" else root / "config.yaml",
+            config_path=None if metadata.id == "native" else root / "config.yaml",
             workspace=root / "workspace",
         )
 
@@ -184,7 +184,16 @@ class KernelCatalog:
             raise KernelLoadError(
                 f"{bridge} must export KERNEL_CLASS: type[BaseKernel]"
             )
-        if not isinstance(getattr(kernel_class, "manifest", None), KernelManifest):
-            raise KernelLoadError("KERNEL_CLASS.manifest must be KernelManifest")
+        KernelCatalog._metadata_for(kernel_class)
         return kernel_class
 
+    @staticmethod
+    def _metadata_for(kernel_class: Type[BaseKernel]) -> KernelMetadata:
+        metadata = getattr(kernel_class, "metadata", None)
+        if metadata is None:
+            metadata = getattr(kernel_class, "manifest", None)
+        if not isinstance(metadata, KernelMetadata):
+            raise KernelLoadError(
+                "KERNEL_CLASS.metadata must be KernelMetadata"
+            )
+        return metadata

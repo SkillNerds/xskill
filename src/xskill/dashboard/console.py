@@ -786,6 +786,43 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"runs": runs}
 
+    @router.get("/admin/kernels/export")
+    def admin_kernel_export(
+        kernel_id: str,
+        limit: int = 500,
+        _=Depends(require_admin),
+    ):
+        """Export one kernel's runs, Skill UX events, and Canary decisions."""
+        from xskill.api import app as app_mod
+        from xskill.config import (
+            XSKILL_HOME,
+            get_kernel_evaluation_db_path,
+            get_skill_dir,
+            kernel_config,
+        )
+        from xskill.kernels.catalog import KernelCatalog, KernelLoadError
+        from xskill.kernels.runtime import KernelEvaluationStore
+
+        cfg = app_mod._config or {}
+        selected = kernel_config(cfg, xskill_home=XSKILL_HOME)
+        catalog = KernelCatalog(
+            plugin_dir=selected["plugin_dir"], xskill_home=XSKILL_HOME,
+        )
+        try:
+            catalog.get(kernel_id)
+            return KernelEvaluationStore(
+                get_kernel_evaluation_db_path(xskill_home=XSKILL_HOME)
+            ).export_report(
+                kernel_id=kernel_id,
+                skill_dir=get_skill_dir(cfg, xskill_home=XSKILL_HOME),
+                registry_db_path=db_path,
+                limit=limit,
+            )
+        except KernelLoadError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @router.post("/admin/kernels/activate")
     def admin_kernel_activate(
         req: KernelActivateRequest,

@@ -70,8 +70,10 @@ xskill = [
     "data/*.json",            # vendored 价格表(Issue #43),随 wheel 发布
     "dashboard/static/*",     # 看板前端壳(index.html / app.js),随 wheel 发布
     "agents/prompts/*.txt",   # skill-creator 官方提示词(case生成/desc优化),随 wheel 发布
-    "data/skill/xskill/*",       # 捆绑的 xskill 使用指南 skill(xskill init 装到各生态)
-    "data/skill/xskill/**/*",    # 上者的子目录(references/scripts 等)一并打包
+    "data/skill/xskill/*",          # 捆绑的 xskill 使用指南 skill
+    "data/skill/xskill/**/*",       # 上者的子目录一并打包
+    "data/skill/xskill-kernel/*",   # 算法内核开发与诊断 skill
+    "data/skill/xskill-kernel/**/*",
 ]
 
 [tool.setuptools.packages.find]

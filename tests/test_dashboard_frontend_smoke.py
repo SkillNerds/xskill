@@ -26,8 +26,10 @@ def test_kernel_page_exposes_switch_and_evaluation_contract():
     assert 'id="kernels-list-body"' in html
     assert 'id="kernel-eval-body"' in html
     assert 'id="kernel-runs-body"' in html
+    assert 'id="kernel-export"' in html
     assert "/api/v1/dashboard/admin/kernels" in js
     assert "/api/v1/dashboard/admin/kernels/activate" in js
+    assert "/api/v1/dashboard/admin/kernels/export" in js
     assert "loadKernels" in js
 
 

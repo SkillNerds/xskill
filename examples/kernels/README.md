@@ -1,497 +1,365 @@
 # XSkill 算法内核开发指南
 
-这份文档面向第一次接触 XSkill 的算法开发者。你会学会：bridge 写在哪里、一次
-`run()` 到底代表什么、怎样批量读取轨迹、怎样安全修改已有 Skill、怎样在本机离线评测，
-以及算法包如何测试和发版。
+算法内核负责把 XSkill 收集的轨迹转化为可复用的 Skill。开发者只需提供一个 Python
+实现脚本；算法包、私有配置和中间数据仍由算法提供方维护。本指南按一次真实交付的顺序，
+说明如何接入、评测、上线和持续迭代。
 
-架构职责边界见[算法内核抽象层](../../docs/algorithm-kernels.md)。本目录提供三个例子：
+## 1. 接入算法内核
 
-- [starter](starter/kernel.py)：无 API、可直接跑的协议烟测内核；
-- [skillopt](skillopt/kernel.py)：直接调用真实 SkillOpt SDK 的集成示例；
-- [openearth](openearth/kernel.py)：第三方 SDK bridge 的通用形状示例。
+### 基本组成
 
-## 先建立一个正确心智模型
-
-算法开发者提供一个很薄的 Python bridge：
+每个算法内核占用一个独立目录：
 
 ```text
-你的算法 package / SDK
-         ↑ 普通 Python import
-~/.xskill/kernels/<kernel-id>/kernel.py
-         ↑ XSkill 发现 KERNEL_CLASS，并调用一次 run(context)
-         │
-         ├─ context.trajectories  轨迹对象、轨迹目录（只读合同）
-         ├─ context.skills        Skill 文件、版本和 UX（只读）
-         ├─ context.publisher     新建或提交 staging 候选
-         ├─ context.workspace     算法自己的可写持久空间
-         └─ context.config_path   算法自己的私有配置
-```
-
-XSkill 不要求算法源码搬进本仓库，也不解析算法私有配置。运行 `xskill` 的 Python 环境只要
-能 `import` 算法 package 即可。
-
-V2 是可信的进程内插件协议：它是清晰的 API 边界，但不是安全沙箱。平台传出的轨迹路径按
-合同只读；后续容器/RPC runner 才能用只读 mount 和资源限额做操作系统级强制。
-
-## 十分钟跑通：不部署服务，直接离线评测
-
-### 1. 安装开发版
-
-```bash
-cd /path/to/xskill-kernel-demo
-python -m pip install -e '.[dev]'
-python -c "import sys, xskill; print(sys.executable); print(xskill.__file__)"
-```
-
-### 2. 安装 starter bridge
-
-```bash
-mkdir -p ~/.xskill/kernels
-cp -R examples/kernels/starter ~/.xskill/kernels/starter
-```
-
-目录约定如下：
-
-```text
-~/.xskill/kernels/starter/
-├── kernel.py              # bridge，必须导出 KERNEL_CLASS
+~/.xskill/kernels/<kernel-id>/
+├── kernel.py              # 算法内核实现脚本，必须导出 KERNEL_CLASS
 ├── config.yaml.example    # 可提交的配置样例
-├── config.yaml            # 私有真实配置，由内核维护
-└── workspace/             # cursor/cache/中间 DB/算法产物，由内核维护
+├── config.yaml            # 私有真实配置，由算法内核读取和维护
+└── workspace/             # 游标、缓存、中间数据库和算法产物
 ```
 
-### 3. 跑标准微型数据集
+`~` 是运行 XSkill 的操作系统账号的主目录。未修改平台配置时，XSkill 从
+`~/.xskill/kernels` 发现算法内核。目录名就是稳定的 `kernel-id`，只能包含小写字母、数字、
+`_` 和 `-`，并且必须与 `KernelMetadata.id` 一致。
 
-不需要 `xskill serve`，也不需要配置平台 LLM/Embedding key：
+XSkill 与算法包的关系如下：
+
+```text
+算法 package / SDK
+        ↑ 普通 Python import
+kernel.py 中的 KERNEL_CLASS
+        ↑ XSkill 调用 run(context)
+        ├─ 读取本次允许访问的轨迹
+        ├─ 读取现有 Skill 及其版本评价
+        ├─ 向 XSkill 提交新 Skill 或更新候选
+        ├─ 使用算法自己的 workspace
+        └─ 获得算法自己的 config.yaml 路径
+```
+
+算法 package 必须安装在运行 `xskill` 的同一个 Python 环境中。XSkill 不解析、不生成也不
+迁移算法的 `config.yaml`；密钥、模型地址和算法参数均由算法提供方负责。
+
+### 运行示例内核
+
+先在 XSkill 仓库中安装开发版，再复制无外部 API 依赖的示例：
 
 ```bash
-xskill eval starter examples/kernels/datasets/micro-trajectories \
-  --sample 1/4 \
-  --plugin-dir ~/.xskill/kernels
+python -m pip install -e '.[dev]'
+mkdir -p "$HOME/.xskill/kernels"
+cp -R examples/kernels/your-demo-algo-kernel \
+  "$HOME/.xskill/kernels/your-demo-algo-kernel"
 ```
 
-`--sample 1/4` 使用 `seed + item id` 做确定性抽样，并把被选文件及 sidecar 的内容 hash
-写入 selection manifest。四条输入固定选择一条；同一 seed 可复现，内容变化会生成新的
-dataset ID。
+示例会在首次运行时创建自己的 `config.yaml`。确认脚本能够被发现：
 
-运行时会显示 `tqdm` 阶段进度，结束后输出：
-
-```text
-KERNEL   VERSION  DATASET              SELECTED  PROCESSED  SKILLS  STATUS   DURATION  QUALITY  ARTIFACTS
-starter  0.1.0    micro-...@<hash>     1         1          1       success  0.18s     n/a*     ~/.xskill/evaluations/...
+```bash
+python src/xskill/data/skill/xskill-kernel/scripts/diagnose_kernel.py \
+  --kernel your-demo-algo-kernel \
+  --plugin-dir "$HOME/.xskill/kernels"
 ```
 
-结果默认落在 `~/.xskill/evaluations/<run-id>/`：
+输出中的 `available` 应为 `true`，并列出算法版本、配置路径、工作空间和支持的触发方式。
+这个检查只导入实现脚本，不会运行算法，也不会切换线上内核。
 
-```text
-run.json                 # 状态、kernel/dataset 身份、selection hash
-events.jsonl             # 阶段进度事件
-result.json              # 紧凑运行结果（provider metrics 会递归脱敏）
-input/selection.json     # 精确输入清单及内容 hash
-input/watch_dirs/        # 本次只读输入快照
-kernel/workspace/        # 本次算法工作区
-registry.db              # 本次隔离 Registry
-skills/                  # 本次隔离 Skill Git repo
-kernel_runs.db           # 本次隔离运行记录
+### 编写实现脚本
+
+为自己的算法复制一份模板，并把目录改成目标 `kernel-id`：
+
+```bash
+cp -R examples/kernels/your-demo-algo-kernel \
+  "$HOME/.xskill/kernels/skillopt"
 ```
 
-离线运行不会修改生产 `registry.db`、正式 Skill、线上 kernel workspace，也不会更改
-`kernel.active`。算法真实私有配置可以原地读取，但不会复制进 artifacts，避免 API key 被
-带入评测产物。`--json` 关闭进度并只输出一个稳定 JSON 对象，适合 CI。
-
-## 真实 SkillOpt 集成示例
-
-[skillopt/kernel.py](skillopt/kernel.py)不是伪造 starter：它直接 import 并调用：
+然后编辑 `kernel.py`：让 `KernelMetadata.id` 与目录名一致，填写名称和算法版本，导入算法
+package，并替换生成 Skill 的函数。以下骨架展示了 SkillOpt 一类算法包的接入形式：
 
 ```python
-from skillopt.config import load_config, flatten_config
-from skillopt.engine.trainer import ReflACTTrainer
-from skillopt.envs.spreadsheetbench.adapter import SpreadsheetBenchAdapter
+from xskill.kernels import BaseKernel, KernelContext, KernelMetadata, KernelRunResult
+
+import skillopt
+
+
+class SkillOptKernel(BaseKernel):
+    metadata = KernelMetadata(
+        id="skillopt",
+        name="SkillOpt",
+        version=str(getattr(skillopt, "__version__", "unknown")),
+        description="Generate Skills with SkillOpt.",
+        triggers=("scheduled", "evaluation"),
+    )
+
+    def run(self, context: KernelContext) -> KernelRunResult:
+        # 在这里读取 context.trajectories，调用 SkillOpt，并通过
+        # context.publisher 提交结果。
+        return KernelRunResult()
+
+
+KERNEL_CLASS = SkillOptKernel
 ```
 
-安装和配置：
+将可公开的默认字段保留在 `config.yaml.example`，把真实 endpoint、路径和密钥写入同目录的
+`config.yaml`。实现脚本应自行校验配置并给出可操作的错误信息。
+
+一次 `run(context)` 是一次有边界的同步任务。内核应在返回前完成本批处理，并准确返回已
+处理的轨迹和已提交的 Skill。轨迹与现有 Skill 按只读合同提供；所有游标、缓存和中间文件
+写入 `context.workspace`。公共对象和发布代码见[附录 A](#附录-a公共对象与读取接口)和
+[附录 B](#附录-bskill-发布与版本评价)。
+
+## 2. 数据集评测与迭代
+
+### 执行隔离评测
+
+复制示例后，在仓库根目录运行：
 
 ```bash
-python -m pip install -e /path/to/SkillOpt
-cp -R examples/kernels/skillopt ~/.xskill/kernels/skillopt
-cp ~/.xskill/kernels/skillopt/config.yaml.example \
-   ~/.xskill/kernels/skillopt/config.yaml
+xskill eval \
+  --kernel your-demo-algo-kernel \
+  --dataset "$PWD/examples/kernels/datasets/micro-trajectories" \
+  --sample 0.25 \
+  --seed 42
 ```
 
-然后在 `config.yaml` 里填写 SkillOpt 自己的 `skillopt_config`、SpreadsheetBench split 和
-data root。XSkill 不解释其中字段；`load_config()`、`_base_`、模型 endpoint、训练轮数和
-配置迁移都归 SkillOpt 自己维护。
+`--sample` 是 `(0, 1]` 范围内的浮点比例。XSkill 按
+`ceil(可用轨迹数 × sample)` 取样，最少选择一条；相同相对路径集合与 `seed` 会选中相同
+文件，选中文件的内容哈希决定 `dataset_id`。数据集目录需要包含 `traj_*.md`，可同时带同名
+`.json` 或 `.md.meta` 文件。
 
-这个 bridge 会把 `context.workspace/<run-id>` 作为 SkillOpt `out_root`，调用
-`ReflACTTrainer.train()`，读取真实 `best_skill.md`，再通过 XSkill Publisher 发布完整
-Skill。它只把白名单汇总指标返回 XSkill，不把可能含密钥的 SkillOpt summary/config 原样
-写入标准评测报告。
+该命令不需要启动 `xskill serve`，不会修改线上轨迹、正式 Skill、线上工作空间或当前内核。
+结果默认写入 `~/.xskill/evaluations/` 下的新目录，主要文件包括：
 
-当前边界要说清楚：SkillOpt 的 SpreadsheetBench adapter 消费 benchmark task/workbook，
-并不消费 XSkill 用户轨迹。因此该示例 manifest 明确标记为 `evaluation`/`manual`，且
-`online_parity=false`；它是“真实 SDK 如何接进来”的例子，不能冒充已经具备生产轨迹等价
-行为。要作为线上替换内核，提供方还需实现 trajectory → SkillOpt EnvAdapter。
+| 文件 | 用途 |
+| --- | --- |
+| `run.json` | 算法、数据集、抽样比例和运行状态。 |
+| `input/selection.json` | 实际选中的文件及内容哈希。 |
+| `events.jsonl` | 各阶段进度。 |
+| `result.json` | 处理量、产出量、耗时和已脱敏的算法指标。 |
+| `skills/` | 本次运行隔离生成的完整 Skill。 |
+| `kernel/workspace/` | 本次运行的算法工作空间。 |
 
-## 我的 bridge 写在哪里
+使用 `--json` 可获得适合 CI 的单个 JSON 结果，使用 `--output <目录>` 可指定产物目录。
+同一个输出目录不会被覆盖。
 
-XSkill 扫描：
+### 判断评测结果
 
-```text
-<plugin_dir>/<kernel-id>/kernel.py
+本地评测首先回答算法是否能够稳定接入：
+
+- `status` 是否成功，失败信息是否可诊断；
+- `selected` 与 `processed` 是否符合算法预期；
+- 生成或更新了哪些 Skill；
+- 相同输入下的产物与指标是否可复现；
+- 耗时、资源消耗和算法自报指标是否在预期范围内。
+
+算法自报的 `metrics` 用于运行诊断，不等同于用户满意度或独立质量分。比较两个版本时，
+保持数据内容、`seed`、抽样比例、模型和算法配置一致，并以 `dataset_id` 确认输入相同。
+
+### 发布算法版本
+
+每次准备交付新版本时：
+
+1. 更新 `KernelMetadata.version`，使其对应算法 package 的发布版本；
+2. 固定算法依赖，并测试空输入、重复运行、配置错误和 SDK 异常；
+3. 在固定数据集上运行 `xskill eval`，保存完整产物；
+4. 检查生成的 Skill、日志和指标中不含密钥或用户隐私；
+5. 交付算法 package、内核目录、`config.yaml.example`、评测产物和回退版本。
+
+修改实现或配置后重复上述评测，以相同输入对比新旧产物和运行指标。
+
+## 3. 上线后的评测与迭代
+
+### 上线交接
+
+算法提供方将发布材料交给正在运行 XSkill 的业务方或平台管理员。管理员负责：
+
+1. 在 XSkill 的 Python 环境中安装指定版本的算法 package；
+2. 把内核目录放入配置的算法内核根目录；
+3. 根据 `config.yaml.example` 创建真实私有配置并注入密钥；
+4. 在 Dashboard 的“算法内核”页面确认状态为“可用”；
+5. 选择该内核，从下一轮任务开始生效。
+
+Dashboard 只修改当前选择，不读取或改写内核的私有配置。切换不会中断已经开始的任务。
+首次上线应预先约定观察周期、目标流量、停止条件和可立即恢复的旧版本。
+
+### 线上评测报告
+
+运行达到约定的观察周期后，管理员在“算法内核”页面点击“导出当前内核评测 JSON”。报告
+包含：
+
+- 汇总成功率、平均耗时、输入量和输出量；
+- 最近最多 500 次运行的状态、数据集身份、耗时、产出、算法指标和错误；
+- 该内核生成的 Skill、main/staging 提交版本及逐条 UX 评价；
+- 与这些 Skill 相关的灰度晋升、拒绝或超时记录。
+
+运行汇总同样基于最近最多 500 次记录。如果一个观察周期超过此窗口，应按更短周期分段导出，
+避免把窗口外运行误计入结论。
+
+评价算法版本时应同时查看运行成功率、处理覆盖、Skill 产量、耗时与成本、UX 样本数和均值、
+灰度结果以及错误明细。平均 UX 样本不足时不能据此判断算法更好；离线结果也不能替代真实
+流量反馈。
+
+### 线上迭代
+
+新版本继续采用“固定数据集评测 → 交付业务方 → 小范围上线 → 导出线上报告 → 决定扩大、
+保持或回退”的闭环。内核更新已有 Skill 时，候选会先进入 staging；XSkill 将用户评价绑定
+到具体提交版本，再根据灰度结果晋升或拒绝候选。算法提供方不直接修改正式 Skill 目录。
+
+## 4. Agent 辅助开发
+
+安装 XSkill 随包提供的 Agent Skills：
+
+```bash
+xskill init --skills-only
 ```
 
-目录名与 `KernelManifest.id` 必须相同，只能使用小写字母、数字、`_`、`-`，最长 64 字符。
-最小骨架：
+安装完成后可使用：
+
+| Skill | 用途 |
+| --- | --- |
+| `/xskill-kernel` | 创建实现脚本、查询公共对象、运行数据集评测、检查产物和诊断加载失败。 |
+| `/xskill` | 查询 XSkill 安装、连接、轨迹、Skill 和平台操作方法。 |
+
+例如，可向 Agent 提出：“使用 `/xskill-kernel`，把我的算法 package 接入 XSkill，并在固定
+数据集上评测。”Agent 会读取详细 API 参考，并可运行随 Skill 提供的只读诊断脚本。
+
+## 附录 A：公共对象与读取接口
+
+实现脚本可以直接导入：
 
 ```python
 from xskill.kernels import (
     BaseKernel,
     KernelContext,
-    KernelManifest,
+    KernelMetadata,
     KernelRunResult,
+    SkillSubmission,
 )
-
-
-class AcmeKernel(BaseKernel):
-    manifest = KernelManifest(
-        id="acme-distiller",
-        name="Acme Distiller",
-        version="1.0.0",       # 算法 package 版本，不是 API 版本
-        description="Generate Skills with the Acme SDK.",
-        triggers=("scheduled", "manual", "evaluation"),
-        api_version=2,
-    )
-
-    def run(self, context: KernelContext) -> KernelRunResult:
-        from acme_distiller import distill
-
-        output = distill(
-            trajectory_roots=[item.path for item in context.trajectories.directories()],
-            config_path=context.config_path,
-            workspace=context.workspace,
-        )
-        # 把 output 转成 Publisher 提交，见下文。
-        return KernelRunResult(metrics={"candidates": len(output)})
-
-
-KERNEL_CLASS = AcmeKernel
 ```
 
-bridge import 失败时，Dashboard 会把该内核显示为“不可用”并展示异常，不影响其他内核。
+`KernelContext` 提供以下属性：
 
-## 一次 `run(context)` 到底是什么
-
-一次 invocation 是平台要求内核完成的一次**有界、同步、可审计**工作：
-
-1. 平台创建唯一 `run_id` 并确定 trigger 与输入作用域；
-2. 用该作用域构造 `KernelContext`；
-3. 只调用一次 `kernel.run(context)`；
-4. 内核在返回前完成这批工作并提交候选；
-5. 平台记录结果或异常。
-
-V1 文档曾把 `request` 和 `context` 作为两个参数，但 provider 经常根本用不到 request，语义
-也不清楚。V2 已将 invocation 收进 context，入口只有 `run(context)`。
-
-通常只需直接 import `BaseKernel`、`KernelContext`、`KernelManifest` 和 `KernelRunResult`。
-轨迹、Skill、Publisher 的对象从 context 获得，不要自行构造；也不要依赖 `_workers`、
-`kernels.runtime`、Registry 表结构等内部实现。
-
-运行身份在 `context.invocation`：
-
-| 字段 | 含义 |
+| 属性 | 内容 |
 | --- | --- |
-| `run_id` / `context.run_id` | 本次唯一 ID，可作为日志、幂等和工作目录键。 |
-| `trigger` | `scheduled`、`trajectory_changed`、`manual` 或 `evaluation`。 |
-| `dataset_id` | `live` 或带内容 hash 的离线数据集身份。 |
-| `changed_trajectory_ids` | 事件触发时的变化提示；不要把它当唯一输入发现方式。 |
-| `full_rebuild` | 调用方是否要求全量重算。 |
+| `run_id` | 本次运行的唯一标识。 |
+| `invocation.trigger` | 本次触发方式。 |
+| `invocation.dataset_id` | 线上作用域或离线数据集身份。 |
+| `invocation.changed_trajectory_ids` | 变化轨迹提示；为空时仍可扫描本次全部输入。 |
+| `config_path` | 当前内核的私有配置路径。 |
+| `workspace` | 当前内核可写的持久目录。 |
+| `trajectories` | 本次允许读取的轨迹。 |
+| `skills` | 现有 Skill、提交版本和 UX 汇总。 |
+| `publisher` | 受管理的 Skill 发布入口。 |
 
-`manifest.triggers` 不包含本次 trigger 时，XSkill 会在调用前拒绝运行。
-
-返回值 `KernelRunResult` 的定义：
-
-| 字段 | 含义 |
-| --- | --- |
-| `processed_trajectory_ids` | 本次确实完成处理的 Registry-qualified ID；决定审计中的 processed 数。 |
-| `submitted_skills` | 本次提交的 Skill 名称；Publisher 实际记录会自动去重合并。 |
-| `metrics` | provider 自报的 JSON 指标；用于诊断，不能冒充平台质量分。 |
-| `notes` | 短备注，不要放轨迹正文、用户隐私或密钥。 |
-
-内核需要自行保证重试幂等。cursor、中间索引、SQLite、模型 cache 等都放
-`context.workspace`，不要修改轨迹文件来标记状态。
-
-## Context 只提供五组核心能力
-
-| 属性 | 权限和用途 |
-| --- | --- |
-| `invocation` / `run_id` | 本次运行身份和输入作用域。 |
-| `config_path` | 内核自己的私有配置路径；格式、默认值、迁移和密钥都归内核。 |
-| `workspace` | 内核可写持久空间；可自由建 cursor、数据库、cache 和算法产物。 |
-| `trajectories` | 逐条读取或直接取得本次允许访问的轨迹目录。 |
-| `skills` / `publisher` | 读取完整 Skill、checkout 编辑、版本级 UX 和托管发布。 |
-
-不暴露可写 Registry connection、TrajDB、SkillDB 或正式 Skill 根目录。
-
-## 怎样读取大量用户轨迹
-
-### 逐条 Python 读取
+逐条读取轨迹：
 
 ```python
-for trajectory in context.trajectories.iter(statuses={"done", "indexed"}):
-    print(trajectory.id, trajectory.ecosystem, trajectory.status)
+for trajectory in context.trajectories.iter():
     text = trajectory.read_text()
-    raw = trajectory.read_raw_json()  # 无同名 .json 时返回 {}
+    raw = trajectory.read_raw_json()
     metadata = dict(trajectory.metadata)
+    print(trajectory.id, trajectory.path, trajectory.ecosystem, trajectory.status)
 ```
 
-`iter()` 是生成器，适合大量轨迹；`list()` 是便利接口；`get(id)` 精确读取一条。
-`trajectory.id` 形如 `3:traj_abc.md`，跨目录稳定；`trajectory.path` 是标准 Markdown 路径，
-`watch_dir` 是来源根目录，二者都按合同只读。
-
-### 直接对目录使用 `rg`、`find` 或自己的批处理引擎
-
-Python 对象不是唯一入口。内核可以取得所有注册且属于本次 invocation 的目录：
+`trajectory.path` 是标准 Markdown 文件，`read_raw_json()` 在存在同名原始 JSON 时返回内容。
+内核也可以取得只读目录，交给 `rg`、DuckDB 或自己的批处理程序：
 
 ```python
-import subprocess
-
 for source in context.trajectories.directories():
-    completed = subprocess.run(
-        ["rg", "--json", "docker", str(source.path)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    consume_rg_json(completed.stdout)
+    batch_reader.scan(source.path)
 ```
 
-也可以使用 `find`、DuckDB、自己的 mmap/indexer 或 agent 原生文件工具。
-`TrajectoryDirectoryResource` 包含 `id/path/label/ecosystem/trajectory_count/indexed_count`。
-即使目录暂时为空，它仍然能通过 `directories()` 被看到。
-
-离线 `xskill eval` 只会在隔离 Registry 中登记本次 selection 的快照目录，内核看不到生产
-Registry，避免抽样后又误扫到全量输入。
-
-## 怎样读取、修改和版本化已有 Skill
-
-### 读取完整 bundle 与版本级 UX
+读取现有 Skill 和版本评价：
 
 ```python
 skill = context.skills.get("docker-recovery", days=90)
-print(skill.name, skill.main_commit_sha, skill.staging_commit_sha)
-print(skill.list_files())
-print(skill.read_text("SKILL.md"))
-print(skill.read_text("references/checklist.md"))
+body = skill.read_text("SKILL.md")
+files = skill.list_files()
 
 for version in skill.versions:
-    print(
-        version.side,
-        version.commit_sha,
-        version.ux_average,
-        version.ux_samples,
-        version.first_scored_at,
-        version.last_scored_at,
-    )
+    print(version.side, version.commit_sha, version.ux_average, version.ux_samples)
 ```
 
-Skill 的稳定身份是 `name`；具体发布版本是 Git `commit_sha`。UX 记录绑定 commit，而不是只
-绑定名字，因此 main/staging 的评分不会混在一起。
+完整字段与故障定位规则随 `/xskill-kernel` 的 `references/api.md` 和
+`references/operations.md` 一起安装。
 
-`skill.path` 是正式 main bundle 的只读路径，便于工具读取，但绝不能直接编辑。需要修改时
-使用托管 checkout。
+## 附录 B：Skill 发布与版本评价
 
-### Checkout → 用任意 SDK/Agent 编辑 → 提交
+新建 Skill 使用 `SkillSubmission`：
 
 ```python
-draft = context.skills.checkout("docker-recovery")
-
-# draft.path 位于当前 kernel workspace，可以安全交给自己的 agent/SDK/shell。
-my_optimizer.edit_directory(draft.path)
-
-published = context.publisher.submit_checkout(
-    draft,
-    message="improve recovery verification",
-    source_trajectory_ids=tuple(consumed_ids),
-)
-print(published.action, published.previous_commit_sha, published.commit_sha)
-```
-
-checkout 会复制 main 的完整可分发 bundle，包括 `SKILL.md`、`scripts/`、`references/`，但
-不复制 `.git`、UX、Canary 和锁文件。提交把 checkout 当作**精确目标快照**：新增、修改和
-删除文件都会进入候选。
-
-`draft.base_commit_sha` 是乐观并发令牌。若 checkout 后 main 已变化，Publisher 拒绝 stale
-提交，要求重新 checkout；它不会静默覆盖别人的版本。
-
-同名更新的生命周期：
-
-```text
-name 相同 + base main commit A
-            │ submit checkout bundle B
-            ▼
-staging commit B（main A 继续分发）
-            │ 真实流量获得分别绑定 A/B 的 UX
-            ├─ B 更好 → Canary promote B 为 main
-            └─ B 更差/超时 → reject，Git 历史仍保留
-```
-
-已有活跃 staging 时，新候选会被拒绝，避免替换正在灰度的版本。Canary 物化的是完整
-staging bundle，不再只有 `SKILL.md`。
-
-### 新建 Skill
-
-新名称尚无 base version，可直接提交文本 bundle：
-
-```python
-from xskill.kernels import SkillSubmission
-
 published = context.publisher.submit(SkillSubmission(
     name="repair-docker-compose",
     skill_md="""---
 name: repair-docker-compose
-description: Diagnose and recover a failed Docker Compose deployment.
+description: Diagnose and recover Docker Compose services.
 metadata: {}
 ---
 
 # Repair Docker Compose
 
-Reliable workflow here.
+Workflow instructions.
 """,
-    files={
-        "scripts/diagnose.py": "print('diagnose')\n",
-        "references/checklist.md": "# Checklist\n",
-    },
+    files={"references/checklist.md": "# Checklist\n"},
     source_trajectory_ids=tuple(consumed_ids),
-    message=f"create in run {context.run_id}",
+    message="create recovery skill",
 ))
 ```
 
-新 Skill 原子创建独立 Git repo 并进入 main。Publisher 校验名称/frontmatter、路径穿越、
-隐藏平台文件、UTF-8 文本和 2 MiB bundle 上限，并写入稳定的
-`metadata.kernel.id/version`。run ID 只进 `kernel_runs.db`，不会污染相同内容的 hash。
+更新已有 Skill 必须先创建受管理的可写副本：
 
-## 评测、打榜与线上 UX：不要混成一个分数
+```python
+draft = context.skills.checkout("docker-recovery")
+my_optimizer.edit_directory(draft.path)
 
-### 已实现：本地 contract eval
+published = context.publisher.submit_checkout(
+    draft,
+    message="improve verification steps",
+    source_trajectory_ids=tuple(consumed_ids),
+)
+```
 
-`xskill eval <kernel> <trajectory-dataset>` 真实经过 `KernelCatalog`、`KernelRuntime`、
-Context 和 Publisher，回答：能否加载、是否幂等、处理多少输入、产出多少 Skill、耗时和
-错误是什么。它提供隔离、进度、表格和标准 artifacts，可直接放进算法项目 CI。
+`checkout` 位于当前内核的工作空间。提交时若 main 已变化，更新会被拒绝，开发者需要重新
+读取最新版本。已有 Skill 的新候选进入 staging，真实评价绑定具体提交；新名称则直接创建
+main 版本。
 
-provider 的 `metrics` 是自报指标，平台不会把其中的 `benchmark_score` 当可信质量分；本地
-结果会明确显示 `QUALITY n/a`。
+`KernelRunResult` 用于记录本次运行：
 
-### 设计基准：Xarena Spreadsheet 官方 top 1/4
+| 字段 | 内容 |
+| --- | --- |
+| `processed_trajectory_ids` | 本次确实完成处理的轨迹 ID。 |
+| `submitted_skills` | 本次提交的 Skill 名称。 |
+| `metrics` | 可 JSON 序列化的算法诊断指标，不得包含密钥。 |
+| `notes` | 简短说明，不应包含轨迹正文或用户隐私。 |
 
-现有 Xarena Board 6 的固定口径是 train/val/test = 20/10/70、seed 42。历史代表结果为
-SkillOpt 58/70、XSkill 57/70、no-skill 39/70，但旧 SkillOpt 与当前 target harness 曾不
-一致，所以只有 protocol fingerprint 完全一致的运行才可比较 baseline delta。
+## 附录 C：路径与配置规则
 
-完整 Spreadsheet 数据约 26 MB，不适合随 wheel 打包，也需要遵守上游数据条款。因此本
-仓只内置 API-free micro dataset；官方数据由外部 data root 和固定 manifest 提供，不能把
-smoke 结果标成官方榜分。
+| 输入 | 解析规则 |
+| --- | --- |
+| 未设置算法内核目录 | 使用当前运行账号的 `~/.xskill/kernels`。 |
+| 配置中的相对 `kernel.plugin_dir` | 相对于 `~/.xskill`。 |
+| 命令行相对 `--plugin-dir` | 相对于执行命令时的 shell 工作目录。 |
+| 相对 `--dataset` | 相对于执行命令时的 shell 工作目录。 |
 
-### 尚未伪装成“已完成”的部分
-
-要复现线上行为，需要独立 server、多 client rollout、固定模型 endpoint、算法容器与
-held-out evaluator 隔离，最终分别报告 hard pass、soft score 和模拟 UX。进程内 trusted
-plugin 无法阻止算法偷读 test/golden；严格榜单必须用 Xarena/Kubernetes 的独立容器。
-
-因此 V2 先交付隔离 local backend；Xarena backend 是下一层 `BenchmarkDriver`，不能用
-`KernelRunResult.metrics` 冒充。上线后真实用户满意度仍来自 main/staging 的版本级 UX 和
-Canary，而不是离线自报分。
-
-## 怎样切到生产内核
-
-通过配置：
+平台配置只负责选择内核和发现目录：
 
 ```yaml
 kernel:
-  active: acme-distiller
-  plugin_dir: ~/.xskill/kernels
+  active: skillopt
+  plugin_dir: kernels
 ```
 
-或在 Dashboard「算法内核」页切换。面板只保存 `kernel.active`，只展示私有配置路径，不
-读取或覆盖算法配置。切换从下一轮 sweep 生效，不中断正在运行的任务。
+上例中的 `plugin_dir` 解析为 `~/.xskill/kernels`。如果命令行显式指定目录，跨机器脚本建议
+使用 `$HOME` 展开的绝对路径。每个内核继续独立维护自己的 `config.yaml` 和 `workspace/`。
 
-生产运行会记录到 `~/.xskill/kernel_runs.db`；Dashboard 汇总成功率、耗时、处理量、产出
-量以及该 kernel 当前 main Skills 的后续 UX。至少同时看 UX 样本数、Canary 晋升率、覆盖
-率、失败率、耗时和成本，不能只看平均分。
+## 附录 D：架构与安全边界
 
-## 配置与 workspace 到底归谁
+XSkill 负责输入作用域、运行记录、Skill 发布和版本评价；算法内核负责配置解释、轨迹分析、
+候选生成、幂等与算法日志。当前实现脚本与 XSkill 运行在同一 Python 进程中，只应加载可信
+代码；只读路径是开发合同，不是操作系统沙箱。
 
-XSkill 只维护选择器：
+仓库还包含两个专项示例：
 
-```yaml
-kernel:
-  active: acme-distiller
-  plugin_dir: ~/.xskill/kernels
-```
+- [SkillOpt](skillopt/kernel.py) 直接调用真实 SkillOpt SpreadsheetBench SDK。它读取
+  SkillOpt 自己配置的数据，不等价于线上 XSkill 轨迹，只用于展示真实 SDK 的评测适配。
+- [OpenEarth](openearth/kernel.py) 展示尚未提供真实 SDK 时的接口形状，不能直接运行或作为
+  可用内核发布。
 
-算法内核自己维护：
-
-```text
-~/.xskill/kernels/acme-distiller/config.yaml
-~/.xskill/kernels/acme-distiller/workspace/
-```
-
-- 配置 schema、默认值、迁移、endpoint 和密钥都由算法包负责；
-- XSkill 将 `config_path` 作为 opaque path，不解析、不改写；
-- 真实配置、workspace 和 API key 不进 Git，只提交 `config.yaml.example`；
-- cursor、中间分析、缓存、SQLite 都可以放 workspace；
-- `xskill eval` 的 workspace/Registry/Skills 独立，私有配置不会复制到 artifacts。
-
-## 测试与发布
-
-推荐四层检查：
-
-1. import/manifest：算法 package 可导入，目录 ID 与 manifest ID 一致；
-2. `run()` 单测：空输入、重复运行、配置错误、SDK 异常、cursor 提交顺序；
-3. `xskill eval`：固定 selection，检查表格、artifacts、输出 bundle 和无生产污染；
-4. XSkill contract/Canary：完整 checkout、stale base、staging、版本 UX 和回退。
-
-本仓测试命令：
-
-```bash
-PYTHONPATH=$PWD/src python -m pytest \
-  tests/test_kernel_abstraction.py \
-  tests/test_kernel_evaluation.py \
-  tests/test_canary.py -q
-```
-
-建议算法项目结构：
-
-```text
-acme-distiller/
-├── pyproject.toml
-├── src/acme_distiller/
-└── integrations/xskill/
-    ├── kernel.py
-    └── config.yaml.example
-```
-
-发布时先跑算法单测和固定 dataset eval，再构建 wheel；让 `KernelManifest.version` 直接取
-算法 package 版本。`KERNEL_API_VERSION` 当前是 2，代表 XSkill bridge 协议；
-`KernelManifest.version` 代表你的算法版本，二者不是一回事。
-
-## 上线前检查表
-
-- [ ] `manifest.id`、目录名、`kernel.active` 完全一致。
-- [ ] 算法 package 能被运行 XSkill 的解释器导入。
-- [ ] 入口是 `run(context)`，manifest 固定 `api_version=2`。
-- [ ] 轨迹逐条读取和目录批处理都只读。
-- [ ] 中间状态只写 `context.workspace`。
-- [ ] 修改 Skill 使用 checkout + `submit_checkout()`，不编辑正式 main 路径。
-- [ ] 新 Skill 只经 Publisher 提交，来源使用 Registry-qualified trajectory ID。
-- [ ] `metrics/notes/artifacts` 不包含隐私和密钥。
-- [ ] 私有配置与 workspace 不进入版本库。
-- [ ] 先通过固定数据集 eval，再切生产并观察版本级 UX/Canary。
-
-## 继续阅读
-
-- [算法内核架构与职责边界](../../docs/algorithm-kernels.md)
-- [真实 SkillOpt bridge](skillopt/kernel.py)
-- [可运行 starter bridge](starter/kernel.py)
-- [公共 Python API](../../src/xskill/kernels/__init__.py)
-- [契约测试](../../tests/test_kernel_abstraction.py)
-- [评测测试](../../tests/test_kernel_evaluation.py)
+更完整的职责、数据流和演进边界见[算法内核架构说明](../../docs/algorithm-kernels.md)。

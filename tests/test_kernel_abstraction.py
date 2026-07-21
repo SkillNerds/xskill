@@ -13,7 +13,7 @@ from xskill.kernels.base import KernelRunResult, SkillSubmission
 from xskill.kernels.catalog import KernelCatalog
 from xskill.kernels.context import SkillPublisher, SkillReader, TrajectoryReader
 from xskill.kernels.runtime import KernelEvaluationStore, KernelRuntime
-from xskill.pipeline.registry import register_dir
+from xskill.pipeline.registry import record_canary_decision, register_dir
 from xskill.skill.frontmatter import parse
 from xskill.skill.git import current_branch
 
@@ -52,9 +52,9 @@ def test_catalog_discovers_local_bridge_and_reports_import_failure(tmp_path):
     valid = plugin_dir / "local-test"
     valid.mkdir(parents=True)
     (valid / "kernel.py").write_text(
-        "from xskill.kernels import BaseKernel, KernelManifest, KernelRunResult\n"
+        "from xskill.kernels import BaseKernel, KernelMetadata, KernelRunResult\n"
         "class LocalKernel(BaseKernel):\n"
-        "    manifest = KernelManifest(id='local-test', name='Local', "
+        "    metadata = KernelMetadata(id='local-test', name='Local', "
         "version='1', description='test')\n"
         "    def run(self, context):\n"
         "        return KernelRunResult(metrics={'ok': True})\n"
@@ -73,7 +73,7 @@ def test_catalog_discovers_local_bridge_and_reports_import_failure(tmp_path):
     assert {"native", "rule-based-demo", "local-test", "broken"} <= set(descriptors)
     assert descriptors["local-test"].available is True
     assert descriptors["local-test"].config_path == valid / "config.yaml"
-    assert catalog.create("local-test").manifest.id == "local-test"
+    assert catalog.create("local-test").metadata.id == "local-test"
     assert descriptors["broken"].available is False
     assert "dependency_that_does_not_exist" in descriptors["broken"].error
 
@@ -157,6 +157,60 @@ def test_skill_checkout_is_editable_copy_and_submit_is_version_checked(tmp_path)
     assert published.action == "staged"
     assert (skill_dir / "bundle-skill" / "references" / "checklist.md").read_text() == "old\n"
     assert (skill_dir / ".canary" / "bundle-skill" / "references" / "checklist.md").read_text() == "new\n"
+
+
+def test_kernel_feedback_attributes_main_and_staging_to_their_owners(tmp_path):
+    skill_dir = tmp_path / "skills"
+    created = SkillPublisher(
+        skill_dir=skill_dir,
+        kernel_id="first-kernel",
+        kernel_version="1",
+        run_id="create",
+    ).submit(SkillSubmission(
+        name="shared-skill",
+        skill_md=_skill_md("shared-skill", "main"),
+    ))
+    staged = SkillPublisher(
+        skill_dir=skill_dir,
+        kernel_id="second-kernel",
+        kernel_version="2",
+        run_id="update",
+    ).submit(SkillSubmission(
+        name="shared-skill",
+        skill_md=_skill_md("shared-skill", "candidate"),
+        base_commit_sha=created.commit_sha,
+    ))
+    skill_path = skill_dir / "shared-skill"
+    canary.append_ux_score(
+        skill_path,
+        traj_id="main-feedback",
+        skill_name="shared-skill",
+        side="main",
+        commit_sha=created.commit_sha,
+        score=0.6,
+        reasons="main",
+    )
+    canary.append_ux_score(
+        skill_path,
+        traj_id="staging-feedback",
+        skill_name="shared-skill",
+        side="staging",
+        commit_sha=staged.commit_sha,
+        score=0.9,
+        reasons="candidate",
+    )
+
+    summaries = KernelEvaluationStore(
+        tmp_path / "runs.db"
+    ).summaries(
+        kernel_ids=["first-kernel", "second-kernel"],
+        skill_dir=skill_dir,
+    )
+    by_kernel = {row["kernel_id"]: row for row in summaries}
+    assert by_kernel["first-kernel"]["skills_owned"] == 1
+    assert by_kernel["first-kernel"]["avg_ux"] == 0.6
+    assert by_kernel["second-kernel"]["skills_owned"] == 1
+    assert by_kernel["second-kernel"]["avg_ux"] == 0.9
 
 
 def test_trajectory_reader_exposes_registered_roots_for_batch_tools(tmp_path):
@@ -243,6 +297,47 @@ def test_rule_based_demo_runs_through_runtime_and_is_idempotent(tmp_path):
     assert demo_summary["runs"] == 2
     assert demo_summary["skills_owned"] == 1
 
+    skill_name = first.submitted_skills[0]
+    skill_path = skill_dir / skill_name
+    main_commit = canary.main_sha(skill_path)
+    assert main_commit
+    canary.append_ux_score(
+        skill_path,
+        traj_id="traj_feedback",
+        skill_name=skill_name,
+        side="main",
+        commit_sha=main_commit,
+        score=0.8,
+        reasons="helpful",
+    )
+    record_canary_decision(
+        skill=skill_name,
+        action="promoted",
+        main_avg=0.7,
+        staging_avg=0.8,
+        main_samples=5,
+        staging_samples=5,
+        age_days=1.0,
+        main_sha=main_commit,
+        staging_sha="candidate-sha",
+        db_path=registry_db,
+    )
+    exported = store.export_report(
+        kernel_id="rule-based-demo",
+        skill_dir=skill_dir,
+        registry_db_path=registry_db,
+    )
+    assert exported["summary"]["runs"] == 2
+    assert exported["run_window"] == {
+        "runs_limit": 500,
+        "runs_returned": 2,
+        "summary_limit": 500,
+        "order": "started_at_desc",
+    }
+    assert exported["runs"][0]["kernel_id"] == "rule-based-demo"
+    assert exported["skills"][0]["ux_events"][0]["score"] == 0.8
+    assert exported["canary_decisions"][0]["action"] == "promoted"
+
 
 def test_native_runner_is_recorded_without_changing_adapter_result(tmp_path):
     runtime = KernelRuntime(
@@ -265,21 +360,22 @@ def test_native_runner_is_recorded_without_changing_adapter_result(tmp_path):
     assert runtime.evaluations.list_runs(limit=1)[0]["kernel_id"] == "native"
 
 
-def test_documented_starter_kernel_is_discoverable_runnable_and_idempotent(
+def test_documented_demo_kernel_is_discoverable_runnable_and_idempotent(
     tmp_path,
 ):
     plugin_dir = tmp_path / "kernels"
     shutil.copytree(
-        Path(__file__).parents[1] / "examples" / "kernels" / "starter",
-        plugin_dir / "starter",
+        Path(__file__).parents[1]
+        / "examples" / "kernels" / "your-demo-algo-kernel",
+        plugin_dir / "your-demo-algo-kernel",
     )
     trajectory_dir = tmp_path / "trajectories"
     trajectory_dir.mkdir()
-    (trajectory_dir / "traj_starter.md").write_text(
-        "## User\n\nExercise the documented starter kernel.\n",
+    (trajectory_dir / "traj_demo.md").write_text(
+        "## User\n\nExercise the documented demo algorithm kernel.\n",
         encoding="utf-8",
     )
-    (trajectory_dir / "traj_starter.md.meta").write_text(
+    (trajectory_dir / "traj_demo.md.meta").write_text(
         '{"kernel_demo": true, "success": true}',
         encoding="utf-8",
     )
@@ -287,7 +383,7 @@ def test_documented_starter_kernel_is_discoverable_runnable_and_idempotent(
     register_dir(trajectory_dir, db_path=registry_db)
     store = KernelEvaluationStore(tmp_path / "kernel_runs.db")
     runtime = KernelRuntime(
-        active_kernel="starter",
+        active_kernel="your-demo-algo-kernel",
         catalog=KernelCatalog(
             plugin_dir=plugin_dir,
             xskill_home=tmp_path,
@@ -298,10 +394,10 @@ def test_documented_starter_kernel_is_discoverable_runnable_and_idempotent(
     )
 
     def native_must_not_run(_request):
-        raise AssertionError("starter must run through the public contract")
+        raise AssertionError("demo kernel must run through the public contract")
 
     descriptor, first = runtime.run_active(native_runner=native_must_not_run)
-    assert descriptor.id == "starter"
+    assert descriptor.id == "your-demo-algo-kernel"
     assert len(first.processed_trajectory_ids) == 1
     assert len(first.submitted_skills) == 1
     assert descriptor.config_path.is_file()

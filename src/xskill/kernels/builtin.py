@@ -10,7 +10,7 @@ import yaml
 
 from xskill.kernels.base import (
     BaseKernel,
-    KernelManifest,
+    KernelMetadata,
     KernelRunResult,
     SkillSubmission,
 )
@@ -19,7 +19,7 @@ from xskill.kernels.base import (
 class NativeKernel(BaseKernel):
     """Descriptor for the existing TaskAgent -> Cluster -> SkillEdit pipeline."""
 
-    manifest = KernelManifest(
+    metadata = KernelMetadata(
         id="native",
         name="XSkill Native",
         version="1",
@@ -42,7 +42,7 @@ class RuleBasedDemoKernel(BaseKernel):
     an ordinary production trajectory into a low-quality example skill.
     """
 
-    manifest = KernelManifest(
+    metadata = KernelMetadata(
         id="rule-based-demo",
         name="Rule-based Demo",
         version="1.0",
@@ -152,6 +152,6 @@ class RuleBasedDemoKernel(BaseKernel):
 
 
 BUILTIN_KERNELS = {
-    NativeKernel.manifest.id: NativeKernel,
-    RuleBasedDemoKernel.manifest.id: RuleBasedDemoKernel,
+    NativeKernel.metadata.id: NativeKernel,
+    RuleBasedDemoKernel.metadata.id: RuleBasedDemoKernel,
 }

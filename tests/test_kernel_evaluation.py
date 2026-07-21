@@ -6,6 +6,9 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
+from xskill.cli import build_parser
 from xskill.kernels.evaluation import (
     _redact,
     resolve_dataset,
@@ -24,24 +27,64 @@ def _dataset(root: Path, count: int = 4) -> Path:
     return root
 
 
+def test_eval_cli_uses_named_kernel_dataset_and_float_sample():
+    args = build_parser().parse_args([
+        "eval",
+        "--kernel", "your-demo-algo-kernel",
+        "--dataset", "./dataset",
+        "--sample", "0.25",
+    ])
+    assert args.kernel_id == "your-demo-algo-kernel"
+    assert args.dataset == "./dataset"
+    assert args.sample == 0.25
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([
+            "eval", "your-demo-algo-kernel", "./dataset",
+        ])
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([
+            "eval",
+            "--kernel", "your-demo-algo-kernel",
+            "--dataset", "./dataset",
+            "--sample", "1/4",
+        ])
+
+
 def test_dataset_fraction_is_deterministic_and_content_addressed(tmp_path):
     dataset = _dataset(tmp_path / "dataset")
-    first = resolve_dataset(dataset, sample="1/4", seed=42)
-    second = resolve_dataset(dataset, sample="1/4", seed=42)
+    first = resolve_dataset(dataset, sample=0.25, seed=42)
+    second = resolve_dataset(dataset, sample=0.25, seed=42)
     assert len(first.items) == 1
     assert first.selection_sha256 == second.selection_sha256
     assert first.items[0].id == second.items[0].id
 
     first.items[0].path.write_text("changed\n", encoding="utf-8")
-    changed = resolve_dataset(dataset, sample="1/4", seed=42)
+    changed = resolve_dataset(dataset, sample=0.25, seed=42)
     assert changed.selection_sha256 != first.selection_sha256
+
+
+@pytest.mark.parametrize("sample", [0, -0.1, 1.01])
+def test_dataset_fraction_rejects_values_outside_open_closed_range(
+    tmp_path, sample,
+):
+    dataset = _dataset(tmp_path / "dataset")
+    with pytest.raises(ValueError, match=r"\(0, 1\]"):
+        resolve_dataset(dataset, sample=sample, seed=42)
+
+
+def test_dataset_fraction_rounds_selected_count_up(tmp_path):
+    dataset = _dataset(tmp_path / "dataset", count=5)
+    selection = resolve_dataset(dataset, sample=0.25, seed=42)
+    assert len(selection.items) == 2
 
 
 def test_local_evaluation_uses_isolated_runtime_and_standard_artifacts(tmp_path):
     plugin_dir = tmp_path / "plugins"
     shutil.copytree(
-        Path(__file__).parents[1] / "examples" / "kernels" / "starter",
-        plugin_dir / "starter",
+        Path(__file__).parents[1]
+        / "examples" / "kernels" / "your-demo-algo-kernel",
+        plugin_dir / "your-demo-algo-kernel",
     )
     dataset = _dataset(tmp_path / "dataset")
     xskill_home = tmp_path / "home"
@@ -50,11 +93,11 @@ def test_local_evaluation_uses_isolated_runtime_and_standard_artifacts(tmp_path)
     output = tmp_path / "artifacts"
 
     report = run_local_evaluation(
-        kernel_id="starter",
+        kernel_id="your-demo-algo-kernel",
         dataset=dataset,
         plugin_dir=plugin_dir,
         xskill_home=xskill_home,
-        sample="1/4",
+        sample=0.25,
         seed=42,
         output_dir=output,
         no_progress=True,

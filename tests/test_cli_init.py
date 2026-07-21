@@ -30,24 +30,26 @@ def _args(**overrides) -> argparse.Namespace:
 
 @pytest.fixture
 def bundled_skill(tmp_path, monkeypatch):
-    """让 ``files('xskill')`` 指向一个带 SKILL.md 的临时目录。"""
+    """让 ``files('xskill')`` 指向两个带 SKILL.md 的临时 Skill。"""
     root = tmp_path / "pkgroot"
-    skill = root / "data" / "skill" / "xskill"
-    skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("# xskill\n", encoding="utf-8")
+    skill_root = root / "data" / "skill"
+    for name in ("xskill", "xskill-kernel"):
+        skill = skill_root / name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
     monkeypatch.setattr("importlib.resources.files", lambda pkg: root)
-    return skill
+    return skill_root
 
 
 @pytest.fixture
 def install_recorder(monkeypatch):
-    """把所有 install_to_* 换成记录调用的桩，返回被安装到的生态列表。"""
+    """把所有 install_to_* 换成记录 Skill 名和生态的桩。"""
     installed = []
     for eco in ("claude_code", "codex", "nga3", "opencode", "ngagent",
                 "openclaw", "cursor", "trae"):
         def _make(eco_name):
             def _fake(skill_path, target_root=None, side="main"):
-                installed.append(eco_name)
+                installed.append((Path(skill_path).name, eco_name))
                 return Path(skill_path) / "SKILL.md"
             return _fake
         monkeypatch.setattr(f"xskill.ecosystems.install_to_{eco}", _make(eco))
@@ -68,7 +70,10 @@ def test_skills_only_installs_without_connecting(
     code = cli.cmd_init(_args(skills_only=True))
 
     assert code == 0
-    assert install_recorder == ["claude_code"]
+    assert install_recorder == [
+        ("xskill", "claude_code"),
+        ("xskill-kernel", "claude_code"),
+    ]
     assert connect_called == []
 
 

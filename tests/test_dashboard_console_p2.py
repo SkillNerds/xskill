@@ -443,6 +443,17 @@ def test_kernel_catalog_and_targeted_activation(console_env, tmp_path, monkeypat
     assert {row["id"] for row in catalog.json()["kernels"]} >= {
         "native", "rule-based-demo",
     }
+    assert alice.get(
+        "/api/v1/dashboard/admin/kernels/export?kernel_id=native"
+    ).status_code == 403
+    exported = boss.get(
+        "/api/v1/dashboard/admin/kernels/export?kernel_id=native"
+    )
+    assert exported.status_code == 200
+    assert exported.json()["kernel_id"] == "native"
+    assert {"summary", "runs", "skills", "canary_decisions"} <= set(
+        exported.json()
+    )
 
     switched = boss.post(
         "/api/v1/dashboard/admin/kernels/activate",

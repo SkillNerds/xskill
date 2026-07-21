@@ -50,7 +50,7 @@ class DatasetSelection:
     eligible: int
     items: tuple[DatasetItem, ...]
     selection_sha256: str
-    sample: str
+    sample: float
     seed: int
 
 
@@ -119,7 +119,7 @@ def _redact(value):
     return repr(value)
 
 
-def resolve_dataset(path: Path, *, sample: str, seed: int) -> DatasetSelection:
+def resolve_dataset(path: Path, *, sample: float, seed: int) -> DatasetSelection:
     root = Path(path).expanduser().resolve()
     if not root.is_dir():
         raise NotADirectoryError(f"evaluation dataset is not a directory: {root}")
@@ -152,16 +152,16 @@ def resolve_dataset(path: Path, *, sample: str, seed: int) -> DatasetSelection:
             sidecars=tuple(sidecars),
         ))
 
-    fraction = _parse_sample(sample)
+    fraction = float(sample)
+    if not 0 < fraction <= 1:
+        raise ValueError("sample must be a floating-point ratio in (0, 1]")
     ordered = sorted(
         items,
         key=lambda item: hashlib.sha256(
             f"{seed}\0{item.id}".encode("utf-8")
         ).hexdigest(),
     )
-    selected_count = len(ordered)
-    if fraction is not None:
-        selected_count = max(1, math.ceil(len(ordered) * fraction))
+    selected_count = max(1, math.ceil(len(ordered) * fraction))
     selected = tuple(ordered[:selected_count])
     identity_rows = []
     for item in sorted(selected, key=lambda entry: entry.id):
@@ -189,22 +189,6 @@ def resolve_dataset(path: Path, *, sample: str, seed: int) -> DatasetSelection:
         sample=sample,
         seed=seed,
     )
-
-
-def _parse_sample(raw: str) -> float | None:
-    normalized = str(raw or "all").strip().lower()
-    if normalized == "all":
-        return None
-    numerator, separator, denominator = normalized.partition("/")
-    if not separator:
-        raise ValueError("sample must be 'all' or a fraction such as '1/4'")
-    try:
-        top, bottom = int(numerator), int(denominator)
-    except ValueError as exc:
-        raise ValueError("sample must be 'all' or a fraction such as '1/4'") from exc
-    if top < 1 or bottom < 1 or top > bottom:
-        raise ValueError("sample fraction must satisfy 1 <= numerator <= denominator")
-    return top / bottom
 
 
 def _write_json(path: Path, value: object, *, mode: int = 0o600) -> None:
@@ -268,7 +252,7 @@ def run_local_evaluation(
     dataset: Path,
     plugin_dir: Path,
     xskill_home: Path,
-    sample: str = "all",
+    sample: float = 1.0,
     seed: int = 42,
     output_dir: Path | None = None,
     json_output: bool = False,
