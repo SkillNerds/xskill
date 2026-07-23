@@ -75,7 +75,8 @@
 
 要接入自己的 trajectory-to-skill 算法，请从[算法内核开发者 README](examples/kernels/README.md)
 开始；其中说明如何编写 `kernel.py`、读取轨迹和 Skill 版本信息，以及使用
-`xskill distill --kernel <id> --trajectory-dir <path>` 在独立目录中离线生成 Skills。
+`xskill distill --kernel <id> --trajectory-dir <path> --output <path>` 在指定的独立目录中
+离线生成 Skills。
 架构职责与演进方向见[算法内核设计文档](docs/algorithm-kernels.md)。
 
 * * *

@@ -45,12 +45,18 @@ XSkill 负责：
 class MyAlgorithmKernel(BaseKernel):
     metadata = KernelMetadata(...)
 
-    def run(self, context: KernelContext) -> KernelRunResult:
+    def run(
+        self,
+        context: KernelContext,
+        run_interval: int = 30,
+    ) -> KernelRunResult:
         ...
 ```
 
 定时任务、轨迹变化和手动调用由 `context.invocation.trigger` 区分，同一算法不需要为每种
-方式分别实现回调。内核在返回前完成本次工作；异常由 XSkill 记录为失败运行。
+方式分别实现回调。线上外部 Kernel 由独立常驻进程复用，并按 `run_interval` 默认值周期
+调用；Native Kernel 仍由 XSkill worker 驱动。`xskill distill` 只调用一次，不使用该间隔。
+内核在返回前完成本次工作；异常由 XSkill 记录为失败运行。
 
 ## 发现和目录
 
@@ -66,6 +72,9 @@ class MyAlgorithmKernel(BaseKernel):
 `kernel.py` 导出 `KERNEL_CLASS: type[BaseKernel]`，目录名与 `KernelMetadata.id` 一致。
 导入算法依赖失败时，该内核会显示为不可用，不影响其他内核。
 
+用户级配置使用 `kernel.kernels_path` 和 `kernel.kernel_id` 选择目录及内核。旧字段
+`plugin_dir`、`active` 继续兼容，但新旧字段不能设置为冲突值。
+
 每个算法内核自行维护并读取自己的 `config.yaml`，XSkill 只提供文件路径。`workspace/`
 由算法保存缓存、中间索引和临时结果。
 
@@ -73,33 +82,55 @@ class MyAlgorithmKernel(BaseKernel):
 
 `KernelContext` 在每次运行中提供：
 
+- `trajectory_root`：本次输入的绝对文件系统根，Kernel 可交给自己的扫描器、命令行工具或
+  dataloader；Team Server 默认是 `~/.xskill/team_trajectories/clients`，手动 distill
+  时是用户指定的 `--trajectory-dir`；
 - `trajectories`：读取单条轨迹，或取得本次可扫描的目录；
-- `skills`：读取完整 Skill、main/staging 提交和各版本 UX，并在工作目录创建可编辑副本；
+- `skills`：只读现有 Skill、main/staging 提交和各版本 UX；
 - `publisher`：新建 Skill 或提交已有 Skill 的新版本；
 - `workspace`：算法可写的工作目录；
 - `config_path`：算法配置路径；
+- `xskill_config_path`：用户级 XSkill 配置的绝对路径；
+- `llm`：按用户配置创建并在外部 Kernel 进程内统一执行 RPM、TPM、burst 和最大并发限制
+  的 LLM 客户端；
+- `embedding`：按用户配置创建并限制最大并发的 Embedding 客户端；
 - `invocation`：触发方式、输入集合 ID 和变化轨迹提示；
 - `run_id`：本次运行 ID。
 
 提交入口会校验 Skill 名称、元数据、文件路径、文本编码和更新依据。新 Skill 直接创建 main；
 已有 Skill 的更新进入 staging，正式版本在观察期间保持不变。
 
+`trajectories` 对平台登记的多个 watch-dir 逐一读取，并递归兼容其下的 `traj_*.md`。当调用方
+只有一个手动输入根、没有 Registry 记录时，也会从 `trajectory_root` 递归构造资源。Kernel
+不应假设根目录下一层就是 Markdown，也不应假设只有一个 client 或 watch-dir。
+
+XSkill 的跨平台稳定输入是标准化、脱敏后的 Markdown。邻接 `.json` 只是可选 sidecar，不能
+作为“服务器一定保存了原始轨迹”的承诺；Team Server 正常上传目前只传 Markdown 和有限的
+model/harness 元数据。
+
 ## 离线生成与线上反馈
 
-`xskill distill --kernel ... --trajectory-dir ...` 将指定目录中的全部轨迹复制到独立输入
-目录，使用独立的工作空间、注册表和 Skill 目录运行内核。产物包含输入清单、运行状态、耗时、
-处理量、生成的 Skills 和算法返回的运行指标。这个命令不启动服务、不切换线上当前内核，也
-不产生算法能力分。
+`xskill distill --kernel ... --trajectory-dir ... --output ...` 将指定目录中的标准轨迹复制
+到独立输入目录，使用独立的工作空间、注册表和 Skill 目录运行内核；同时把用户指定目录的
+绝对路径作为 `context.trajectory_root` 暴露给 Kernel，使其能够读取同目录下自己的数据格式
+或附件。`--output` 必须显式提供，离线 `context.workspace` 固定为
+`<output>/.xskill/workspace/`。产物包含输入清单、运行状态、耗时、处理量、生成的 Skills 和
+算法返回的运行指标。这个命令不启动服务、不切换线上当前内核，也不产生算法能力分。
 
 线上每次运行都记录内核 ID 和算法版本。内核生成的 Skill 投入使用后，UX 评价绑定到具体
 Skill 提交版本，灰度流程再记录晋升、拒绝或超时。Dashboard 导出的当前内核报告同时包含
 运行明细、版本级 UX 和灰度结果。算法自己返回的 `metrics` 只作为运行信息，不能代替用户
 评价。
 
+新增和更新都调用 `publisher.submit()`。更新时，Kernel 先读取目标 Skill 当前的
+`main_commit_sha`，再作为 `base_commit_sha` 提交；Publisher 用它进行并发校验并把候选版本
+送入 staging。`KernelRunResult` 只记录运行回报，本身不会修改 Skill。
+
 ## 安全边界
 
-算法内核是 XSkill 进程内加载的可信 Python 插件，不是操作系统沙箱：算法代码与 XSkill
-使用同一账号权限。生产环境只安装经过审查的内核和依赖；未知代码需要放入独立容器或服务。
+线上外部算法内核在 XSkill 管理的独立常驻进程中加载，但不是操作系统沙箱：算法代码仍以
+XSkill 所在账号运行。生产环境只安装经过审查的内核和依赖；未知代码需要放入独立容器或
+服务。
 
 标准离线产物不会复制算法的 `config.yaml`，返回的嵌套指标会按敏感字段名脱敏。算法仍需
 避免把密钥、用户正文和个人信息写入 `metrics`、`notes`、日志或需要交付的工作空间文件。
@@ -108,7 +139,7 @@ Skill 提交版本，灰度流程再记录晋升、拒绝或超时。Dashboard �
 
 在保持 `run(context)` 和 Context 对象用法不变的前提下，可以继续增加：
 
-- 子进程、容器或远程服务执行器；
+- 容器或远程服务执行器；
 - CPU、内存、网络与超时限制；
 - 更细的输入授权和数据访问记录；
 - 内核 package 的签名、发布与兼容性检查。
