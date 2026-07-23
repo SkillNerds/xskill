@@ -14,8 +14,9 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
+
+import yaml
 
 from xskill.kernels.base import KernelRunResult
 from xskill.kernels.catalog import KernelCatalog
@@ -65,23 +66,27 @@ class OfflineDistillationReport:
     metrics: dict
     notes: str
 
-    def as_dict(self) -> dict:
-        return {
-            "run_id": self.run_id,
+    def as_dict(self, *, include_artifact_dir: bool = False) -> dict:
+        result = {
             "status": self.status,
             "kernel": {
                 "id": self.kernel_id,
                 "version": self.kernel_version,
             },
-            "trajectory_set_id": self.trajectory_set_id,
-            "trajectories": self.trajectories,
-            "processed": self.processed,
-            "submitted_skills": list(self.submitted_skills),
+            "trajectories": {
+                "total": self.trajectories,
+                "processed": self.processed,
+            },
+            "skills": list(self.submitted_skills),
             "duration_s": round(self.duration_s, 4),
-            "artifact_dir": str(self.artifact_dir),
-            "metrics": _redact(self.metrics),
-            "notes": self.notes,
         }
+        if self.metrics:
+            result["metrics"] = _redact(self.metrics)
+        if self.notes:
+            result["notes"] = self.notes
+        if include_artifact_dir:
+            result["artifact_dir"] = str(self.artifact_dir)
+        return result
 
 
 def _sha256(path: Path) -> str:
@@ -173,25 +178,6 @@ def _write_json(path: Path, value: object, *, mode: int = 0o600) -> None:
     temporary.replace(path)
 
 
-def _append_event(
-    path: Path,
-    *,
-    phase: str,
-    current: int,
-    total: int,
-    message: str,
-) -> None:
-    record = {
-        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "phase": phase,
-        "current": current,
-        "total": total,
-        "message": message,
-    }
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
 def _materialize_trajectories(
     trajectory_set: TrajectorySet,
     *,
@@ -229,7 +215,7 @@ def run_offline_distillation(
     trajectory_dir: Path,
     plugin_dir: Path,
     xskill_home: Path,
-    output_dir: Path | None = None,
+    output_dir: Path,
     json_output: bool = False,
     no_progress: bool = False,
 ) -> OfflineDistillationReport:
@@ -237,18 +223,21 @@ def run_offline_distillation(
     from tqdm import tqdm
 
     trajectory_set = resolve_trajectory_directory(trajectory_dir)
+    xskill_config_path = (Path(xskill_home) / "config.yaml").resolve()
+    xskill_config: dict = {}
+    if xskill_config_path.is_file():
+        loaded_config = yaml.safe_load(
+            xskill_config_path.read_text(encoding="utf-8")
+        ) or {}
+        if not isinstance(loaded_config, dict):
+            raise ValueError("xskill config must be a mapping")
+        xskill_config = loaded_config
     catalog = KernelCatalog(plugin_dir=plugin_dir, xskill_home=xskill_home)
     descriptor = catalog.get(kernel_id)
     if "manual" not in descriptor.triggers:
         raise ValueError(f"kernel {kernel_id} does not declare the 'manual' trigger")
 
     run_id = uuid.uuid4().hex
-    if output_dir is None:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        output_dir = (
-            Path(xskill_home) / "distillations"
-            / f"{stamp}-{kernel_id}-{trajectory_set.source.name}-{run_id[:8]}"
-        )
     artifact_dir = Path(output_dir).expanduser().resolve()
     if artifact_dir.exists():
         raise FileExistsError(
@@ -256,42 +245,32 @@ def run_offline_distillation(
         )
     artifact_dir.mkdir(parents=True, mode=0o700)
 
-    manifest_path = artifact_dir / "run.json"
-    events_path = artifact_dir / "events.jsonl"
-    input_root = artifact_dir / "input"
-    registry_db = artifact_dir / "registry.db"
+    result_path = artifact_dir / "result.json"
+    internal_root = artifact_dir / ".xskill"
+    input_root = internal_root / "input"
+    registry_db = internal_root / "registry.db"
     isolated_skills = artifact_dir / "skills"
-    workspace = artifact_dir / "kernel" / "workspace"
-    run_store = KernelEvaluationStore(artifact_dir / "kernel_runs.db")
-    isolated_config = artifact_dir / "kernel" / "config.yaml"
+    isolated_skills.mkdir(mode=0o700)
+    workspace = internal_root / "workspace"
+    run_store = KernelEvaluationStore(internal_root / "kernel_runs.db")
+    isolated_config = internal_root / "config.yaml"
     config_path = (
         descriptor.config_path
         if descriptor.config_path is not None and descriptor.config_path.is_file()
         else isolated_config
     )
-    manifest = {
-        "schema_version": 1,
-        "run_id": run_id,
+    initial_result = {
         "status": "running",
-        "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "kernel": {
             "id": descriptor.id,
             "version": descriptor.version,
-            "api_version": 2,
         },
-        "input": {
-            "id": trajectory_set.trajectory_set_id,
-            "source_name": trajectory_set.source.name,
-            "trajectories": len(trajectory_set.items),
-            "content_sha256": trajectory_set.content_sha256,
-        },
-        "config": {
-            "copied_to_artifacts": False,
-            "provider_owned": bool(config_path == descriptor.config_path),
+        "trajectories": {
+            "total": len(trajectory_set.items),
         },
     }
-    _write_json(manifest_path, manifest)
-    phase_total = 4
+    _write_json(result_path, initial_result)
+    phase_total = 3
     progress = tqdm(
         total=phase_total,
         desc=f"xskill distill {kernel_id}",
@@ -301,24 +280,16 @@ def run_offline_distillation(
     )
     started = time.monotonic()
     try:
-        _append_event(
-            events_path,
-            phase="snapshot",
-            current=0,
-            total=phase_total,
-            message="copying trajectories into the isolated input directory",
-        )
         _materialize_trajectories(
             trajectory_set, input_root=input_root, registry_db=registry_db,
         )
-        _write_json(input_root / "trajectories.json", {
-            "schema_version": 1,
-            "trajectory_set_id": trajectory_set.trajectory_set_id,
+        _write_json(input_root / "manifest.json", {
+            "run_id": run_id,
+            "id": trajectory_set.trajectory_set_id,
             "content_sha256": trajectory_set.content_sha256,
-            "items": [{
-                "id": item.id,
-                "relative_path": item.relative_path,
-                "md_sha256": item.md_sha256,
+            "files": [{
+                "path": item.relative_path,
+                "sha256": item.md_sha256,
                 "sidecars": [
                     {"name": source.name, "sha256": digest}
                     for source, digest in item.sidecars
@@ -327,13 +298,6 @@ def run_offline_distillation(
         })
         progress.update(1)
 
-        _append_event(
-            events_path,
-            phase="kernel",
-            current=1,
-            total=phase_total,
-            message="running the kernel in an isolated layout",
-        )
         runtime = KernelRuntime(
             active_kernel=kernel_id,
             catalog=catalog,
@@ -342,6 +306,8 @@ def run_offline_distillation(
             evaluation_store=KernelEvaluationStore(
                 Path(xskill_home) / "kernel_runs.db"
             ),
+            xskill_config=xskill_config,
+            xskill_config_path=xskill_config_path,
         )
         layout = KernelExecutionLayout(
             skill_dir=isolated_skills,
@@ -349,6 +315,11 @@ def run_offline_distillation(
             evaluation_store=run_store,
             workspace=workspace,
             config_path=config_path,
+            # Expose the exact directory selected by the user.  The standard
+            # TrajectoryReader still consumes the isolated snapshot registered
+            # above, while kernels may run their own read/grep/batch tooling
+            # directly against this absolute source root.
+            trajectory_root=trajectory_set.source,
         )
 
         def native_not_supported(_invocation) -> KernelRunResult:
@@ -366,13 +337,6 @@ def run_offline_distillation(
         )
         progress.update(1)
 
-        _append_event(
-            events_path,
-            phase="report",
-            current=2,
-            total=phase_total,
-            message="writing the result summary",
-        )
         report = OfflineDistillationReport(
             run_id=run_id,
             status="success",
@@ -387,37 +351,22 @@ def run_offline_distillation(
             metrics=dict(result.metrics),
             notes=result.notes,
         )
-        _write_json(artifact_dir / "result.json", report.as_dict())
-        progress.update(1)
-        manifest.update({
-            "status": "success",
-            "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "result": "result.json",
-        })
-        _write_json(manifest_path, manifest)
-        _append_event(
-            events_path,
-            phase="finalize",
-            current=phase_total,
-            total=phase_total,
-            message="offline distillation complete",
-        )
+        _write_json(result_path, report.as_dict())
         progress.update(1)
         return report
     except BaseException as exc:
-        manifest.update({
+        _write_json(result_path, {
             "status": "error",
-            "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "kernel": {
+                "id": descriptor.id,
+                "version": descriptor.version,
+            },
+            "trajectories": {
+                "total": len(trajectory_set.items),
+            },
+            "duration_s": round(max(0.0, time.monotonic() - started), 4),
             "error": f"{type(exc).__name__}: {exc}",
         })
-        _write_json(manifest_path, manifest)
-        _append_event(
-            events_path,
-            phase="error",
-            current=progress.n,
-            total=phase_total,
-            message=f"{type(exc).__name__}: {exc}",
-        )
         raise
     finally:
         progress.close()

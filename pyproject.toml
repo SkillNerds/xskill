@@ -82,6 +82,7 @@ version_file = "src/xskill/_version.py"
 fallback_version = "0.0.0+unknown"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 markers = [
     # ``live_agent`` 标记的测试会真 spawn codex/opencode 子进程对接 mock LLM
     # server，验证端到端流程通——不调真 LLM API。默认排除（``addopts`` 含

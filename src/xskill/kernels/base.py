@@ -117,8 +117,13 @@ class BaseKernel(ABC):
     def run(
         self,
         context: "KernelContext",
+        run_interval: int = 30,
     ) -> KernelRunResult:
-        """Complete one bounded invocation and return auditable counters."""
+        """Complete one bounded invocation and return auditable counters.
+
+        XSkill reads ``run_interval``'s default to schedule an online external
+        kernel. Offline distillation invokes this method exactly once.
+        """
 
 
 # Compatibility alias for integrations written against the initial preview.

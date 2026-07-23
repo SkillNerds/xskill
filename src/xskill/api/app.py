@@ -1162,6 +1162,7 @@ def create_app(home_root: Path | str | None = None,
             _config.get("server", {}).get("sweep_timeout", 1800)
         )
         sweep_command = [_sys.executable, "-m", "xskill._workers", "sweep"]
+        sweep_command.append("--native-only")
         if team_server:
             sweep_command.append("--server")
         else:
@@ -1175,6 +1176,24 @@ def create_app(home_root: Path | str | None = None,
         _schedulers.append(sweep_scheduler)
         logger.info("sweep scheduler started (team_server=%s, every %.0fs via subprocess)",
                     team_server, poll_interval)
+        kernel_host_command = [
+            _sys.executable,
+            "-m",
+            "xskill._workers",
+            "kernel-host",
+        ]
+        if team_server:
+            kernel_host_command.append("--server")
+        kernel_host_scheduler = _SweepSched(
+            "kernel-host",
+            kernel_host_command,
+            interval=1.0,
+            timeout=5.0,
+            persistent=True,
+        )
+        kernel_host_scheduler.start()
+        _schedulers.append(kernel_host_scheduler)
+        logger.info("external kernel host supervisor started")
         if not team_server:
             ingest_interval = min(poll_interval, 1.0)
             ingest_scheduler = _SweepSched(

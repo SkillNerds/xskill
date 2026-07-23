@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import inspect
 import json
+import os
 import sqlite3
 import time
 import uuid
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator, Mapping
 
 from xskill._sqlite_connect import connect_with_lock
 from xskill.kernels.base import KernelInvocation, KernelRunResult, KernelTrigger
@@ -45,6 +47,85 @@ CREATE INDEX IF NOT EXISTS idx_kernel_runs_kernel_started
 """
 
 
+def _kernel_environment_values(
+    config: Mapping[str, object] | None,
+) -> dict[str, str]:
+    """Build the documented provider environment without exposing secrets."""
+    source = config or {}
+    llm = source.get("llm") or {}
+    embedding = source.get("embedding") or {}
+    if not isinstance(llm, Mapping) or not isinstance(embedding, Mapping):
+        raise ValueError("llm and embedding config sections must be mappings")
+    candidates = {
+        "LLM_BASE_URL": llm.get("base_url"),
+        "LLM_MODEL_NAME": llm.get("model"),
+        "LLM_API_KEY": llm.get("api_key"),
+        "EMBED_BASE_URL": embedding.get("base_url"),
+        "EMBED_MODEL_NAME": embedding.get("model"),
+        "EMBED_API_KEY": embedding.get("api_key"),
+    }
+    return {
+        key: str(value)
+        for key, value in candidates.items()
+        if value is not None and str(value)
+    }
+
+
+@contextmanager
+def kernel_environment(
+    config: Mapping[str, object] | None,
+) -> Iterator[None]:
+    """Temporarily inject model settings while third-party kernel code runs."""
+    updates = _kernel_environment_values(config)
+    previous = {key: os.environ.get(key) for key in updates}
+    os.environ.update(updates)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _kernel_model_clients(config: Mapping[str, object] | None):
+    """Create lazy-network clients which share XSkill's process limiters."""
+    if not config:
+        return None, None
+    from xskill.utils.llm import EmbedClient, LLMClient
+
+    llm_cfg = config.get("llm") or {}
+    embedding_cfg = config.get("embedding") or {}
+    if not isinstance(llm_cfg, dict) or not isinstance(embedding_cfg, dict):
+        raise ValueError("llm and embedding config sections must be mappings")
+    llm = (
+        LLMClient.from_config(llm_cfg)
+        if llm_cfg.get("base_url") and llm_cfg.get("model")
+        else None
+    )
+    embedding = (
+        EmbedClient.from_config(embedding_cfg)
+        if embedding_cfg.get("base_url") and embedding_cfg.get("model")
+        else None
+    )
+    return llm, embedding
+
+
+def kernel_run_interval(kernel, *, default: float = 30.0) -> float:
+    """Read the scheduling interval declared by ``run_interval``'s default."""
+    parameter = inspect.signature(kernel.run).parameters.get("run_interval")
+    value = default if parameter is None else parameter.default
+    if value is inspect.Parameter.empty:
+        raise TypeError("kernel run_interval must declare a default value")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("kernel run_interval default must be a number")
+    interval = float(value)
+    if interval <= 0:
+        raise ValueError("kernel run_interval default must be > 0")
+    return interval
+
+
 @dataclass(frozen=True)
 class KernelRunRecord:
     run_id: str
@@ -72,6 +153,7 @@ class KernelExecutionLayout:
     evaluation_store: "KernelEvaluationStore"
     workspace: Path
     config_path: Path
+    trajectory_root: Path | None = None
 
 
 class KernelEvaluationStore:
@@ -338,12 +420,42 @@ class KernelRuntime:
         skill_dir: Path,
         registry_db_path: Path,
         evaluation_store: KernelEvaluationStore,
+        trajectory_root: Path | None = None,
+        xskill_config: Mapping[str, object] | None = None,
+        xskill_config_path: Path | None = None,
     ):
         self.active_kernel = active_kernel
         self.catalog = catalog
         self.skill_dir = Path(skill_dir)
         self.registry_db_path = Path(registry_db_path)
         self.evaluations = evaluation_store
+        self.xskill_config = dict(xskill_config or {})
+        self.xskill_config_path = Path(
+            xskill_config_path
+            if xskill_config_path is not None
+            else catalog.xskill_home / "config.yaml"
+        ).expanduser().resolve()
+        self.llm, self.embedding = _kernel_model_clients(self.xskill_config)
+        self._kernel_instances = {}
+        self.trajectory_root = Path(
+            trajectory_root
+            if trajectory_root is not None
+            else catalog.xskill_home / "team_trajectories" / "clients"
+        ).expanduser().resolve()
+
+    def external_run_interval(self) -> float:
+        """Return the selected external kernel's declared interval."""
+        if self.active_kernel == "native":
+            raise ValueError("native kernel uses the XSkill worker scheduler")
+        return kernel_run_interval(self._external_kernel(self.active_kernel))
+
+    def _external_kernel(self, kernel_id: str):
+        kernel = self._kernel_instances.get(kernel_id)
+        if kernel is None:
+            with kernel_environment(self.xskill_config):
+                kernel = self.catalog.create(kernel_id)
+            self._kernel_instances[kernel_id] = kernel
+        return kernel
 
     def run_active(
         self,
@@ -385,6 +497,11 @@ class KernelRuntime:
             execution_layout.evaluation_store
             if execution_layout else self.evaluations
         )
+        trajectory_root = Path(
+            execution_layout.trajectory_root
+            if execution_layout and execution_layout.trajectory_root is not None
+            else self.trajectory_root
+        ).expanduser().resolve()
         try:
             if descriptor.id == "native":
                 result = native_runner(invocation)
@@ -413,12 +530,19 @@ class KernelRuntime:
                     invocation=invocation,
                     workspace=workspace,
                     config_path=config_path,
-                    trajectories=TrajectoryReader(registry_db_path),
+                    xskill_config_path=self.xskill_config_path,
+                    trajectories=TrajectoryReader(
+                        registry_db_path,
+                        root=trajectory_root,
+                    ),
                     skills=SkillReader(skill_dir, workspace=workspace),
                     publisher=publisher,
+                    llm=self.llm,
+                    embedding=self.embedding,
                 )
-                kernel = self.catalog.create(descriptor.id)
-                result = kernel.run(context)
+                kernel = self._external_kernel(descriptor.id)
+                with kernel_environment(self.xskill_config):
+                    result = kernel.run(context)
                 published_names = tuple(item.name for item in publisher.published)
             if not isinstance(result, KernelRunResult):
                 raise TypeError(

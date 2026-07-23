@@ -84,6 +84,36 @@ def test_tpm_reconcile_returns_overcharge():
     assert wait == 0
 
 
+def test_request_and_token_burst_are_independent():
+    bucket = TokenBucket(
+        rpm=60,
+        tpm=600,
+        request_burst=2,
+        token_burst=30,
+    )
+
+    assert bucket._rpm_burst == 2
+    assert bucket._tpm_burst == 30
+    assert bucket.acquire_rpm(timeout=0) == 0
+    assert bucket.acquire_rpm(timeout=0) == 0
+    assert bucket.acquire_rpm(timeout=0) > 0
+    assert bucket.acquire_tpm(30, timeout=0) == 0
+    assert bucket.acquire_tpm(1, timeout=0) > 0
+
+
+def test_explicit_bursts_override_legacy_burst_independently():
+    bucket = TokenBucket(
+        rpm=60,
+        tpm=600,
+        burst=99,
+        request_burst=3,
+        token_burst=40,
+    )
+
+    assert bucket._rpm_burst == 3
+    assert bucket._tpm_burst == 40
+
+
 # ─── Concurrency ─────────────────────────────────────────────
 
 def test_concurrent_acquire_no_double_spend():

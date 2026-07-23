@@ -7,7 +7,10 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Iterable, Iterator, Mapping
+from typing import TYPE_CHECKING, Iterable, Iterator, Mapping
+
+if TYPE_CHECKING:
+    from xskill.utils.llm import EmbedClient, LLMClient
 
 from xskill.kernels.base import (
     KernelInvocation,
@@ -90,6 +93,7 @@ class TrajectoryResource:
     ecosystem: str
     status: str | None
     metadata: Mapping[str, object]
+    used_skills: tuple[str, ...] = ()
 
     def read_text(self) -> str:
         return self.path.read_text(encoding="utf-8")
@@ -102,16 +106,28 @@ class TrajectoryResource:
 
 
 class TrajectoryReader:
-    """Read-only facade over this invocation's registered trajectory roots."""
+    """Filesystem-capable facade over this invocation's trajectory input.
 
-    def __init__(self, db_path: Path):
+    ``root`` is the absolute input root exposed to the kernel for its own batch
+    readers and filesystem tools.  Registered watch directories remain the
+    preferred source of attribution and status metadata.  When no watch
+    directory is registered, the reader falls back to recursively discovering
+    ``traj_*.md`` below ``root`` so manually supplied datasets still work.
+    """
+
+    def __init__(self, db_path: Path, *, root: Path | None = None):
         self._db_path = Path(db_path)
+        self.root = (
+            Path(root).expanduser().resolve()
+            if root is not None
+            else None
+        )
 
     def directories(self) -> tuple[TrajectoryDirectoryResource, ...]:
         """Expose roots for ``rg``/``find``/DuckDB and other batch readers."""
         from xskill.pipeline.registry import Registry
 
-        return tuple(
+        registered = tuple(
             TrajectoryDirectoryResource(
                 id=str(item.id),
                 path=item.path,
@@ -123,6 +139,26 @@ class TrajectoryReader:
             )
             for item in Registry(self._db_path).list()
         )
+        if registered or self.root is None or not self.root.is_dir():
+            return registered
+
+        # A manually supplied trajectory root does not have to be registered.
+        # Represent it as one synthetic directory while preserving the same
+        # provider-facing resource contract.
+        trajectory_count = sum(
+            1
+            for path in self.root.rglob("traj_*.md")
+            if path.is_file() and not path.is_symlink()
+        )
+        return (TrajectoryDirectoryResource(
+            id="root",
+            path=self.root,
+            label=self.root.name,
+            ecosystem="kernel-input",
+            auto_index=False,
+            trajectory_count=trajectory_count,
+            indexed_count=0,
+        ),)
 
     def iter(
         self,
@@ -136,12 +172,14 @@ class TrajectoryReader:
 
         accepted = set(statuses) if statuses is not None else None
         registry = Registry(self._db_path)
-        for watch_dir in registry.list():
+        for watch_dir in self.directories():
             if directory_id is not None and str(watch_dir.id) != str(directory_id):
                 continue
             if not watch_dir.path.is_dir():
                 continue
-            for path in sorted(watch_dir.path.glob("traj_*.md")):
+            for path in sorted(watch_dir.path.rglob("traj_*.md")):
+                if path.is_symlink() or not path.is_file():
+                    continue
                 trajectory = Trajectory.load(path, registry=registry)
                 status = trajectory.status
                 if accepted is not None and status not in accepted:
@@ -150,16 +188,25 @@ class TrajectoryReader:
                     metadata = trajectory.meta
                 except (OSError, json.JSONDecodeError):
                     metadata = {}
+                used_skills = tuple(dict.fromkeys(
+                    item.strip()
+                    for item in str(trajectory.skill_used or "").split(",")
+                    if item.strip()
+                ))
+                relative_path = path.relative_to(watch_dir.path).as_posix()
                 yield TrajectoryResource(
-                    id=f"{watch_dir.id}:{path.name}",
+                    id=f"{watch_dir.id}:{relative_path}",
                     trajectory_id=path.stem,
                     path=path,
-                    watch_dir_id=watch_dir.id,
+                    watch_dir_id=(
+                        int(watch_dir.id) if watch_dir.id != "root" else 0
+                    ),
                     watch_dir=watch_dir.path,
                     label=watch_dir.label,
                     ecosystem=watch_dir.ecosystem,
                     status=status,
                     metadata=MappingProxyType(dict(metadata)),
+                    used_skills=used_skills,
                 )
 
     def list(
@@ -347,7 +394,7 @@ class SkillPublisher:
             if not draft.base_commit_sha:
                 raise ValueError(
                     f"updating skill {name} requires base_commit_sha; "
-                    "use context.skills.checkout()"
+                    "read context.skills.get(name).main_commit_sha first"
                 )
             published = self._stage_existing(
                 skill_path, name, skill_md, files, draft.message,
@@ -573,10 +620,20 @@ class KernelContext:
     invocation: KernelInvocation
     workspace: Path
     config_path: Path
+    xskill_config_path: Path
     trajectories: TrajectoryReader
     skills: SkillReader
     publisher: SkillPublisher
+    llm: "LLMClient | None"
+    embedding: "EmbedClient | None"
 
     @property
     def run_id(self) -> str:
         return self.invocation.run_id
+
+    @property
+    def trajectory_root(self) -> Path:
+        """Absolute filesystem root selected for this kernel invocation."""
+        if self.trajectories.root is None:
+            raise RuntimeError("kernel invocation has no trajectory root")
+        return self.trajectories.root

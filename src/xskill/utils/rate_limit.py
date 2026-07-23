@@ -8,13 +8,36 @@ DIY 实现,零额外依赖。设计基线:
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import math
 import threading
 import time
 import unicodedata
+from collections import defaultdict, deque
+from functools import partial
 from typing import Any, Callable, Dict, Optional
 
 from xskill.utils.shutdown import SHUTTING_DOWN
+
+
+_REQUEST_SOURCE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "xskill_request_source", default="other",
+)
+
+
+@contextlib.contextmanager
+def request_source(source: str):
+    """Identify the agent-worker pool issuing requests in this context."""
+    token = _REQUEST_SOURCE.set(source)
+    try:
+        yield
+    finally:
+        _REQUEST_SOURCE.reset(token)
+
+
+def current_request_source() -> str:
+    return _REQUEST_SOURCE.get()
 
 
 def estimate_tokens(text: str) -> int:
@@ -50,13 +73,27 @@ class TokenBucket:
         rpm: Optional[int] = None,
         tpm: Optional[int] = None,
         burst: Optional[int] = None,
+        request_burst: Optional[int] = None,
+        token_burst: Optional[int] = None,
         clock: Optional[Callable[[], float]] = None,
     ):
         self.rpm = rpm
         self.tpm = tpm
-        # burst 默认 = ceil(rate/6),约 10 秒预算的瞬时突发
-        self._rpm_burst = burst if burst is not None else (max(1, rpm // 6) if rpm else 0)
-        self._tpm_burst = burst if burst is not None else (max(1, tpm // 6) if tpm else 0)
+        # ``burst`` 保留为公共 Python API 的兼容别名；显式的新参数优先。
+        if request_burst is None:
+            request_burst = burst
+        if token_burst is None:
+            token_burst = burst
+        self._rpm_burst = (
+            request_burst
+            if request_burst is not None
+            else (max(1, rpm // 6) if rpm else 0)
+        )
+        self._tpm_burst = (
+            token_burst
+            if token_burst is not None
+            else (max(1, tpm // 6) if tpm else 0)
+        )
         self._clock = clock or time.monotonic
 
         self._rpm_tokens = float(self._rpm_burst)
@@ -154,6 +191,159 @@ class RateLimitExhausted(RuntimeError):
     """限流桶在 timeout 内仍取不到 token —— 上层应捕获或选择降级。"""
 
 
+class _WeightedInflightGate:
+    """Weighted, work-conserving semaphore for LLM HTTP calls."""
+
+    def __init__(self, limit: int, weights: Optional[dict[str, int]] = None):
+        self.limit = int(limit)
+        self.weights = {
+            name: max(1, int(weight))
+            for name, weight in (weights or {}).items()
+        }
+        self._condition = threading.Condition()
+        self._waiting: dict[str, deque[threading.Event]] = defaultdict(deque)
+        self._scores: dict[str, int] = defaultdict(int)
+        self._active = 0
+
+    def _select_locked(self) -> str:
+        active_sources = [name for name, queue in self._waiting.items() if queue]
+        total_weight = sum(self.weights.get(name, 1) for name in active_sources)
+        for name in active_sources:
+            self._scores[name] += self.weights.get(name, 1)
+        selected = max(active_sources, key=self._scores.__getitem__)
+        self._scores[selected] -= total_weight
+        return selected
+
+    def _grant_locked(self) -> None:
+        while self._active < self.limit and any(self._waiting.values()):
+            source = self._select_locked()
+            ticket = self._waiting[source].popleft()
+            self._active += 1
+            ticket.set()
+
+    def acquire(self, source: str) -> None:
+        ticket = threading.Event()
+        with self._condition:
+            self._waiting[source].append(ticket)
+            self._grant_locked()
+        ticket.wait()
+
+    def release(self) -> None:
+        with self._condition:
+            self._active -= 1
+            self._grant_locked()
+
+    @property
+    def active(self) -> int:
+        with self._condition:
+            return self._active
+
+    @property
+    def waiting(self) -> int:
+        with self._condition:
+            return sum(len(queue) for queue in self._waiting.values())
+
+
+class SharedRequestLimiter:
+    """Shared RPM/TPM and weighted in-flight limit for one endpoint."""
+
+    def __init__(
+        self,
+        *,
+        bucket: TokenBucket | None = None,
+        rpm: Optional[int] = None,
+        tpm: Optional[int] = None,
+        request_burst: Optional[int] = None,
+        token_burst: Optional[int] = None,
+        max_inflight: Optional[int] = None,
+        weights: Optional[dict[str, int]] = None,
+    ):
+        self.bucket = bucket or TokenBucket(
+            rpm=rpm,
+            tpm=tpm,
+            request_burst=request_burst,
+            token_burst=token_burst,
+        )
+        self._gate = (
+            _WeightedInflightGate(int(max_inflight), weights)
+            if max_inflight
+            else None
+        )
+        self._lock = threading.Lock()
+        self._inflight = 0
+        self._rate_limit_waiting = 0
+        self._retry_waiting = 0
+
+    def call(
+        self,
+        *,
+        prompt: str,
+        inner_call: Callable[[], Any],
+        timeout: float = 60.0,
+    ) -> Any:
+        estimated = estimate_tokens(prompt)
+        gate_acquired = False
+        if self._gate is not None:
+            # 并发准入放在 RPM/TPM 之前，让权重控制请求机会，而非只控制
+            # 恰好已经取得 token 的 HTTP 调用。
+            self._gate.acquire(current_request_source())
+            gate_acquired = True
+        with self._lock:
+            self._rate_limit_waiting += 1
+        try:
+            wait = self.bucket.acquire_rpm(timeout=timeout)
+            if wait > 0:
+                raise RateLimitExhausted(
+                    f"RPM bucket exhausted, need wait {wait:.1f}s"
+                )
+            wait = self.bucket.acquire_tpm(estimated, timeout=timeout)
+            if wait > 0:
+                raise RateLimitExhausted(
+                    f"TPM bucket exhausted, need wait {wait:.1f}s"
+                )
+        except BaseException:
+            if gate_acquired:
+                self._gate.release()
+            raise
+        finally:
+            with self._lock:
+                self._rate_limit_waiting -= 1
+        with self._lock:
+            self._inflight += 1
+        try:
+            response = inner_call()
+        finally:
+            with self._lock:
+                self._inflight -= 1
+            if gate_acquired:
+                self._gate.release()
+        actual = extract_total_tokens(response)
+        if actual is not None:
+            self.bucket.reconcile_tpm(estimated=estimated, actual=actual)
+        return response
+
+    def begin_retry_wait(self) -> None:
+        with self._lock:
+            self._retry_waiting += 1
+
+    def end_retry_wait(self) -> None:
+        with self._lock:
+            self._retry_waiting -= 1
+
+    @property
+    def status(self) -> dict[str, int]:
+        with self._lock:
+            inflight = self._inflight
+            rate_waiting = self._rate_limit_waiting
+            retry_waiting = self._retry_waiting
+        return {
+            "inflight": inflight,
+            "waiting": self._gate.waiting if self._gate is not None else 0,
+            "rate_limit_waiting": rate_waiting,
+            "retry_waiting": retry_waiting,
+        }
+
+
 def extract_total_tokens(resp: Any) -> Optional[int]:
     """从 OpenAI 兼容 response 提取 total_tokens,缺失返 None。
 
@@ -191,15 +381,32 @@ class RateLimitedLLM:
     不假设 inner 的内部实现,只检查 response.usage.total_tokens 做 reconcile。
     """
 
-    def __init__(self, *, bucket: TokenBucket, inner_call: Callable[..., Any]):
+    def __init__(
+        self,
+        *,
+        bucket: TokenBucket | None = None,
+        limiter: SharedRequestLimiter | None = None,
+        inner_call: Callable[..., Any],
+    ):
+        if bucket is None and limiter is None:
+            raise ValueError("bucket 或 limiter 至少提供一个")
         self.bucket = bucket
+        self.limiter = limiter
         self.inner_call = inner_call
 
     def call(self, *, prompt: str, timeout: float = 30.0, **kwargs) -> Any:
         """执行受限流的 LLM 调用。流程: acquire_rpm → estimate → acquire_tpm
         → inner_call(**kw) → reconcile_tpm by response.usage(缺失则保留估算)。
         """
-        # 1) RPM acquire
+        if self.limiter is not None:
+            return self.limiter.call(
+                prompt=prompt,
+                inner_call=partial(self.inner_call, prompt=prompt, **kwargs),
+                timeout=timeout,
+            )
+
+        # Backward-compatible direct bucket path.
+        assert self.bucket is not None
         wait = self.bucket.acquire_rpm(timeout=timeout)
         if wait > 0:
             raise RateLimitExhausted(f"RPM bucket exhausted, need wait {wait:.1f}s")
@@ -226,6 +433,8 @@ class RateLimitedLLM:
 # 导致同 API key 的额度被双重消耗。
 _BUCKETS: Dict[str, TokenBucket] = {}
 _BUCKETS_LOCK = threading.Lock()
+_LIMITERS: Dict[tuple[str, str], SharedRequestLimiter] = {}
+_LIMITERS_LOCK = threading.Lock()
 
 
 def get_or_create_bucket(
@@ -234,16 +443,89 @@ def get_or_create_bucket(
     rpm: Optional[int] = None,
     tpm: Optional[int] = None,
     burst: Optional[int] = None,
+    request_burst: Optional[int] = None,
+    token_burst: Optional[int] = None,
 ) -> TokenBucket:
     """按 base_url 取桶,不存在则新建。线程安全。"""
     with _BUCKETS_LOCK:
         if base_url not in _BUCKETS:
-            _BUCKETS[base_url] = TokenBucket(rpm=rpm, tpm=tpm, burst=burst)
+            _BUCKETS[base_url] = TokenBucket(
+                rpm=rpm,
+                tpm=tpm,
+                burst=burst,
+                request_burst=request_burst,
+                token_burst=token_burst,
+            )
         return _BUCKETS[base_url]
+
+
+def get_or_create_request_limiter(
+    kind: str,
+    base_url: str,
+    *,
+    rpm: Optional[int] = None,
+    tpm: Optional[int] = None,
+    request_burst: Optional[int] = None,
+    token_burst: Optional[int] = None,
+    max_inflight: Optional[int] = None,
+    weights: Optional[dict[str, int]] = None,
+) -> SharedRequestLimiter:
+    """Return the process-wide limiter shared by one request endpoint."""
+    key = (kind, base_url)
+    with _LIMITERS_LOCK:
+        if key not in _LIMITERS:
+            bucket = None
+            if kind == "llm":
+                bucket = get_or_create_bucket(
+                    base_url,
+                    rpm=rpm,
+                    tpm=tpm,
+                    request_burst=request_burst,
+                    token_burst=token_burst,
+                )
+            _LIMITERS[key] = SharedRequestLimiter(
+                bucket=bucket,
+                rpm=rpm,
+                tpm=tpm,
+                request_burst=request_burst,
+                token_burst=token_burst,
+                max_inflight=max_inflight,
+                weights=weights,
+            )
+        return _LIMITERS[key]
+
+
+def request_limiter_status(kind: str) -> dict[str, int]:
+    """Aggregate live counters for status endpoints."""
+    with _LIMITERS_LOCK:
+        limiters = [
+            limiter
+            for (limiter_kind, _), limiter in _LIMITERS.items()
+            if limiter_kind == kind
+        ]
+    statuses = [limiter.status for limiter in limiters]
+    keys = ("inflight", "waiting", "rate_limit_waiting", "retry_waiting")
+    return {key: sum(status.get(key, 0) for status in statuses) for key in keys}
+
+
+def begin_retry_wait(kind: str, base_url: str) -> None:
+    with _LIMITERS_LOCK:
+        limiter = _LIMITERS.get((kind, base_url))
+    if limiter is not None:
+        limiter.begin_retry_wait()
+
+
+def end_retry_wait(kind: str, base_url: str) -> None:
+    with _LIMITERS_LOCK:
+        limiter = _LIMITERS.get((kind, base_url))
+    if limiter is not None:
+        limiter.end_retry_wait()
 
 
 def reset_buckets_for_testing() -> None:
     """测试用 —— 清空注册表,各测试间隔离。"""
+    with _LIMITERS_LOCK:
+        _LIMITERS.clear()
     with _BUCKETS_LOCK:
         _BUCKETS.clear()
 

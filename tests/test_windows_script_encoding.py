@@ -16,10 +16,19 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+GENERATED_SKILLOPT_WORKSPACE = (
+    REPO_ROOT / "examples" / "kernels" / "skillopt" / "workspace"
+)
 
 PS1_FILES = sorted(
     p for p in REPO_ROOT.rglob("*.ps1")
-    if ".git" not in p.parts and "node_modules" not in p.parts
+    if (
+        ".git" not in p.parts
+        and "node_modules" not in p.parts
+        # Materialized benchmark checkouts and their virtualenv are ignored,
+        # third-party runtime data rather than XSkill's shipped scripts.
+        and not p.is_relative_to(GENERATED_SKILLOPT_WORKSPACE)
+    )
 )
 
 UTF8_BOM = b"\xef\xbb\xbf"

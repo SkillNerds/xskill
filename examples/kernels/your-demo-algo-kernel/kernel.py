@@ -1,8 +1,8 @@
 """Runnable example implementation for the XSkill algorithm-kernel API.
 
 Copy this directory to ``~/.xskill/kernels/your-demo-algo-kernel``. The implementation is
-deliberately deterministic: it only processes trajectories whose metadata has
-``kernel_demo: true``. Replace ``_build_skill_md`` with your own SDK call.
+deliberately deterministic: it processes at most ``max_per_run`` trajectories
+per invocation. Replace ``_build_skill_md`` with your own SDK call.
 """
 
 from __future__ import annotations
@@ -34,18 +34,17 @@ class YourDemoAlgoKernel(BaseKernel):
     )
 
     _DEFAULT_CONFIG = {
-        "required_meta_flag": "kernel_demo",
         "max_per_run": 1,
     }
 
     def run(
         self,
         context: KernelContext,
+        run_interval: int = 30,
     ) -> KernelRunResult:
         config = self._load_config(context.config_path)
         cursor_path = context.workspace / "processed.json"
         processed = self._load_processed(cursor_path)
-        flag = str(config.get("required_meta_flag") or "kernel_demo")
         max_per_run = int(config.get("max_per_run", 1))
         if max_per_run < 1:
             raise ValueError("max_per_run must be >= 1")
@@ -54,7 +53,6 @@ class YourDemoAlgoKernel(BaseKernel):
             trajectory
             for trajectory in context.trajectories.list()
             if trajectory.id not in processed
-            and bool(trajectory.metadata.get(flag))
         ][:max_per_run]
 
         submitted: list[str] = []
@@ -82,7 +80,7 @@ class YourDemoAlgoKernel(BaseKernel):
                 "published": len(submitted),
                 "dataset_id": context.invocation.dataset_id,
             },
-            notes="Demo kernel only reads metadata.kernel_demo=true inputs.",
+            notes="Demo kernel processes unprocessed inputs up to max_per_run.",
         )
 
     @staticmethod

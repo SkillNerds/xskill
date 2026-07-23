@@ -32,7 +32,7 @@ class OpenEarthKernel(BaseKernel):
         api_version=2,
     )
 
-    def run(self, context) -> KernelRunResult:
+    def run(self, context, run_interval: int = 30) -> KernelRunResult:
         trajectories = context.trajectories.list()
 
         # Adapt this single call to the real SDK.  The SDK owns and parses its

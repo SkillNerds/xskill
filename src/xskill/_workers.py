@@ -1,8 +1,9 @@
-"""内部短命子进程 worker(**非用户 CLI**)。
+"""内部 worker 子进程入口（**非用户 CLI**）。
 
 watcher / 画像重计算拆成短命子进程:web 进程的 ``IntervalSubprocessScheduler`` 用
 ``[sys.executable, "-m", "xskill._workers", <kind>]`` spawn 一个全新解释器进程,跑一轮
-即退,GIL 与 web 事件循环彻底隔离。
+即退,GIL 与 web 事件循环彻底隔离。外部 Kernel 则由 ``kernel-host`` 常驻子进程复用
+Kernel 实例并自行按 ``run_interval`` 驱动。
 
 这些是**内部管道**,刻意不注册进 ``xskill`` 用户 CLI(``cli.build_parser``)——用户
 ``xskill --help`` 看不到它们。调度器直接调本模块的 SDK 函数(``run_sweep_once`` /
@@ -12,12 +13,18 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from pathlib import Path
 
 logger = logging.getLogger("xskill._workers")
 
 
-def run_sweep_once(*, server: bool = False, home: str | None = None) -> int:
+def run_sweep_once(
+    *,
+    server: bool = False,
+    home: str | None = None,
+    native_only: bool = False,
+) -> int:
     """跑一轮 watcher sweep(采集→拆分→聚类→灰度)即退,状态落 watcher_status.json。
 
     非 server 先对本机各生态一次性入库(ingest_detected_ecosystems_once),再
@@ -29,6 +36,7 @@ def run_sweep_once(*, server: bool = False, home: str | None = None) -> int:
         get_kernel_evaluation_db_path,
         get_registry_db_path,
         get_skill_dir,
+        get_team_trajectories_dir,
         kernel_config,
         load_config,
     )
@@ -65,6 +73,12 @@ def run_sweep_once(*, server: bool = False, home: str | None = None) -> int:
                 install_history_path=install_history_path,
             )
         selected = kernel_config(config, xskill_home=XSKILL_HOME)
+        if native_only and selected["active"] != "native":
+            logger.info(
+                "native sweep skipped while external kernel %s is selected",
+                selected["active"],
+            )
+            return 0
         catalog = KernelCatalog(
             plugin_dir=selected["plugin_dir"],
             xskill_home=XSKILL_HOME,
@@ -76,6 +90,10 @@ def run_sweep_once(*, server: bool = False, home: str | None = None) -> int:
             registry_db_path=registry_db_path,
             evaluation_store=KernelEvaluationStore(
                 get_kernel_evaluation_db_path(xskill_home=XSKILL_HOME)
+            ),
+            trajectory_root=(
+                get_team_trajectories_dir() / "clients"
+                if server else None
             ),
         )
 
@@ -118,6 +136,140 @@ def run_sweep_once(*, server: bool = False, home: str | None = None) -> int:
             error=str(exc),
         )
         return 1
+
+
+def _trajectory_snapshot(reader) -> dict[str, tuple[int, int]]:
+    """Return stable resource fingerprints for new/updated trajectory input."""
+    snapshot: dict[str, tuple[int, int]] = {}
+    for resource in reader.iter():
+        try:
+            stat = resource.path.stat()
+        except OSError:
+            continue
+        snapshot[resource.id] = (stat.st_mtime_ns, stat.st_size)
+    return snapshot
+
+
+def run_kernel_host(
+    *,
+    server: bool = False,
+    stop_event=None,
+    max_cycles: int | None = None,
+) -> int:
+    """Keep the selected external kernel alive and invoke it periodically."""
+    from xskill.config import (
+        CONFIG_PATH,
+        XSKILL_HOME,
+        get_kernel_evaluation_db_path,
+        get_registry_db_path,
+        get_skill_dir,
+        get_team_trajectories_dir,
+        kernel_config,
+        load_config,
+    )
+    from xskill.kernels.base import KernelRunResult
+    from xskill.kernels.catalog import KernelCatalog
+    from xskill.kernels.context import TrajectoryReader
+    from xskill.kernels.runtime import (
+        KernelEvaluationStore,
+        KernelRuntime,
+        kernel_environment,
+    )
+    from xskill.utils.shutdown import SHUTTING_DOWN
+
+    stop = stop_event or SHUTTING_DOWN
+    runtime = None
+    runtime_key: tuple[str, Path] | None = None
+    previous_snapshot: dict[str, tuple[int, int]] = {}
+    first_run = True
+    next_run_at = time.monotonic()
+    completed_cycles = 0
+
+    while not stop.is_set():
+        config = load_config()
+        selected = kernel_config(config, xskill_home=XSKILL_HOME)
+        active = selected["active"]
+        if active == "native":
+            runtime = None
+            runtime_key = None
+            previous_snapshot = {}
+            first_run = True
+            if stop.wait(1.0):
+                break
+            continue
+
+        selected_key = (active, selected["plugin_dir"])
+        if runtime is None or selected_key != runtime_key:
+            with kernel_environment(config):
+                catalog = KernelCatalog(
+                    plugin_dir=selected["plugin_dir"],
+                    xskill_home=XSKILL_HOME,
+                )
+            runtime = KernelRuntime(
+                active_kernel=active,
+                catalog=catalog,
+                skill_dir=get_skill_dir(
+                    config, xskill_home=XSKILL_HOME,
+                ).expanduser().resolve(),
+                registry_db_path=get_registry_db_path(
+                    xskill_home=XSKILL_HOME,
+                ).expanduser().resolve(),
+                evaluation_store=KernelEvaluationStore(
+                    get_kernel_evaluation_db_path(xskill_home=XSKILL_HOME)
+                ),
+                trajectory_root=(get_team_trajectories_dir() / "clients"),
+                xskill_config=config,
+                xskill_config_path=CONFIG_PATH,
+            )
+            interval = runtime.external_run_interval()
+            runtime_key = selected_key
+            previous_snapshot = {}
+            first_run = True
+            next_run_at = time.monotonic()
+            logger.info(
+                "external kernel host selected %s (interval %.1fs, server=%s)",
+                active,
+                interval,
+                server,
+            )
+
+        remaining = next_run_at - time.monotonic()
+        if remaining > 0:
+            if stop.wait(min(remaining, 1.0)):
+                break
+            continue
+
+        assert runtime is not None
+        reader = TrajectoryReader(
+            runtime.registry_db_path,
+            root=runtime.trajectory_root,
+        )
+        current_snapshot = _trajectory_snapshot(reader)
+        changed = tuple(sorted(
+            resource_id
+            for resource_id, fingerprint in current_snapshot.items()
+            if first_run or previous_snapshot.get(resource_id) != fingerprint
+        ))
+
+        try:
+            runtime.run_active(
+                trigger="scheduled",
+                dataset_id="live",
+                changed_trajectory_ids=changed,
+                full_rebuild=first_run,
+                native_runner=lambda _invocation: KernelRunResult(),
+            )
+        except Exception:  # noqa: BLE001 - persistent process run boundary
+            logger.exception("external kernel %s run failed", active)
+        else:
+            previous_snapshot = current_snapshot
+            first_run = False
+        completed_cycles += 1
+        if max_cycles is not None and completed_cycles >= max_cycles:
+            return 0
+        next_run_at = time.monotonic() + interval
+
+    return 0
 
 
 def _build_claude_code_ingester(*, home: str | None = None):
@@ -300,6 +452,9 @@ def main(argv: list[str] | None = None) -> int:
     p_sweep = sub.add_parser("sweep")
     p_sweep.add_argument("--server", action="store_true")
     p_sweep.add_argument("--home", default=None)
+    p_sweep.add_argument("--native-only", action="store_true")
+    p_kernel = sub.add_parser("kernel-host")
+    p_kernel.add_argument("--server", action="store_true")
     p_ingest = sub.add_parser("ecosystem-ingest")
     p_ingest.add_argument("--home", default=None)
     p_ingest.add_argument("--loop", action="store_true")
@@ -309,7 +464,13 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_logging(get_logs_dir(), debug=False, quiet=False, stdout=True)
     if args.kind == "sweep":
-        return run_sweep_once(server=args.server, home=args.home)
+        return run_sweep_once(
+            server=args.server,
+            home=args.home,
+            native_only=args.native_only,
+        )
+    if args.kind == "kernel-host":
+        return run_kernel_host(server=args.server)
     if args.kind == "ecosystem-ingest":
         if args.loop:
             return run_ecosystem_ingest_loop(

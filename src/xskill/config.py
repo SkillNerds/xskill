@@ -53,8 +53,8 @@ interests: []                         # optional top-level interest filter;
 # own ~/.xskill/kernels/<id>/config.yaml and workspace; XSkill never parses or
 # rewrites that private config.
 kernel:
-  active: native
-  plugin_dir: ~/.xskill/kernels       # <id>/kernel.py local bridge scripts
+  kernel_id: native
+  kernels_path: ~/.xskill/kernels     # <id>/kernel.py local bridge scripts
 
 # ===== LLM (generation / scoring / chat) =====
 # Any OpenAI-compatible chat-completions endpoint works (DeepSeek, OpenAI,
@@ -88,10 +88,12 @@ llm:
   # client_max_retries: 0 # optional; openai-SDK client retries (default 0 —
                          # transient-error retries are handled by xskill's own
                          # retry wrapper; client retries would multiply).
-  # rate_limit:          # optional; absent = unlimited (good for self-hosted)
-  #   rpm: 60            # requests per minute; match your provider plan
-  #   tpm: 100000        # tokens per minute (optional within rate_limit)
-  #   burst: 10          # optional; default = ceil(rate/6)
+  rate_limit:
+    rpm: 240             # requests per minute shared in this process
+    request_burst: 8     # short request burst capacity
+    max_inflight: 8      # simultaneous LLM HTTP requests
+    # tpm: 100000        # optional tokens per minute
+    # token_burst: 20000 # optional token burst capacity
   # See docs/adr/0001-rate-limit-diy-not-litellm.md for the design rationale.
 
 # ===== Embedding (vector retrieval) =====
@@ -107,6 +109,8 @@ embedding:
   model:    text-embedding-v4
   api_key:  PUT_YOUR_EMBEDDING_API_KEY_HERE
   dim:      0
+  rate_limit:
+    max_inflight: 4      # independent embedding HTTP concurrency
   # api: openai | multimodal   # optional; default openai. "multimodal" for
                                # vision-style embedding endpoints.
   # max_embed: 2               # optional; skill_hub/search 语义通道的全局并发上限
@@ -542,13 +546,39 @@ def kernel_config(
         raise ValueError(
             f"kernel 必须是 mapping，got {type(section).__name__}"
         )
-    active = validate_kernel_id(section.get("active", "native"))
+    configured_id = section.get("kernel_id")
+    legacy_active = section.get("active")
+    if (
+        configured_id is not None
+        and legacy_active is not None
+        and str(configured_id).strip() != str(legacy_active).strip()
+    ):
+        raise ValueError(
+            "kernel.kernel_id 与兼容字段 kernel.active 不能冲突"
+        )
+    active = validate_kernel_id(
+        configured_id if configured_id is not None else legacy_active or "native"
+    )
     state_root = (
         Path(xskill_home) if xskill_home is not None else XSKILL_HOME
     ).expanduser().resolve()
-    raw_plugin_dir = section.get("plugin_dir") or str(state_root / "kernels")
+    configured_path = section.get("kernels_path")
+    legacy_plugin_dir = section.get("plugin_dir")
+    if (
+        configured_path is not None
+        and legacy_plugin_dir is not None
+        and str(configured_path).strip() != str(legacy_plugin_dir).strip()
+    ):
+        raise ValueError(
+            "kernel.kernels_path 与兼容字段 kernel.plugin_dir 不能冲突"
+        )
+    raw_plugin_dir = (
+        configured_path
+        if configured_path is not None
+        else legacy_plugin_dir or str(state_root / "kernels")
+    )
     if not isinstance(raw_plugin_dir, str) or not raw_plugin_dir.strip():
-        raise ValueError("kernel.plugin_dir 必须是非空字符串路径")
+        raise ValueError("kernel.kernels_path 必须是非空字符串路径")
     plugin_dir = Path(raw_plugin_dir).expanduser()
     if not plugin_dir.is_absolute():
         plugin_dir = state_root / plugin_dir

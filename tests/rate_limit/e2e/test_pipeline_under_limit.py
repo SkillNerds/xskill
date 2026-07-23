@@ -53,7 +53,12 @@ def test_20_chats_under_server_rpm_zero_failures(fake_server):
         # 按 RPM 节流;但 timeout=60 的 acquire 在测试里太慢。
         # 这里取舍: 不开 client 限流,直接看 client 撞 server 429 后的行为(下一条 test 覆盖)。
         # 本 test 改成 server RPM=25 让 20 全 fit,验证"client 限流无效但 server 充裕"路径
-        "rate_limit": {"rpm": 8, "tpm": 100_000, "burst": 30},
+        "rate_limit": {
+            "rpm": 8,
+            "tpm": 100_000,
+            "request_burst": 30,
+            "token_burst": 100_000,
+        },
     }
     # 改用宽松 server RPM 让本 test 验证 client 限流不阻塞
     fake_server.reset()
@@ -123,7 +128,12 @@ def test_client_bucket_blocks_before_server_429(fake_server):
         "api_key": "test",
         # client 桶比 server 紧 —— burst=2 比 server RPM=2 等紧。
         # 实际跑时 client 限流先于 server 触发。
-        "rate_limit": {"rpm": 1, "tpm": 100_000, "burst": 2},
+        "rate_limit": {
+            "rpm": 1,
+            "tpm": 100_000,
+            "request_burst": 2,
+            "token_burst": 100_000,
+        },
     }
     client = LLMClient.from_config(cfg)
     client.chat("p1")

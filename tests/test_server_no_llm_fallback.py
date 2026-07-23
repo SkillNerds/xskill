@@ -127,8 +127,12 @@ def test_standalone_worker_commands_share_resolved_ecosystem_home(
         "--home",
         str(ecosystem_home.resolve()),
     ]
-    assert set(records_by_name) == {"sweep", "ecosystem-ingest"}
+    assert set(records_by_name) == {
+        "sweep", "kernel-host", "ecosystem-ingest",
+    }
     assert records_by_name["sweep"].command[-2:] == expected_home_arguments
+    assert "--native-only" in records_by_name["sweep"].command
+    assert records_by_name["kernel-host"].keyword_arguments["persistent"] is True
     ingest_command = records_by_name["ecosystem-ingest"].command
     home_argument_index = ingest_command.index("--home")
     assert ingest_command[
@@ -237,10 +241,13 @@ def test_team_server_schedules_only_server_sweep(
     records_by_name = {
         record.name: record for record in scheduler_records
     }
-    assert set(records_by_name) == {"profile-refresh", "sweep"}
+    assert set(records_by_name) == {"profile-refresh", "sweep", "kernel-host"}
     sweep_command = records_by_name["sweep"].command
     assert sweep_command[-1] == "--server"
+    assert "--native-only" in sweep_command
     assert "--home" not in sweep_command
+    assert records_by_name["kernel-host"].command[-1] == "--server"
+    assert records_by_name["kernel-host"].keyword_arguments["persistent"] is True
     assert "ecosystem-ingest" not in records_by_name
     assert all(record.stopped for record in scheduler_records)
 

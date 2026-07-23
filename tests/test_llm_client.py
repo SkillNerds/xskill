@@ -13,6 +13,9 @@ extractor 把 LLM 投资浪费掉。
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from xskill.utils.llm import LLMClient, EmbedClient, _resolve_embed_api_style
@@ -66,6 +69,71 @@ class TestLLMClientFromConfig:
         with pytest.raises(ValueError):
             LLMClient.from_config({"base_url": "http://x", "api_key": "k"})
 
+    def test_chat_passes_all_rate_limit_dimensions(self):
+        ledger = MagicMock()
+        client = LLMClient.from_config(
+            {
+                "base_url": "http://x/",
+                "model": "m",
+                "api_key": "k",
+                "rate_limit": {
+                    "rpm": 60,
+                    "tpm": 6000,
+                    "request_burst": 4,
+                    "token_burst": 400,
+                    "max_inflight": 3,
+                    "_pool_weights": {"split": 2},
+                },
+            },
+            usage_ledger=ledger,
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+        limiter = MagicMock()
+        limiter.call.return_value = response
+
+        with patch(
+            "xskill.utils.rate_limit.get_or_create_request_limiter",
+            return_value=limiter,
+        ) as factory:
+            assert client.chat("hello") == "ok"
+
+        factory.assert_called_once_with(
+            "llm",
+            "http://x",
+            rpm=60,
+            tpm=6000,
+            request_burst=4,
+            token_burst=400,
+            max_inflight=3,
+            weights={"split": 2},
+        )
+        ledger.record_llm.assert_called_once()
+
+    def test_chat_maps_legacy_burst_to_both_buckets(self):
+        client = LLMClient(
+            base_url="http://x",
+            model="m",
+            api_key="k",
+            rate_limit_cfg={"rpm": 60, "tpm": 6000, "burst": 5},
+            usage_ledger=MagicMock(),
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+        limiter = MagicMock()
+        limiter.call.return_value = response
+
+        with patch(
+            "xskill.utils.rate_limit.get_or_create_request_limiter",
+            return_value=limiter,
+        ) as factory:
+            client.chat("hello")
+
+        assert factory.call_args.kwargs["request_burst"] == 5
+        assert factory.call_args.kwargs["token_burst"] == 5
+
 
 class TestEmbedApiStyle:
     def test_text_model_defaults_openai(self):
@@ -83,3 +151,29 @@ class TestEmbedApiStyle:
             "base_url": "http://x", "model": "doubao-embedding-large-text-250515", "api_key": "k",
         })
         assert c.api_style == "openai"
+
+    def test_embedding_uses_configured_max_inflight(self):
+        client = EmbedClient.from_config(
+            {
+                "base_url": "http://x/",
+                "model": "embed",
+                "api_key": "k",
+                "rate_limit": {"max_inflight": 2},
+            }
+        )
+        limiter = MagicMock()
+        limiter.call.side_effect = lambda **kwargs: kwargs["inner_call"]()
+
+        with patch.object(
+            client, "_call_api_single_unlimited", return_value=[1.0, 2.0]
+        ):
+            with patch(
+                "xskill.utils.rate_limit.get_or_create_request_limiter",
+                return_value=limiter,
+            ) as factory:
+                vector = client.encode("hello")
+
+        factory.assert_called_once_with(
+            "embedding", "http://x", max_inflight=2
+        )
+        assert vector.tolist() == [1.0, 2.0]

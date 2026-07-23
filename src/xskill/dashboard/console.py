@@ -293,7 +293,11 @@ def _replace_kernel_active(raw: str, kernel_id: str) -> str:
         raise ValueError("config.yaml 包含重复的 kernel 顶层段")
     if not section_indexes:
         separator = "" if not raw or raw.endswith(("\n", "\r")) else "\n"
-        return raw + separator + f"\n# Algorithm kernel selector\nkernel:\n  active: {normalized}\n"
+        return (
+            raw + separator
+            + f"\n# Algorithm kernel selector\nkernel:\n"
+            f"  kernel_id: {normalized}\n"
+        )
 
     start = section_indexes[0]
     end = len(lines)
@@ -302,17 +306,26 @@ def _replace_kernel_active(raw: str, kernel_id: str) -> str:
         if line.strip() and not line[0].isspace() and not line.lstrip().startswith("#"):
             end = index
             break
-    active_pattern = re.compile(
-        r"^(\s+)active\s*:[^#\r\n]*?(\s+#.*)?(\r?\n)?$"
+    selector_pattern = re.compile(
+        r"^(\s+)(kernel_id|active)\s*:[^#\r\n]*?(\s+#.*)?(\r?\n)?$"
     )
+    selected_index = None
     for index in range(start + 1, end):
-        match = active_pattern.match(lines[index])
-        if match:
-            comment = match.group(2) or ""
-            newline = match.group(3) or "\n"
-            lines[index] = f"{match.group(1)}active: {normalized}{comment}{newline}"
-            return "".join(lines)
-    lines.insert(start + 1, f"  active: {normalized}\n")
+        match = selector_pattern.match(lines[index])
+        if match and (match.group(2) == "kernel_id" or selected_index is None):
+            selected_index = index
+            if match.group(2) == "kernel_id":
+                break
+    if selected_index is not None:
+        match = selector_pattern.match(lines[selected_index])
+        assert match is not None
+        comment = match.group(3) or ""
+        newline = match.group(4) or "\n"
+        lines[selected_index] = (
+            f"{match.group(1)}{match.group(2)}: {normalized}{comment}{newline}"
+        )
+        return "".join(lines)
+    lines.insert(start + 1, f"  kernel_id: {normalized}\n")
     return "".join(lines)
 
 

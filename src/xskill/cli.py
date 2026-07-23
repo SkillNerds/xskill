@@ -3,7 +3,7 @@
 cli.py — xskill 紧凑 CLI
 ═══════════════════════════════════════════════════════
 主要子命令：
-    xskill distill --kernel <id> --trajectory-dir <path>
+    xskill distill --kernel <id> --trajectory-dir <path> --output <path>
     xskill serve [--host] [--port]
     xskill registry add|remove|list <path>
     xskill search <关键词...> [--top-k]
@@ -48,7 +48,10 @@ def cmd_distill(args) -> int:
         raw = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
         kernel_section = raw.get("kernel", {}) if isinstance(raw, dict) else {}
         configured = (
-            kernel_section.get("plugin_dir")
+            (
+                kernel_section.get("kernels_path")
+                or kernel_section.get("plugin_dir")
+            )
             if isinstance(kernel_section, dict) else None
         )
         if configured:
@@ -64,7 +67,7 @@ def cmd_distill(args) -> int:
             trajectory_dir=Path(args.trajectory_dir),
             plugin_dir=plugin_dir,
             xskill_home=XSKILL_HOME,
-            output_dir=Path(args.output).expanduser() if args.output else None,
+            output_dir=Path(args.output).expanduser(),
             json_output=args.json,
             no_progress=args.no_progress,
         )
@@ -78,7 +81,10 @@ def cmd_distill(args) -> int:
             print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
     if args.json:
-        print(json.dumps(report.as_dict(), ensure_ascii=False))
+        print(json.dumps(
+            report.as_dict(include_artifact_dir=True),
+            ensure_ascii=False,
+        ))
     else:
         print(render_distillation_table(report))
     return 0
@@ -1226,7 +1232,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--trajectory-dir", required=True,
         help="包含 traj_*.md 的轨迹目录",
     )
-    p_distill.add_argument("--output", default=None, help="产物输出目录")
+    p_distill.add_argument(
+        "--output", required=True,
+        help="本次运行的产物输出目录；目录必须不存在",
+    )
     p_distill.add_argument(
         "--plugin-dir", default=None,
         help=(

@@ -1,14 +1,17 @@
 """RateLimitedLLM wrapper 测试 —— 不发 HTTP,用 stub 验证 acquire/reconcile 调用顺序。"""
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock
 
 import pytest
 
 from xskill.utils.rate_limit import (
     RateLimitedLLM,
+    SharedRequestLimiter,
     TokenBucket,
     get_or_create_bucket,
+    get_or_create_request_limiter,
     reset_buckets_for_testing,
 )
 
@@ -68,3 +71,56 @@ def test_get_or_create_bucket_is_shared_per_base_url():
     assert b1 is b2  # 同 URL 共享同一桶
     b3 = get_or_create_bucket("https://other.example.com", rpm=60, tpm=1000)
     assert b3 is not b1
+
+
+def test_request_limiter_is_shared_per_kind_and_base_url():
+    first = get_or_create_request_limiter(
+        "llm", "https://api.example.com", max_inflight=2
+    )
+    second = get_or_create_request_limiter(
+        "llm", "https://api.example.com", max_inflight=2
+    )
+    embedding = get_or_create_request_limiter(
+        "embedding", "https://api.example.com", max_inflight=2
+    )
+
+    assert first is second
+    assert embedding is not first
+
+
+def test_shared_request_limiter_caps_inflight_calls():
+    limiter = SharedRequestLimiter(max_inflight=2)
+    release = threading.Event()
+    two_entered = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def inner_call():
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+            if active == 2:
+                two_entered.set()
+        assert release.wait(timeout=2)
+        with lock:
+            active -= 1
+        return {}
+
+    threads = [
+        threading.Thread(
+            target=lambda: limiter.call(prompt="hello", inner_call=inner_call)
+        )
+        for _ in range(5)
+    ]
+    for thread in threads:
+        thread.start()
+
+    assert two_entered.wait(timeout=2)
+    assert max_active == 2
+    release.set()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+    assert max_active == 2

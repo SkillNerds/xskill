@@ -469,6 +469,20 @@ def test_kernel_catalog_and_targeted_activation(console_env, tmp_path, monkeypat
     assert not (xskill_home / "kernels" / "rule-based-demo" / "config.yaml").exists()
 
 
+def test_kernel_activation_updates_canonical_selector():
+    from xskill.dashboard.console import _replace_kernel_active
+
+    raw = (
+        "# keep\n"
+        "kernel:\n"
+        "  kernel_id: native  # selected\n"
+        "  kernels_path: ~/.xskill/kernels\n"
+    )
+    updated = _replace_kernel_active(raw, "rule-based-demo")
+    assert "kernel_id: rule-based-demo  # selected" in updated
+    assert "kernels_path: ~/.xskill/kernels" in updated
+
+
 def test_reload_slots_only_change_is_hot_not_restart(console_env, tmp_path, monkeypatch):
     """只改 team.server 的槽位子键 = 现取即生效 → 不该被标成"需重启"。
 
