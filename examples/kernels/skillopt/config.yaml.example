@@ -1,15 +1,31 @@
 # Owned and parsed only by examples/kernels/skillopt/kernel.py.
-# XSkill does not interpret this file or copy it into offline artifacts.
-skill_name: spreadsheet-skillopt
-description: Spreadsheet manipulation strategy optimized by SkillOpt.
+# Codex routes trajectories and maintains each target's validation task bank.
+codex_path: codex
+codex_model: deepseek-v4-flash
+codex_provider: volcengine
+codex_provider_name: Volcengine AgentPlan
+codex_base_url: https://ark.cn-beijing.volces.com/api/plan/v3
+codex_env_key: VOLCENGINE_API_KEY
+codex_wire_api: responses
+max_targets: 8
+router_timeout: 600
+task_timeout: 600
 
-# May be absolute or relative to this file. SkillOpt resolves its own _base_.
-skillopt_config: /path/to/SkillOpt/configs/spreadsheetbench/default.yaml
+# SkillOpt-Sleep still optimizes exactly one target per invocation. The kernel
+# invokes it independently for every target selected by the router.
+backend: xskill
+model: ""
+edit_budget: 2
+gate_mode: "on"
+gate_metric: hard
+gate_mixed_weight: 0.5
+validation_fraction: 0.34
+seed: 42
+execution_timeout: 120
 
-# Native SkillOpt structured config overrides.
-overrides:
-  - env.split_dir=/path/to/spreadsheetbench/train_split
-  - env.data_root=/path/to/spreadsheetbench/data_root
-  - train.seed=42
-  - train.num_epochs=4
-  - train.train_size=20
+# SkillOpt-Sleep's native CLI backends remain available. Optional role-specific
+# settings are passed through to SkillOpt-Sleep:
+# optimizer_backend: codex
+# optimizer_model: ""
+# target_backend: codex
+# target_model: ""
