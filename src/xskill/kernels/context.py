@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -20,6 +21,19 @@ from xskill.kernels.base import (
 )
 
 AtomSplitStatus = Literal["pending", "ready", "updated"]
+TrajectorySource = Literal["user", "temp"]
+
+_TEMP_TRAJECTORY_ID_RE = re.compile(r"^traj_[a-z0-9][a-z0-9_-]{0,126}$")
+_USER_HEADER_RE = re.compile(r"^##\s+User\b")
+_PLATFORM_HEADING_RE = re.compile(
+    r"^## (?:User(?:\s|$)|Assistant(?:\s|$)|Tool Call:|Tool Output:)"
+)
+_KERNEL_TEMP_MARKDOWN_EXAMPLE = (
+    "## User\n\n"
+    "Please deploy the service.\n\n"
+    "## Assistant\n\n"
+    "Done.\n"
+)
 
 
 _HIDDEN_BUNDLE_PARTS = {
@@ -96,6 +110,7 @@ class AtomResource:
     used_skills: tuple[str, ...]
     intent: str = ""
     summary: str = ""
+    content: str = ""
     offset_start: int = 0
     offset_end: int = 0
 
@@ -129,6 +144,7 @@ def _load_atom_resources(trajectory_path: Path) -> tuple[AtomResource, ...]:
             used_skills=used,
             intent=str(atom.intent or ""),
             summary=str(atom.summary or ""),
+            content=str(atom.raw_segment or ""),
             offset_start=int(atom.offset_start or 0),
             offset_end=int(atom.offset_end or 0),
         ))
@@ -187,6 +203,7 @@ class TrajectoryResource:
     used_skills: tuple[str, ...] = ()
     atom_split_status: AtomSplitStatus = "pending"
     atoms: tuple[AtomResource, ...] = ()
+    source: TrajectorySource = "user"
 
     def read_text(self) -> str:
         return self.path.read_text(encoding="utf-8")
@@ -198,6 +215,44 @@ class TrajectoryResource:
         return json.loads(raw_path.read_text(encoding="utf-8"))
 
 
+def _validate_kernel_temp_markdown(markdown: str) -> None:
+    """Validate platform-style markdown before ``TrajectoryReader.create_temp``."""
+    if not isinstance(markdown, str) or not markdown.strip():
+        raise ValueError(
+            "temp trajectory markdown must be non-empty with at least one ## User "
+            "section; example:\n"
+            f"{_KERNEL_TEMP_MARKDOWN_EXAMPLE}"
+        )
+    has_user = False
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("## "):
+            continue
+        if _USER_HEADER_RE.match(stripped):
+            has_user = True
+            continue
+        if stripped.lower().startswith("## user"):
+            raise ValueError(
+                "temp trajectory markdown uses malformed ## User heading; "
+                "expected platform headings ## User / ## Assistant / "
+                "## Tool Call: / ## Tool Output:; example:\n"
+                f"{_KERNEL_TEMP_MARKDOWN_EXAMPLE}"
+            )
+        if not _PLATFORM_HEADING_RE.match(stripped):
+            raise ValueError(
+                "temp trajectory markdown contains unsupported section heading; "
+                "expected platform headings ## User / ## Assistant / "
+                "## Tool Call: / ## Tool Output:; example:\n"
+                f"{_KERNEL_TEMP_MARKDOWN_EXAMPLE}"
+            )
+    if not has_user:
+        raise ValueError(
+            "temp trajectory markdown must contain at least one ## User section; "
+            "example:\n"
+            f"{_KERNEL_TEMP_MARKDOWN_EXAMPLE}"
+        )
+
+
 def _trajectory_resource_from_path(
     *,
     path: Path,
@@ -205,6 +260,7 @@ def _trajectory_resource_from_path(
     status: str | None,
     metadata: Mapping[str, object],
     used_skills: tuple[str, ...],
+    source: TrajectorySource = "user",
 ) -> TrajectoryResource:
     disk_atoms = _load_atom_resources(path)
     split_status = resolve_atom_split_status(status, atom_count=len(disk_atoms))
@@ -225,6 +281,7 @@ def _trajectory_resource_from_path(
         used_skills=used_skills,
         atom_split_status=split_status,
         atoms=atoms,
+        source=source,
     )
 
 
@@ -238,13 +295,25 @@ class TrajectoryReader:
     ``traj_*.md`` below ``root`` so manually supplied trajectory trees still work.
     """
 
-    def __init__(self, db_path: Path, *, root: Path | None = None):
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        root: Path | None = None,
+        temp_root: Path | None = None,
+    ):
         self._db_path = Path(db_path)
         self.root = (
             Path(root).expanduser().resolve()
             if root is not None
             else None
         )
+        self._temp_root = (
+            Path(temp_root).expanduser().resolve()
+            if temp_root is not None
+            else None
+        )
+        self._temp_watch_dir_id: int | None = None
 
     def directories(self) -> tuple[TrajectoryDirectoryResource, ...]:
         """Expose roots for ``rg``/``find``/DuckDB and other batch readers."""
@@ -336,6 +405,80 @@ class TrajectoryReader:
             if resource.id == resource_id:
                 return resource
         raise KeyError(f"trajectory not found: {resource_id}")
+
+    def _ensure_temp_watch_dir(self) -> tuple[Path, TrajectoryDirectoryResource]:
+        if self._temp_root is None:
+            raise RuntimeError(
+                "TrajectoryReader has no temp_root configured; cannot create_temp"
+            )
+        from xskill.pipeline.registry import Registry, register_dir
+
+        temp_root = self._temp_root
+        temp_root.mkdir(parents=True, exist_ok=True)
+        if self._temp_watch_dir_id is None:
+            registry = Registry(self._db_path)
+            resolved = temp_root.resolve()
+            for item in registry.list():
+                if item.path.resolve() == resolved:
+                    self._temp_watch_dir_id = int(item.id)
+                    break
+            else:
+                self._temp_watch_dir_id = register_dir(
+                    temp_root,
+                    label="kernel-temp",
+                    ecosystem="kernel-temp",
+                    auto_index=False,
+                    db_path=self._db_path,
+                )
+        watch_dir = TrajectoryDirectoryResource(
+            id=str(self._temp_watch_dir_id),
+            path=temp_root,
+            label="kernel-temp",
+            ecosystem="kernel-temp",
+            auto_index=False,
+            trajectory_count=0,
+            indexed_count=0,
+        )
+        return temp_root, watch_dir
+
+    def create_temp(
+        self,
+        markdown: str,
+        *,
+        trajectory_id: str,
+    ) -> TrajectoryResource:
+        """Write a kernel-owned temp trajectory and register it for platform split."""
+        normalized_id = str(trajectory_id or "").strip()
+        if not _TEMP_TRAJECTORY_ID_RE.fullmatch(normalized_id):
+            raise ValueError(
+                "trajectory_id must match traj_[a-z0-9][a-z0-9_-]{0,126}: "
+                f"{trajectory_id!r}"
+            )
+        _validate_kernel_temp_markdown(markdown)
+
+        temp_root, watch_dir = self._ensure_temp_watch_dir()
+        path = (temp_root / f"{normalized_id}.md").resolve()
+        if temp_root not in path.parents:
+            raise ValueError(f"unsafe temp trajectory path: {path}")
+
+        path.write_text(markdown, encoding="utf-8")
+
+        from xskill.pipeline.registry import discover_trajectories
+
+        discover_trajectories(
+            int(watch_dir.id),
+            temp_root,
+            db_path=self._db_path,
+        )
+
+        return _trajectory_resource_from_path(
+            path=path,
+            watch_dir=watch_dir,
+            status="discovered",
+            metadata={},
+            used_skills=(),
+            source="temp",
+        )
 
 
 @dataclass(frozen=True)

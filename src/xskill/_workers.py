@@ -138,15 +138,21 @@ def run_sweep_once(
         return 1
 
 
-def _trajectory_snapshot(reader) -> dict[str, tuple[int, int]]:
-    """Return stable resource fingerprints for new/updated trajectory input."""
-    snapshot: dict[str, tuple[int, int]] = {}
+def _trajectory_snapshot(reader) -> dict[str, tuple[int, int, tuple[str, ...]]]:
+    """Return feed fingerprints for trajectories whose atom split view is ready."""
+    snapshot: dict[str, tuple[int, int, tuple[str, ...]]] = {}
     for resource in reader.iter():
+        if resource.atom_split_status != "ready":
+            continue
         try:
             stat = resource.path.stat()
         except OSError:
             continue
-        snapshot[resource.id] = (stat.st_mtime_ns, stat.st_size)
+        snapshot[resource.id] = (
+            stat.st_mtime_ns,
+            stat.st_size,
+            tuple(atom.atom_id for atom in resource.atoms),
+        )
     return snapshot
 
 

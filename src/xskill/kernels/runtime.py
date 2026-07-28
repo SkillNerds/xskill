@@ -534,6 +534,7 @@ class KernelRuntime:
                     trajectories=TrajectoryReader(
                         registry_db_path,
                         root=trajectory_root,
+                        temp_root=workspace / "temp_trajectories",
                     ),
                     skills=SkillReader(skill_dir, workspace=workspace),
                     publisher=publisher,

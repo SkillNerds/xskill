@@ -3,6 +3,39 @@
 from __future__ import annotations
 
 from xskill.kernels.runtime import KernelEvaluationStore
+from xskill.pipeline.atom import AtomTask, AtomTaskStore
+from xskill.pipeline.registry import (
+    discover_trajectories,
+    register_dir,
+    update_traj_status,
+)
+
+
+def _mark_ready(trajectory_path, *, registry_db):
+    watch_dir_id = register_dir(
+        trajectory_path.parent,
+        label="client-a",
+        db_path=registry_db,
+    )
+    discover_trajectories(
+        watch_dir_id, trajectory_path.parent, db_path=registry_db,
+    )
+    update_traj_status(
+        watch_dir_id,
+        trajectory_path.name,
+        status="split_done",
+        db_path=registry_db,
+    )
+    AtomTaskStore(root=trajectory_path.parent).save(AtomTask(
+        atom_id="atom_traj_one_0001",
+        traj_id=trajectory_path.stem,
+        offset_start=1,
+        offset_end=3,
+        intent="intent",
+        summary="summary",
+        raw_segment="first",
+    ))
+    return watch_dir_id
 
 
 def test_kernel_host_reuses_process_and_reports_changed_trajectories(
@@ -53,10 +86,17 @@ def test_kernel_host_reuses_process_and_reports_changed_trajectories(
     )
     trajectory.parent.mkdir(parents=True)
     trajectory.write_text("## User\n\nfirst\n", encoding="utf-8")
+    registry_db = xskill_home / "registry.db"
+    watch_dir_id = _mark_ready(trajectory, registry_db=registry_db)
 
     monkeypatch.setattr(config_module, "XSKILL_HOME", xskill_home)
     monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
     monkeypatch.setattr(config_module, "_config", {})
+    monkeypatch.setattr(
+        config_module,
+        "get_registry_db_path",
+        lambda **kwargs: registry_db,
+    )
 
     class MutatingStopEvent:
         mutated = False
@@ -71,6 +111,15 @@ def test_kernel_host_reuses_process_and_reports_changed_trajectories(
                     "## User\n\nfirst trajectory changed\n",
                     encoding="utf-8",
                 )
+                AtomTaskStore(root=trajectory.parent).save(AtomTask(
+                    atom_id="atom_traj_one_0002",
+                    traj_id=trajectory.stem,
+                    offset_start=3,
+                    offset_end=5,
+                    intent="intent",
+                    summary="summary",
+                    raw_segment="first trajectory changed",
+                ))
                 self.mutated = True
             return False
 
@@ -85,7 +134,7 @@ def test_kernel_host_reuses_process_and_reports_changed_trajectories(
     ).list_runs(limit=10)
     assert len(runs) == 2
     runs_by_call = {run["metrics"]["calls"]: run for run in runs}
-    resource_id = "root:client-a/traj_one.md"
+    resource_id = f"{watch_dir_id}:traj_one.md"
     assert runs_by_call[1]["metrics"] == {
         "calls": 1,
         "changed": [resource_id],

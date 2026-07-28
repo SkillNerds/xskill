@@ -87,8 +87,11 @@ class MyAlgorithmKernel(BaseKernel):
   时是用户指定的 `--trajectory-dir`。该根只表示平台轨迹输入（`traj_*.md` 及 sidecar），
   不是任意 benchmark 目录；算法自有评测集放在 `workspace`。
 - `trajectories`：读取单条轨迹及其子轨迹（atom）视图，或取得本次可扫描的目录。轨迹对象
-  提供 Markdown 原文与 `atom_split_status`（`pending` / `ready` / `updated`），**不提供
-  轨迹级 UX**；体验分在 atom 的 `ux_score`（`1..10` 或 `None`）以及 Skill 版本评价上。
+  提供 Markdown 原文、`source`（`user` / `temp`）、`atom_split_status`（`pending` /
+  `ready` / `updated`），以及 atom 的 `content` 字段；**不提供轨迹级 UX**；体验分在 atom
+  的 `ux_score`（`1..10` 或 `None`）以及 Skill 版本评价上。Kernel 可通过
+  `trajectories.create_temp(...)` 写入 workspace 下临时轨迹；`changed_trajectory_ids`
+  只 feed `ready` 轨迹，算法用 `atom_id` 去重。
 - `skills`：只读现有 Skill、main/staging 提交和各版本 UX；
 - `publisher`：新建 Skill 或提交已有 Skill 的新版本；
 - `workspace`：算法可写的工作目录（含自有数据集与缓存）；

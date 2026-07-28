@@ -74,8 +74,9 @@ Skill 目录；`trajectory_root` 仍指向用户指定的轨迹输入根。命�
 
 `xskill serve` 为外部 Kernel 维护独立的常驻 `kernel-host` 子进程。它复用 Kernel 实例，
 读取 `run_interval` 默认值并固定周期调用；每次 Context 的
-`changed_trajectory_ids` 包含首轮全量或相对上一轮新增、变化的轨迹 ID。切换 Kernel 后，
-host 在下一次检查配置时重新建立对应运行时。
+`changed_trajectory_ids` 只包含 **atom 拆分已完成（ready）** 且相对上一轮新增或变化的轨迹
+ID（`pending` / `updated` 不会进入 feed）。切换 Kernel 后，host 在下一次检查配置时重新建立
+对应运行时。算法用 `atom_id` 自行去重，不要 spin-wait pending 轨迹。
 
 同一个 host 不会并发调用两次 `run()`：一轮返回后才开始计算下一次等待间隔，因此
 `run_interval` 是两轮之间的间隔，不是执行超时。XSkill 当前不替第三方 Kernel 强制设置

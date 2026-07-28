@@ -120,7 +120,16 @@ for trajectory in context.trajectories.iter():
     for atom in trajectory.atoms:
         score = atom.ux_score  # 1..10 或 None
         skills = atom.used_skills
+        body = atom.content      # raw_segment 原文；在 atoms 中恒为 str
 ```
+
+`TrajectoryResource.source` 为 `user`（平台输入）或 `temp`（Kernel 通过
+`context.trajectories.create_temp(...)` 写入 workspace 下临时轨迹）。临时轨迹初次返回
+`atom_split_status="pending"`、`atoms=()`；拆分完成后会以 `ready` 进入后续 feed。
+
+`context.invocation.changed_trajectory_ids` **只包含 atom 拆分已完成（`ready`）** 且相对
+上一轮有变化的轨迹；`pending` / `updated` 不会进入该列表。算法用 `atom_id` 自行去重，
+不要轮询等待 pending。
 
 `trajectory_root` 始终是绝对路径，且只表示平台轨迹输入树。Team Server 默认是
 `~/.xskill/team_trajectories/clients`；如果调用方显式提供轨迹目录（例如
@@ -280,8 +289,9 @@ def run(
 ```
 
 每次触发时，XSkill 都会创建本轮 `KernelContext`。Kernel 可以从
-`context.invocation.changed_trajectory_ids` 获取本轮新上传或发生变化的轨迹 ID，并通过
-`context.trajectory_root` 或 `context.trajectories` 读取轨迹。
+`context.invocation.changed_trajectory_ids` 获取本轮 **atom 拆分已完成（ready）** 且相对
+上一轮有变化的轨迹 ID，并通过 `context.trajectory_root` 或 `context.trajectories` 读取
+轨迹。`pending` 轨迹不会进入该列表；不要轮询等待拆分完成。
 
 `run()` 应完成一轮工作并返回 `KernelRunResult`。不建议在其中使用执行 CPU 密集型任务、长期
 占用解释器 GIL 的线程池，以免卡住 Kernel 的常驻进程；Kernel 可以自行创建子进程处理这类
