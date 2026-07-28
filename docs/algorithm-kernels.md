@@ -84,17 +84,20 @@ class MyAlgorithmKernel(BaseKernel):
 
 - `trajectory_root`：本次输入的绝对文件系统根，Kernel 可交给自己的扫描器、命令行工具或
   dataloader；Team Server 默认是 `~/.xskill/team_trajectories/clients`，手动 distill
-  时是用户指定的 `--trajectory-dir`；
-- `trajectories`：读取单条轨迹，或取得本次可扫描的目录；
+  时是用户指定的 `--trajectory-dir`。该根只表示平台轨迹输入（`traj_*.md` 及 sidecar），
+  不是任意 benchmark 目录；算法自有评测集放在 `workspace`。
+- `trajectories`：读取单条轨迹及其子轨迹（atom）视图，或取得本次可扫描的目录。轨迹对象
+  提供 Markdown 原文与 `atom_split_status`（`pending` / `ready` / `updated`），**不提供
+  轨迹级 UX**；体验分在 atom 的 `ux_score`（`1..10` 或 `None`）以及 Skill 版本评价上。
 - `skills`：只读现有 Skill、main/staging 提交和各版本 UX；
 - `publisher`：新建 Skill 或提交已有 Skill 的新版本；
-- `workspace`：算法可写的工作目录；
+- `workspace`：算法可写的工作目录（含自有数据集与缓存）；
 - `config_path`：算法配置路径；
 - `xskill_config_path`：用户级 XSkill 配置的绝对路径；
 - `llm`：按用户配置创建并在外部 Kernel 进程内统一执行 RPM、TPM、burst 和最大并发限制
   的 LLM 客户端；
 - `embedding`：按用户配置创建并限制最大并发的 Embedding 客户端；
-- `invocation`：触发方式、输入集合 ID 和变化轨迹提示；
+- `invocation`：触发方式、输入集合指纹（`dataset_id`）和变化轨迹提示；
 - `run_id`：本次运行 ID。
 
 提交入口会校验 Skill 名称、元数据、文件路径、文本编码和更新依据。新 Skill 直接创建 main；
@@ -112,10 +115,11 @@ model/harness 元数据。
 
 `xskill distill --kernel ... --trajectory-dir ... --output ...` 将指定目录中的标准轨迹复制
 到独立输入目录，使用独立的工作空间、注册表和 Skill 目录运行内核；同时把用户指定目录的
-绝对路径作为 `context.trajectory_root` 暴露给 Kernel，使其能够读取同目录下自己的数据格式
-或附件。`--output` 必须显式提供，离线 `context.workspace` 固定为
-`<output>/.xskill/workspace/`。产物包含输入清单、运行状态、耗时、处理量、生成的 Skills 和
-算法返回的运行指标。这个命令不启动服务、不切换线上当前内核，也不产生算法能力分。
+绝对路径作为 `context.trajectory_root` 暴露给 Kernel（平台轨迹输入根）。算法自有评测或
+附件应使用 `context.workspace`，不要把 benchmark 根目录冒充轨迹输入。`--output` 必须显式
+提供，离线 `context.workspace` 固定为 `<output>/.xskill/workspace/`。产物包含输入清单、
+运行状态、耗时、处理量、生成的 Skills 和算法返回的运行指标。这个命令不启动服务、不切换
+线上当前内核，也不产生算法能力分。
 
 线上每次运行都记录内核 ID 和算法版本。内核生成的 Skill 投入使用后，UX 评价绑定到具体
 Skill 提交版本，灰度流程再记录晋升、拒绝或超时。Dashboard 导出的当前内核报告同时包含

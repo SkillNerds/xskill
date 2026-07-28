@@ -56,11 +56,12 @@ xskill distill \
 XSkill 读取目录及其子目录中的全部 `traj_*.md`，并带上同名 `.json` 或
 `.md.meta`。`--output` 是必填参数，目标目录必须不存在；用 `--json` 让自动化程序读取
 结果。需要从其他内核根目录加载时增加 `--plugin-dir <目录>`。Kernel 收到的
-`context.trajectory_root` 是 `--trajectory-dir` 解析后的绝对路径，因此也可以读取
-该目录树中不属于标准 trajectory 三件套的数据文件。
+`context.trajectory_root` 是 `--trajectory-dir` 解析后的绝对路径，指向平台轨迹
+输入树。同目录下允许存在轨迹 sidecar，但不要把 benchmark 题库当作该根目录的主
+内容；算法自有评测 / 防退化数据集应放在 `context.workspace`。
 
 离线命令的标准 `TrajectoryResource` 使用输入副本，并使用单独的工作空间、注册表和
-Skill 目录；直接通过 `trajectory_root` 读取的额外文件仍来自用户指定目录。命令不启动
+Skill 目录；`trajectory_root` 仍指向用户指定的轨迹输入根。命令不启动
 `xskill serve`，也不切换线上当前内核。它只生成 Skills 和运行记录，不输出算法能力分。
 无论 `run_interval` 是多少，distill 都只调用一次 `run(context)`。
 

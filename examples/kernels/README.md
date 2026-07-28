@@ -94,11 +94,11 @@ XSkill 调用 `run(context)` 时，`context` 包含：
 | 属性 | 可以做什么 |
 | --- | --- |
 | `context.run_id` | 获取本次运行的唯一 ID，用于日志和中间文件命名。 |
-| `context.invocation` | 查看触发方式、输入集合 ID、发生变化的轨迹 ID，以及是否要求重新处理全部输入。 |
+| `context.invocation` | 查看触发方式、输入集合指纹（`dataset_id`）、发生变化的轨迹 ID，以及是否要求重新处理全部输入。 |
 | `context.config_path` | 获取本算法 `config.yaml` 的路径。 |
-| `context.workspace` | 写入本算法的临时文件、缓存和中间结果。 |
-| `context.trajectory_root` | 本次轨迹输入的绝对根路径。Team Server 默认是 `~/.xskill/team_trajectories/clients`；手动 distill 时是用户指定的目录。 |
-| `context.trajectories` | XSkill 提供的标准轨迹视图，用于列出并读取本次可用轨迹。 |
+| `context.workspace` | 写入本算法的临时文件、缓存、中间结果；算法自有垂直领域 / 防退化数据集也放这里。 |
+| `context.trajectory_root` | 本次**平台轨迹输入**的绝对根路径（`traj_*.md` 及 sidecar）。Team Server 默认是 `~/.xskill/team_trajectories/clients`；手动 distill 时是用户指定的目录。不要当成 benchmark 根。 |
+| `context.trajectories` | XSkill 提供的标准轨迹视图（含 `atom_split_status` 与 `atoms` 子视图；无轨迹级 UX）。 |
 | `context.skills` | XSkill 提供的 Skill 视图，用于读取现有 Skill、版本及各版本的用户评价。 |
 | `context.llm` | XSkill 提供并统一限流的 LLM 对象。 |
 | `context.embedding` | XSkill 提供并统一限制并发的 Embedding 对象。 |
@@ -115,16 +115,24 @@ for trajectory in context.trajectories.iter():
     text = trajectory.read_text()
     raw_info = trajectory.read_raw_json()
     metadata = dict(trajectory.metadata)
+    if trajectory.atom_split_status == "pending":
+        continue
+    for atom in trajectory.atoms:
+        score = atom.ux_score  # 1..10 或 None
+        skills = atom.used_skills
 ```
 
-`trajectory_root` 始终是绝对路径。Team Server 默认是
+`trajectory_root` 始终是绝对路径，且只表示平台轨迹输入树。Team Server 默认是
 `~/.xskill/team_trajectories/clients`；如果调用方显式提供轨迹目录（例如
 `xskill distill --trajectory-dir ...`），则它就是用户选择的那个目录。Kernel 可以把这个
-路径交给 `rg`、`find`、DuckDB 或自己的 dataloader，不需要强制使用 XSkill 的对象视图。
+路径交给 `rg`、`find`、DuckDB 或自己的 dataloader，但不要把 benchmark 题库塞进该根；
+自有评测集放在 `context.workspace`。
 
 `context.trajectories` 兼容平台登记的多个 watch-dir，也会递归发现嵌套目录中的
-`traj_*.md`；没有 Registry 记录的手动输入根同样可以读取。Team Server 的正常上传链路目前
-只保存脱敏 Markdown，并在 `.json` 中保存有限的 model/harness 元数据。
+`traj_*.md`；没有 Registry 记录的手动输入根同样可以读取。每条轨迹保留 Markdown 原文，
+并通过 `atom_split_status`（`pending` / `ready` / `updated`）与 `atoms` 暴露子轨迹证据；
+**不提供轨迹级 UX 分**（分在 atom 上，Skill 版本评价在 `context.skills`）。Team Server
+的正常上传链路目前只保存脱敏 Markdown，并在 `.json` 中保存有限的 model/harness 元数据。
 
 ### Skill 的真实写入与运行回报
 
@@ -201,15 +209,16 @@ Skill 仓库的动作仍然只由 Publisher 完成。
 xskill distill \
   --kernel your-demo-algo-kernel \
   --plugin-dir "$HOME/.xskill/kernels" \
-  --trajectory-dir "$PWD/examples/kernels/datasets/test_data" \
+  --trajectory-dir "$PWD/examples/kernels/mock-runtime-trajectories" \
   --output "$PWD/output/your-demo-run"
 ```
 
 XSkill 会读取指定目录及其子目录中的全部 `traj_*.md`。同名的 `.json` 或 `.md.meta` 文件
 会作为轨迹的补充信息一起提供给内核。标准对象视图使用独立输入副本；与此同时，
-`context.trajectory_root` 保留为用户指定目录的绝对路径，供算法读取 Markdown 之外的数据
-文件。工作空间和 Skill 目录仍然隔离，不需要启动 `xskill serve`，也不会切换线上正在使用
-的内核。
+`context.trajectory_root` 保留为用户指定目录的绝对路径（平台轨迹输入根）。仓库自带的
+`examples/kernels/mock-runtime-trajectories` 只是 mock 运行时轨迹样例，不是算法私有
+评测集。工作空间和 Skill 目录仍然隔离，不需要启动 `xskill serve`，也不会切换线上正在
+使用的内核。
 
 `--output` 是必填参数，目标目录必须不存在。该目录既是本次运行的产物根目录，也决定离线
 Kernel 的工作空间位置：

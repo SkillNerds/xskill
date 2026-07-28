@@ -16,8 +16,8 @@ description: 为 XSkill 创建、接入、离线运行和诊断轨迹转 Skill �
    `KernelMetadata.id` 与目录名一致。
 4. 在 `kernel.py` 中导入算法 SDK。算法自行维护 `config.yaml`，并通过
    `def run(self, context, run_interval=30)` 声明线上调用间隔。
-5. 用 `context.trajectory_root` 运行算法自己的文件扫描器，或从
-   `context.trajectories` 读取标准轨迹；把中间文件写入 `context.workspace`，
+5. 用 `context.trajectory_root` 或 `context.trajectories` 读取平台轨迹（含
+   `atom_split_status` / `atoms`）；把中间文件与自有评测数据写入 `context.workspace`，
    只通过 `context.publisher` 提交 Skills。
 6. 优先使用 `context.llm` 和 `context.embedding`；自建客户端时从
    `context.xskill_config_path` 或 XSkill 注入的模型环境变量读取配置。
@@ -32,9 +32,13 @@ description: 为 XSkill 创建、接入、离线运行和诊断轨迹转 Skill �
 
 不要把轨迹输入目录、Kernel 工作空间和离线产物目录混为一谈：
 
-- `context.trajectory_root` 是只读轨迹输入的绝对路径。手动 distill 时，它等于
-  `--trajectory-dir` 指定目录的绝对路径。
-- `context.workspace` 是 XSkill 传给 Kernel 的可写目录，用于跨轮状态、缓存和中间结果。
+- `context.trajectory_root` 是只读**平台轨迹输入**的绝对路径。手动 distill 时，它等于
+  `--trajectory-dir` 指定目录的绝对路径。不要把 benchmark 或私有评测集放进该根；
+  这类数据放在 `context.workspace`。
+- `context.workspace` 是 XSkill 传给 Kernel 的可写目录，用于跨轮状态、缓存、中间结果
+  以及算法自有数据集。
+- `context.invocation.dataset_id` 是本次输入集合指纹（离线由轨迹内容生成；线上对应当前
+  作用范围 / live 输入集），不是数据集产品名。
 - 线上运行时，`context.workspace` 是 `<kernel 根目录>/workspace/`；使用默认 Kernel
   根目录时，即 `~/.xskill/kernels/<kernel-id>/workspace/`。XSkill 不会在每轮结束后自动
   清空它，Kernel 应使用 `context.run_id` 划分单轮文件，并自行管理长期状态。

@@ -7,7 +7,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Iterable, Iterator, Mapping
+from typing import TYPE_CHECKING, Iterable, Iterator, Literal, Mapping
 
 if TYPE_CHECKING:
     from xskill.utils.llm import EmbedClient, LLMClient
@@ -18,6 +18,8 @@ from xskill.kernels.base import (
     SkillSubmission,
     validate_kernel_id,
 )
+
+AtomSplitStatus = Literal["pending", "ready", "updated"]
 
 
 _HIDDEN_BUNDLE_PARTS = {
@@ -81,8 +83,97 @@ class TrajectoryDirectoryResource:
 
 
 @dataclass(frozen=True)
+class AtomResource:
+    """Read-only sub-trajectory (AtomTask) exposed under a trajectory view.
+
+    ``ux_score`` is an integer in ``1..10`` when scored, otherwise ``None``.
+    There is no trajectory-level UX aggregate on :class:`TrajectoryResource`.
+    """
+
+    atom_id: str
+    trajectory_id: str
+    ux_score: int | None
+    used_skills: tuple[str, ...]
+    intent: str = ""
+    summary: str = ""
+    offset_start: int = 0
+    offset_end: int = 0
+
+
+def _normalize_atom_ux_score(value: object) -> int | None:
+    if value is None or isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if 1 <= value <= 10:
+        return value
+    return None
+
+
+def _load_atom_resources(trajectory_path: Path) -> tuple[AtomResource, ...]:
+    from xskill.pipeline.atom import AtomTaskStore
+
+    traj_id = trajectory_path.stem
+    store = AtomTaskStore(root=trajectory_path.parent)
+    resources: list[AtomResource] = []
+    for atom in store.list_by_traj(traj_id):
+        used = tuple(
+            dict.fromkeys(
+                str(item).strip()
+                for item in (atom.used_skills or [])
+                if str(item).strip()
+            )
+        )
+        resources.append(AtomResource(
+            atom_id=str(atom.atom_id),
+            trajectory_id=str(atom.traj_id or traj_id),
+            ux_score=_normalize_atom_ux_score(atom.ux_score),
+            used_skills=used,
+            intent=str(atom.intent or ""),
+            summary=str(atom.summary or ""),
+            offset_start=int(atom.offset_start or 0),
+            offset_end=int(atom.offset_end or 0),
+        ))
+    return tuple(resources)
+
+
+def resolve_atom_split_status(
+    registry_status: str | None,
+    *,
+    atom_count: int,
+) -> AtomSplitStatus:
+    """Map platform registry status onto the kernel-facing split view.
+
+    - ``pending``: first-time split not finished; expose no atoms.
+    - ``ready``: current markdown body has been split through.
+    - ``updated``: body grew again and incremental split is in progress;
+      previously produced atoms remain readable and unchanged.
+    """
+    status = str(registry_status or "").strip()
+    if status == "updated":
+        return "updated"
+    if status == "splitting":
+        return "updated" if atom_count > 0 else "pending"
+    if status == "discovered":
+        return "pending"
+    if status in {
+        "split_done", "indexed", "clustering", "done", "meta_done",
+        "filtered", "error",
+    }:
+        return "ready"
+    # Manual / unregistered roots: atoms on disk mean a usable split view.
+    if atom_count > 0:
+        return "ready"
+    return "pending"
+
+
+@dataclass(frozen=True)
 class TrajectoryResource:
-    """Read-only reference with a registry-qualified stable ID."""
+    """Read-only reference with a registry-qualified stable ID.
+
+    Stable platform input is the sanitized Markdown body. Sub-trajectory
+    evidence lives under :attr:`atoms` and is gated by
+    :attr:`atom_split_status`. This object does not expose a trajectory-level
+    UX score.
+    """
 
     id: str
     trajectory_id: str
@@ -94,6 +185,8 @@ class TrajectoryResource:
     status: str | None
     metadata: Mapping[str, object]
     used_skills: tuple[str, ...] = ()
+    atom_split_status: AtomSplitStatus = "pending"
+    atoms: tuple[AtomResource, ...] = ()
 
     def read_text(self) -> str:
         return self.path.read_text(encoding="utf-8")
@@ -105,6 +198,36 @@ class TrajectoryResource:
         return json.loads(raw_path.read_text(encoding="utf-8"))
 
 
+def _trajectory_resource_from_path(
+    *,
+    path: Path,
+    watch_dir: TrajectoryDirectoryResource,
+    status: str | None,
+    metadata: Mapping[str, object],
+    used_skills: tuple[str, ...],
+) -> TrajectoryResource:
+    disk_atoms = _load_atom_resources(path)
+    split_status = resolve_atom_split_status(status, atom_count=len(disk_atoms))
+    atoms = () if split_status == "pending" else disk_atoms
+    relative_path = path.relative_to(watch_dir.path).as_posix()
+    return TrajectoryResource(
+        id=f"{watch_dir.id}:{relative_path}",
+        trajectory_id=path.stem,
+        path=path,
+        watch_dir_id=(
+            int(watch_dir.id) if watch_dir.id != "root" else 0
+        ),
+        watch_dir=watch_dir.path,
+        label=watch_dir.label,
+        ecosystem=watch_dir.ecosystem,
+        status=status,
+        metadata=MappingProxyType(dict(metadata)),
+        used_skills=used_skills,
+        atom_split_status=split_status,
+        atoms=atoms,
+    )
+
+
 class TrajectoryReader:
     """Filesystem-capable facade over this invocation's trajectory input.
 
@@ -112,7 +235,7 @@ class TrajectoryReader:
     readers and filesystem tools.  Registered watch directories remain the
     preferred source of attribution and status metadata.  When no watch
     directory is registered, the reader falls back to recursively discovering
-    ``traj_*.md`` below ``root`` so manually supplied datasets still work.
+    ``traj_*.md`` below ``root`` so manually supplied trajectory trees still work.
     """
 
     def __init__(self, db_path: Path, *, root: Path | None = None):
@@ -193,19 +316,11 @@ class TrajectoryReader:
                     for item in str(trajectory.skill_used or "").split(",")
                     if item.strip()
                 ))
-                relative_path = path.relative_to(watch_dir.path).as_posix()
-                yield TrajectoryResource(
-                    id=f"{watch_dir.id}:{relative_path}",
-                    trajectory_id=path.stem,
+                yield _trajectory_resource_from_path(
                     path=path,
-                    watch_dir_id=(
-                        int(watch_dir.id) if watch_dir.id != "root" else 0
-                    ),
-                    watch_dir=watch_dir.path,
-                    label=watch_dir.label,
-                    ecosystem=watch_dir.ecosystem,
+                    watch_dir=watch_dir,
                     status=status,
-                    metadata=MappingProxyType(dict(metadata)),
+                    metadata=metadata,
                     used_skills=used_skills,
                 )
 
