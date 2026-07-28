@@ -105,22 +105,37 @@ XSkill 调用 `run(context)` 时，`context` 包含：
 | `context.xskill_config_path` | 用户级 `~/.xskill/config.yaml` 的路径，供 Kernel 选择自行创建客户端时读取。 |
 | `context.publisher` | 唯一会真实新增或更新 Skill 的写入入口。 |
 
-Kernel 可以选择对象视图，也可以直接操作输入目录：
+Kernel 可以选择对象视图，也可以直接操作输入目录。推荐消费路径：
 
 ```python
 root = context.trajectory_root
 # subprocess.run(["rg", "tool_call", str(root)], ...)
 
-for trajectory in context.trajectories.iter():
-    text = trajectory.read_text()
+# 优先消费 ready-only feed；离线 distill 常是 full_rebuild + 空 changed。
+changed = context.invocation.changed_trajectory_ids
+if changed:
+    by_id = {t.id: t for t in context.trajectories.list()}
+    batch = [by_id[i] for i in changed if i in by_id]
+else:
+    batch = list(context.trajectories.iter())
+
+seen_atoms = set()  # 实际应持久化到 context.workspace
+for trajectory in batch:
+    text = trajectory.read_text()  # 母轨迹 Markdown 始终可读
     raw_info = trajectory.read_raw_json()
-    metadata = dict(trajectory.metadata)
-    if trajectory.atom_split_status == "pending":
-        continue
-    for atom in trajectory.atoms:
-        score = atom.ux_score  # 1..10 或 None
+    new_atoms = [a for a in trajectory.atoms if a.atom_id not in seen_atoms]
+    for atom in new_atoms:
+        score = atom.ux_score  # 1..10 或 None；无轨迹级 UX
         skills = atom.used_skills
         body = atom.content      # raw_segment 原文；在 atoms 中恒为 str
+        seen_atoms.add(atom.atom_id)
+    # atoms 为空（例如离线 mock 未拆分）时，回退使用 text
+
+# 算法自有 rollout：先在算法侧转成平台 Markdown，再 create_temp
+# temp = context.trajectories.create_temp(
+#     platform_md, trajectory_id="traj_kernel_temp_001",
+# )
+# # temp.source == "temp"；atom_split_status == "pending"；不要轮询等待
 ```
 
 `TrajectoryResource.source` 为 `user`（平台输入）或 `temp`（Kernel 通过

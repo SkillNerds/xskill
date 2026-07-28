@@ -132,17 +132,29 @@ Team Server 默认根是 `~/.xskill/team_trajectories/clients`。调用方显式
 sidecar（`.json` / `.md.meta`）。不要把 benchmark 题库或算法私有评测集放进这个
 根目录；这类数据应维护在 `context.workspace` 下。
 
-XSkill 也把标准 Markdown 包装成 `TrajectoryResource`。逐条处理：
+XSkill 也把标准 Markdown 包装成 `TrajectoryResource`。推荐消费路径：
 
 ```python
-for item in context.trajectories.iter():
-    text = item.read_text()
+# 优先消费 ready-only feed；离线 distill 常是 full_rebuild + 空 changed。
+changed = context.invocation.changed_trajectory_ids
+if changed:
+    by_id = {t.id: t for t in context.trajectories.list()}
+    batch = [by_id[i] for i in changed if i in by_id]
+else:
+    batch = list(context.trajectories.iter())
+
+seen_atoms = set()  # 持久化到 context.workspace，按 atom_id 去重
+for item in batch:
+    text = item.read_text()  # 母轨迹 Markdown 始终可读
     raw = item.read_raw_json()
     metadata = dict(item.metadata)
-    print(item.id, item.trajectory_id, item.path, item.status)
-    print(item.atom_split_status, len(item.atoms))
+    print(item.id, item.trajectory_id, item.source, item.atom_split_status)
     for atom in item.atoms:
+        if atom.atom_id in seen_atoms:
+            continue
         print(atom.atom_id, atom.ux_score, atom.used_skills, atom.content)
+        seen_atoms.add(atom.atom_id)
+    # atoms 为空时回退使用 text（例如离线 mock 未拆分）
 ```
 
 常用字段：

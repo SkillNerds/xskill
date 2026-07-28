@@ -867,6 +867,9 @@ def _copy_resource_bundle(resource: Any, destination: Path) -> None:
 
 
 def _materialize_trajectory(resource: TrajectoryResource, destination: Path) -> dict[str, Any]:
+    # Mother trajectory markdown is always available via read_text().
+    # Ready-feed trajectories may also expose atoms (atom_id / content / ux_score);
+    # there is no trajectory-level ux_score. SkillOpt still ships markdown to agents.
     destination.mkdir(parents=True, exist_ok=False)
     markdown = str(redact_secrets(resource.read_text()))
     md_path = destination / "trajectory.md"
@@ -877,6 +880,9 @@ def _materialize_trajectory(resource: TrajectoryResource, destination: Path) -> 
         "label": resource.label,
         "ecosystem": resource.ecosystem,
         "used_skills": list(resource.used_skills),
+        "source": resource.source,
+        "atom_split_status": resource.atom_split_status,
+        "atom_ids": [atom.atom_id for atom in resource.atoms],
         "markdown": md_path.relative_to(destination.parent.parent).as_posix(),
         "source_sha256": _sha256_file(resource.path),
         "redacted_sha256": _sha256_file(md_path),
@@ -1286,6 +1292,8 @@ class SkillOptKernel(BaseKernel):
     def run(self, context: KernelContext, run_interval: int = 30) -> KernelRunResult:
         del run_interval
         config = self._load_config(context.config_path)
+        # Prefer ready-only changed_trajectory_ids when the host provides them.
+        # Offline / empty changed → iterate all mother trajectories (no spin-wait).
         resources = list(context.trajectories.iter())
         changed = set(context.invocation.changed_trajectory_ids)
         if changed:
