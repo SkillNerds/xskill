@@ -1,4 +1,9 @@
-# This file belongs to the OpenEarth kernel. XSkill never parses or edits it.
-model: YOUR_OPENEARTH_MODEL
-api_key: YOUR_OPENEARTH_KEY
-
+# Private OpenEarth SDK configuration. XSkill treats this file as opaque.
+reflect:
+  # OpenEarth currently invokes the configured model through OpenCode.
+  base_url: opencode
+  model: YOUR_OPENEARTH_MODEL
+  binary: opencode
+  timeout: 600
+  # Optional custom reflection strategy Markdown:
+  # strategy: /absolute/path/to/strategy.md

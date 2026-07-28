@@ -1,0 +1,8 @@
+# OpenEarth SDK build inputs are private and stay local. XSkill receives only
+# the bridge, public documentation, configuration example, wheel, and checksum.
+sdk/
+
+__pycache__/
+config.yaml
+workspace/
+output/
