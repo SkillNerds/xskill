@@ -385,12 +385,16 @@ class TrajectoryReader:
                     for item in str(trajectory.skill_used or "").split(",")
                     if item.strip()
                 ))
+                source = (
+                    "temp" if watch_dir.ecosystem == "kernel-temp" else "user"
+                )
                 yield _trajectory_resource_from_path(
                     path=path,
                     watch_dir=watch_dir,
                     status=status,
                     metadata=metadata,
                     used_skills=used_skills,
+                    source=source,
                 )
 
     def list(
