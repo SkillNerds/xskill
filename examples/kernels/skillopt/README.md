@@ -90,7 +90,7 @@ TOML 只定义 Agent 的职责，不声明工具。Kernel 启动 Agent 时，把
           +--> 轨迹视图 --------------> context.trajectories
 ```
 
-普通 `xskill distill` 的数据由命令调用者提供。仓库示例使用 `examples/kernels/datasets/test_data`。线上数据来自 Team Server 接收的客户端轨迹。`context.trajectory_root` 是轨迹根目录，供 Kernel 直接读取文件；`context.trajectories` 是轨迹视图，供 Kernel 按统一格式查询和遍历轨迹。
+普通 `xskill distill` 的数据由命令调用者提供。仓库示例使用 `examples/kernels/mock-runtime-trajectories`（仅 mock 运行时轨迹，不是算法私有评测集）。线上数据来自 Team Server 接收的客户端轨迹。`context.trajectory_root` 是平台轨迹输入根；算法自有垂直领域 / 防退化数据集应放在 `context.workspace`。`context.trajectories` 是轨迹视图，供 Kernel 按统一格式查询和遍历轨迹。
 
 线上轨迹视图读取在线轨迹根目录中的文件。默认测试数据中的 `.json` 只包含 `{"harness": "claude_code"}`，用于说明轨迹由 Claude Code Agent 产生；轨迹正文在 Markdown 文件中。
 
@@ -172,14 +172,14 @@ AgentPlan 密钥从 `codex_env_key` 指定的环境变量读取。此模式会�
 
 ## 用默认数据跑一遍
 
-`examples/kernels/datasets/test_data` 中有两条脱敏后的 PatentDagger 轨迹：
+`examples/kernels/mock-runtime-trajectories` 中有两条脱敏后的 PatentDagger mock 轨迹：
 
 ```bash
 PYTHONPATH="$PWD/src" \
   python -m xskill distill \
   --kernel skillopt \
   --plugin-dir "$PWD/examples/kernels" \
-  --trajectory-dir "$PWD/examples/kernels/datasets/test_data" \
+  --trajectory-dir "$PWD/examples/kernels/mock-runtime-trajectories" \
   --output "$PWD/output/skillopt-real-smoke-$(date -u +%Y%m%dT%H%M%SZ)" \
   --json --no-progress
 ```

@@ -20,6 +20,7 @@ from xskill.kernels.context import (
     TrajectoryDirectoryResource,
     TrajectoryReader,
     TrajectoryResource,
+    AtomResource,
 )
 
 __all__ = [
@@ -40,4 +41,5 @@ __all__ = [
     "TrajectoryReader",
     "TrajectoryDirectoryResource",
     "TrajectoryResource",
+    "AtomResource",
 ]

@@ -72,14 +72,14 @@ XSkill 每次调用 `run(context)` 都会创建一个新的 `KernelContext`：
 | --- | --- |
 | `context.run_id` | 本次运行的唯一 ID。 |
 | `context.invocation.trigger` | 本次为什么运行。 |
-| `context.invocation.dataset_id` | 本次输入集合的 ID；线上通常是作用范围，离线由输入内容生成。 |
-| `context.invocation.changed_trajectory_ids` | 本次发生变化的轨迹 ID；可能为空。 |
+| `context.invocation.dataset_id` | 本次**输入集合指纹**（不是 benchmark 数据集名）。离线 distill 由轨迹目录内容生成；线上通常对应当前作用范围 / live 输入集。 |
+| `context.invocation.changed_trajectory_ids` | 本次**atom 拆分已完成（ready）**且相对上一轮有变化的轨迹 ID；`pending` / `updated` 不会进入该列表。 |
 | `context.invocation.full_rebuild` | 是否要求重新处理本次全部输入。 |
 | `context.config_path` | 当前算法 `config.yaml` 的路径。 |
 | `context.xskill_config_path` | 用户级 XSkill `config.yaml` 的绝对路径。 |
-| `context.workspace` | 当前算法可写的工作目录。 |
-| `context.trajectory_root` | 本次轨迹输入的绝对根路径。 |
-| `context.trajectories` | 本次可读取的轨迹。 |
+| `context.workspace` | 当前算法可写的工作目录。算法自有垂直领域评测集、防退化数据集应放在这里，不要塞进 `trajectory_root`。 |
+| `context.trajectory_root` | 本次**平台轨迹输入**的绝对根路径（脱敏 `traj_*.md` 及 sidecar）。不要当成任意 benchmark 根目录。 |
+| `context.trajectories` | 本次可读取的轨迹视图（含 atom 子视图，见下）。 |
 | `context.skills` | 现有 Skills、版本和用户评价。 |
 | `context.publisher` | 提交新 Skill 或新版本的入口。 |
 | `context.llm` | 按 XSkill 用户配置创建、在 Kernel 进程内统一限流的 LLM 客户端。 |
@@ -128,14 +128,33 @@ Team Server 默认根是 `~/.xskill/team_trajectories/clients`。调用方显式
 路径。目录可能包含多个 client、watch-dir 或任意层级，不能假设 Markdown 直接位于
 根目录下一层。
 
-XSkill 也把标准 Markdown 包装成 `TrajectoryResource`。逐条处理：
+`trajectory_root` 只承载平台轨迹输入：标准化脱敏后的 `traj_*.md` 以及同名
+sidecar（`.json` / `.md.meta`）。不要把 benchmark 题库或算法私有评测集放进这个
+根目录；这类数据应维护在 `context.workspace` 下。
+
+XSkill 也把标准 Markdown 包装成 `TrajectoryResource`。推荐消费路径：
 
 ```python
-for item in context.trajectories.iter():
-    text = item.read_text()
+# 优先消费 ready-only feed；离线 distill 常是 full_rebuild + 空 changed。
+changed = context.invocation.changed_trajectory_ids
+if changed:
+    by_id = {t.id: t for t in context.trajectories.list()}
+    batch = [by_id[i] for i in changed if i in by_id]
+else:
+    batch = list(context.trajectories.iter())
+
+seen_atoms = set()  # 持久化到 context.workspace，按 atom_id 去重
+for item in batch:
+    text = item.read_text()  # 母轨迹 Markdown 始终可读
     raw = item.read_raw_json()
     metadata = dict(item.metadata)
-    print(item.id, item.trajectory_id, item.path, item.status)
+    print(item.id, item.trajectory_id, item.source, item.atom_split_status)
+    for atom in item.atoms:
+        if atom.atom_id in seen_atoms:
+            continue
+        print(atom.atom_id, atom.ux_score, atom.used_skills, atom.content)
+        seen_atoms.add(atom.atom_id)
+    # atoms 为空时回退使用 text（例如离线 mock 未拆分）
 ```
 
 常用字段：
@@ -147,11 +166,64 @@ for item in context.trajectories.iter():
 | `path` | 轨迹 Markdown 文件路径。 |
 | `watch_dir` | 这条轨迹所在的来源目录。 |
 | `label`、`ecosystem` | 来源名称和来源类型。 |
-| `status` | 当前处理状态，可能为空。 |
+| `status` | 平台 registry 状态，可能为空。 |
 | `metadata` | `.md.meta` 中读取到的信息。 |
 | `used_skills` | Registry 已记录的 Skill 名称元组；可能为空，只作为算法证据。 |
+| `atom_split_status` | 子轨迹拆分视图状态：`pending` / `ready` / `updated`。 |
+| `source` | 轨迹来源：`user`（平台输入）或 `temp`（Kernel 通过 `create_temp` 写入的临时轨迹）。 |
+| `atoms` | 当前可消费的子轨迹（Atom）只读元组；见下表。 |
 | `read_text()` | 读取 Markdown 内容。 |
 | `read_raw_json()` | 读取同名 `.json` sidecar；不存在时返回空字典，不保证它是上游原始轨迹。 |
+
+**没有轨迹级 UX 分。** 体验分只出现在子轨迹 `AtomResource.ux_score` 上（以及
+`context.skills` 的 Skill 版本评价上）。
+
+### `atom_split_status` 与 `atoms`
+
+对齐平台增量拆分：旧 atom 不会改写；正文追加后由 TaskAgent 用 `last_offset` 续拆。
+
+| `atom_split_status` | 含义 | `atoms` |
+| --- | --- | --- |
+| `pending` | 首次尚未拆完 | 空元组 `()` |
+| `ready` | 当前正文已拆到头 | 全部已产出的 atom |
+| `updated` | 正文又变了，正在续拆 | **只含续拆前已有 atom**；新段尚未出现 |
+
+每个 `AtomResource`：
+
+| 字段 | 内容 |
+| --- | --- |
+| `atom_id` | 子轨迹 ID。 |
+| `trajectory_id` | 所属轨迹 ID。 |
+| `ux_score` | `1..10` 的整数；尚未打分为 `None`（不用魔法数）。 |
+| `used_skills` | 该子轨迹记录使用过的 Skill 名称。 |
+| `intent` / `summary` | 意图与摘要；可能为空。 |
+| `content` | 该 atom 在 Markdown 中的原文片段（来自 `raw_segment`）；在 `atoms` 中始终为字符串，可为 `""`。 |
+| `offset_start` / `offset_end` | 在 Markdown 中的行号区间。 |
+
+每次 `run()` 构建 Context 时现读 registry 与 atom 文件，不跨轮缓存该视图。
+算法应先看 `atom_split_status`：`pending` 时不要假定有可消费证据，也**不要**轮询等待；
+`updated` 时只能依赖已返回的旧 atom。平台不在 `changed_trajectory_ids` 中标记
+“新 atom”；算法用 `atom_id` 自行去重即可。
+
+### `create_temp`
+
+Kernel 可在本轮 workspace 下写入临时轨迹，供平台后续拆分：
+
+```python
+resource = context.trajectories.create_temp(
+    "## User\n\nPlease summarize this repo.\n",
+    trajectory_id="traj_kernel_temp_001",
+)
+print(resource.source, resource.atom_split_status)  # temp, pending
+```
+
+- Markdown 必须非空，且至少包含一个平台风格的 `## User` 段；允许的标题还有
+  `## Assistant`、`## Tool Call:`、`## Tool Output:`。
+- `trajectory_id` 须匹配 `traj_[a-z0-9][a-z0-9_-]{0,126}`，文件写入
+  `<workspace>/temp_trajectories/<trajectory_id>.md` 并登记到 registry。
+- 返回的 `TrajectoryResource` 为 `source="temp"`、`atom_split_status="pending"`、
+  `atoms=()`；拆分完成后会在后续 `run()` 中以 `ready` 状态出现在 feed 中。
+- 可多次调用，无创建配额。
 
 也可以使用：
 
@@ -165,7 +237,8 @@ for source in context.trajectories.directories():
 
 `directories()` 返回平台登记的多个 watch-dir；`iter()` 会递归兼容其中嵌套的
 `traj_*.md`。没有 Registry 记录的手动根会作为一个递归目录提供。需要对整个输入树
-运行 `rg`、DuckDB 或算法自己的批处理程序时，优先使用 `context.trajectory_root`。
+运行 `rg`、DuckDB 或算法自己的批处理程序时，优先使用 `context.trajectory_root`，
+但仍应只把它当作轨迹输入树。
 
 跨平台稳定契约只有标准化、脱敏后的 Markdown。Team Server 正常上传不保留客户端
 原始轨迹，同名 `.json` 通常只有 model/harness 等有限元数据。不要修改输入文件。
