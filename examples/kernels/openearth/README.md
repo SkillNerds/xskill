@@ -24,7 +24,7 @@ ready TrajectoryResource
 
 - `changed_trajectory_ids` 非空时，只处理其中的 ready 轨迹；
 - changed 为空且 `full_rebuild=True` 时，处理全部 ready 轨迹；
-- changed 为空且非 full rebuild 时直接结束，不读取 Skill、不调用 SDK。
+- changed 为空且非 full rebuild 时不蒸馏轨迹、不调用 SDK 训练入口，但仍检查待发布队列。
 
 SDK 将每条轨迹展开成 atom，并以 `<trajectory resource id>#<atom id>` 作为稳定证据 ID：
 
@@ -60,7 +60,8 @@ SDK 将每条轨迹展开成 atom，并以 `<trajectory resource id>#<atom id>` 
 6. **生成草稿**：候选名称与已有 Skill 完全相同时生成 update draft，并保留原 bundle；
    否则生成 create draft。
 7. **交给 XSkill 发布**：SDK 只返回 `SkillDraft`。Kernel 再通过
-   `context.publisher.submit(...)` 发布；已有 active staging 的 Skill 会被跳过。
+   `context.publisher.submit(...)` 发布；已有 active staging 的 Skill 会进入 OpenEarth
+   待发布队列。
 
 当前到第 6 步即结束 OpenEarth 训练，不执行 OpenEarth candidate rollout 或 Gate。
 XSkill 自己的 staging/canary 发布机制不受影响。
@@ -69,6 +70,23 @@ XSkill 自己的 staging/canary 发布机制不受影响。
 `name + main_commit_sha` 分类缓存，因此不会重新分类未变化的 Skill。重建只生成并提交
 本轮草稿，不会删除没有重新生成的旧 Skill。
 
+## staging 发布队列
+
+XSkill 同一时刻只允许同名 Skill 存在一个 active staging。OpenEarth 不再丢弃因此无法
+提交的新草稿，而是在 `context.workspace/openearth-publication-queue.json` 中为每个
+Skill 保留一个最新 pending draft：
+
+- active staging 仍存在时继续等待；新 draft 覆盖同名旧 pending draft，避免陈旧版本
+  无限堆积；
+- staging 被拒绝、main 未变化时，pending draft 使用原 base commit 直接提交；
+- staging 晋升、main 已变化时，先保留最新 main 的 provider 元数据和 bundle 文件，
+  再叠加 pending draft 的 OpenEarth 字段和正文，最后以新 main SHA 提交；
+- 每次 scheduled/manual 调用都会先执行一次队列 tick，即使本轮没有 changed trajectory；
+- 只有 Publisher 成功接受草稿后才从队列移除，发布竞态则重新读取 main/staging 状态。
+
+队列只管理尚未进入 XSkill staging 的下一版本；已进入 staging 的版本仍完全由 XSkill
+灰度、晋升或拒绝。
+
 ## 安装
 
 SDK 源码位于本地 `sdk/`，由本目录的 `.gitignore` 排除，不会提交到 XSkill 远程仓库。
@@ -76,7 +94,7 @@ SDK 源码位于本地 `sdk/`，由本目录的 `.gitignore` 排除，不会提�
 
 ```bash
 python -m pip install \
-  examples/kernels/openearth/wheels/openearth_skill_sdk-0.7.0-py3-none-any.whl
+  examples/kernels/openearth/wheels/openearth_skill_sdk-0.8.0-py3-none-any.whl
 ```
 
 然后复制 Kernel 目录并创建私有配置：

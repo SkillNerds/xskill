@@ -49,7 +49,7 @@ Kernel 按下面的三态契约选择 SDK 输入：
 | --- | --- | --- |
 | 非空 | 任意值 | 只选择 changed 中的 ready 轨迹 |
 | 空 | `True` | 选择全部 ready 轨迹 |
-| 空 | `False` | 立即结束；不读取 Skill，也不调用 SDK |
+| 空 | `False` | 不训练轨迹；只执行待发布队列 tick |
 
 changed 始终拥有输入范围的优先级。`full_rebuild=True` 会传给 SDK，使所选轨迹中的历史
 atom 绕过跨运行签名去重并重新进入蒸馏。无论是否重建，同一训练批次都按稳定
@@ -59,6 +59,9 @@ atom 绕过跨运行签名去重并重新进入蒸馏。无论是否重建，同
 全量重建仍读取当前 main Skill 作为反思上下文，但 `name + main_commit_sha` 未变化的
 Skill 会命中原分类缓存，不再次调用分类 LLM。SDK 和 Kernel 都不会因为某个旧 Skill
 没有在本轮重新生成就将它删除。
+
+队列为空时，上表最后一行不会读取轨迹或 Skill，也不会调用 SDK 训练入口；队列非空时
+只读取对应 Skill 的当前 main/staging 状态，不执行轨迹反思或 LLM 调用。
 
 ## 已有 Skill 的分层
 
@@ -196,5 +199,24 @@ oracle 分数保存在：
 - `candidate_dir`：OpenEarth workspace 中的候选目录。
 
 SDK 不直接写 XSkill Skill 仓库。`kernel.py` 通过
-`context.publisher.submit(SkillSubmission(...))` 发布，并在已有 Skill 存在 active
-staging 时跳过该草稿。本版本暂时不执行 Gate。
+`context.publisher.submit(SkillSubmission(...))` 发布。本版本暂时不执行 Gate。
+
+### active staging 与排队
+
+已有 Skill 存在 active staging 时，Kernel 将草稿写入：
+
+```text
+<context.workspace>/openearth-publication-queue.json
+```
+
+这是按 Skill 名称组织的 latest-wins 队列：一个 Skill 最多保留一个尚未提交的 pending
+draft，新 draft 会替换旧 pending draft。每次 Kernel 调用先检查队列：
+
+1. staging 仍存在：继续等待；
+2. staging 被拒绝且 main SHA 未变化：按原 base commit 提交；
+3. staging 晋升且 main SHA 已变化：确定性 rebase 到最新 main，再提交；
+4. Publisher 成功后删除 pending；竞态导致 staging/main 改变时刷新状态后等待或重试。
+
+rebase 不调用 LLM，也不是把旧 bundle 整体覆盖到新 main。它保留最新 main 的
+provider-owned frontmatter 和附件，应用 pending draft 的 description、OpenEarth
+optimizer 字段和正文，并把 `base_commit_sha` 更新为最新 main SHA。
