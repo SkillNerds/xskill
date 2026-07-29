@@ -16,6 +16,8 @@ try:
         SkillDraft,
         __version__,
         rebase_skill_draft,
+        record_oracle_score,
+        run_benchmark,
         train_skills,
     )
 except ImportError as exc:
@@ -232,6 +234,37 @@ class OpenEarthKernel(BaseKernel):
         submitted, queue_metrics = _drain_publication_queue(context, queue)
         changed = tuple(context.invocation.changed_trajectory_ids)
         full_rebuild = bool(context.invocation.full_rebuild)
+        existing_snapshots = None
+        benchmark_metrics = {
+            "benchmark_enabled": False,
+            "benchmark_selected": 0,
+            "benchmark_created": 0,
+            "benchmark_skipped": 0,
+        }
+        if full_rebuild:
+            existing_snapshots = _existing_skills(context)
+
+            def register_benchmark_trajectory(rollout):
+                record_oracle_score(
+                    workspace=context.workspace,
+                    trajectory_id=rollout.trajectory_id,
+                    ux_score=rollout.ux_score,
+                    case_id=rollout.case_id,
+                    metadata=rollout.metadata,
+                )
+                context.trajectories.create_temp(
+                    markdown=rollout.markdown,
+                    trajectory_id=rollout.trajectory_id,
+                )
+
+            benchmark_result = run_benchmark(
+                config_path=context.config_path,
+                workspace=context.workspace,
+                existing_skills=existing_snapshots,
+                run_id=context.run_id,
+                on_trajectory=register_benchmark_trajectory,
+            )
+            benchmark_metrics = dict(benchmark_result.metrics)
         if changed:
             changed_ids = set(changed)
             selected = [
@@ -259,6 +292,7 @@ class OpenEarthKernel(BaseKernel):
                     "queue_superseded": 0,
                     "queue_pending": len(queue["pending"]),
                     **queue_metrics,
+                    **benchmark_metrics,
                 },
                 notes=(
                     "No trajectory training input; OpenEarth only reconciled "
@@ -270,7 +304,11 @@ class OpenEarthKernel(BaseKernel):
             config_path=context.config_path,
             workspace=context.workspace,
             trajectories=selected,
-            existing_skills=_existing_skills(context),
+            existing_skills=(
+                existing_snapshots
+                if existing_snapshots is not None
+                else _existing_skills(context)
+            ),
             run_id=context.run_id,
             full_rebuild=full_rebuild,
         )
@@ -308,6 +346,7 @@ class OpenEarthKernel(BaseKernel):
             "queue_pending": len(queue["pending"]),
             "queue_rebased_immediate": rebased_immediate,
             **queue_metrics,
+            **benchmark_metrics,
         }
         if result.candidate_dir:
             metrics["candidate_dir"] = result.candidate_dir

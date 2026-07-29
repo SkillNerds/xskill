@@ -10,7 +10,7 @@ from zipfile import ZipFile
 OPENEARTH = Path(__file__).resolve().parents[1]
 WHEEL = (
     OPENEARTH / "wheels"
-    / "openearth_skill_sdk-0.8.0-py3-none-any.whl"
+    / "openearth_skill_sdk-0.9.0-py3-none-any.whl"
 )
 
 
@@ -21,12 +21,15 @@ def test_openearth_wheel_checksum_and_public_contents():
     with ZipFile(WHEEL) as archive:
         names = set(archive.namelist())
         metadata = archive.read(
-            "openearth_skill_sdk-0.8.0.dist-info/METADATA"
+            "openearth_skill_sdk-0.9.0.dist-info/METADATA"
         ).decode("utf-8")
 
-    assert "Version: 0.8.0" in metadata
+    assert "Version: 0.9.0" in metadata
     assert "openearth_skill_sdk/xskill.py" in names
     assert "openearth_skill_sdk/drafts.py" in names
+    assert "openearth_skill_sdk/benchmark.py" in names
+    assert "openearth_skill_sdk/environments.py" in names
+    assert "openearth_skill_sdk/target.py" in names
     assert not any(
         forbidden in name
         for name in names
@@ -50,3 +53,5 @@ def test_openearth_delivery_documents_atom_score_sources():
     assert "atom_id" in usage
     assert "openearth-publication-queue.json" in usage
     assert "latest-wins" in usage
+    assert "run_benchmark" in usage
+    assert "openearth-benchmark-state.json" in usage

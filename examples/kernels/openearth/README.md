@@ -19,6 +19,11 @@ ready TrajectoryResource
           context.publisher.submit(...)
 ```
 
+在启用内部 benchmark 时，full rebuild 会先由 OpenEarth target harness 运行配置的 case，
+把每个 rollout 转成一个平台格式 Markdown，记录 oracle score，再调用
+`context.trajectories.create_temp(...)`。临时轨迹进入 XSkill 拆分队列；拆成唯一 Atom
+并变为 ready 后，在后续 Kernel 调用中进入上面的统一训练流。
+
 桥接层仅提交 `atom_split_status == "ready"` 的轨迹。输入范围严格遵循
 `context.invocation`：
 
@@ -44,26 +49,28 @@ SDK 将每条轨迹展开成 atom，并以 `<trajectory resource id>#<atom id>` 
 
 一次 Kernel 运行大致分为以下阶段：
 
-1. **选择输入**：优先处理本轮变化且已经完成 atom 拆分的轨迹；手动全量运行时读取全部
+1. **可选 benchmark 生产**：启用 benchmark 的 full rebuild 先运行尚未登记的 case，
+   计算 oracle score，并创建 pending 临时轨迹；这些轨迹等待 XSkill 拆分，不在当轮训练。
+2. **选择输入**：优先处理本轮变化且已经完成 atom 拆分的轨迹；手动全量运行时读取全部
    ready 轨迹；没有变化且不是全量重建时本轮不做任何训练。
-2. **同步已有 Skill**：把 XSkill main Skill 的完整只读快照放入 OpenEarth workspace，
+3. **同步已有 Skill**：把 XSkill main Skill 的完整只读快照放入 OpenEarth workspace，
    并对没有 `level` 的新增或变化 Skill 做一次批量分类。
-3. **构造训练证据**：把每条轨迹展开成 atom，真实数据使用 `atom.ux_score`，临时评测
+4. **构造训练证据**：把每条轨迹展开成 atom，真实数据使用 `atom.ux_score`，临时评测
    数据使用已记录的 OpenEarth oracle score。增量运行通过稳定证据 ID 和内容签名跳过
    历史未变化 atom；全量重建会重新蒸馏历史 atom，但同一批内仍按 `atom_id` 去重，
    同 ID 不同内容或评分会直接报冲突。
-4. **划分反思通道**：UX 7–10 的成功 atom 用于提炼可复用 Planning Skill；UX 1–5
+5. **划分反思通道**：UX 7–10 的成功 atom 用于提炼可复用 Planning Skill；UX 1–5
    的失败 atom 先检索已有 Planning Skill，找不到时生成临时诊断计划，再反思产生
    Functional 修复候选。
-5. **整理候选**：对本轮 Functional 候选做一次全局 curation，可保留、修改、合并或
+6. **整理候选**：对本轮 Functional 候选做一次全局 curation，可保留、修改、合并或
    丢弃候选，同时校验其 atom 来源。
-6. **生成草稿**：候选名称与已有 Skill 完全相同时生成 update draft，并保留原 bundle；
+7. **生成草稿**：候选名称与已有 Skill 完全相同时生成 update draft，并保留原 bundle；
    否则生成 create draft。
-7. **交给 XSkill 发布**：SDK 只返回 `SkillDraft`。Kernel 再通过
+8. **交给 XSkill 发布**：SDK 只返回 `SkillDraft`。Kernel 再通过
    `context.publisher.submit(...)` 发布；已有 active staging 的 Skill 会进入 OpenEarth
    待发布队列。
 
-当前到第 6 步即结束 OpenEarth 训练，不执行 OpenEarth candidate rollout 或 Gate。
+内部 benchmark 只负责产生训练证据，不执行 candidate rollout 或 OpenEarth Gate。
 XSkill 自己的 staging/canary 发布机制不受影响。
 
 全量重建仍以当前 main Skill 作为只读反思上下文，并复用
@@ -94,7 +101,7 @@ SDK 源码位于本地 `sdk/`，由本目录的 `.gitignore` 排除，不会提�
 
 ```bash
 python -m pip install \
-  examples/kernels/openearth/wheels/openearth_skill_sdk-0.8.0-py3-none-any.whl
+  examples/kernels/openearth/wheels/openearth_skill_sdk-0.9.0-py3-none-any.whl
 ```
 
 然后复制 Kernel 目录并创建私有配置：
@@ -129,5 +136,5 @@ python -m pip wheel \
   .
 ```
 
-每次重建后同步更新 `SHA256SUMS`。wheel 中只应包含运行时代码，不应包含 Gate、
-dataset task/evaluator 或 SDK 测试。
+每次重建后同步更新 `SHA256SUMS`。wheel 包含 benchmark dataset/environment/target
+harness 和运行时代码，但不包含 Gate、组合 experiment 或 SDK 测试。

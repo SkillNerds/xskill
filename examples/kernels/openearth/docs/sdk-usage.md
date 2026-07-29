@@ -141,8 +141,28 @@ OpenEarth 不调用 XSkill 内部 UX scorer，也不读取轨迹级分数，因�
 
 ## 评测数据和 oracle 分数
 
-评测器先执行 OpenEarth rollout 并计算 oracle score，再使用同一个稳定
-`trajectory_id` 依次写分和创建临时轨迹：
+启用 `benchmark.enabled` 后，Kernel 在 full rebuild 中调用 OpenEarth
+`run_benchmark(...)`。harness 从 `benchmark.dataset_dir` 加载 case，运行 target agent
+并用环境 oracle 评分，再使用同一个稳定 `trajectory_id` 依次写分和创建临时轨迹。
+Gate 不会运行。
+
+```yaml
+benchmark:
+  enabled: true
+  dataset_dir: /absolute/path/to/officeqa
+  env: officeqa
+  split: train
+  model: deepseek/deepseek-v4-flash
+  binary: opencode
+  agent_timeout: 900
+  parallel: 1
+  n_cases: 10
+  # 修改 sample_id 可为同一批 case 主动生成一组新 rollout
+  sample_id: default
+  officeqa_docs_dirs: /absolute/path/to/parsed/docs
+```
+
+Kernel 的登记动作等价于：
 
 ```python
 from openearth_skill_sdk import record_oracle_score
@@ -174,6 +194,15 @@ assert temp.atom_split_status == "pending"
 `create_temp` 只登记待拆分轨迹；不要轮询。平台完成 atom 拆分后，它会在后续 Kernel
 调用中以 `ready` 资源出现，此时 SDK 按 `trajectory.trajectory_id` 找到已保存的 oracle
 分数并训练。
+
+benchmark 状态保存在
+`<context.workspace>/openearth-benchmark-state.json`。轨迹 ID 由数据路径、环境、split、
+case 内容、target model 和 `sample_id` 生成；相同 case 登记成功后不会在后续 full
+rebuild 中重复运行。要主动生成一组新 rollout，可以修改 `benchmark.sample_id`。
+
+当前恢复的 harness 支持 `officeqa`、`spreadsheet` 和 `livemath`。其任务工作目录和
+OpenCode 隔离数据位于 `<context.workspace>/openearth-benchmark-runs`，完成后清理临时
+目录；正式训练证据仍由 XSkill temp trajectory 保存。
 
 一个 oracle 分数必须只对应一个 atom，因此评测 Markdown 应表达一个完整的
 User/Assistant rollout。若 ready 临时轨迹被拆成多个 atom，SDK 会报错，避免把一个 case
