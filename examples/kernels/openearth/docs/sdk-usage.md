@@ -13,6 +13,7 @@ result = train_skills(
     trajectories=ready_trajectories,
     existing_skills=existing_skills,
     run_id=context.run_id,
+    full_rebuild=context.invocation.full_rebuild,
 )
 ```
 
@@ -39,6 +40,25 @@ class ScoredAtomInput:
 
 普通接入方不需要自行构造它；它也是 SDK 的公开中间契约，便于脱离 XSkill
 `TrajectoryResource` 做单元测试或其他 provider 适配。
+
+## 增量与全量重建
+
+Kernel 按下面的三态契约选择 SDK 输入：
+
+| `changed_trajectory_ids` | `full_rebuild` | 本轮行为 |
+| --- | --- | --- |
+| 非空 | 任意值 | 只选择 changed 中的 ready 轨迹 |
+| 空 | `True` | 选择全部 ready 轨迹 |
+| 空 | `False` | 立即结束；不读取 Skill，也不调用 SDK |
+
+changed 始终拥有输入范围的优先级。`full_rebuild=True` 会传给 SDK，使所选轨迹中的历史
+atom 绕过跨运行签名去重并重新进入蒸馏。无论是否重建，同一训练批次都按稳定
+`atom_id` 去重：ID 和签名都相同只处理一次；同一 ID 对应不同证据、内容或评分时抛出
+冲突错误，避免重复证据产生不一致结果。
+
+全量重建仍读取当前 main Skill 作为反思上下文，但 `name + main_commit_sha` 未变化的
+Skill 会命中原分类缓存，不再次调用分类 LLM。SDK 和 Kernel 都不会因为某个旧 Skill
+没有在本轮重新生成就将它删除。
 
 ## 已有 Skill 的分层
 
@@ -72,7 +92,9 @@ SDK 按以下顺序决定反思层级：
 ```text
 ready trajectories
   → 展开并标准化 ScoredAtomInput
-  → 使用 evidence_id + 内容/评分签名过滤未变化 atom
+  → 批内按 atom_id 去重
+  → 增量时使用 evidence_id + 内容/评分签名过滤历史未变化 atom
+     （full rebuild 绕过这一层）
   → 按 UX 分数划分 success / failure / deferred
   → success：提炼 Planning 候选
   → failure：检索 Planning 上下文或生成临时诊断计划
@@ -83,8 +105,9 @@ ready trajectories
 
 具体行为：
 
-- **证据去重**：`evidence_id` 由轨迹资源 ID 和 atom ID 组成；内容、评分、评分来源或摘要
-  发生变化时，同一 atom 可以重新进入反思。
+- **证据去重**：批内先按 `atom_id` 去重并拒绝冲突副本。跨运行状态使用
+  `evidence_id`（轨迹资源 ID 与 atom ID）及内容/评分签名；增量时内容、评分、评分来源
+  或摘要发生变化才重新进入反思，全量重建则重新处理历史证据。
 - **Planning 通道**：成功 atom 用来提炼跨步骤、可复用的规划；本轮新 Planning 候选与
   已有 Planning Skill 一起构成失败通道的检索库。
 - **Functional 通道**：每个失败 atom 先检索相关 Planning Skill；没有匹配项时只生成

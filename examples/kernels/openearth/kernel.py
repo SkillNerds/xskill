@@ -56,14 +56,34 @@ class OpenEarthKernel(BaseKernel):
 
     def run(self, context, run_interval: int = 30) -> KernelRunResult:
         del run_interval
-        all_trajectories = context.trajectories.list()
-        changed = set(context.invocation.changed_trajectory_ids)
-        selected = [
-            trajectory
-            for trajectory in all_trajectories
-            if (not changed or trajectory.id in changed)
-            and trajectory.atom_split_status == "ready"
-        ]
+        changed = tuple(context.invocation.changed_trajectory_ids)
+        full_rebuild = bool(context.invocation.full_rebuild)
+        if changed:
+            changed_ids = set(changed)
+            selected = [
+                trajectory
+                for trajectory in context.trajectories.list()
+                if trajectory.id in changed_ids
+                and trajectory.atom_split_status == "ready"
+            ]
+        elif full_rebuild:
+            selected = [
+                trajectory
+                for trajectory in context.trajectories.list()
+                if trajectory.atom_split_status == "ready"
+            ]
+        else:
+            return KernelRunResult(
+                metrics={
+                    "selected_trajectories": 0,
+                    "full_rebuild": False,
+                    "no_changes": True,
+                },
+                notes=(
+                    "No changed trajectories and full_rebuild is false; "
+                    "OpenEarth did not invoke the SDK."
+                ),
+            )
 
         result = train_skills(
             config_path=context.config_path,
@@ -71,6 +91,7 @@ class OpenEarthKernel(BaseKernel):
             trajectories=selected,
             existing_skills=_existing_skills(context),
             run_id=context.run_id,
+            full_rebuild=full_rebuild,
         )
 
         submitted = []
@@ -99,6 +120,8 @@ class OpenEarthKernel(BaseKernel):
         metrics = {
             **dict(result.metrics),
             "selected_trajectories": len(selected),
+            "full_rebuild": full_rebuild,
+            "no_changes": False,
             "processed_atoms": len(result.processed_atom_ids),
             "generated_drafts": len(result.drafts),
             "published_drafts": len(submitted),
