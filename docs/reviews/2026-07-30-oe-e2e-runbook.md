@@ -65,13 +65,13 @@ ls /home/admin/data/xskill_eval/sample_dataset/traj_*.md | sort | head -10 \
 | 项 | 值 |
 | --- | --- |
 | 日期 | 2026-07-30 |
-| E2E_HOME | （执行时填写） |
+| E2E_HOME | `/tmp/oe-e2e-home-20260730`（已备：10 条用户轨 + OE kernel 配置 + mini spreadsheet 题集） |
 | 用户轨 10 条 | 源：`/home/admin/data/xskill_eval/sample_dataset/` |
-| 题集 | `/home/admin/leaderboard/datasets/officeqa` |
-| DeepSeek | `deepseek-v4-flash` @ `api.deepseek.com` |
-| 用户轨拆完 | ⏳ |
-| temp 拆完并入训 | ⏳（BDD 已绿；现场 e2e ⏳） |
-| PK 结论 | ⏳ 等真实打分 |
+| 题集 | `/home/admin/xarena_out/spreadsheet-mini-5-task-fast` |
+| DeepSeek | `deepseek-v4-flash` @ `api.deepseek.com`（探活通过） |
+| 用户轨拆完 | ⏳ 待在隔离 home 起 serve |
+| temp 拆完并入训 | BDD 已绿；现场 e2e ⏳ |
+| PK 结论 | ⏳ 等真实 UX 打分攒齐（`min_samples=5`） |
 
 ## 备注
 
