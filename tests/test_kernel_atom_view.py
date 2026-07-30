@@ -172,6 +172,35 @@ def test_create_temp_accepts_minimal_user_markdown(tmp_path):
     written = temp_root / "traj_kernel_temp.md"
     assert written.is_file()
     assert written.read_text(encoding="utf-8") == "## User\n\nhello temp\n"
+    temp_watch = next(
+        item for item in reader.directories() if item.ecosystem == "kernel-temp"
+    )
+    assert temp_watch.auto_index is True
+
+
+def test_create_temp_reenables_auto_index_on_existing_temp_watch_dir(tmp_path):
+    """Old kernel-temp rows registered with auto_index=False must be flipped on."""
+    from xskill.pipeline.registry import Registry, register_dir
+
+    registry_db = tmp_path / "registry.db"
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    register_dir(
+        temp_root,
+        label="kernel-temp",
+        ecosystem="kernel-temp",
+        auto_index=False,
+        db_path=registry_db,
+    )
+    assert Registry(registry_db).list()[0].auto_index is False
+
+    reader = TrajectoryReader(registry_db, temp_root=temp_root)
+    reader.create_temp("## User\n\nhello\n", trajectory_id="traj_temp_reenable")
+    temp_watch = next(
+        item for item in reader.directories() if item.ecosystem == "kernel-temp"
+    )
+    assert temp_watch.auto_index is True
+    assert Registry(registry_db).list()[0].auto_index is True
 
 
 def test_feed_snapshot_excludes_pending_trajectories(tmp_path):
