@@ -1046,6 +1046,15 @@ def create_app(home_root: Path | str | None = None,
             _skill_dir,
         )
 
+        # 预热 skills_catalog：海量库首次 /skills 否则会在请求路径上 backfill 数秒。
+        try:
+            from xskill.skill.catalog_store import ensure_skills_catalog
+            # skillhub 合入由 dashboard 路由按需做；此处只预热 native 投影，
+            # 避免首个 /skills 在请求路径上扫盘灌表。
+            ensure_skills_catalog(_skill_dir, skillhub=None)
+        except Exception:
+            logger.exception("skills_catalog warmup failed (first /skills may be slow)")
+
         # 生态自动检测 + 一次性入库已迁到常驻 watcher 子进程
         # (pipeline.watcher_factory.ingest_detected_ecosystems_once),web 进程不再起
         # 常驻 ingester 线程。
