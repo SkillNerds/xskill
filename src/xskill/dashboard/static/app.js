@@ -1294,15 +1294,18 @@ document.getElementById('traj-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('traj-open').click();
 });
 
+// ═════════════ P2:登录/角色 + 我的/管理/设置 ═════════════
+// IDENT 必须在首次 route() 之前完成初始化：route() 会读它决定默认落地页
+// （普通用户 → 我的）。若放在 route() 之后，开机即 ReferenceError，后续
+// load* 与 initIdent 全部中断，表现为未登录空骨架，仅流水线页仍可用。
+let IDENT = null;   // {user, role} | null
+
 // ── 启动：各端点独立加载，单个失败不拖垮整页 ───────────────────
 route();
 for (const f of [loadOverview, loadRates, loadPipeline, loadDomain, loadCost,
   loadSkills, loadDirs, loadUsersStatus, loadTags, loadCanary]) {
   f().catch(e => console.error(e));
 }
-
-// ═════════════ P2:登录/角色 + 我的/管理/设置 ═════════════
-let IDENT = null;   // {user, role} | null
 
 async function jpost(u, body, method) {
   const r = await fetch(u, { method: method || 'POST',
