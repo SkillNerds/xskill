@@ -185,6 +185,8 @@ CREATE TABLE IF NOT EXISTS atom_adoption (
     was_new     INTEGER       -- 1=首次加入 0=覆盖
 );
 CREATE INDEX IF NOT EXISTS idx_atom_adopt ON atom_adoption(atom_id);
+-- 血缘/主贡献人按 skill 过滤（skill_lineage、skill_main_producers 的 IN 查询）
+CREATE INDEX IF NOT EXISTS idx_atom_adopt_skill ON atom_adoption(skill);
 
 CREATE TABLE IF NOT EXISTS canary_decision (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -59,15 +61,36 @@ def _traj_of_atom(atom_id: str) -> str:
     return stem if stem and idx.isdigit() else ""
 
 
+_TRAJ_USER_TTL_SECONDS = 5.0
+_traj_user_cache: dict[str, tuple[float, dict[str, str]]] = {}
+_traj_user_lock = threading.Lock()
+
+
 def _traj_user_map(db_path: Optional[Path] = None) -> dict[str, str]:
-    """filename stem → user_key。调用方批量算贡献人时只建一次。"""
-    with pooled_connection(db_path) as conn:
-        return {
-            (r["filename"][:-3] if r["filename"].endswith(".md")
-             else r["filename"]): (r["user_key"] or "")
-            for r in conn.execute(
-                "SELECT filename, user_key FROM trajectories").fetchall()
-        }
+    """filename stem → user_key（5s TTL + 单飞）。
+
+    本映射要全表扫 ``trajectories``，而「我的」页一次首屏会经多个端点
+    各自调到这里；短窗缓存把一波请求收敛成一次扫描，锁内构建保证到期
+    瞬间只有一个线程真扫。返回的是缓存内共享 dict，调用方只读不改写。
+    """
+    key = str(db_path or "")
+    with _traj_user_lock:
+        hit = _traj_user_cache.get(key)
+        if hit and hit[0] > time.monotonic():
+            return hit[1]
+        if len(_traj_user_cache) > 8:
+            _traj_user_cache.clear()
+        with pooled_connection(db_path) as conn:
+            mapping = {
+                (r["filename"][:-3] if r["filename"].endswith(".md")
+                 else r["filename"]): (r["user_key"] or "")
+                for r in conn.execute(
+                    "SELECT filename, user_key FROM trajectories").fetchall()
+            }
+        _traj_user_cache[key] = (
+            time.monotonic() + _TRAJ_USER_TTL_SECONDS, mapping,
+        )
+        return mapping
 
 
 def skill_contributors(skill: str, *, min_weight: int = CONTRIBUTOR_MIN_WEIGHT,

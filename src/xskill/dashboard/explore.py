@@ -16,7 +16,11 @@ from xskill.pipeline.registry import (
     dashboard_visible_trajectory_sql,
     pooled_connection,
 )
-from xskill.dashboard.metrics import _resolve_local_root, load_usage_records
+from xskill.dashboard.metrics import (
+    SingleFlightTtlCache,
+    _resolve_local_root,
+    load_usage_records,
+)
 
 
 class TrajExplorer:
@@ -141,6 +145,42 @@ class TrajExplorer:
         return out
 
 
+_VISIBLE_TRAJ_TTL_SECONDS = 5.0
+_visible_traj_cache = SingleFlightTtlCache(
+    ttl_seconds=_VISIBLE_TRAJ_TTL_SECONDS, max_entries=8)
+
+
+def _visible_traj_info(db_path: Optional[Path]) -> dict[str, dict]:
+    """可见轨迹 stem → {user, model, root}（5s TTL + 单飞）。
+
+    本映射要全量 JOIN ``trajectories × watch_dirs``；skill_lineage 被
+    「我的」页贡献图按 skill 逐个调用，逐调逐扫会随轨迹量线性放大。
+    短窗缓存把一页 N 个 skill 的请求收敛成一次扫描。返回共享只读 dict。
+    """
+    from xskill.config import get_registry_db_path
+
+    def build() -> dict[str, dict]:
+        with pooled_connection(db_path) as conn:
+            wd_rows = conn.execute(
+                "SELECT t.filename fn, t.source_model model, w.label label,"
+                " w.path wpath FROM trajectories t"
+                " JOIN watch_dirs w ON t.watch_dir_id=w.id"
+                f" WHERE {dashboard_visible_trajectory_sql('t', 'w')}"
+            ).fetchall()
+        db_dir = (
+            Path(db_path).parent if db_path else get_registry_db_path().parent
+        )
+        out: dict[str, dict] = {}
+        for r in wd_rows:
+            stem = r["fn"][:-3] if r["fn"].endswith(".md") else r["fn"]
+            out[stem] = {"user": r["label"] or "(local)",
+                         "model": r["model"] or "",
+                         "root": _resolve_local_root(r["wpath"], db_dir)}
+        return out
+
+    return _visible_traj_cache.get_or_build(str(db_path or ""), build)
+
+
 def skill_lineage(skill_dir: Path, name: str,
                   db_path: Optional[Path] = None) -> dict:
     """skill 血缘（图①下半区）：贡献原子（adoption 事件 + 在途 candidates）
@@ -153,20 +193,7 @@ def skill_lineage(skill_dir: Path, name: str,
         adoption = conn.execute(
             "SELECT atom_id, weightscore, ts FROM atom_adoption WHERE skill=?"
             " ORDER BY ts", (name,)).fetchall()
-        wd_rows = conn.execute(
-            "SELECT t.filename fn, t.source_model model, w.label label,"
-            " w.path wpath FROM trajectories t"
-            " JOIN watch_dirs w ON t.watch_dir_id=w.id"
-            f" WHERE {dashboard_visible_trajectory_sql('t', 'w')}"
-        ).fetchall()
-    from xskill.config import get_registry_db_path
-    db_dir = Path(db_path).parent if db_path else get_registry_db_path().parent
-    traj_info: dict[str, dict] = {}
-    for r in wd_rows:
-        stem = r["fn"][:-3] if r["fn"].endswith(".md") else r["fn"]
-        traj_info[stem] = {"user": r["label"] or "(local)",
-                           "model": r["model"] or "",
-                           "root": _resolve_local_root(r["wpath"], db_dir)}
+    traj_info = _visible_traj_info(db_path)
     from xskill.skill.candidates import load_candidates
     from xskill.dashboard.metrics import _traj_of_atom
     entries: dict[str, dict] = {}

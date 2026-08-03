@@ -44,6 +44,28 @@ _RECO_TRIGGER_TTL_SECONDS = 5.0
 _reco_trigger_cache = SingleFlightTtlCache(
     ttl_seconds=_RECO_TRIGGER_TTL_SECONDS, max_entries=32)
 
+_ADOPTION_ROWS_TTL_SECONDS = 5.0
+_adoption_rows_cache = SingleFlightTtlCache(
+    ttl_seconds=_ADOPTION_ROWS_TTL_SECONDS, max_entries=8)
+
+
+def _adoption_rows(db_path: Optional[Path]) -> list[dict]:
+    """全量 atom_adoption 行（5s TTL + 单飞）。
+
+    贡献归属判定要在 Python 侧按 atom_id 内嵌 traj_id 做包含匹配，无法下推
+    SQL；每请求整表搬运随 adoption 体量线性放大。短窗缓存把一波请求收敛成
+    一次扫描。返回共享只读 list，调用方逐条 dict() 后再改。
+    """
+    def build() -> list[dict]:
+        with pooled_connection(db_path) as conn:
+            return [
+                dict(r) for r in conn.execute(
+                    "SELECT atom_id, skill, weightscore FROM atom_adoption",
+                ).fetchall()
+            ]
+
+    return _adoption_rows_cache.get_or_build(str(db_path or ""), build)
+
 
 def _team_ctx():
     from xskill.team.server.api import team_context
@@ -472,9 +494,7 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
                     (user,),
                 ).fetchall()
             }
-            adoption = conn.execute(
-                "SELECT atom_id, skill, weightscore FROM atom_adoption"
-            ).fetchall()
+            adoption = _adoption_rows(db_path)
         # atom_id 内嵌 traj_id（atom_<traj_id>_NNNN）——按包含判定归属
         my_adopted = [dict(a) for a in adoption
                       if any(stem in (a["atom_id"] or "") for stem in my_stems)]
