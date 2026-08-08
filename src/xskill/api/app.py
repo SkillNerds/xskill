@@ -29,6 +29,7 @@ from dulwich.errors import NotGitRepository
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from dulwich.errors import NotGitRepository
 
 from xskill import __version__
 from xskill.config import load_config, get_skill_dir
@@ -508,6 +509,8 @@ def api_search_skills(req: SkillSearchRequest):
     同步 def：embed 是同步网络调用，见 api_search_trajectories 的说明。
     """
     try:
+        if not (_skill_dir / ".skill_index.pkl").exists():
+            return []
         embedding_client = create_embed_client(_config)
         return search_skill_index(
             skill_dir=_skill_dir,
