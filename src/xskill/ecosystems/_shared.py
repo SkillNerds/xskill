@@ -669,6 +669,14 @@ def submit_trajectory(
     ``ingest.mask_patterns``（默认空 = 不替换）。命中段在写 md 之前替换为
     占位符——剥掉评测 harness 的固定外壳，防聚类被任务外壳吸住。
     """
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("trajectory content must be non-empty")
+
+    if format == "json":
+        data = json.loads(content)
+        if not data:
+            raise ValueError("trajectory content must be non-empty")
+
     traj_dir = Path(traj_dir) if traj_dir else get_traj_dir()
     traj_dir.mkdir(parents=True, exist_ok=True)
 
