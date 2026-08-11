@@ -672,10 +672,15 @@ def submit_trajectory(
     traj_dir = Path(traj_dir) if traj_dir else get_traj_dir()
     traj_dir.mkdir(parents=True, exist_ok=True)
 
+    if not str(content or "").strip():
+        raise ValueError("trajectory content must be non-empty")
+
     if not traj_id:
         traj_id = generate_traj_id(traj_dir)
 
     md_content, json_metadata = adapt_trajectory(content, format, metadata)
+    if not str(md_content or "").strip():
+        raise ValueError("trajectory content must be non-empty")
 
     # 落盘前清洗：去 ANSI 转义 + 控制字符（终端/tool 原始输出常掺入），
     # 保证 splitlines 行数 == \n 行数（atom offset 与人类行号一致）、不喂垃圾给模型。
