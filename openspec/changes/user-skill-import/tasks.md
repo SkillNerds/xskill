@@ -5,8 +5,8 @@
 ## 讨论期（当前）
 
 - [x] 0.1 撰写 `proposal.md` / `design.md` / 草案 `specs/` / 本 tasks
-- [ ] 0.2 开 GitHub Issue，挂 OpenSpec 路径，请维护者答 Q1–Q7
-- [ ] 0.3 （可选）docs-only PR：仅合入 `openspec/changes/user-skill-import/**` 便于审阅
+- [x] 0.2 开 GitHub Issue #211，挂 OpenSpec 路径，请维护者答 Q1–Q7
+- [x] 0.3 docs-only draft PR #212：`openspec/changes/user-skill-import/**`
 
 ## P0 — 受控导入 MVP（拍板后）
 
