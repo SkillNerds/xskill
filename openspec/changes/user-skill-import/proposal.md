@@ -1,10 +1,11 @@
 # Feature: 导入用户已有 Skill（User Skill Import）
 
-> 状态：**主干已拍板**（[#211 维护者评论](https://github.com/SkillNerds/xskill/issues/211) + [#213](https://github.com/SkillNerds/xskill/issues/213)）：
-> CLI 定名顶层 `xskill import <path>`；新 skill 直接 main；同名在现有 main 上追加 commit；
-> team 下 client 经新 API 写 server `skill_dir` 再 bundle 推回。剩余行为细节见 `design.md` §6。
-> 实现等 #209、#210 合入 main 后再开 PR。
-> 相邻议题 [#4 UserSkill vs projectSkill](https://github.com/SkillNerds/xskill/issues/4)。
+> 状态：**主要设计已确认**（[#211 维护者评论](https://github.com/SkillNerds/xskill/issues/211) + [#213](https://github.com/SkillNerds/xskill/issues/213)）：
+> CLI 为顶层命令 `xskill import <path>`；新 skill 导入后直接位于 main；
+> 同名导入在现有 main 上追加一次 commit；team 模式下 client 经新增 API 写入
+> server 的 `skill_dir`，再由 bundle 机制推回本地。尚未确定的行为细节见 `design.md` §6。
+> 实现待 #209、#210 合入 main 后再提交 PR。
+> 相邻议题：[#4 UserSkill vs projectSkill](https://github.com/SkillNerds/xskill/issues/4)。
 
 ## Why
 
@@ -13,7 +14,7 @@ skill（`~/.claude/skills/`、`~/.agents/skills/`、团队共享目录、从别�
 `SKILL.md` 包），却没有一条**一等公民**的导入路径，把这些 skill 干净地纳入
 `~/.xskill/skill/` 仓（带 git 生命周期、catalog、索引、harness 安装、team 分发）。
 
-现状是半成品拼盘，体验断裂：
+现状是多个不完整的入口并存，体验割裂：
 
 | 已有入口 | 能做什么 | 缺口 |
 |---|---|---|
@@ -30,11 +31,11 @@ skill（`~/.claude/skills/`、`~/.agents/skills/`、团队共享目录、从别�
 引入 **User Skill Import** 能力：把外部 skill 目录（或 zip）纳入 xskill 自有 skill 仓，
 并保证与后续蒸馏 / canary / sync / search **前向兼容**。
 
-建议交付分层（拍板后拆 PR）：
+建议分层交付（设计确认后拆分为多个 PR）：
 
 1. **P0 本地一等入口（standalone + client）**  
-   - CLI：`xskill skill import <path> [--name] [--force|--skip-existing]`（名称待定）  
-   - 校验 `SKILL.md`（`parse_strict`）、规范化 name、初始化/对齐 git（baby 或直接 main，见 Open Q）  
+   - CLI：顶层命令 `xskill import <path>`（已确认）  
+   - 校验 `SKILL.md`（`parse_strict`）、规范化 name、初始化/对齐 git（已确认：直接进入 main）  
    - 写 catalog、可选触发 index 增量、可选装到已检测 harness  
    - 明确 **不推荐** 用户裸 `cp`；若检测到「仓内无 git 的外来目录」，给出修复命令
 
@@ -43,9 +44,9 @@ skill（`~/.claude/skills/`、`~/.agents/skills/`、团队共享目录、从别�
    - **不做** `--from claude-user` / `--agents` 这类生态扫描旗标（#213：误导入风险；
      路径本身就是最明确的授权）
 
-3. **P2 Team / Server**  
-   - 复用或收敛 `upload` →「进 hub」vs「进 server 自有仓」两条语义，避免再分叉  
-   - 管理员 CLI / API：从路径或 zip 导入 server `skill_dir`（带鉴权）
+3. **P2 Team / Server**（已确认方向）  
+   - `upload` 与 `import` 语义不合并：前者进 hub，后者经新增 API 写入 server `skill_dir`  
+   - client 端 `xskill import` 上送、server 落库、bundle 推回；权限细节见 `design.md` §6 R5
 
 4. **文档与前向兼容**  
    - 在 northbound-api / README 区分：`import`（入自有仓）≠ `upload`（入 user_skill_hub）≠ SkillHub 扫描  
@@ -71,17 +72,16 @@ skill（`~/.claude/skills/`、`~/.agents/skills/`、团队共享目录、从别�
 ## Impact（预估）
 
 - `src/xskill/skill/repo.py`：`import_skill` 重做或旁路新实现  
-- `src/xskill/cli.py`：新增 `skill import`（或顶层 `import-skill`）  
+- `src/xskill/cli.py`：新增顶层命令 `xskill import`  
 - `src/xskill/api/app.py`：`/skills/import` 对齐新语义（路径/zip）  
 - `src/xskill/skill/catalog_store.py` / index / ecosystems install：导入后钩子  
-- `tests/`：校验失败、重名策略、无 SKILL.md、批量 from claude-user  
+- `tests/`：校验失败、同名追加 commit、无 SKILL.md、父目录批量导入  
 - **不新增重依赖**
 
-## 请维护者拍板（摘要）
+## 决定情况（摘要）
 
-完整选项与取舍见 `design.md`。核心二选一（可组合）：
-
-1. **主推 CLI/API 受控导入**（推荐）：禁止把裸 `cp` 当支持路径；提供 `xskill skill import`。  
-2. **允许 `cp` + 守护扫描**：用户可拷进 `skill_dir`，watcher/serve 启动时 heal（git init + catalog）。运维简单，但脏状态与权限边界更糊。
-
-以及：导入后落 **main** 还是 **baby**、重名策略、是否默认装 harness、team 是否与 `upload` 合并语义。
+主要问题已有结论（见 `design.md` §5）：采用 CLI/API 受控导入，命令为顶层
+`xskill import <path>`；导入后直接位于 main；同名在现有 main 上追加一次 commit；
+`upload` 与 `import` 语义不合并。尚待维护者确认的行为细节见 `design.md` §6（R1–R9），
+其中优先级较高的是：源仓库存在未提交修改时的处理（R3）、是否默认安装到 harness
+及循环安装防护（R4）、team 模式下的导入权限（R5）。
