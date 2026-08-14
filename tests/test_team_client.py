@@ -253,6 +253,44 @@ def test_cleanup_removes_skill_not_in_manifest(server_app, tmp_path):
     assert (tmp_path / "client_home" / ".xskill" / "skill" / "fix-foo").is_dir()   # manifest 里的保留
 
 
+def test_colocated_client_does_not_delete_server_skills(tmp_path, monkeypatch):
+    """本机既是 server 又 connect 时，不得按派发清单清空自有仓。"""
+    from xskill.team.shared.protocol import SyncResponse
+
+    xhome = tmp_path / ".xskill"
+    canonical = xhome / "skill"
+    keep = canonical / "unassigned"
+    keep.mkdir(parents=True)
+    (keep / "SKILL.md").write_text("# keep\n", encoding="utf-8")
+    (xhome / "team_server.json").write_text('{"join_token": "t"}', encoding="utf-8")
+    monkeypatch.setattr("xskill.config.XSKILL_HOME", xhome)
+    monkeypatch.setattr(
+        "xskill.config.get_team_server_state_path",
+        lambda: xhome / "team_server.json",
+    )
+    monkeypatch.setattr("xskill.config.get_skill_dir", lambda: canonical)
+
+    tc = TeamClient(
+        state=ClientState(
+            server_url="http://testserver", client_id="c", join_token="t",
+        ),
+        http=SimpleNamespace(),
+        skill_dir=canonical,
+        cursor_path=tmp_path / "cursor.json",
+        history_path=tmp_path / "history.jsonl",
+        home_root=tmp_path / "home",
+        min_change_interval=0,
+    )
+    assert tc.skill_dir == xhome / "client_skill"
+    empty = SyncResponse(slots=[], server_time=1.0)
+    tc.cleanup(empty)
+    assert keep.is_dir()
+
+    tc.skill_dir = canonical
+    tc.cleanup(empty)
+    assert keep.is_dir()
+
+
 def test_cleanup_reaps_orphaned_ecosystem_links(server_app, tmp_path):
     """cleanup 按生态目录反向收孤儿 link:工作副本被 out-of-band 删除后残留、
     指向 xskill 工作副本根、且不在 manifest 的 dangling link 要收掉;第三方 link /
