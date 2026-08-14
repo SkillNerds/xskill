@@ -1,8 +1,10 @@
 # Feature: 导入用户已有 Skill（User Skill Import）
 
-> 状态：**设计草案（讨论中）**。本提案只做前向兼容的能力边界与入口选型，
-> 实现等 Open Questions（见 `design.md`）拍板后再开实现 PR。
-> 关联讨论：Issue（本提案提交后挂链）、相邻议题 [#4 UserSkill vs projectSkill](https://github.com/SkillNerds/xskill/issues/4)。
+> 状态：**主干已拍板**（[#211 维护者评论](https://github.com/SkillNerds/xskill/issues/211) + [#213](https://github.com/SkillNerds/xskill/issues/213)）：
+> CLI 定名顶层 `xskill import <path>`；新 skill 直接 main；同名在现有 main 上追加 commit；
+> team 下 client 经新 API 写 server `skill_dir` 再 bundle 推回。剩余行为细节见 `design.md` §6。
+> 实现等 #209、#210 合入 main 后再开 PR。
+> 相邻议题 [#4 UserSkill vs projectSkill](https://github.com/SkillNerds/xskill/issues/4)。
 
 ## Why
 
@@ -37,9 +39,9 @@ skill（`~/.claude/skills/`、`~/.agents/skills/`、团队共享目录、从别�
    - 明确 **不推荐** 用户裸 `cp`；若检测到「仓内无 git 的外来目录」，给出修复命令
 
 2. **P1 批量 / 生态源**  
-   - `xskill skill import --from claude-user`（扫 `~/.claude/skills/*`）  
-   - `--from agents`（`~/.agents/skills`）  
-   - 目录批量：`import <parent-dir> --all`
+   - 批量 = **直接给父目录路径**：`xskill import ~/.claude/skills/`（一次收入多个）  
+   - **不做** `--from claude-user` / `--agents` 这类生态扫描旗标（#213：误导入风险；
+     路径本身就是最明确的授权）
 
 3. **P2 Team / Server**  
    - 复用或收敛 `upload` →「进 hub」vs「进 server 自有仓」两条语义，避免再分叉  

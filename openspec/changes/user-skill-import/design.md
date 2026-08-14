@@ -1,6 +1,8 @@
 # Design — User Skill Import
 
-> 状态：讨论草案。§5 Open Questions 拍板后补齐 `specs/` SHALL 细则并拆实现 tasks。
+> 状态：**主干已拍板**（#211 维护者评论 + #213），见 §5；`specs/` 已按拍板改为终稿口径。
+> 剩余待确认的行为细节收敛在 §6。与本文早期草案冲突处（Q1 走 baby、Q2 拒绝）以 #213 为准。
+> 实现等 #209、#210 合入 main 后再开 PR（理由见 #213）。
 
 ## 1. Context（现状）
 
@@ -84,11 +86,12 @@ xskill skill import ~/.claude/skills/my-foo
 
 把 `upload` 扩展成「可选写入 server skill_dir」。无法覆盖 standalone；且 hub 与自有仓语义继续缠在一起。
 
-### 推荐组合
+### 推荐组合（已被 #213 采纳的形态）
 
-- **主：S1**（CLI + 共用库函数 + API 对齐）  
-- **辅：对裸 cp 只检测告警 / `--heal` 显式修复**（弱化 S2）  
-- **Team：保留 `upload`→hub；另增「admin import 进 server 仓」或 `import --to server`（P2）**
+- **主：S1**（CLI + 共用库函数 + API 对齐），CLI 定名顶层 `xskill import <path>`
+- **辅：对裸 cp 只检测告警 / `--heal` 显式修复**（弱化 S2，终稿见 §6 R6）
+- **Team：`upload`→hub 不动；client `xskill import` 经新 API 写 server `skill_dir`。
+  #213 明确不做 `upload --target=hub|repo` 开关——两条命令、两处落点**
 
 ## 3. 目标架构（S1）
 
@@ -157,57 +160,73 @@ xskill skill import --from claude-user          # 批量，P1
 
 提案要求：**命名与帮助文案禁止混用「导入」「上传」**。
 
-## 5. Open Questions（请在 issue 回复）
+## 5. 拍板结果（Q1–Q7 → #211 维护者评论 + #213）
 
-**Q1 — 导入后初始分支？**
+| 原问题 | 结论 | 出处 |
+|---|---|---|
+| Q1 初始分支 | **直接 main**。用户导入的是成品，不走 baby 再蒸馏。`--as-baby` 不做 | #213 |
+| Q2 重名 | **不拒绝、不覆盖**：在现有 main 上**追加一次 commit**，工作区变成上传内容形状；git 历史与盘上 `.ux_scores.jsonl` / `.candidates.yml` sidecar 全保留。目标停在 baby 或有 staging → 拒绝并说明 | #213 |
+| Q3 源自带 `.git` | **新名字**：同步源仓，最新 `main`（缺 main 取最新分支 HEAD）为演进起点，目标仓保证有 `main`。**同名**：以目标仓历史为准，源历史写进 commit message，不换仓 | #211 评论 + #213 |
+| Q4 默认 install | **未拍板** → 移入 §6 R4 | — |
+| Q5 server 入口 | client 走 **CLI `xskill import` → 新 API 送 server `skill_dir`**（不是 `skill_hub/upload`，也不是 `upload --target`）；随后走既有 bundle 分发 + client 留档 checkout | #211 评论 + #213 |
+| Q6 裸 `cp` | #213 未推翻草案建议：**检测 + 提示，不静默 heal**（终稿待 §6 R6 一并确认） | 草案默认 |
+| Q7 与 #4 边界 | 本提案只覆盖「进入 xskill 自有仓」；UserSkill/projectSkill 挂载另议 | 草案默认，未被推翻 |
 
-- (a) 直接 **main**（用户已有成品，默认可分发）  
-- (b) **baby**（强制走一遍 SkillEdit/晋升，更一致但烦）  
-- (c) 默认 main，`--as-baby` 可选  
+CLI 形态定为顶层 **`xskill import <path>`**；同时支持单 skill 目录与多 skill 父目录；
+**不做** `--agents` / `--from <生态>` 扫描旗标（误导入风险）。同名策略与「纳入自有仓后
+还能改写（脚本化）」在 #213 同期设计，实现等 #209 / #210 合入。
 
-**Q2 — 重名？**
+## 6. 剩余待确认的行为细节（新 Open Questions，建议默认可直接反对）
 
-- (a) 拒绝（默认）  
-- (b) `--force` 覆盖（丢本地仓）  
-- (c) `--rename` / 自动后缀  
+拍板把主干钉死了，但把 import 写成可实现的 spec 还差下面这些。每条附建议默认：
 
-**Q3 — 源目录已有 `.git`？**
+**R1 — 单/批判定与混合目录**
+根有 `SKILL.md` → 单 skill；否则扫一层子目录取含 `SKILL.md` 者，不递归。
+*混合情况*（根有 `SKILL.md`，子目录里也有）：按单 skill 处理，子目录视为该 skill 的资产。
 
-- (a) 丢弃历史，按 xskill 布局重建  
-- (b) 尽量保留 remote/history（复杂，易和外置 remote 冲突）  
+**R2 — skill 名字以谁为准**
+建议：`frontmatter.name`（过 slug 校验）为准；与源目录 basename 不一致时以 frontmatter
+为准并在输出中提示。slug 非法 → 拒绝（不自动改名）。
 
-**Q4 — 是否默认 `install` 到已检测 harness？**
+**R3 — 源仓工作区是脏的（有未提交修改）**
+建议：以**工作区字节**为准导入（用户看到什么就导入什么），历史照搬后在顶上补一个
+「import: uncommitted changes」commit；而不是静默取 HEAD 丢掉用户最新编辑。
 
-- (a) 默认安装  
-- (b) 默认不装，`--install` 才装  
-- (c) 若源路径已是某 harness 的 skill 目录，只入仓、不再 symlink 回去（防环）  
+**R4 — 是否默认 install 到已检测 harness（原 Q4）**
+建议：默认安装（与蒸馏 skill 毕业后的 `_install_skill_to_all_detected` 对齐），
+但**防环**：源路径若已位于某 harness 的 skills 目录内，跳过该 harness 的安装
+（目标已存在同路径，symlink 回源会成环或自指）。
 
-**Q5 — Server 导入主入口？**
+**R5 — team 模式下谁有权 import 到 server 仓**
+import 直接改 server 自有仓的 main，比 upload（hub 旁路）权限敏感。
+建议：默认所有已 connect 成员可导入**新名字**；**同名追加 commit** 是否限 admin，请拍板。
 
-- (a) 仅在 server 主机跑 CLI  
-- (b) 鉴权 API 收 zip（admin）  
-- (c) 扩展 `upload` 增加 `?target=repo|hub`  
+**R6 — 裸 `cp` 的终稿（原 Q6）**
+建议维持：watcher 检测到 `skill_dir` 下无 `.git` 的目录 → 日志警告 + 提示
+`xskill import --heal <dir>`；不静默改盘。
 
-**Q6 — 裸 `cp` 策略？**
+**R7 — 幂等**
+同名且上传内容与当前 main 树完全一致：建议 no-op 并提示「已是最新」，不产生空 commit。
 
-- (a) 不支持；文档明确  
-- (b) 检测 + 提示 `--heal`  
-- (c) 自动 heal（最不推荐）  
+**R8 — 大小与敏感文件**
+建议沿用 upload 的 20MB 上限；默认排除 `.env` / `*.pem` 等常见秘密文件并警告。
 
-**Q7 — 与 #4 UserSkill/projectSkill？**
+**R9 — `metadata.origin: imported` 标记（#213 未提）**
+建议保留：写入 `origin: imported`，旧 skill 无字段视为非导入，前向兼容。
 
-本提案是否只声明「导入进入 xskill 自有仓 = user-scoped 可复用 skill」，project-scoped 另开提案？
-
-## 6. 风险
+## 7. 风险
 
 - **环装**：从 `~/.claude/skills/x` import 后再 install 回 CC → 需 path 判断。  
 - **覆盖用户未提交编辑**：`--force` 必须二次确认或 dry-run。  
 - **大目录 / 密钥**：导入应跳过常见秘密文件（`.env`）或限制大小（对齐 upload 20MB）。  
 - **旧 `import_skill` 行为变更**：可能有隐藏调用方；实现时先搜全仓调用再改。
 
-## 7. 测试设计（拍板后落地）
+## 8. 测试设计（对齐 #213 验收）
 
-- 单元：校验失败不落盘；重名策略；name 取自 frontmatter  
-- 集成：import 后 `SkillRepo` 可迭代、catalog 有行、可选 index  
-- 回归：不破坏 `upload` hub 路径  
-- BDD（可选）：`skill_import.feature` — Given 外部 SKILL.md When import Then 仓内可 search
+- 单元：校验失败不落盘；同名追加 commit 后 `git log` 仍含导入前 commit、
+  盘上 `.ux_scores.jsonl` 旧 `commit_sha` 原样；baby/staging 时拒绝；
+  不再 `rmtree`、不再对父目录 commit；name 取自 frontmatter
+- 集成：新 skill import 后 per-skill git、在 main、catalog 有行；
+  team 下 client 能 checkout 到 server 端 sha（旧副本有留档 commit）
+- 回归：`xskill upload` 行为不变（仍进 hub，不进自有仓）
+- BDD（建议）：`skill_import.feature` — 单/批/同名/灰度拒绝 四组场景
