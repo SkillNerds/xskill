@@ -199,11 +199,31 @@ def _target_has_git(target: Path) -> bool:
     return (target / ".git").is_dir()
 
 
+def _notify_imported_catalog(
+    target: Path,
+    catalog_db_path: Path | str | None,
+) -> None:
+    """import 不跑 Agent 工具上下文，git 写出口的 upsert 会被跳过。
+
+    看板技能库读的是 ``skills_catalog`` 投影表，冷启动灌过表之后不再扫盘。
+    这里显式把纳入结果写进 registry，CLI 报成功后面板才能看见。
+    """
+    from xskill.config import get_registry_db_path
+    from xskill.skill.catalog_store import notify_native_upsert
+
+    resolved = (
+        Path(catalog_db_path) if catalog_db_path is not None
+        else get_registry_db_path()
+    )
+    notify_native_upsert(target, db_path=resolved)
+
+
 def import_one_skill(
     skill_dir: Path,
     source: Path,
     *,
     commit_message: str | None = None,
+    catalog_db_path: Path | str | None = None,
 ) -> ImportResult:
     """把一个源技能目录落入 ``skill_dir / source.name``。"""
     source = Path(source).resolve()
@@ -222,6 +242,7 @@ def import_one_skill(
             shutil.copytree(source, copied, symlinks=True)
             return import_one_skill(
                 skill_dir, copied, commit_message=message,
+                catalog_db_path=catalog_db_path,
             )
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -246,6 +267,7 @@ def import_one_skill(
             init_imported_repo_on_main(target, message)
         code, sha, _ = run_git(["rev-parse", "HEAD"], cwd=str(target))
         result.sha = sha.strip() if code == 0 else ""
+        _notify_imported_catalog(target, catalog_db_path)
         logger.info("imported new skill %s sha=%s", name, result.sha[:8])
         return result
 
@@ -271,6 +293,7 @@ def import_one_skill(
 
     code, sha, _ = run_git(["rev-parse", "HEAD"], cwd=str(target))
     result.sha = sha.strip() if code == 0 else ""
+    _notify_imported_catalog(target, catalog_db_path)
     logger.info("imported existing skill %s sha=%s staging=%s",
                 name, result.sha[:8], result.staging_kept)
     return result
