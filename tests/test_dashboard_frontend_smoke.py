@@ -26,11 +26,16 @@ def test_kernel_page_exposes_switch_and_evaluation_contract():
     assert 'id="kernels-list-body"' in html
     assert 'id="kernel-eval-body"' in html
     assert 'id="kernel-runs-body"' in html
+    assert 'id="kernel-log-view"' in html
+    assert 'id="kernel-log-status"' in html
     assert 'id="kernel-export"' in html
     assert "/api/v1/dashboard/admin/kernels" in js
     assert "/api/v1/dashboard/admin/kernels/activate" in js
     assert "/api/v1/dashboard/admin/kernels/export" in js
+    assert "api/v1/dashboard/admin/kernels/logs" in js
+    assert "EventSource" in js
     assert "loadKernels" in js
+    assert "startKernelLogStream" in js
 
 
 def test_index_is_fully_vendored():

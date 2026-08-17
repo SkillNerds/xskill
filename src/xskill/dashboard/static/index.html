@@ -343,6 +343,18 @@
         </div>
 
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
+          <div class="flex items-baseline justify-between gap-3 flex-wrap">
+            <h2 class="font-semibold text-sm">内核进程日志 <span class="font-normal text-[11px] text-slate-400 ml-2">实时捕获 kernel-host 的 stdout 与 print</span></h2>
+            <div class="flex items-center gap-2">
+              <span id="kernel-log-status" class="text-[11px] text-slate-400">未连接</span>
+              <button type="button" id="kernel-log-pause" class="px-2 py-0.5 rounded-lg ring-1 ring-slate-200 text-[11px] text-slate-600 hover:bg-slate-50">暂停滚动</button>
+              <button type="button" id="kernel-log-clear" class="px-2 py-0.5 rounded-lg ring-1 ring-slate-200 text-[11px] text-slate-600 hover:bg-slate-50">清空</button>
+            </div>
+          </div>
+          <pre id="kernel-log-view" class="mt-3 max-h-[320px] overflow-auto rounded-xl bg-slate-950 text-slate-100 p-3 text-[11px] leading-5 font-mono whitespace-pre-wrap break-all">等待连接…</pre>
+        </div>
+
+        <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
           <h2 class="font-semibold text-sm">可用内核 <span class="font-normal text-[11px] text-slate-400 ml-2">bundled + ~/.xskill/kernels/&lt;id&gt;/kernel.py</span></h2>
           <div class="overflow-x-auto"><table class="w-full mt-2 text-[12.5px]">
             <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">内核</th><th class="text-left font-medium">来源 / 触发</th><th class="text-left font-medium">私有空间</th><th class="text-left font-medium">状态</th><th class="text-right font-medium">操作</th></tr></thead>

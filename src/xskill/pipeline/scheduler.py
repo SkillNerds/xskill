@@ -12,8 +12,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import threading
+from pathlib import Path
 
 from xskill.utils.proc import windowless_subprocess_kwargs
 
@@ -31,6 +33,7 @@ class IntervalSubprocessScheduler:
         interval: float,
         timeout: float,
         persistent: bool = False,
+        log_path: str | Path | None = None,
     ):
         if interval <= 0:
             raise ValueError("interval 必须 > 0")
@@ -41,6 +44,7 @@ class IntervalSubprocessScheduler:
         self._interval = float(interval)
         self._timeout = float(timeout)
         self._persistent = bool(persistent)
+        self._log_path = Path(log_path) if log_path is not None else None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen | None = None
@@ -126,14 +130,25 @@ class IntervalSubprocessScheduler:
     def _persistent_loop(self) -> None:
         """守护一个常驻轻量子进程；退出后有界退避重启。"""
         while not self._stop.is_set():
+            log_file = None
             try:
-                process = subprocess.Popen(
-                    self._command,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                popen_kwargs: dict = {
+                    "stdout": subprocess.DEVNULL,
+                    "stderr": subprocess.DEVNULL,
                     **windowless_subprocess_kwargs(),
-                )
+                }
+                if self._log_path is not None:
+                    self._log_path.parent.mkdir(parents=True, exist_ok=True)
+                    log_file = open(self._log_path, "ab")
+                    env = os.environ.copy()
+                    env["PYTHONUNBUFFERED"] = "1"
+                    popen_kwargs["stdout"] = log_file
+                    popen_kwargs["stderr"] = subprocess.STDOUT
+                    popen_kwargs["env"] = env
+                process = subprocess.Popen(self._command, **popen_kwargs)
             except OSError:
+                if log_file is not None:
+                    log_file.close()
                 logger.warning(
                     "常驻调度任务 %s 启动子进程失败",
                     self._name,
@@ -142,6 +157,8 @@ class IntervalSubprocessScheduler:
                 if self._stop.wait(self._interval):
                     return
                 continue
+            if log_file is not None:
+                log_file.close()
             with self._process_lock:
                 self._process = process
             while process.poll() is None:

@@ -744,6 +744,11 @@ def get_logs_dir() -> Path:
     return LOGS_DIR
 
 
+def get_kernel_console_log_path() -> Path:
+    """kernel-host 子进程 stdout/stderr 落盘路径，供算法内核页实时串流。"""
+    return get_logs_dir() / "xskill.kernel.log"
+
+
 def get_traj_dir() -> Path:
     """默认轨迹目录 = 第一个已注册的 watch dir。
 

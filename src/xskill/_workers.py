@@ -268,6 +268,12 @@ def run_kernel_host(
         except Exception:  # noqa: BLE001 - persistent process run boundary
             logger.exception("external kernel %s run failed", active)
         else:
+            logger.info(
+                "external kernel %s run finished (changed=%d, full_rebuild=%s)",
+                active,
+                len(changed),
+                first_run,
+            )
             previous_snapshot = current_snapshot
             first_run = False
         completed_cycles += 1
@@ -469,6 +475,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     configure_logging(get_logs_dir(), debug=False, quiet=False, stdout=True)
+    if args.kind == "kernel-host":
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is not None:
+                try:
+                    reconfigure(line_buffering=True)
+                except (OSError, ValueError):
+                    pass
     if args.kind == "sweep":
         return run_sweep_once(
             server=args.server,

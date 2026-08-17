@@ -1184,12 +1184,14 @@ def create_app(home_root: Path | str | None = None,
         ]
         if team_server:
             kernel_host_command.append("--server")
+        from xskill.config import get_kernel_console_log_path
         kernel_host_scheduler = _SweepSched(
             "kernel-host",
             kernel_host_command,
             interval=1.0,
             timeout=5.0,
             persistent=True,
+            log_path=get_kernel_console_log_path(),
         )
         kernel_host_scheduler.start()
         _schedulers.append(kernel_host_scheduler)

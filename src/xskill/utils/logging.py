@@ -34,6 +34,7 @@ namespace 单独开一份 RotatingFileHandler，写到 ~/.xskill/logs/<name>.log
   xskill.ux_score.log         — LLM 评分员每条 traj 给的分 + reasons
   xskill.ecosystems.log       — CCSessionIngester / 翻牌子 / install
   xskill.registry.log         — watch_dirs / trajectories 表 CRUD
+  xskill.kernel.log           — kernel-host stdout/stderr（调度器捕获，供内核页 SSE）
   agno.log                    — agno 内部（reasoning_content 流式输出多）
   httpx.log                   — HTTP 请求记录（debug 用）
 
