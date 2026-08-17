@@ -106,13 +106,14 @@ run_id=... stage=reflect_planning candidates=2 trajectories=7
 run_id=... stage=run_completed generated_drafts=2 processed_atoms=12
 ```
 
-运行 `xskill serve` / `xskill connect` 时，日志会写入
-`~/.xskill/logs/xskill.log`。kernel-host 的 stdout（含上述 logger 与 SDK print）
-另外落到 `~/.xskill/logs/xskill.kernel.log`，并在 Dashboard 算法内核页实时串流。
+运行 `xskill serve` 时，这些 INFO 写入 `~/.xskill/logs/xskill.kernel.log`
+（`xskill.kernel.*` 组件文件），并冒泡进 `xskill.log`。kernel-host 捕获的 stdout
+（SDK print）也追加进同一份 kernel.log；Dashboard 算法内核页实时串流这份文件，
+并显示最近一条 `stage=`。
 
 ```bash
-tail -f ~/.xskill/logs/xskill.log | grep 'xskill.kernel.openearth'
 tail -f ~/.xskill/logs/xskill.kernel.log
+tail -f ~/.xskill/logs/xskill.log | grep 'xskill.kernel.openearth'
 ```
 
 ## 安装

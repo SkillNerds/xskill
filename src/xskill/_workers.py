@@ -183,6 +183,7 @@ def run_kernel_host(
     )
     from xskill.utils.shutdown import SHUTTING_DOWN
 
+    kernel_log = logging.getLogger("xskill.kernel.host")
     stop = stop_event or SHUTTING_DOWN
     runtime = None
     runtime_key: tuple[str, Path] | None = None
@@ -232,7 +233,7 @@ def run_kernel_host(
             previous_snapshot = {}
             first_run = True
             next_run_at = time.monotonic()
-            logger.info(
+            kernel_log.info(
                 "external kernel host selected %s (interval %.1fs, server=%s)",
                 active,
                 interval,
@@ -266,9 +267,9 @@ def run_kernel_host(
                 native_runner=lambda _invocation: KernelRunResult(),
             )
         except Exception:  # noqa: BLE001 - persistent process run boundary
-            logger.exception("external kernel %s run failed", active)
+            kernel_log.exception("external kernel %s run failed", active)
         else:
-            logger.info(
+            kernel_log.info(
                 "external kernel %s run finished (changed=%d, full_rebuild=%s)",
                 active,
                 len(changed),
@@ -474,7 +475,14 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("profile-refresh")
     args = parser.parse_args(argv)
 
-    configure_logging(get_logs_dir(), debug=False, quiet=False, stdout=True)
+    configure_logging(
+        get_logs_dir(),
+        debug=False,
+        quiet=False,
+        # kernel-host 的 stdout 已被调度器追加进 xskill.kernel.log；再开
+        # StreamHandler 会让 xskill.kernel.openearth 进度日志写两遍。
+        stdout=args.kind != "kernel-host",
+    )
     if args.kind == "kernel-host":
         for stream in (sys.stdout, sys.stderr):
             reconfigure = getattr(stream, "reconfigure", None)

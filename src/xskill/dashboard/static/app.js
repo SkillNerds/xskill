@@ -889,6 +889,11 @@ function kernelLogPageOn() {
 function appendKernelLog(line) {
   const view = document.getElementById('kernel-log-view');
   if (!view) return;
+  const stageMatch = String(line).match(/\bstage=([^\s]+)/);
+  if (stageMatch) {
+    const stageEl = document.getElementById('kernel-log-stage');
+    if (stageEl) stageEl.textContent = 'stage=' + stageMatch[1];
+  }
   _kernelLogLines.push(line);
   if (_kernelLogLines.length > KERNEL_LOG_MAX) {
     _kernelLogLines = _kernelLogLines.slice(-KERNEL_LOG_MAX);
@@ -1360,6 +1365,8 @@ if (kernelLogClear) {
     _kernelLogLines = [];
     const view = document.getElementById('kernel-log-view');
     if (view) view.textContent = '';
+    const stageEl = document.getElementById('kernel-log-stage');
+    if (stageEl) stageEl.textContent = 'stage=—';
   });
 }
 

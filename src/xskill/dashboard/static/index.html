@@ -344,8 +344,9 @@
 
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
           <div class="flex items-baseline justify-between gap-3 flex-wrap">
-            <h2 class="font-semibold text-sm">内核进程日志 <span class="font-normal text-[11px] text-slate-400 ml-2">实时捕获 kernel-host 的 stdout 与 print</span></h2>
+            <h2 class="font-semibold text-sm">内核进程日志 <span class="font-normal text-[11px] text-slate-400 ml-2">OpenEarth stage 进度，以及 kernel-host 的 print</span></h2>
             <div class="flex items-center gap-2">
+              <span id="kernel-log-stage" class="text-[11px] font-mono text-teal-700">stage=—</span>
               <span id="kernel-log-status" class="text-[11px] text-slate-400">未连接</span>
               <button type="button" id="kernel-log-pause" class="px-2 py-0.5 rounded-lg ring-1 ring-slate-200 text-[11px] text-slate-600 hover:bg-slate-50">暂停滚动</button>
               <button type="button" id="kernel-log-clear" class="px-2 py-0.5 rounded-lg ring-1 ring-slate-200 text-[11px] text-slate-600 hover:bg-slate-50">清空</button>
