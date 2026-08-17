@@ -895,7 +895,39 @@ def get_skill_dir(
     return skill_dir if skill_dir.is_absolute() else state_root / skill_dir
 
 
+def get_client_skill_dir(
+    config_data: Optional[dict] = None,
+    *,
+    xskill_home: Optional[Path] = None,
+) -> Path:
+    """Client 模式专用 skill 工作副本目录（默认 ~/.xskill/client_skill/）。
+
+    与 get_skill_dir()（Server / standalone 专用）物理隔离，根治 Issue #227。
+    """
+    if config_data is not None:
+        config_source = config_data
+    else:
+        try:
+            config_source = get_config()
+        except FileNotFoundError:
+            config_source = {}
+    state_root = (
+        Path(xskill_home) if xskill_home is not None else XSKILL_HOME
+    ).expanduser().resolve()
+    raw = config_source.get("client_skill_dir")
+    if raw is not None and (not isinstance(raw, str) or not raw.strip()):
+        raise ValueError("client_skill_dir 必须是非空字符串路径")
+    client_skill_dir = Path(raw or "client_skill").expanduser()
+    return (
+        client_skill_dir
+        if client_skill_dir.is_absolute()
+        else state_root / client_skill_dir
+    )
+
+
+
 def get_logs_dir() -> Path:
+
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     return LOGS_DIR
 

@@ -405,7 +405,7 @@ def _run_team_client_forever(state, *, use_proxy: bool,
     """构造 TeamClient 并阻塞跑守护循环。"""
     import httpx
     from xskill.config import (
-        XSKILL_HOME, get_team_client_cursor_path, get_team_client_history_path,
+        get_client_skill_dir, get_team_client_cursor_path, get_team_client_history_path,
     )
     from xskill.team.client.daemon import TeamClient
 
@@ -413,12 +413,13 @@ def _run_team_client_forever(state, *, use_proxy: bool,
                         trust_env=use_proxy)
     client = TeamClient(
         state=state, http=http,
-        skill_dir=XSKILL_HOME / "skill",
+        skill_dir=get_client_skill_dir(),
         cursor_path=get_team_client_cursor_path(state.server_url),
         history_path=get_team_client_history_path(state.server_url),
         auto_update=auto_update,
         use_proxy=use_proxy,
     )
+
     client.run_forever()   # 阻塞
 
 
