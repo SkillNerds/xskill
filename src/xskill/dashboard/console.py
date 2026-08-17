@@ -13,7 +13,7 @@ import operator
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -901,14 +901,24 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
         }
 
     @router.get("/admin/kernels/logs")
-    def admin_kernel_logs(_=Depends(require_admin)):
+    def admin_kernel_logs(
+        request: Request,
+        after: str | None = None,
+        _=Depends(require_admin),
+    ):
         """SSE tail of kernel-host stdout/stderr (print + logging)."""
         from xskill.config import get_kernel_console_log_path
-        from xskill.kernels.console_log import iter_kernel_console_sse
+        from xskill.kernels.console_log import (
+            iter_kernel_console_sse,
+            parse_resume_offset,
+        )
 
         path = get_kernel_console_log_path()
+        resume_from = parse_resume_offset(
+            request.headers.get("last-event-id") or after
+        )
         return StreamingResponse(
-            iter_kernel_console_sse(path),
+            iter_kernel_console_sse(path, after=resume_from),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

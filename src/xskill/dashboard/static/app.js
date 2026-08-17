@@ -894,31 +894,42 @@ function appendKernelLog(line) {
     const stageEl = document.getElementById('kernel-log-stage');
     if (stageEl) stageEl.textContent = 'stage=' + stageMatch[1];
   }
+  const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 32;
+  const placeholder = view.textContent === '等待连接…' || view.textContent === '正在连接…';
   _kernelLogLines.push(line);
   if (_kernelLogLines.length > KERNEL_LOG_MAX) {
     _kernelLogLines = _kernelLogLines.slice(-KERNEL_LOG_MAX);
+    view.textContent = _kernelLogLines.join('\n');
+  } else if (placeholder || _kernelLogLines.length === 1) {
+    view.textContent = line;
+  } else {
+    view.append(document.createTextNode('\n' + line));
   }
-  const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 32;
-  view.textContent = _kernelLogLines.join('\n');
   if (!_kernelLogPaused && atBottom) view.scrollTop = view.scrollHeight;
 }
 
 function startKernelLogStream() {
   if (!IDENT || IDENT.role !== 'admin') return;
   if (_kernelLogES) return;
+  _kernelLogLines = [];
+  _kernelLogPaused = false;
+  const pauseBtn = document.getElementById('kernel-log-pause');
+  if (pauseBtn) pauseBtn.textContent = '暂停滚动';
+  const stageEl = document.getElementById('kernel-log-stage');
+  if (stageEl) stageEl.textContent = 'stage=—';
   const status = document.getElementById('kernel-log-status');
   const view = document.getElementById('kernel-log-view');
-  if (view && !_kernelLogLines.length) view.textContent = '正在连接…';
+  if (view) view.textContent = '正在连接…';
   if (status) status.textContent = '连接中';
   const source = new EventSource('api/v1/dashboard/admin/kernels/logs');
   _kernelLogES = source;
+  source.onopen = () => {
+    if (status) status.textContent = '已连接';
+  };
   source.onmessage = ev => {
     let payload;
     try { payload = JSON.parse(ev.data); } catch { payload = { t: 'log', line: ev.data }; }
-    if (payload.t === 'meta' && payload.path) {
-      if (status) status.textContent = payload.path;
-      return;
-    }
+    if (payload.t === 'meta') return;
     if (payload.line != null) appendKernelLog(payload.line);
   };
   source.onerror = () => {
@@ -927,9 +938,13 @@ function startKernelLogStream() {
 }
 
 function stopKernelLogStream() {
-  if (_kernelLogES) {
-    _kernelLogES.close();
-    _kernelLogES = null;
+  const source = _kernelLogES;
+  _kernelLogES = null;
+  if (source) {
+    source.onerror = null;
+    source.onmessage = null;
+    source.onopen = null;
+    source.close();
   }
   const status = document.getElementById('kernel-log-status');
   if (status) status.textContent = '未连接';

@@ -505,6 +505,30 @@ def test_kernel_logs_sse_streams_backlog(console_env, tmp_path, monkeypatch):
     assert str(log_path) in response.text
 
 
+def test_kernel_logs_sse_resumes_from_last_event_id(console_env, monkeypatch):
+    seen = {}
+
+    def finite_iter(path, **kwargs):
+        seen["path"] = path
+        seen.update(kwargs)
+        yield 'data: {"t": "meta", "path": "x"}\n\n'
+
+    monkeypatch.setattr(
+        "xskill.config.get_kernel_console_log_path",
+        lambda: Path("/tmp/xskill.kernel.log"),
+    )
+    monkeypatch.setattr(
+        "xskill.kernels.console_log.iter_kernel_console_sse",
+        finite_iter,
+    )
+    response = console_env["boss"].get(
+        "/api/v1/dashboard/admin/kernels/logs",
+        headers={"Last-Event-ID": "88"},
+    )
+    assert response.status_code == 200
+    assert seen.get("after") == 88
+
+
 def test_kernel_activation_updates_canonical_selector():
     from xskill.dashboard.console import _replace_kernel_active
 

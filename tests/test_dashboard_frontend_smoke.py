@@ -38,6 +38,8 @@ def test_kernel_page_exposes_switch_and_evaluation_contract():
     assert "loadKernels" in js
     assert "startKernelLogStream" in js
     assert "kernel-log-stage" in js
+    assert "_kernelLogLines = []" in js
+    assert "source.onerror = null" in js
 
 
 def test_index_is_fully_vendored():

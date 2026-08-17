@@ -7,7 +7,10 @@ import sys
 import threading
 import time
 
-from xskill.kernels.console_log import iter_kernel_console_sse
+from xskill.kernels.console_log import (
+    iter_kernel_console_sse,
+    parse_resume_offset,
+)
 from xskill.pipeline.scheduler import IntervalSubprocessScheduler
 
 
@@ -18,6 +21,22 @@ def _payloads(chunks: list[str]) -> list[dict]:
             if raw_line.startswith("data: "):
                 out.append(json.loads(raw_line[6:]))
     return out
+
+
+def _last_event_id(chunks: list[str]) -> str | None:
+    last = None
+    for chunk in chunks:
+        for raw_line in chunk.split("\n"):
+            if raw_line.startswith("id: "):
+                last = raw_line[4:].strip()
+    return last
+
+
+def test_parse_resume_offset_accepts_digits_only():
+    assert parse_resume_offset(None) is None
+    assert parse_resume_offset(" 88 ") == 88
+    assert parse_resume_offset("id-88") is None
+    assert parse_resume_offset("-1") is None
 
 
 def test_iter_kernel_console_sse_emits_backlog_then_new_lines(tmp_path):
@@ -34,6 +53,22 @@ def test_iter_kernel_console_sse_emits_backlog_then_new_lines(tmp_path):
         handle.write("new-line\n")
     more = list(iter_kernel_console_sse(path, max_events=4, poll_seconds=0.01))
     assert {"t": "log", "line": "new-line"} in _payloads(more)
+
+
+def test_iter_kernel_console_sse_resume_skips_backlog(tmp_path):
+    path = tmp_path / "xskill.kernel.log"
+    path.write_text("old-line\nkeep-line\n", encoding="utf-8")
+    first = list(iter_kernel_console_sse(path, max_events=3, poll_seconds=0.01))
+    event_id = _last_event_id(first)
+    assert event_id is not None
+    resume_from = int(event_id)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("new-line\n")
+    resumed = list(iter_kernel_console_sse(
+        path, after=resume_from, max_events=2, poll_seconds=0.01,
+    ))
+    lines = [row["line"] for row in _payloads(resumed) if row.get("t") == "log"]
+    assert lines == ["new-line"]
 
 
 def test_iter_kernel_console_sse_status_when_file_missing(tmp_path):

@@ -11,8 +11,19 @@ DEFAULT_BACKLOG_LINES = 200
 DEFAULT_POLL_SECONDS = 0.4
 
 
-def sse_pack(payload: dict) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+def sse_pack(payload: dict, event_id: int | None = None) -> str:
+    prefix = f"id: {event_id}\n" if event_id is not None else ""
+    return f"{prefix}data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def parse_resume_offset(raw: str | None) -> int | None:
+    """Parse SSE Last-Event-ID / ``after`` as a byte offset into the log file."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text.isdigit():
+        return None
+    return int(text)
 
 
 def _strip_cr(line: str) -> str:
@@ -39,22 +50,27 @@ def iter_kernel_console_sse(
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     max_events: int | None = None,
     stop: Callable[[], bool] | None = None,
+    after: int | None = None,
 ) -> Iterator[str]:
-    """Yield SSE chunks: meta, optional status, then ``log`` lines as they appear."""
+    """Yield SSE chunks: meta, optional status, then ``log`` lines as they appear.
+
+    Log lines carry ``id: <byte offset>`` so EventSource reconnects resume
+    via Last-Event-ID instead of replaying the backlog.
+    """
     emitted = 0
 
-    def emit(payload: dict) -> str:
+    def emit(payload: dict, event_id: int | None = None) -> str:
         nonlocal emitted
         emitted += 1
-        return sse_pack(payload)
+        return sse_pack(payload, event_id=event_id)
 
     yield emit({"t": "meta", "path": str(path)})
     if max_events is not None and emitted >= max_events:
         return
 
-    offset = 0
+    offset = max(0, after) if after is not None else 0
     buf = ""
-    primed = False
+    primed = after is not None
     idle_ticks = 0
 
     while True:
@@ -96,8 +112,9 @@ def iter_kernel_console_sse(
                     if newline >= 0:
                         text = text[newline + 1 :]
                 lines, buf = _split_complete_lines(text)
+                event_id = offset if offset > 0 else None
                 for line in lines[-backlog:]:
-                    yield emit({"t": "log", "line": line})
+                    yield emit({"t": "log", "line": line}, event_id=event_id)
                     if max_events is not None and emitted >= max_events:
                         return
                 continue
@@ -116,7 +133,8 @@ def iter_kernel_console_sse(
         idle_ticks = 0
         buf += raw.decode("utf-8", errors="replace")
         lines, buf = _split_complete_lines(buf)
+        event_id = offset if offset > 0 else None
         for line in lines:
-            yield emit({"t": "log", "line": line})
+            yield emit({"t": "log", "line": line}, event_id=event_id)
             if max_events is not None and emitted >= max_events:
                 return
