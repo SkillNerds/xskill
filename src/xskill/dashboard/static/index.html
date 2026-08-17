@@ -17,6 +17,14 @@
   .toast{animation:toast-in .18s ease-out}
   @keyframes toast-in{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
   #scatter-tip{position:fixed;z-index:70;pointer-events:none;max-width:280px}
+  /* 内核日志：编译期 CSS 没收录过深色底，缺类时会变成浅字浅底 */
+  #kernel-log-view{
+    max-height:320px;
+    overflow:auto;
+    background:#0f172a;
+    color:#f8fafc;
+    line-height:1.5;
+  }
 </style></head>
 <body class="bg-slate-100 text-slate-900 text-[13px] leading-normal">
 <div class="flex min-h-screen">
@@ -344,15 +352,15 @@
 
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
           <div class="flex items-baseline justify-between gap-3 flex-wrap">
-            <h2 class="font-semibold text-sm">内核进程日志 <span class="font-normal text-[11px] text-slate-400 ml-2">OpenEarth stage 进度，以及 kernel-host 的 print</span></h2>
+            <h2 class="font-semibold text-sm">内核进程日志 <span class="font-normal text-[11px] text-slate-500 ml-2">OpenEarth stage 进度，以及 kernel-host 的 print</span></h2>
             <div class="flex items-center gap-2">
-              <span id="kernel-log-stage" class="text-[11px] font-mono text-teal-700">stage=—</span>
-              <span id="kernel-log-status" class="text-[11px] text-slate-400">未连接</span>
+              <span id="kernel-log-stage" class="text-[11px] font-mono text-teal-800">stage=—</span>
+              <span id="kernel-log-status" class="text-[11px] text-slate-500">未连接</span>
               <button type="button" id="kernel-log-pause" class="px-2 py-0.5 rounded-lg ring-1 ring-slate-200 text-[11px] text-slate-600 hover:bg-slate-50">暂停滚动</button>
               <button type="button" id="kernel-log-clear" class="px-2 py-0.5 rounded-lg ring-1 ring-slate-200 text-[11px] text-slate-600 hover:bg-slate-50">清空</button>
             </div>
           </div>
-          <pre id="kernel-log-view" class="mt-3 max-h-[320px] overflow-auto rounded-xl bg-slate-950 text-slate-100 p-3 text-[11px] leading-5 font-mono whitespace-pre-wrap break-all">等待连接…</pre>
+          <pre id="kernel-log-view" class="mt-3 overflow-auto rounded-xl bg-slate-900 text-white p-3 text-[11px] font-mono whitespace-pre-wrap break-all">等待连接…</pre>
         </div>
 
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
