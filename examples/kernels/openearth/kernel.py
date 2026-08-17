@@ -8,6 +8,7 @@ oracle score store for kernel-owned temporary benchmark trajectories.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 try:
@@ -36,6 +37,20 @@ from xskill.kernels import (
 
 _QUEUE_SCHEMA = 1
 _QUEUE_FILENAME = "openearth-publication-queue.json"
+logger = logging.getLogger("xskill.kernel.openearth")
+
+
+def _log_progress(run_id: str, stage: str, **fields) -> None:
+    details = " ".join(
+        f"{key}={json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)}"
+        for key, value in sorted(fields.items())
+    )
+    logger.info(
+        "run_id=%s stage=%s%s",
+        run_id,
+        stage,
+        f" {details}" if details else "",
+    )
 
 
 def _skill_snapshot(skill) -> ExistingSkillInput:
@@ -230,10 +245,29 @@ class OpenEarthKernel(BaseKernel):
 
     def run(self, context, run_interval: int = 30) -> KernelRunResult:
         del run_interval
-        queue = _load_queue(context)
-        submitted, queue_metrics = _drain_publication_queue(context, queue)
         changed = tuple(context.invocation.changed_trajectory_ids)
         full_rebuild = bool(context.invocation.full_rebuild)
+
+        def progress(stage: str, **fields) -> None:
+            # SDK events already carry the same run_id; keep one canonical copy.
+            fields.pop("run_id", None)
+            _log_progress(context.run_id, stage, **fields)
+
+        progress(
+            "run_started",
+            trigger=context.invocation.trigger,
+            changed_trajectories=len(changed),
+            full_rebuild=full_rebuild,
+        )
+        queue = _load_queue(context)
+        submitted, queue_metrics = _drain_publication_queue(context, queue)
+        progress(
+            "publication_queue_reconciled",
+            pending_before=queue_metrics["queue_pending_before"],
+            drained=queue_metrics["queue_drained"],
+            waiting=queue_metrics["queue_waiting"],
+            pending_after=len(queue["pending"]),
+        )
         existing_snapshots = None
         benchmark_metrics = {
             "benchmark_enabled": False,
@@ -263,8 +297,10 @@ class OpenEarthKernel(BaseKernel):
                 existing_skills=existing_snapshots,
                 run_id=context.run_id,
                 on_trajectory=register_benchmark_trajectory,
+                on_event=progress,
             )
             benchmark_metrics = dict(benchmark_result.metrics)
+            progress("benchmark_completed", **benchmark_metrics)
         if changed:
             changed_ids = set(changed)
             selected = [
@@ -280,6 +316,12 @@ class OpenEarthKernel(BaseKernel):
                 if trajectory.atom_split_status == "ready"
             ]
         else:
+            progress(
+                "run_completed",
+                no_changes=True,
+                published_drafts=len(submitted),
+                queue_pending=len(queue["pending"]),
+            )
             return KernelRunResult(
                 submitted_skills=tuple(submitted),
                 metrics={
@@ -300,6 +342,12 @@ class OpenEarthKernel(BaseKernel):
                 ),
             )
 
+        selected_atoms = sum(len(trajectory.atoms) for trajectory in selected)
+        progress(
+            "distillation_started",
+            selected_trajectories=len(selected),
+            selected_atoms=selected_atoms,
+        )
         result = train_skills(
             config_path=context.config_path,
             workspace=context.workspace,
@@ -311,6 +359,14 @@ class OpenEarthKernel(BaseKernel):
             ),
             run_id=context.run_id,
             full_rebuild=full_rebuild,
+            on_event=progress,
+        )
+        progress(
+            "distillation_completed",
+            processed_trajectories=len(result.processed_trajectory_ids),
+            processed_atoms=len(result.processed_atom_ids),
+            generated_drafts=len(result.drafts),
+            batch_duplicates=result.metrics.get("batch_duplicates", 0),
         )
 
         queued = []
@@ -325,13 +381,20 @@ class OpenEarthKernel(BaseKernel):
                 origin_run_id=context.run_id,
             )
             if busy:
-                if _enqueue(context, queue, draft):
+                was_superseded = _enqueue(context, queue, draft)
+                if was_superseded:
                     superseded.append(draft.name)
                 queued.append(draft.name)
+                progress(
+                    "draft_queued",
+                    skill=draft.name,
+                    superseded=was_superseded,
+                )
                 continue
             if rebased:
                 rebased_immediate += 1
             submitted.append(draft.name)
+            progress("draft_submitted", skill=draft.name, rebased=rebased)
 
         metrics = {
             **dict(result.metrics),
@@ -350,6 +413,15 @@ class OpenEarthKernel(BaseKernel):
         }
         if result.candidate_dir:
             metrics["candidate_dir"] = result.candidate_dir
+        progress(
+            "run_completed",
+            no_changes=False,
+            processed_atoms=metrics["processed_atoms"],
+            generated_drafts=metrics["generated_drafts"],
+            published_drafts=metrics["published_drafts"],
+            queued_drafts=metrics["queued_drafts"],
+            queue_pending=metrics["queue_pending"],
+        )
         return KernelRunResult(
             processed_trajectory_ids=result.processed_trajectory_ids,
             submitted_skills=tuple(submitted),

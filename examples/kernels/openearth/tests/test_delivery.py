@@ -60,6 +60,17 @@ def test_openearth_delivery_documents_atom_score_sources():
     assert "openearth-benchmark-state.json" in usage
 
 
+def test_openearth_kernel_wires_progress_events_to_xskill_logging():
+    source = (OPENEARTH / "kernel.py").read_text(encoding="utf-8")
+
+    assert 'logging.getLogger("xskill.kernel.openearth")' in source
+    assert '"run_started"' in source
+    assert '"distillation_started"' in source
+    assert '"distillation_completed"' in source
+    assert '"run_completed"' in source
+    assert source.count("on_event=progress") == 2
+
+
 def test_oracle_temp_multi_atom_does_not_raise():
     """Platform may split temp trajectories into N atoms; oracle is case-level."""
     import importlib

@@ -94,6 +94,25 @@ Skill 保留一个最新 pending draft：
 队列只管理尚未进入 XSkill staging 的下一版本；已进入 staging 的版本仍完全由 XSkill
 灰度、晋升或拒绝。
 
+## 运行日志
+
+Kernel 使用 `xskill.kernel.openearth` logger 输出结构化 INFO 进度，覆盖运行开始、发布
+队列整理、benchmark rollout、蒸馏开始、Planning/Functional 反思完成、草稿提交或排队
+以及运行完成。每条日志都包含 `run_id` 和 `stage`，例如：
+
+```text
+run_id=... stage=distillation_started selected_atoms=12 selected_trajectories=4
+run_id=... stage=reflect_planning candidates=2 trajectories=7
+run_id=... stage=run_completed generated_drafts=2 processed_atoms=12
+```
+
+运行 `xskill serve` / `xskill connect` 时，日志会显示在终端并写入
+`~/.xskill/logs/xskill.log`：
+
+```bash
+tail -f ~/.xskill/logs/xskill.log | grep 'xskill.kernel.openearth'
+```
+
 ## 安装
 
 SDK 源码位于本地 `sdk/`，由本目录的 `.gitignore` 排除，不会提交到 XSkill 远程仓库。
