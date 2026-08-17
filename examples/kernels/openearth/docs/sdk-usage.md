@@ -52,9 +52,10 @@ Kernel 按下面的三态契约选择 SDK 输入：
 | 空 | `False` | 不训练轨迹；只执行待发布队列 tick |
 
 changed 始终拥有输入范围的优先级。`full_rebuild=True` 会传给 SDK，使所选轨迹中的历史
-atom 绕过跨运行签名去重并重新进入蒸馏。无论是否重建，同一训练批次都按稳定
-`atom_id` 去重：ID 和签名都相同只处理一次；同一 ID 对应不同证据、内容或评分时抛出
-冲突错误，避免重复证据产生不一致结果。
+atom 绕过跨运行签名去重并重新进入蒸馏。无论是否重建，同一训练批次都按 provider
+限定的稳定 `evidence_id` 去重：ID 和签名都相同只处理一次；同一 `evidence_id` 对应
+不同内容或评分时抛出冲突错误。不同 trajectory 中相同的本地 `atom_id` 是独立证据，
+不会误判为冲突。
 
 全量重建仍读取当前 main Skill 作为反思上下文，但 `name + main_commit_sha` 未变化的
 Skill 会命中原分类缓存，不再次调用分类 LLM。SDK 和 Kernel 都不会因为某个旧 Skill
@@ -95,7 +96,7 @@ SDK 按以下顺序决定反思层级：
 ```text
 ready trajectories
   → 展开并标准化 ScoredAtomInput
-  → 批内按 atom_id 去重
+  → 批内按 evidence_id 去重
   → 增量时使用 evidence_id + 内容/评分签名过滤历史未变化 atom
      （full rebuild 绕过这一层）
   → 按 UX 分数划分 success / failure / deferred
@@ -108,9 +109,10 @@ ready trajectories
 
 具体行为：
 
-- **证据去重**：批内先按 `atom_id` 去重并拒绝冲突副本。跨运行状态使用
-  `evidence_id`（轨迹资源 ID 与 atom ID）及内容/评分签名；增量时内容、评分、评分来源
-  或摘要发生变化才重新进入反思，全量重建则重新处理历史证据。
+- **证据去重**：批内和跨运行状态都使用 `evidence_id`（轨迹资源 ID 与 atom ID）及
+  内容/评分签名去重；同一证据的冲突副本会被拒绝，不同轨迹中相同的本地 `atom_id`
+  会分别处理。增量时内容、评分、评分来源或摘要发生变化才重新进入反思，全量重建则
+  重新处理历史证据。
 - **Planning 通道**：成功 atom 用来提炼跨步骤、可复用的规划；本轮新 Planning 候选与
   已有 Planning Skill 一起构成失败通道的检索库。
 - **Functional 通道**：每个失败 atom 先检索相关 Planning Skill；没有匹配项时只生成
