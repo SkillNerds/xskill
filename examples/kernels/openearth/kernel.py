@@ -105,6 +105,7 @@ def _draft_to_queue_entry(draft, *, run_id: str) -> dict:
         "name": draft.name,
         "skill_md": draft.skill_md,
         "files": dict(draft.files),
+        "file_updates": dict(draft.file_updates),
         "source_trajectory_ids": list(draft.source_trajectory_ids),
         "action": draft.action,
         "base_version_token": draft.base_version_token,
@@ -116,8 +117,13 @@ def _draft_from_queue_entry(name: str, entry: dict) -> SkillDraft:
     if not isinstance(entry, dict) or entry.get("name") != name:
         raise ValueError(f"invalid queued OpenEarth Skill draft: {name!r}")
     files = entry.get("files", {})
+    file_updates = entry.get("file_updates", {})
     source_ids = entry.get("source_trajectory_ids", [])
-    if not isinstance(files, dict) or not isinstance(source_ids, list):
+    if (
+        not isinstance(files, dict)
+        or not isinstance(file_updates, dict)
+        or not isinstance(source_ids, list)
+    ):
         raise ValueError(f"invalid queued OpenEarth Skill bundle: {name!r}")
     return SkillDraft(
         name=name,
@@ -126,6 +132,7 @@ def _draft_from_queue_entry(name: str, entry: dict) -> SkillDraft:
         source_trajectory_ids=tuple(str(item) for item in source_ids),
         action=str(entry.get("action") or "update"),
         base_version_token=entry.get("base_version_token"),
+        file_updates=file_updates,
     )
 
 

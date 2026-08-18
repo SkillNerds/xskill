@@ -10,7 +10,7 @@ from zipfile import ZipFile
 OPENEARTH = Path(__file__).resolve().parents[1]
 WHEEL = (
     OPENEARTH / "wheels"
-    / "openearth_skill_sdk-0.9.1-py3-none-any.whl"
+    / "openearth_skill_sdk-0.10.0-py3-none-any.whl"
 )
 
 
@@ -21,18 +21,20 @@ def test_openearth_wheel_checksum_and_public_contents():
     with ZipFile(WHEEL) as archive:
         names = set(archive.namelist())
         metadata = archive.read(
-            "openearth_skill_sdk-0.9.1.dist-info/METADATA"
+            "openearth_skill_sdk-0.10.0.dist-info/METADATA"
         ).decode("utf-8")
         service = archive.read("openearth_skill_sdk/service.py").decode("utf-8")
 
-    assert "Version: 0.9.1" in metadata
+    assert "Version: 0.10.0" in metadata
     assert "openearth_skill_sdk/xskill.py" in names
     assert "openearth_skill_sdk/drafts.py" in names
+    assert "openearth_skill_sdk/bundles.py" in names
     assert "openearth_skill_sdk/benchmark.py" in names
     assert "openearth_skill_sdk/environments.py" in names
     assert "openearth_skill_sdk/target.py" in names
     assert "seen_in_run.get(atom.evidence_id)" in service
     assert "conflicting duplicate evidence_id" in service
+    assert "file_updates=file_updates" in service
     assert not any(
         forbidden in name
         for name in names
@@ -69,6 +71,7 @@ def test_openearth_kernel_wires_progress_events_to_xskill_logging():
     assert '"distillation_completed"' in source
     assert '"run_completed"' in source
     assert source.count("on_event=progress") == 2
+    assert '"file_updates": dict(draft.file_updates)' in source
 
 
 def test_oracle_temp_multi_atom_does_not_raise():

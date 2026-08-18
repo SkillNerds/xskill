@@ -206,9 +206,9 @@ rebuild 中重复运行。要主动生成一组新 rollout，可以修改 `bench
 OpenCode 隔离数据位于 `<context.workspace>/openearth-benchmark-runs`，完成后清理临时
 目录；正式训练证据仍由 XSkill temp trajectory 保存。
 
-一个 oracle 分数必须只对应一个 atom，因此评测 Markdown 应表达一个完整的
-User/Assistant rollout。若 ready 临时轨迹被拆成多个 atom，SDK 会报错，避免把一个 case
-级分数错误地复制到多段证据。
+评测 Markdown 应表达一个完整的 User/Assistant rollout。若平台把 ready 临时轨迹拆成
+多个 atom，SDK 会把该轨迹的 case 级 oracle 分数应用到每个 atom，并分别保留稳定的
+`evidence_id`。
 
 oracle 分数保存在：
 
@@ -228,6 +228,14 @@ oracle 分数保存在：
 - `processed_atom_ids`：已消费的稳定 atom 证据 ID；
 - `metrics`：成功、失败、暂缓和评分来源计数；
 - `candidate_dir`：OpenEarth workspace 中的候选目录。
+
+每个 draft 是完整 Skill bundle：必有 `SKILL.md`，并可在确有必要时包含 UTF-8 文本
+`references/` 和 `scripts/`。长且低频的补充说明适合放入 `references/`；确定性、易出错
+的操作适合放入 `scripts/`。每个附件都必须由 `SKILL.md` 使用准确相对路径引用，SDK 会
+拒绝路径穿越、其他顶层目录、孤立附件和超过 2 MiB 的生成 bundle。
+
+更新已有 Skill 时，SDK 默认保留 provider 的现有附件，同路径的本次生成附件会覆盖旧
+内容。当前契约不支持删除附件。
 
 SDK 不直接写 XSkill Skill 仓库。`kernel.py` 通过
 `context.publisher.submit(SkillSubmission(...))` 发布。本版本暂时不执行 Gate。
@@ -250,4 +258,5 @@ draft，新 draft 会替换旧 pending draft。每次 Kernel 调用先检查队�
 
 rebase 不调用 LLM，也不是把旧 bundle 整体覆盖到新 main。它保留最新 main 的
 provider-owned frontmatter 和附件，应用 pending draft 的 description、OpenEarth
-optimizer 字段和正文，并把 `base_commit_sha` 更新为最新 main SHA。
+optimizer 字段、正文和本次生成的附件增量，并把 `base_commit_sha` 更新为最新 main
+SHA；因此排队期间别人新增或修改的无关附件不会被旧 draft 覆盖。
