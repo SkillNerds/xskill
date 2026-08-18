@@ -1992,6 +1992,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_reg.add_argument("--label", type=str, default="",
                        help="human-friendly label (for add)")
 
+    p_privacy = sub.add_parser(
+        "privacy",
+        help="管理本机的轨迹上传排除规则（team 模式下生效）",
+        description=(
+            "管理本机的轨迹上传排除规则（team 模式下生效）。\n\n"
+            "被排除的项目或轨迹不会被读取、不会被上传，也不会被标记为已上传；\n"
+            "规则只保存在本机，不会发送到服务器。删除规则后，符合条件的轨迹会在\n"
+            "之后的扫描中正常上传。"
+        ),
+        epilog=_PRIVACY_HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_privacy.add_argument(
+        "privacy_action",
+        choices=["deny-project", "deny-trajectory", "allow-project",
+                 "allow-trajectory", "list"],
+        metavar="<command>",
+        help=("deny-project <path> | deny-trajectory <id> | "
+              "allow-project <path> | allow-trajectory <id> | list"),
+    )
+    p_privacy.add_argument("target", nargs="?", type=str,
+                           help="项目路径（*-project）或轨迹 id（*-trajectory）")
+    p_privacy.add_argument("--json", action="store_true", help="机读 JSON 输出")
+
     p_search = sub.add_parser(
         "search",
         help="搜索 skill（自动适配：已连 team 走 SkillHub，否则本地技能库）",
@@ -2252,6 +2276,8 @@ def main() -> int:
         return cmd_search(args)
     if args.command == "download":
         return cmd_download(args)
+    if args.command == "privacy":
+        return cmd_privacy(args)
     if args.command == "upload":
         return cmd_upload(args)
     if args.command == "generate":
@@ -2304,3 +2330,227 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main() or 0)
+
+
+# ═══════════════════════════════════════════════════════════════
+# xskill privacy — 本机轨迹上传排除规则（issue #244）
+# ═══════════════════════════════════════════════════════════════
+
+_PRIVACY_HELP_EPILOG = """\
+说明:
+  · 项目目录按绝对路径匹配，会解析符号链接；macOS 与 Windows 上不区分大小写。
+  · 按项目排除依赖轨迹记录的工作目录。Cursor 与 Trae 两个来源目前不记录
+    工作目录，对它们只能按轨迹 id 排除；`list` 会给出提示。
+  · 轨迹 id 即轨迹文件名去掉 .md，可在 ~/.xskill/*_sessions/ 下查看，
+    也可在看板的轨迹详情页复制。
+
+examples:
+  xskill privacy deny-project ~/code/secret-project
+  xskill privacy deny-trajectory traj_cc_backend_a1b2c3d4
+  xskill privacy list
+"""
+
+
+def _privacy_bridge_root() -> "Path":
+    from pathlib import Path
+    from xskill.config import XSKILL_HOME
+    return Path(XSKILL_HOME)
+
+
+def _privacy_scan_local(bridge_root: "Path") -> list[dict]:
+    """列出本机 bridge 目录下的全部轨迹（id / cwd / source / 是否已上传时间）。
+    只读元数据小文件，不读正文。"""
+    from xskill.team.client.privacy import (
+        read_trajectory_cwd, read_trajectory_source, source_lacks_cwd,
+    )
+    rows: list[dict] = []
+    for md in sorted(bridge_root.glob("*_sessions/traj_*.md")):
+        if not md.is_file():
+            continue
+        src = read_trajectory_source(md)
+        rows.append({
+            "trajectory_id": md.stem,
+            "path": md,
+            "cwd": read_trajectory_cwd(md),
+            "source": src,
+            "no_cwd_source": source_lacks_cwd(src),
+        })
+    return rows
+
+
+def _privacy_uploaded_at(traj_id: str) -> str | None:
+    """若该轨迹此前上传过，返回上传时间字符串；查不到返回 None。
+    上传状态按 server 分目录存放，逐个 client 目录查。"""
+    from xskill.config import XSKILL_HOME
+    from xskill.team.client.upload_state import TrajectoryUploadStateStore
+    clients_dir = XSKILL_HOME / "clients"
+    if not clients_dir.is_dir():
+        return None
+    for d in sorted(clients_dir.iterdir()):
+        db = d / "client_state.db"
+        if not db.is_file():
+            continue
+        try:
+            store = TrajectoryUploadStateStore(db_path=db)
+            st = store.get(traj_id)
+        except Exception:  # noqa: BLE001 — 只读探测，损坏的旧库不阻塞 CLI
+            continue
+        if st is None:
+            continue
+        row = dict(st)  # sqlite3.Row → dict
+        if row.get("uploaded_cleaned_content_hash"):
+            secs = row.get("uploaded_at_seconds")
+            if secs:
+                from datetime import datetime
+                return datetime.fromtimestamp(float(secs)).strftime("%Y-%m-%d %H:%M")
+            return "（时间未知）"
+    return None
+
+
+def cmd_privacy(args) -> int:
+    import json as _json
+    from xskill.team.client.privacy import (
+        canonical_project_path, default_privacy_path, load_policy,
+        normalize_project_path, save_policy,
+    )
+
+    policy_path = default_privacy_path()
+    try:
+        policy = load_policy(policy_path)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    action = args.privacy_action
+    bridge_root = _privacy_bridge_root()
+    as_json = getattr(args, "json", False)
+
+    def emit(obj_json: dict, lines: list[str]) -> None:
+        if as_json:
+            print(_json.dumps(obj_json, ensure_ascii=False, indent=2))
+        else:
+            for ln in lines:
+                _write_search_output(ln)
+
+    if action == "list":
+        rows = _privacy_scan_local(bridge_root)
+        proj_view = []
+        for proj, added in policy.projects.items():
+            matched = [r for r in rows if r["cwd"] and policy.denied_by(r["trajectory_id"], r["cwd"]) == f"project:{proj}"]
+            proj_view.append({"path": policy.display_project(proj), "matched": len(matched), "added_at": added})
+        traj_view = []
+        for tid, added in policy.trajectories.items():
+            row = next((r for r in rows if r["trajectory_id"] == tid), None)
+            traj_view.append({
+                "trajectory_id": tid,
+                "source": row["source"] if row else "",
+                "project": (row["cwd"] if row and row["cwd"]
+                            else ("(该来源不记录工作目录)" if row and row["no_cwd_source"] else "")),
+                "added_at": added,
+            })
+        unmatchable = [r for r in rows if r["no_cwd_source"]]
+        total_denied = sum(1 for r in rows if policy.is_denied(r["trajectory_id"], r["cwd"]))
+        if policy.is_empty:
+            emit({"projects": [], "trajectories": [], "denied_total": 0},
+                 ["(no privacy rules)",
+                  "默认允许上传全部轨迹。使用 deny-project / deny-trajectory 添加排除规则。"])
+            return 0
+        lines: list[str] = []
+        lines.append(f"项目排除规则 ({len(proj_view)})")
+        if proj_view:
+            lines.append("  TRAJECTORIES\tADDED\tPATH")
+            for pv in proj_view:
+                lines.append(f"  {pv['matched']}\t{pv['added_at']}\t{pv['path']}")
+        lines.append("")
+        lines.append(f"轨迹排除规则 ({len(traj_view)})")
+        if traj_view:
+            lines.append("  TRAJECTORY_ID\tSOURCE\tADDED\tPROJECT")
+            for tv in traj_view:
+                lines.append(f"  {tv['trajectory_id']}\t{tv['source']}\t{tv['added_at']}\t{tv['project']}")
+        lines.append("")
+        lines.append(f"共 {total_denied} 条轨迹被排除上传。")
+        if unmatchable and policy.projects:
+            lines.append(f"提示：有 {len(unmatchable)} 条轨迹来自 Cursor 或 Trae，这两个来源不记录工作目录，"
+                         "项目规则对它们不生效，只能按轨迹 id 排除。")
+        emit({"projects": proj_view, "trajectories": traj_view, "denied_total": total_denied,
+              "unmatchable_sources": len(unmatchable)}, lines)
+        return 0
+
+    if action in ("deny-project", "allow-project"):
+        if not args.target:
+            print(f"error: {action} 需要一个项目路径", file=sys.stderr)
+            return 2
+        norm = normalize_project_path(args.target)
+        shown = canonical_project_path(args.target)
+        if action == "deny-project":
+            changed, _ = policy.deny_project(args.target)
+            if not changed:
+                emit({"status": "already_denied", "path": shown}, [f"Already denied: {shown}"])
+                return 0
+            save_policy(policy, policy_path)
+            rows = _privacy_scan_local(bridge_root)
+            hit = [r for r in rows if r["cwd"] and policy.denied_by(r["trajectory_id"], r["cwd"]) == f"project:{norm}"]
+            lines = [f"Denied project: {shown}",
+                     "  该目录及其子目录下产生的轨迹将不再上传（不读取、不上传、不标记为已上传）。"]
+            from pathlib import Path as _P
+            if not _P(shown).exists():
+                lines.append("  提示：该目录当前不存在，规则已保存，将对之后在此目录下产生的轨迹生效。")
+            else:
+                lines.append(f"  当前已发现 {len(hit)} 条属于该目录的轨迹，会在下一轮扫描时跳过。")
+            no_cwd = [r for r in rows if r["no_cwd_source"]]
+            if no_cwd:
+                sample = no_cwd[0]["trajectory_id"]
+                lines.append(f"  注意：本机有 {len(no_cwd)} 条轨迹来自 Cursor 或 Trae，这两个来源不记录工作目录，无法按项目匹配；"
+                             f"如需排除请使用 deny-trajectory {sample}。")
+            emit({"status": "denied", "path": shown, "matched": len(hit), "unmatchable_sources": len(no_cwd)}, lines)
+            return 0
+        changed, _ = policy.allow_project(args.target)
+        if not changed:
+            emit({"status": "not_found", "path": shown}, [f"Not found: {shown}"])
+            return 1
+        save_policy(policy, policy_path)
+        rows = _privacy_scan_local(bridge_root)
+        from xskill.team.client.privacy import _is_within
+        restored = [r for r in rows if r["cwd"] and _is_within(normalize_project_path(r["cwd"]), norm)]
+        emit({"status": "allowed", "path": shown, "restored": len(restored)},
+             [f"Allowed project: {shown}",
+              f"  该目录下的轨迹恢复正常上传流程；此前被跳过的 {len(restored)} 条轨迹会在之后的扫描中按现有规则上传。"])
+        return 0
+
+    if action in ("deny-trajectory", "allow-trajectory"):
+        if not args.target:
+            print(f"error: {action} 需要一个轨迹 id", file=sys.stderr)
+            return 2
+        tid = args.target.strip()
+        if action == "deny-trajectory":
+            if not policy.deny_trajectory(tid):
+                emit({"status": "already_denied", "trajectory_id": tid}, [f"Already denied: {tid}"])
+                return 0
+            save_policy(policy, policy_path)
+            rows = _privacy_scan_local(bridge_root)
+            row = next((r for r in rows if r["trajectory_id"] == tid), None)
+            lines = [f"Denied trajectory: {tid}"]
+            if row is None:
+                lines.append("  提示：本机当前没有这个 id 的轨迹，规则已保存，将对之后出现的同名轨迹生效。")
+                emit({"status": "denied", "trajectory_id": tid, "known": False}, lines)
+                return 0
+            proj = row["cwd"] or ("(该来源不记录工作目录)" if row["no_cwd_source"] else "(未知)")
+            lines.append(f"  来源: {row['source']}   项目: {proj}")
+            lines.append("  该轨迹将不再上传。")
+            up = _privacy_uploaded_at(tid)
+            if up:
+                lines.append(f"  注意：该轨迹此前已上传过一次（{up}），本规则只阻止之后的重新上传，不会删除服务器上已有的副本。")
+            else:
+                lines.append("  状态: 尚未上传")
+            emit({"status": "denied", "trajectory_id": tid, "known": True, "source": row["source"],
+                  "project": row["cwd"], "previously_uploaded_at": up}, lines)
+            return 0
+        if not policy.allow_trajectory(tid):
+            emit({"status": "not_found", "trajectory_id": tid}, [f"Not found: {tid}"])
+            return 1
+        save_policy(policy, policy_path)
+        emit({"status": "allowed", "trajectory_id": tid},
+             [f"Allowed trajectory: {tid}", "  该轨迹恢复正常上传流程。"])
+        return 0
+
+    print(f"error: unknown privacy action {action!r}", file=sys.stderr)
+    return 2
