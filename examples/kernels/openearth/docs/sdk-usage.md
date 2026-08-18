@@ -237,6 +237,19 @@ oracle 分数保存在：
 更新已有 Skill 时，SDK 默认保留 provider 的现有附件，同路径的本次生成附件会覆盖旧
 内容。当前契约不支持删除附件。
 
+当失败轨迹没有匹配到可复用 Planning Skill 时，SDK 生成的 transient pseudo plan 会
+保存到：
+
+```text
+<context.workspace>/openearth-experience/skills/candidates/
+  <run-id>/transient-plans/<evidence-internal-id>.md
+```
+
+对应 Functional candidate 的 `planning_context` 会记录相对
+`openearth-experience` 的稳定路径，例如
+`skills/candidates/<run-id>/transient-plans/<id>.md`。该文件仅用于审计和复现反思上下文，
+不会作为 Planning Skill 发布。
+
 SDK 不直接写 XSkill Skill 仓库。`kernel.py` 通过
 `context.publisher.submit(SkillSubmission(...))` 发布。本版本暂时不执行 Gate。
 

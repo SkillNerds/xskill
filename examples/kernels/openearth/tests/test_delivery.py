@@ -10,7 +10,7 @@ from zipfile import ZipFile
 OPENEARTH = Path(__file__).resolve().parents[1]
 WHEEL = (
     OPENEARTH / "wheels"
-    / "openearth_skill_sdk-0.10.0-py3-none-any.whl"
+    / "openearth_skill_sdk-0.10.1-py3-none-any.whl"
 )
 
 
@@ -21,11 +21,13 @@ def test_openearth_wheel_checksum_and_public_contents():
     with ZipFile(WHEEL) as archive:
         names = set(archive.namelist())
         metadata = archive.read(
-            "openearth_skill_sdk-0.10.0.dist-info/METADATA"
+            "openearth_skill_sdk-0.10.1.dist-info/METADATA"
         ).decode("utf-8")
         service = archive.read("openearth_skill_sdk/service.py").decode("utf-8")
+        pipeline = archive.read("openearth_skill_sdk/pipeline.py").decode("utf-8")
+        workspace = archive.read("openearth_skill_sdk/workspace.py").decode("utf-8")
 
-    assert "Version: 0.10.0" in metadata
+    assert "Version: 0.10.1" in metadata
     assert "openearth_skill_sdk/xskill.py" in names
     assert "openearth_skill_sdk/drafts.py" in names
     assert "openearth_skill_sdk/bundles.py" in names
@@ -35,6 +37,8 @@ def test_openearth_wheel_checksum_and_public_contents():
     assert "seen_in_run.get(atom.evidence_id)" in service
     assert "conflicting duplicate evidence_id" in service
     assert "file_updates=file_updates" in service
+    assert "save_transient_plan" in pipeline
+    assert "candidate-only; never published" in workspace
     assert not any(
         forbidden in name
         for name in names

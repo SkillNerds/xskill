@@ -123,7 +123,7 @@ SDK 源码位于本地 `sdk/`，由本目录的 `.gitignore` 排除，不会提�
 
 ```bash
 python -m pip install \
-  examples/kernels/openearth/wheels/openearth_skill_sdk-0.10.0-py3-none-any.whl
+  examples/kernels/openearth/wheels/openearth_skill_sdk-0.10.1-py3-none-any.whl
 ```
 
 然后复制 Kernel 目录并创建私有配置：
