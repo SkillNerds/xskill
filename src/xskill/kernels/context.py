@@ -785,16 +785,48 @@ class SkillPublisher:
         )
 
         frontmatter, _ = parse(skill_md)
-        draft_path = self._skill_dir / ".kernel_drafts" / self._run_id / name
-        init_skill_repo_on_baby(
-            str(draft_path), name, str(frontmatter["description"]),
-        )
-        self._write_bundle(draft_path, skill_md, files)
-        if not commit_baby_to_main_branch(
-            str(draft_path), f"kernel({self._kernel_id}): {message}",
-        ):
-            raise RuntimeError(f"failed to publish new skill: {name}")
-        draft_path.replace(skill_path)
+        draft_root = self._skill_dir / ".kernel_drafts"
+        run_draft_root = draft_root / self._run_id
+        draft_path = run_draft_root / name
+        try:
+            init_skill_repo_on_baby(
+                str(draft_path), name, str(frontmatter["description"]),
+            )
+            self._write_bundle(draft_path, skill_md, files)
+            if not commit_baby_to_main_branch(
+                str(draft_path), f"kernel({self._kernel_id}): {message}",
+            ):
+                raise RuntimeError(f"failed to publish new skill: {name}")
+            draft_path.replace(skill_path)
+        finally:
+            # A successful replace moves the draft repository away. On any
+            # failure, remove the incomplete repository. Empty parents are
+            # best-effort cleanup because another publication from the same
+            # run may still be using them.
+            if draft_path.is_symlink():
+                try:
+                    draft_path.unlink()
+                except OSError:
+                    pass
+            elif draft_path.exists():
+                shutil.rmtree(draft_path, ignore_errors=True)
+            try:
+                remaining_drafts = [
+                    child
+                    for child in run_draft_root.iterdir()
+                    if child.name != ".repo_locks"
+                ]
+            except OSError:
+                remaining_drafts = None
+            if remaining_drafts == []:
+                # Repository locks live beside draft repositories and remain
+                # as ordinary files after their context exits. Once the last
+                # draft is gone, the whole run workspace is disposable.
+                shutil.rmtree(run_draft_root, ignore_errors=True)
+            try:
+                draft_root.rmdir()
+            except OSError:
+                pass
         return PublishedSkill(
             name=name, action="created", commit_sha=main_sha(skill_path) or "",
         )
