@@ -45,3 +45,19 @@ deterministic：固定 timestamp `2026-01-15T10:00:00 UTC` + 固定 UUID
 
 - `npm i -g @openai/codex` → `codex-cli 0.130.0`
 - 安装路径：`/home/user/.nvm/versions/node/v24.14.1/bin/codex`
+
+## `sample_rollout_v0148.jsonl`
+
+由 **codex-cli 0.148.0** 真实运行（`tests/live/test_codex_live.py` 的
+mock-LLM 流程）写出的 rollout，仅脱敏路径并裁剪 developer 注入的本机 skill
+清单，行结构原样。它记录了 0.148 相对旧版的格式变化：
+
+- **不再有 `event_msg` / `user_message`**；用户输入写成
+  `response_item` / `message` / `role=user` / `content=[{type: input_text, text}]`
+- 同一形态里混着注入内容：`role=developer` 的 skills 说明、`role=user` 的
+  `<environment_context>` 环境快照——只有不以 `<` 开头的 `role=user` 文本
+  才是用户真正说的话
+- 助手回复为 `role=assistant` / `output_text`
+- 新增 `world_state` 顶层类型与 `event_msg` / `item_completed` 事件
+
+适配器同时支持两种格式（存量磁盘上仍有旧版 rollout）；两份 fixture 各有测试。

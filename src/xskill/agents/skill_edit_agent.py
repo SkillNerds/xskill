@@ -631,6 +631,7 @@ class SkillEditAgent:
         from xskill.agents.context_budget import (
             DEFAULT_MAX_CONTEXT,
             TRIM_TRIGGER_RATIO,
+            _bool_or_default,
         )
 
         max_context = int(
@@ -638,11 +639,15 @@ class SkillEditAgent:
         )
         spill_limit = int(max_context * TRIM_TRIGGER_RATIO)
         compact_raw = (self.llm_cfg or {}).get("compact_token_limit")
-        compact_limit = (
-            max(int(compact_raw), spill_limit)
-            if compact_raw not in (None, "")
-            else None
+        enable_spill = _bool_or_default(
+            (self.llm_cfg or {}).get("enable_spill"), False,
         )
+        if compact_raw in (None, ""):
+            compact_limit = None
+        elif enable_spill:
+            compact_limit = max(int(compact_raw), spill_limit)
+        else:
+            compact_limit = int(compact_raw)
         return spill_limit, compact_limit
 
     def _append_turn_start(self, n: int, processing: int, pending: int) -> None:

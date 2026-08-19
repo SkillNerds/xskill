@@ -114,15 +114,22 @@ def test_context_management_reads_compact_config_and_calls_compactor(tmp_path):
     calls: list[dict] = []
 
     class _FakeModel:
-        def invoke(self, messages, assistant_message=None, **_kwargs):
+        def invoke(self, invoke_messages, assistant_message=None, **_kwargs):
             calls.append({
-                "messages": messages,
+                "messages": invoke_messages,
                 "assistant_message": assistant_message,
             })
             if len(calls) == 1:
-                assert len(messages) == 1
-                assert "CONTEXT CHECKPOINT COMPACTION" in messages[0].content
-                assert "Keep only information needed" not in messages[0].content
+                assert len(invoke_messages) == len(source_messages) + 1
+                assert all(
+                    actual is original
+                    for actual, original in zip(invoke_messages, source_messages)
+                )
+                compact_request = invoke_messages[-1]
+                assert compact_request.role == "user"
+                assert "CONTEXT CHECKPOINT COMPACTION" in compact_request.content
+                assert "Keep only information needed" not in compact_request.content
+                assert "SkillEditAgent system prompt" not in compact_request.content
                 if assistant_message is not None:
                     assistant_message.role = "assistant"
                     assistant_message.content = "COMPACT SUMMARY"
@@ -135,11 +142,12 @@ def test_context_management_reads_compact_config_and_calls_compactor(tmp_path):
             "max_context": 1000,
             "compact_token_limit": 20,
             "compact_keep_recent_messages": 2,
+            "enable_spill": True,
         },
         spill_root=tmp_path / "spill",
     )
     assistant_message = Message(role="assistant", content=None)
-    messages = [
+    source_messages = [
         Message(
             role="system",
             content="SkillEditAgent system prompt\n" + ("S" * 4000),
@@ -152,15 +160,15 @@ def test_context_management_reads_compact_config_and_calls_compactor(tmp_path):
         Message(role="user", content="continue"),
     ]
 
-    model.invoke(messages=messages, assistant_message=assistant_message)
+    model.invoke(messages=source_messages, assistant_message=assistant_message)
 
     assert len(calls) == 2
     final_messages = calls[1]["messages"]
     assert [m.role for m in final_messages] == [
-        "system", "user", "assistant", "assistant", "user",
+        "system", "user", "user", "assistant", "user",
     ]
     assert "COMPACT SUMMARY" in final_messages[2].content
-    assert "spill_path:" in calls[0]["messages"][0].content
+    assert "spill_path:" in calls[0]["messages"][3].content
 
 
 def _tarpit_server():

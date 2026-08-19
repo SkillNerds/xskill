@@ -70,9 +70,10 @@ def _wrap_with_context_mgmt(model, llm_cfg: dict, *, spill_root=None):
     """把弃窗单趟的上下文自管理（spec §4.5）套到 model.invoke 外层。
 
     - max_context 配置优先,缺省 200K + warning（``resolve_max_context``）。
-    - 发请求前到 85% 主动剪裁旧 look/readfile 工具返回。
-    - 若 llm/llm_skill 配了 compact_token_limit，剪裁后仍超限时写一份续跑 handoff 摘要。
-    - 唯一底层兜底：抓后端"上下文超长"报错 → 再剪 → 重发一次。
+    - 默认 enable_spill=false：不主动剪旧 tool 结果；配了 compact_token_limit
+      则靠 compact 收敛。设 enable_spill=true 才恢复 85% spill/剪裁。
+    - compact 走同步 invoke_stream（HTTP 流式，worker 等到摘要写完）。
+    - 唯一底层兜底：抓后端"上下文超长"报错 → compact 或（spill 开时）狠剪 → 重发一次。
     - 记后端真实 prompt_tokens 供 ``context_budget()`` 工具读。
 
     套在 rate_limit 包装之外（最外层）：剪裁/重发后才进限流记账,语义正确。
@@ -80,7 +81,10 @@ def _wrap_with_context_mgmt(model, llm_cfg: dict, *, spill_root=None):
     from xskill.agents.context_budget import ContextManager, resolve_max_context
     max_ctx = resolve_max_context(llm_cfg)
     cm = ContextManager(max_ctx, spill_root=spill_root, config=llm_cfg)
-    model.invoke = cm.wrap(model.invoke)
+    model.invoke = cm.wrap(
+        model.invoke,
+        invoke_stream=getattr(model, "invoke_stream", None),
+    )
     return model
 
 
@@ -244,7 +248,10 @@ def _is_transient_error(exc: Exception) -> bool:
     # 本地限流桶耗尽只是"等一等就有令牌"，必须按瞬时错误重试——不能靠字符串
     # 匹配：消息是 "RPM bucket exhausted"，与 hint "rpm exhausted" 子串对不上，
     # 曾被误判为非瞬时 → 1/8 一击致命，高并发下 cluster 会话成片死亡。
+    from xskill.agents.context_budget import CompactFailedError
     from xskill.utils.rate_limit import RateLimitExhausted
+    if isinstance(exc, CompactFailedError):
+        return False
     if isinstance(exc, RateLimitExhausted):
         return True
     t = f"{exc}".lower()

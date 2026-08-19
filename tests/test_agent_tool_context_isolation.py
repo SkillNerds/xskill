@@ -561,6 +561,7 @@ def test_long_context_spills_are_instance_isolated_and_never_use_shared_tmp(
         ContextManager(
             max_context=1000,
             spill_root=spill_root,
+            config={"enable_spill": True},
         ).wrap(fake_invoke)(messages)
         match = re.search(r"spill_path: (.+)", seen["content"])
         assert match is not None
