@@ -1859,6 +1859,69 @@ def cmd_read(args, xskill) -> int:
     return 0
 
 
+def cmd_tools(args) -> int:
+    """``xskill tools <name>``：一次性运维命令。当前仅 migrate-traj-name。"""
+    if args.tools_action != "migrate-traj-name":
+        print(f"未知 tools 子命令: {args.tools_action}", file=sys.stderr)
+        return 2
+    from xskill.config import (
+        XSKILL_HOME,
+        get_registry_db_path,
+        get_skill_dir,
+        get_team_clients_db_path,
+        get_team_trajectories_dir,
+        load_config,
+    )
+    from xskill.tools import migrate_traj_names, rollback_traj_names
+
+    registry_db = get_registry_db_path(xskill_home=XSKILL_HOME)
+    if args.rollback:
+        backup_dir = Path(args.backup_dir) if args.backup_dir else None
+        restored = rollback_traj_names(
+            xskill_home=XSKILL_HOME,
+            registry_db=registry_db,
+            backup_dir=backup_dir,
+        )
+        print(f"已回滚 {restored} 条轨迹改名")
+        return 0
+
+    # 纯客户端可能没有 config.yaml：技能目录与 server 轨迹根都按「拿得到
+    # 才迁移」处理，本机桥接目录的迁移不受影响。
+    try:
+        config = load_config()
+        skill_dir = get_skill_dir(config, xskill_home=XSKILL_HOME)
+    except Exception:  # noqa: BLE001
+        skill_dir = None
+    try:
+        traj_root = get_team_trajectories_dir()
+    except Exception:  # noqa: BLE001
+        traj_root = None
+    report = migrate_traj_names(
+        xskill_home=XSKILL_HOME,
+        traj_root=traj_root,
+        registry_db=registry_db,
+        clients_registry_db=get_team_clients_db_path(),
+        skill_dir=skill_dir,
+        dry_run=args.dry_run,
+    )
+    for line in report.skipped:
+        print(f"  跳过: {line}")
+    if not report.planned:
+        print("没有需要迁移的轨迹（存量命名已符合当前规则）")
+        return 0
+    for plan in report.planned:
+        marker = "计划" if args.dry_run else "改名"
+        print(f"  {marker}: {plan.directory / plan.old_id} → "
+              f"{plan.new_id}（{plan.reason}）")
+    if args.dry_run:
+        print(f"共 {len(report.planned)} 条（dry-run，未改动任何文件）")
+    else:
+        print(f"完成 {report.renamed}/{len(report.planned)} 条；"
+              f"备份于 {report.backup_dir}（回滚：xskill tools "
+              f"migrate-traj-name --rollback）")
+    return 0
+
+
 def cmd_rebuild(args, _xskill) -> int:
     """`xskill rebuild [--force]` —— 用现有原始轨迹重跑蒸馏。
 
@@ -2162,6 +2225,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_read.add_argument("--no-register", action="store_true",
                         help="只桥接不注册 watch_dir（一般不用）")
 
+    p_tools = sub.add_parser(
+        "tools", help="一次性运维命令（存量数据迁移等，均带备份与回滚）",
+    )
+    tools_sub = p_tools.add_subparsers(dest="tools_action", required=True)
+    p_mig = tools_sub.add_parser(
+        "migrate-traj-name",
+        help="把存量轨迹改成新命名规则（issue #234：会话 id 尾段 16 位、"
+             "团队 server 落盘带成员前缀）。改名前自动备份，可回滚",
+    )
+    p_mig.add_argument("--dry-run", action="store_true",
+                       help="只列出将要执行的改名，不动任何文件")
+    p_mig.add_argument("--rollback", action="store_true",
+                       help="按最近一份备份逆向恢复上一次迁移")
+    p_mig.add_argument("--backup-dir", default=None,
+                       help="回滚时指定备份目录（默认取最近一份）")
+
     p_rebuild = sub.add_parser(
         "rebuild", help="用现有原始轨迹重跑蒸馏（换强模型重生成 skill）",
     )
@@ -2265,6 +2344,8 @@ def main() -> int:
 
     # read / rebuild 只动 registry + 文件，不需要 llm.api_key / facade——
     # 重跑由运行中的 watcher 完成，本命令只做"重置/桥接"。
+    if args.command == "tools":
+        return cmd_tools(args)
     if args.command == "read":
         return cmd_read(args, None)
     if args.command == "rebuild":

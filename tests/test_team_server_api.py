@@ -155,7 +155,8 @@ def test_paused_upload_is_accepted_and_backlog_is_discovered_after_resume(
         "rejected": [],
     }
     sessions_dir = traj_root / "clients" / "alice" / "sessions"
-    assert (sessions_dir / "traj_cc_paused_001.md").read_text() == content
+    stored_name = f"traj_alice_{client_id[:8]}_cc_paused_001.md"
+    assert (sessions_dir / stored_name).read_text() == content
     watch_dir = R.get_watch_dir(sessions_dir, db_path=registry_db)
     assert watch_dir["auto_index"] == 0
     with R.pooled_connection(registry_db) as conn:
@@ -169,7 +170,7 @@ def test_paused_upload_is_accepted_and_backlog_is_discovered_after_resume(
     assert R.get_watch_dir(sessions_dir, db_path=registry_db)["auto_index"] == 1
     assert R.discover_trajectories(
         watch_dir["id"], sessions_dir, db_path=registry_db,
-    ) == ["traj_cc_paused_001.md"]
+    ) == [stored_name]
 
 
 def test_sync_auth_uses_current_token_and_delete_revokes_immediately(client):
@@ -350,8 +351,9 @@ def test_upload_writes_traj_md_under_client_bucket(client, tmp_path):
     client.post("/api/v1/team/upload", headers=hdr, json={
         "trajectories": [{"traj_id": "traj_cc_x_001", "content": body,
                           "sha256": _sha(body)}]})
+    # 落盘名带成员标识前缀（issue #234；匿名客户端为 u_ + client_id 前 8 位）
     expected = (tmp_path / "team_traj" / "clients" / cid / "sessions"
-                / "traj_cc_x_001.md")
+                / f"traj_u_{cid[:8]}_cc_x_001.md")
     assert expected.is_file()
     assert expected.read_text(encoding="utf-8") == body
 
@@ -366,7 +368,7 @@ def test_upload_with_model_writes_json_sidecar(client, tmp_path):
         "trajectories": [{"traj_id": "traj_cc_x_001", "content": body,
                           "sha256": _sha(body), "model": "claude-opus-4-7"}]})
     sess = tmp_path / "team_traj" / "clients" / cid / "sessions"
-    sidecar = sess / "traj_cc_x_001.json"
+    sidecar = sess / f"traj_u_{cid[:8]}_cc_x_001.json"
     assert sidecar.is_file()
     assert _json.loads(sidecar.read_text(encoding="utf-8"))["model"] == "claude-opus-4-7"
 
@@ -380,8 +382,9 @@ def test_upload_without_model_no_json_sidecar(client, tmp_path):
         "trajectories": [{"traj_id": "traj_cc_x_001", "content": body,
                           "sha256": _sha(body)}]})   # 不带 model
     sess = tmp_path / "team_traj" / "clients" / cid / "sessions"
-    assert (sess / "traj_cc_x_001.md").is_file()
-    assert not (sess / "traj_cc_x_001.json").exists()   # 行为不回归
+    assert (sess / f"traj_u_{cid[:8]}_cc_x_001.md").is_file()
+    # 行为不回归
+    assert not (sess / f"traj_u_{cid[:8]}_cc_x_001.json").exists()
 
 
 # ── 推荐调优热生效(回归:曾被 _ctx 启动快照冻死,面板改完必须重启) ────

@@ -506,10 +506,16 @@ class DirectoryWatcher:
             candidates.ATOM_PROMOTION_THRESHOLD,
             len(snapshot_payload["trajectory_ids"]),
         )
-        self._check_pending_skill_edits(
-            threshold=candidates.ATOM_PROMOTION_THRESHOLD,
-        )
-        cold_start_signal.consume()
+        try:
+            self._check_pending_skill_edits(
+                threshold=candidates.ATOM_PROMOTION_THRESHOLD,
+            )
+        finally:
+            # 提交成败都消费信号（issue #234 附带修复）：失败时留着信号会让
+            # 下一轮 poll 再按快照**全量**重跑同一批，且固定 poll 间隔、无
+            # 退避；消费后转入常规 SkillEdit 路径——它每轮扫描本就兜底重试，
+            # 且带批量减半与连续失败降优先级两级退避。
+            cold_start_signal.consume()
 
     def _check_pending_skill_edits(self, threshold=None):
         """遍历每个 skill 目录调 SkillEditAgent.maybe_run()。

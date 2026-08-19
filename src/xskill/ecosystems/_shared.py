@@ -461,6 +461,37 @@ def _sanitize_for_filename(s: str, maxlen: int = 32) -> str:
     return cleaned[:maxlen] if cleaned else ""
 
 
+# 会话 id 进入文件名保留的长度。2026-08 之前为 8——前缀型会话 id（如
+# ``ses_``开头）只剩 4 个有效字符，团队服务器把多人轨迹合并训练时会重名，
+# 蒸馏整轮失败（issue #234）。现为 16。磁盘上旧文件名的尾段仍是 8 位：
+# 不迁移不重命名，查找一律走 ``lookup_bridged_markdown`` 的新旧双键回退；
+# 一次性迁移由 ``xskill tools migrate-traj-name`` 手动执行。
+SID_FILENAME_LENGTH = 16
+LEGACY_SID_FILENAME_LENGTH = 8
+
+
+def short_sid(sid: str) -> str:
+    """会话 id → 文件名尾段（当前长度）。"""
+    return _sanitize_for_filename(sid, maxlen=SID_FILENAME_LENGTH) or "nosid"
+
+
+def legacy_short_sid(sid: str) -> str:
+    """会话 id → 旧长度（8 位）文件名尾段，供识别存量文件。"""
+    return _sanitize_for_filename(sid, maxlen=LEGACY_SID_FILENAME_LENGTH) or "nosid"
+
+
+def lookup_bridged_markdown(index: dict, sid: str):
+    """按会话 id 在「尾段 → md 路径」索引里查已桥接文件，新旧长度都认。
+
+    索引键是文件名最后一段（长度即文件当时的命名规则）；先按当前 16 位查，
+    未命中再按旧 8 位查——保证放宽长度后，存量旧名文件仍被识别为「已桥接」，
+    续写时原地覆盖而不是再生成一份新名文件。"""
+    hit = index.get(short_sid(sid))
+    if hit is not None:
+        return hit
+    return index.get(legacy_short_sid(sid))
+
+
 def _scan_seen_sessions(target_traj_dir: Path) -> set[str]:
     """重启时重建 ``seen_sessions``。
 
@@ -721,7 +752,7 @@ class JsonlIngester:
     1. 扫 ``spec.sessions_path(home_root)`` 下匹配 ``spec.sessions_glob`` 的文件
     2. 用 ``spec.session_id_from_path`` 抽 session id，跟 ``seen_sessions`` 去重
     3. 用 ``spec.adapter_format`` 喂 ``submit_trajectory`` 桥成 ``traj_*.md``
-    4. traj_id 取 ``<spec.traj_id_prefix><project>_<sid8>``——保留 ``traj_`` 前缀
+    4. traj_id 取 ``<spec.traj_id_prefix><project>_<sid>``——保留 ``traj_`` 前缀
        让 watcher 的 ``traj_*.md`` glob 继续匹配
 
     用法两种：
@@ -952,9 +983,9 @@ class JsonlIngester:
                 continue
 
             rebridged = False
+            existing_md: Path | None = None
             if sid in seen:
-                md_path = bridged_md.get(
-                    _sanitize_for_filename(sid, maxlen=8) or "nosid")
+                md_path = lookup_bridged_markdown(bridged_md, sid)
                 if md_path is None:
                     continue  # 见过但 bridge 目录无 md（如 assignments 记录）→ 不回头
                 if not (
@@ -967,6 +998,7 @@ class JsonlIngester:
                     except OSError:
                         continue
                 rebridged = True  # 源在转换后又增长 → 全量重转换覆盖
+                existing_md = md_path
 
             content = jsonl_path.read_text(encoding="utf-8", errors="ignore")
             if not content.strip():
@@ -987,7 +1019,13 @@ class JsonlIngester:
                     content,
                     session_start_t,
                 )
-            traj_id = self._make_traj_id(content, sid)
+            # 重转换沿用现有文件名：旧 8 位命名的存量文件在 sid 尾段放宽到
+            # 16 位后重算会得到新名，若按新名落盘会留下旧名残骸 + 一份重复
+            # 语料；原地覆盖旧名（issue #234 的「新旧共存」约定）。
+            traj_id = (
+                existing_md.stem if existing_md is not None
+                else self._make_traj_id(content, sid)
+            )
             result = submit_trajectory(
                 content=content,
                 format=self.spec.adapter_format,
@@ -1022,19 +1060,19 @@ class JsonlIngester:
                 )
             submitted.append(result)
             seen.add(sid)
-            bridged_md[
-                _sanitize_for_filename(sid, maxlen=8) or "nosid"
-            ] = Path(result["path"])
+            bridged_md[short_sid(sid)] = Path(result["path"])
         return submitted
 
     def bridged_markdown_by_session_prefix(
         self,
         target_traj_dir: Path,
     ) -> dict[str, Path]:
-        """bridge 目录里已有的 ``traj_*.md``，按文件名尾段 sid8 建索引。
+        """bridge 目录里已有的 ``traj_*.md``，按文件名尾段建索引。
 
-        traj_id 形如 ``<prefix><project>_<sid8>``（见 ``_make_traj_id``）——
-        最后一个下划线后即 sid8（uuid 前 8 字符，无下划线）。供续写重转换
+        traj_id 形如 ``<prefix><project>_<sid>``（见 ``_make_traj_id``）——
+        最后一个下划线后即 sid 尾段（JsonlIngester 各生态的 sid 是 uuid，
+        无下划线；尾段长度不限，8 位旧名与 16 位新名同样入索引，查找由
+        ``lookup_bridged_markdown`` 双键回退）。供续写重转换
         在不读源文件内容的前提下，廉价反查"这个 sid 上次桥成了哪个 md"。
         """
         out: dict[str, Path] = {}
@@ -1045,8 +1083,8 @@ class JsonlIngester:
         return out
 
     def _make_traj_id(self, content: str, sid: str) -> str:
-        """``<prefix><project>_<sid8>``——project = cwd basename，sid8 = sid 前 8 字符。"""
+        """``<prefix><project>_<sid>``——project = cwd basename，sid 段长度见 SID_FILENAME_LENGTH。"""
         cwd = self.spec.cwd_from_content(content)
         project = _sanitize_for_filename(Path(cwd).name if cwd else "", maxlen=32) or "unknown"
-        sid_short = _sanitize_for_filename(sid, maxlen=8) or "nosid"
+        sid_short = short_sid(sid)
         return f"{self.spec.traj_id_prefix}{project}_{sid_short}"

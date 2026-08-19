@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from xskill.ecosystems._shared import (
+    short_sid,
     EcosystemSpec,
     JsonlIngester,
     _agents_skills_path,
@@ -141,7 +142,7 @@ def _read_cwd_from_codex_jsonl(jsonl_content: str) -> str:
 
 
 def _codex_traj_id(jsonl_path: Path, session_id: str) -> str:
-    """codex bridged 轨迹 ID：``traj_codex_<projectname>_<sid8>``。
+    """codex bridged 轨迹 ID：``traj_codex_<projectname>_<sid>``。
 
     与 ``_cc_traj_id`` 同形，前缀换成 ``traj_codex_`` 让 trajectory 元数据能
     一眼区分来源。cwd 从 codex JSONL 首行抽（不是 CC 的 per-event 字段）。
@@ -149,7 +150,7 @@ def _codex_traj_id(jsonl_path: Path, session_id: str) -> str:
     content = jsonl_path.read_text(encoding="utf-8", errors="ignore") if jsonl_path.is_file() else ""
     cwd = _read_cwd_from_codex_jsonl(content)
     project = _sanitize_for_filename(Path(cwd).name if cwd else "", maxlen=32) or "unknown"
-    sid_short = _sanitize_for_filename(session_id, maxlen=8) or "nosid"
+    sid_short = short_sid(session_id)
     return f"traj_codex_{project}_{sid_short}"
 
 

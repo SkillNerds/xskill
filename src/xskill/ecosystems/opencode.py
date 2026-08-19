@@ -43,6 +43,7 @@ from xskill.ecosystems.installation import (
     is_link_or_junction,
 )
 from xskill.ecosystems._shared import (
+    short_sid,
     SqliteEcosystemSpec,
     _agents_skills_path,
     _install_all_with,
@@ -367,7 +368,7 @@ class SqliteIngester:
                     msg["_parts"] = parts_by_msg.get(mid, [])
                     messages.append(msg)
 
-                # 生成 traj_id：含 project basename + sid8（同 CC 命名风格）；
+                # 生成 traj_id：含 project basename + sid 尾段（同 CC 命名风格）；
                 # 前缀按 spec.traj_id_prefix 派生，避免对 ecosystem 硬编码 if 分支。
                 traj_id = self._sqlite_traj_id(sid, directory)
                 # 用户 agent 模型(批2):message.data.model = {providerID, modelID}
@@ -459,18 +460,20 @@ class SqliteIngester:
         return "\n".join(out)
 
     def _sqlite_traj_id(self, sid: str, directory: str) -> str:
-        """``<spec.traj_id_prefix><projectname>_<sid8>`` 命名，与 CC bridged
+        """``<spec.traj_id_prefix><projectname>_<sid>`` 命名，与 CC bridged
         同风格。
 
-        OpenCode / ngagent session id 是 ``ses_xxxx`` 形式（带前缀），
-        sid8 取前 8 字符即可，碰撞概率忽略。前缀由 ``spec.traj_id_prefix``
+        OpenCode / ngagent session id 是 ``ses_xxxx`` 形式（带前缀）——
+        ``ses_`` 已占 4 字符，历史上的 8 位截断只剩 4 位有效字符，团队
+        合并多人语料时会撞名（issue #234），故取 ``SID_FILENAME_LENGTH``
+        （16）位。前缀由 ``spec.traj_id_prefix``
         决定（``traj_oc_`` for opencode、``traj_ng_`` for ngagent），
         非硬编码。
         """
         project = _sanitize_for_filename(
             Path(directory).name if directory else "", maxlen=32,
         ) or "unknown"
-        sid_short = _sanitize_for_filename(sid, maxlen=8) or "nosid"
+        sid_short = short_sid(sid)
         return f"{self.spec.traj_id_prefix}{project}_{sid_short}"
 
 

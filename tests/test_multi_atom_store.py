@@ -119,7 +119,12 @@ class TestMultiStoreRouting:
         atom = multi.load("atom_traj_same_0001")
 
         assert atom.summary == "client B duplicate atom"
-        assert "atom id atom_traj_same_0001 duplicated across atom stores" in caplog.text
+        # 两份内容不同（summary 不同）→ 按「冲突」告警（issue #234：内容
+        # 一致才算重复，降为 debug）
+        assert (
+            "atom id atom_traj_same_0001 conflicts across atom stores"
+            in caplog.text
+        )
 
     def test_duplicate_atom_id_tie_uses_first_store(self, tmp_path, caplog):
         store_a, store_b = _two_client_stores(tmp_path)
@@ -140,7 +145,11 @@ class TestMultiStoreRouting:
         atom = multi.load("atom_traj_same_0001")
 
         assert atom.summary == "client A duplicate atom"
-        assert "atom id atom_traj_same_0001 duplicated across atom stores" in caplog.text
+        # 内容不同 → 冲突文案（issue #234：内容一致才算重复，降为 debug）
+        assert (
+            "atom id atom_traj_same_0001 conflicts across atom stores"
+            in caplog.text
+        )
 
     def test_duplicate_traj_id_uses_newest_and_warns(self, tmp_path, caplog):
         store_a, store_b = _two_client_stores(tmp_path)
@@ -164,7 +173,10 @@ class TestMultiStoreRouting:
 
         assert [a.atom_id for a in atoms] == ["atom_traj_same_0002"]
         assert multi.traj_root_for("traj_same") == store_b.root
-        assert "traj id traj_same duplicated across atom stores" in caplog.text
+        # 两份 traj 正文不同 → 冲突文案（issue #234）
+        assert (
+            "traj id traj_same conflicts across atom stores" in caplog.text
+        )
 
 
 class TestSkillToolsAcrossStores:
@@ -219,7 +231,10 @@ class TestSkillToolsAcrossStores:
 
         out = agent_tools.read_traj.entrypoint("traj_same", offset_start=1, offset_end=2)
         assert out == "B\n"
-        assert "traj id traj_same duplicated across atom stores" in caplog.text
+        # 两份 traj 正文不同 → 冲突文案（issue #234）
+        assert (
+            "traj id traj_same conflicts across atom stores" in caplog.text
+        )
 
     def test_single_store_behavior_unchanged(self, tmp_path):
         """单 store 路径（单机/cold_flush）：直接绑 AtomTaskStore，行为不回归。"""

@@ -81,6 +81,33 @@ def safe_dir_name(user_name: str | None, client_id: str) -> str:
     return escaped
 
 
+def member_traj_tag(user_name: str | None, client_id: str) -> str:
+    """成员标识，由服务器前缀到落盘轨迹文件名里，保证多成员轨迹不重名。
+
+    形式为「用户名可读部分 + 8 位 client_id 前缀」（issue #234）：
+
+    - 可读部分：用户名按 ``[A-Za-z0-9._-]`` 转义、去掉首尾下划线与点后
+      截取前 16 字符；为空（匿名、纯中文用户名等）退化为 ``u``。
+    - 哈希部分：client_id 前 8 位。client_id 本身是
+      ``sha256("name:" + 规范化用户名)[:16]``，同名用户跨设备一致——同一人
+      换电脑不会产生第二个身份；4 位截断在数十人团队即有可感的碰撞概率，
+      故取 8 位。
+
+    示例：``alice`` → ``alice_1a2b3c4d``；``小明`` → ``u_9f8e7d6c``。
+    """
+    readable = ""
+    if user_name:
+        # 与 client_id 的派生一致按小写规范化：同一人以「Bob」「bob」注册
+        # 得到同一 client_id，成员标识也必须相同，否则同一人的语料会因
+        # 大小写分裂成两套文件名。
+        readable = _SAFE_DIR_RE.sub(
+            "_", user_name.strip().lower()
+        ).strip("_.")[:16]
+    if not readable:
+        readable = "u"
+    return f"{readable}_{client_id[:8]}"
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS clients (
     client_id      TEXT PRIMARY KEY,

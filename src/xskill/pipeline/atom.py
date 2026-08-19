@@ -16,6 +16,7 @@ AtomTask 打分。读入 AtomTask 数据 + 该 atom 用过的 skills / side / co
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import pickle
@@ -320,11 +321,29 @@ class MultiAtomTaskStore:
         if not hits:
             return None
         if len(hits) > 1:
-            logger.warning(
-                "%s duplicated across atom stores; using newest: %s",
-                label,
-                [str(path) for _, _, path in hits],
-            )
+            # 同名多份先看内容（issue #234）：内容完全一致 = 同一份被拷进多个
+            # 用户目录，按重复处理，debug 记一笔即可；内容不同才是真冲突，
+            # 记 warning 并取 mtime 最新的一份。
+            digests = set()
+            for _, _, path in hits:
+                try:
+                    digests.add(hashlib.sha256(path.read_bytes()).hexdigest())
+                except OSError:
+                    digests.add(f"unreadable:{path}")
+            if len(digests) <= 1:
+                logger.debug(
+                    "%s duplicated across atom stores with identical "
+                    "content; treating as one copy: %s",
+                    label,
+                    [str(path) for _, _, path in hits],
+                )
+            else:
+                logger.warning(
+                    "%s conflicts across atom stores (same id, different "
+                    "content); using newest: %s",
+                    label,
+                    [str(path) for _, _, path in hits],
+                )
         _idx, store, path = max(
             hits,
             key=lambda h: (h[2].stat().st_mtime_ns, -h[0]),

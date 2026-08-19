@@ -50,7 +50,7 @@ class RegisterResponse(BaseModel):
 
 
 class UploadTrajectory(BaseModel):
-    traj_id: str           # 形如 traj_cc_<project>_<sid8>，必须 traj_ 前缀
+    traj_id: str           # 形如 traj_cc_<project>_<sid>，必须 traj_ 前缀
     content: str           # 已脱敏的 markdown 全文
     sha256: str            # content 的 sha256，server 端去重用
     model: str = ""        # 产生该轨迹的用户 agent 模型（取自本机 .json sidecar；

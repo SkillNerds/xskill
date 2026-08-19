@@ -89,6 +89,7 @@ def test_team_upload_sanitizes_content(tmp_path):
                           "sha256": hashlib.sha256(body.encode()).hexdigest()}]})
     assert r.status_code == 200 and r.json()["accepted"] == ["traj_cc_x"]
 
-    md = (traj_root / "clients" / cid / "sessions" / "traj_cc_x.md").read_text(encoding="utf-8")
+    md = (traj_root / "clients" / cid / "sessions"
+          / f"traj_u_{cid[:8]}_cc_x.md").read_text(encoding="utf-8")
     assert "\x1b" not in md and "\x00" not in md and "\x0c" not in md
     assert "dirty" in md and "hidden" in md
