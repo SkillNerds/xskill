@@ -60,6 +60,85 @@ def client_id_from_name(name: str) -> str:
 _SAFE_DIR_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 
+def list_paused_client_dir_names(db_path: Path | str | None) -> list[str]:
+    """Return filesystem dir names for clients with ingest_paused=1.
+
+    Lightweight read: does not construct ClientRegistry (no touch timer).
+    Missing db / missing table / missing column → empty list.
+    """
+    if not db_path:
+        return []
+    path = Path(db_path)
+    if not path.is_file():
+        return []
+    try:
+        conn = sqlite3.connect(str(path), timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if "clients" not in tables:
+                return []
+            cols = {
+                row["name"] for row in conn.execute("PRAGMA table_info(clients)")
+            }
+            if "client_id" not in cols:
+                return []
+            if "ingest_paused" not in cols:
+                return []
+            user_col = "user_name" if "user_name" in cols else None
+            select = "client_id" + (", user_name" if user_col else "")
+            rows = conn.execute(
+                f"SELECT {select} FROM clients WHERE ingest_paused=1"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        logger.debug("list_paused_client_dir_names failed on %s", path, exc_info=True)
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        client_id = str(row["client_id"] or "").strip()
+        if not client_id:
+            continue
+        raw_name = ""
+        if user_col:
+            raw_name = str(row["user_name"] or "").strip()
+        try:
+            dir_name = safe_dir_name(raw_name or None, client_id)
+        except ValueError:
+            dir_name = client_id
+        if dir_name in seen:
+            continue
+        seen.add(dir_name)
+        names.append(dir_name)
+    return names
+
+
+def paused_trajectory_roots(
+    traj_root: Path | str | None,
+    clients_db_path: Path | str | None,
+) -> tuple[Path, ...]:
+    """Absolute client trajectory trees that generate must not read."""
+    if traj_root is None:
+        return ()
+    root = Path(traj_root)
+    names = list_paused_client_dir_names(clients_db_path)
+    blocked: list[Path] = []
+    for name in names:
+        client_dir = root / "clients" / name
+        try:
+            blocked.append(client_dir.resolve())
+        except OSError:
+            blocked.append(client_dir)
+    return tuple(blocked)
+
+
 def safe_dir_name(user_name: str | None, client_id: str) -> str:
     """文件系统目录名：优先用 user_name 明文（安全转义），匿名用 client_id。
 

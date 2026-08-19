@@ -329,6 +329,54 @@ def collect_read_roots(
     return unique
 
 
+def exclude_blocked_read_roots(
+    roots: list[Path],
+    blocked: tuple[Path, ...] | list[Path],
+) -> list[Path]:
+    """Drop roots that are an on-hold client tree or sit inside one."""
+    if not blocked:
+        return list(roots)
+    blocked_resolved: list[Path] = []
+    for raw in blocked:
+        path = Path(raw)
+        try:
+            blocked_resolved.append(path.resolve())
+        except OSError:
+            blocked_resolved.append(path)
+
+    def _is_blocked(path: Path) -> bool:
+        try:
+            resolved = path.resolve() if path.exists() else path
+        except OSError:
+            resolved = path
+        for root in blocked_resolved:
+            if resolved == root:
+                return True
+            try:
+                resolved.relative_to(root)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    return [path for path in roots if not _is_blocked(path)]
+
+
+def collect_blocked_traj_roots(
+    traj_root: Path | None,
+    clients_db_path: Path | None = None,
+) -> tuple[Path, ...]:
+    from xskill.config import get_team_clients_db_path
+    from xskill.team.server.client_registry import paused_trajectory_roots
+
+    if traj_root is None:
+        return ()
+    db_path = clients_db_path
+    if db_path is None:
+        db_path = get_team_clients_db_path()
+    return paused_trajectory_roots(traj_root, db_path)
+
+
 def pin_generated_skills(
     *,
     user_id: str,
@@ -438,6 +486,7 @@ def _run_generate_job_body(
     config: dict,
     db_path: Path | None = None,
     logs_dir: Path | None = None,
+    clients_db_path: Path | None = None,
 ) -> None:
     from xskill.agents import agent_tools
     from xskill.agents.agno_factory import make_default_factory
@@ -446,6 +495,10 @@ def _run_generate_job_body(
 
     skill_dir = Path(skill_dir)
     extra_roots = collect_read_roots(skill_dir, traj_root, db_path=db_path)
+    blocked_roots = collect_blocked_traj_roots(
+        traj_root, clients_db_path=clients_db_path,
+    )
+    extra_roots = exclude_blocked_read_roots(extra_roots, blocked_roots)
     logs_dir = Path(logs_dir) if logs_dir is not None else get_logs_dir()
     spill_root = (
         logs_dir / "agents" / "generate_agents" / job["user_id"] / "spill" / job["job_id"]
@@ -463,6 +516,7 @@ def _run_generate_job_body(
         extra_read_roots=tuple(extra_roots),
         generate_user_id=job["user_id"],
         registry_db_path=resolved_db,
+        blocked_read_roots=blocked_roots,
     )
     llm_cfg = {**(config.get("llm") or {}), **(config.get("llm_skill") or {})}
     factory = make_default_factory(
