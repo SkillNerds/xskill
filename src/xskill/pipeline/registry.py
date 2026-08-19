@@ -1655,6 +1655,47 @@ def get_watch_dir(dir_path: str | Path, *, db_path: Optional[Path] = None) -> di
         return dict(row) if row else None
 
 
+def find_overlapping_watch_dirs(
+    watch_dirs: Optional[list[dict]] = None,
+    *,
+    db_path: Optional[Path] = None,
+) -> list[dict]:
+    """侦测注册目录中的父子重叠关系。
+
+    返回包含 parent 与 child 记录的重叠对列表：
+    [{"parent": {...}, "child": {...}}, ...]
+    """
+    dirs = watch_dirs if watch_dirs is not None else list_watch_dirs(db_path=db_path)
+    valid_dirs: list[tuple[Path, dict]] = []
+    for d in dirs:
+        try:
+            p_val = d.get("path") if isinstance(d, dict) else getattr(d, "path", None)
+            if p_val:
+                raw_d = (
+                    d if isinstance(d, dict)
+                    else (dict(d.__dict__) if hasattr(d, "__dict__") else {"path": str(p_val)})
+                )
+                valid_dirs.append((Path(p_val).resolve(), raw_d))
+        except Exception:
+            continue
+
+    overlaps: list[dict] = []
+    for i, (p1, d1) in enumerate(valid_dirs):
+        for j, (p2, d2) in enumerate(valid_dirs):
+            if i != j and p1 != p2:
+                try:
+                    if p2.is_relative_to(p1):
+                        overlaps.append({"parent": d1, "child": d2})
+                except AttributeError:
+                    try:
+                        p2.relative_to(p1)
+                        overlaps.append({"parent": d1, "child": d2})
+                    except ValueError:
+                        pass
+    return overlaps
+
+
+
 # ---------------------------------------------------------------------------
 # Trajectory tracking
 # ---------------------------------------------------------------------------
@@ -2316,6 +2357,11 @@ class Registry:
         p = Path(path).expanduser().resolve()
         row = get_watch_dir(p, db_path=self._db_path)
         return self._row_to_watch_dir(row) if row else None
+
+    def find_overlapping(self) -> list[dict]:
+        """侦测当前注册表中的父子重叠目录。"""
+        return find_overlapping_watch_dirs(db_path=self._db_path)
+
 
     @staticmethod
     def _row_to_watch_dir(row: dict, **overrides) -> WatchDir:

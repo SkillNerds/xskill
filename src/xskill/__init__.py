@@ -30,6 +30,8 @@ from xskill.pipeline.registry import Registry
 from xskill.skill.repo import SkillRepo
 
 __all__ = [
+    "__version__",
     "XSkill", "Skill", "Trajectory",
     "Registry", "SkillRepo",
 ]
+

@@ -82,6 +82,20 @@ def cmd_registry(args, xskill) -> int:
         if not dirs:
             print("(no registered directories)")
             return 0
+        from xskill.pipeline.registry import find_overlapping_watch_dirs
+        raw_dirs = [
+            {"id": w.id, "path": str(w.path), "label": w.label, "ecosystem": w.ecosystem}
+            for w in dirs
+        ]
+        overlaps = find_overlapping_watch_dirs(raw_dirs)
+        if overlaps:
+            print("WARNING: overlapping registry roots detected")
+            for item in overlaps:
+                p = item["parent"]
+                c = item["child"]
+                print(f"  Parent: id={p.get('id')} ({p.get('ecosystem', '-')})\t{p.get('path')}")
+                print(f"  Child:  id={c.get('id')} ({c.get('ecosystem', '-')})\t{c.get('path')}")
+            print()
         # 列序: id  ecosystem  traj  indexed  label  path
         # ecosystem 是来源标签：``manual`` = 用户手动注册；其他如
         # ``claude_code`` = daemon 启动时自动 detect 出来的生态目录。
