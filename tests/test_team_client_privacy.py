@@ -101,8 +101,11 @@ def test_deny_project_normalizes_relative_tilde_and_symlink(tmp_path, monkeypatc
     _write_traj(home / ".xskill", "cc_sessions", "traj_via_link", cwd=str(link))
     _write_traj(home / ".xskill", "cc_sessions", "traj_via_real", cwd=str(real))
 
-    # 用 ~ 与相对路径写规则，均应命中同一目录
+    # 用 ~ 与相对路径写规则，均应命中同一目录。
+    # Windows 上 os.path.expanduser 读 USERPROFILE 而非 HOME（Python ≥3.8），
+    # 两个都设，测试在三平台行为一致。
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     pol = pv.PrivacyPolicy()
     changed, norm = pol.deny_project("~/real-proj")
