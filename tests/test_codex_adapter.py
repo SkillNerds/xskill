@@ -489,3 +489,52 @@ class TestCodexHelpers:
             "payload": {"record_type": "response", "index": 0},
         })
         assert _read_cwd_from_codex_jsonl(only_response) == ""
+
+
+# ──────────────────────────────────────────────────────────────────
+# codex-cli ≥0.148 rollout format (user input moved into response_item)
+# ──────────────────────────────────────────────────────────────────
+
+FIXTURE_V0148 = Path(__file__).parent / "fixtures" / "codex" / "sample_rollout_v0148.jsonl"
+
+
+class TestCodexRollout0148:
+    """0.148 把用户输入从 ``event_msg::user_message`` 搬到
+    ``response_item/message/role=user``，并把注入上下文混在同一形态里。
+    fixture 是真实 codex-cli 0.148.0 写出的 rollout（脱敏）。"""
+
+    def _adapt(self):
+        assert FIXTURE_V0148.is_file(), f"fixture missing: {FIXTURE_V0148}"
+        return adapt_trajectory(
+            FIXTURE_V0148.read_text(encoding="utf-8"), "codex_rollout_jsonl",
+        )
+
+    def test_user_prompt_is_recovered(self):
+        md, meta = self._adapt()
+        assert meta.get("query") == "hello"
+        assert "## User\n\nhello" in md
+
+    def test_assistant_reply_is_recovered(self):
+        md, _meta = self._adapt()
+        assert "## Assistant\n\nHello from mock LLM" in md
+
+    def test_injected_context_is_filtered(self):
+        """role=developer 的 skills 说明与 role=user 的 <environment_context>
+        是运行时注入，不是用户说的话，不得进入轨迹正文。"""
+        md, _meta = self._adapt()
+        assert "<environment_context>" not in md
+        assert "skills_instructions" not in md
+        assert "<cwd>" not in md
+
+    def test_session_meta_still_parsed(self):
+        md, _meta = self._adapt()
+        assert "**cli_version**: 0.148.0" in md
+        assert "**originator**: codex_exec" in md
+
+    def test_old_format_fixture_unchanged(self):
+        """两种格式并存：旧 fixture（event_msg::user_message）行为不变。"""
+        md, meta = adapt_trajectory(
+            FIXTURE_PATH.read_text(encoding="utf-8"), "codex_rollout_jsonl",
+        )
+        assert meta.get("query")
+        assert "## User" in md

@@ -177,6 +177,24 @@ CODEX_SPEC = EcosystemSpec(
 # ─────────────────────────────────────────────────────────────────
 
 
+def _codex_message_text(content) -> str:
+    """``response_item/message`` 的 ``content`` → 纯文本。0.148 的形态是
+    ``[{"type": "input_text"|"output_text", "text": ...}]``；兼容 string。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                tx = block.get("text")
+                if tx:
+                    parts.append(str(tx))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    return ""
+
+
 def _adapt_codex_rollout_jsonl(content: str, metadata: dict) -> tuple[str, dict]:
     """Convert a Codex CLI rollout JSONL (``~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl``)
     to markdown + metadata.
@@ -242,10 +260,29 @@ def _adapt_codex_rollout_jsonl(content: str, metadata: dict) -> tuple[str, dict]
             continue
 
         if ev_type == "response_item":
-            # 占位：codex response_item 的内部 schema 复杂（含 message / tool_use /
-            # function_call_output 等），P2 不深化。这里只计数 + 透传一条 timeline
-            # 让下游能看到"这条 session 确实有 N 条响应"。
             response_count += 1
+            # codex-cli ≥0.148 把用户输入也写成 response_item/message/role=user
+            # （不再有 event_msg::user_message），并把注入上下文混在同一形态里：
+            # role=developer 的 skills 说明、role=user 的 <environment_context>
+            # 环境快照——只有不以 "<" 开头的 user 文本才是用户真正说的话。
+            # 助手回复同形态 role=assistant / output_text。旧版（≤0.147）没有这
+            # 类 role=user 的 response_item，走上面的 event_msg 分支，两种格式并存。
+            if payload.get("type") == "message":
+                role = payload.get("role")
+                text = _codex_message_text(payload.get("content"))
+                if role == "user" and text and not text.lstrip().startswith("<"):
+                    if not first_user_query:
+                        first_user_query = text[:500]
+                    timeline.append({"t": t, "role": "user", "content": text[:2000]})
+                    t += 1
+                    continue
+                if role == "assistant" and text:
+                    timeline.append({"t": t, "role": "assistant", "content": text[:2000]})
+                    t += 1
+                    continue
+                if role in ("user", "developer"):
+                    continue  # 注入的运行时上下文 / 系统说明，不进 timeline
+            # 其它 response_item（tool call / function output / 未知）：计数 + 透传占位
             timeline.append({
                 "t": t, "role": "assistant",
                 "content": f"[codex response_item #{payload.get('index', response_count - 1)}]",

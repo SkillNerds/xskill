@@ -230,7 +230,7 @@ def given_token_reference(estimate_context: TokenEstimateContext) -> None:
 def given_context_manager_default(estimate_context: TokenEstimateContext) -> None:
     estimate_context.manager = ContextManager(
         1000,
-        config={"model": "deepseek-chat"},
+        config={"model": "deepseek-chat", "enable_spill": True},
     )
     def _invoke_stub(messages: list[Any], **_kwargs: Any) -> dict[str, Any]:
         estimate_context.invoke_call_count += 1

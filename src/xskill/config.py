@@ -79,13 +79,18 @@ llm:
                          # default (a warning is logged). Uncomment and set it
                          # to YOUR model's real context limit (e.g. 128000 for
                          # gpt-4o, 64000 for deepseek-chat).
-  # compact_token_limit: 120000  # optional; after trimming/spilling old tool
-                         # results, if the estimated history is still above this
-                         # limit, ask the same chat model to write a handoff
-                         # summary of old agent memory (Generate / SkillEdit).
-                         # The effective limit is never below spill@ (85% of
-                         # max_context), so spill always runs first. Leave
-                         # commented to disable.
+  # enable_spill: false   # optional; default false. When false, never trim/
+                         # spill old tool results; rely on compact_token_limit.
+                         # Set true to restore proactive spill@85% behavior.
+  # compact_token_limit: 120000  # optional; if estimated history is still above
+                         # this limit, ask the same chat model to compact working
+                         # memory (Generate / SkillEdit). With enable_spill true,
+                         # the effective limit is never below spill@ (85% of
+                         # max_context). Leave commented to disable compact.
+                         # Compact uses synchronous HTTP streaming (invoke_stream)
+                         # so request_timeout is between chunks, not the whole
+                         # summary. Failures retry; they do not continue the
+                         # main request with still-over-limit history.
   # compact_keep_recent_messages: 6 # optional; recent complete message blocks
                          # kept verbatim after compact. Default 6.
   # temperature: 0.0     # optional; default 0 (deterministic)

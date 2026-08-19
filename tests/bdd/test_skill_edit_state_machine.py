@@ -346,6 +346,7 @@ def _exercise_context_pressure(world: StateWorld) -> None:
         compact_token_limit=900,
         compact_keep_recent_messages=1,
         compact_fn=lambda _prompt: "保留候选、证据摘要和待完成提交。",
+        config={"enable_spill": True},
     )
     model.invoke = manager.wrap(model.invoke)
     model = _wrap_with_retry(
@@ -458,6 +459,7 @@ def _run_state_agent(world: StateWorld) -> None:
     llm_cfg = {
         "max_context": 1000 if world.mode == "context_pressure" else 128_000,
         "compact_token_limit": 900 if world.mode == "context_pressure" else 112_000,
+        "enable_spill": world.mode == "context_pressure",
     }
     agent = SkillEditAgent(
         skill_dir=world.skill_dir,
