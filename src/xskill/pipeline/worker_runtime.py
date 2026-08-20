@@ -213,23 +213,54 @@ class BoundedExecutor:
 
 
 class ClusterResultRecorder:
-    """Thread-safe record of successful writes made for one ClusterAgent call."""
+    """Thread-safe record of successful writes made for one ClusterAgent call.
+
+    Candidate files are authoritative and allow one atom to support multiple
+    skills, so the in-memory result must retain every per-skill association too.
+    """
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._results: dict[str, tuple[str, int]] = {}
+        self._results: dict[str, dict[str, int]] = {}
 
     def record(self, atom_id: str, skill_name: str, weightscore: int) -> None:
         with self._lock:
-            self._results[atom_id] = (skill_name, int(weightscore))
+            assignments = self._results.setdefault(atom_id, {})
+            # Reinsert an overwrite so ``get`` keeps its historical meaning:
+            # the most recently written association is the compatibility view.
+            assignments.pop(skill_name, None)
+            assignments[skill_name] = int(weightscore)
 
     def get(self, atom_id: str) -> tuple[str, int] | None:
         with self._lock:
-            return self._results.get(atom_id)
+            assignments = self._results.get(atom_id)
+            if not assignments:
+                return None
+            return next(reversed(assignments.items()))
 
-    def snapshot(self) -> dict[str, tuple[str, int]]:
+    def move(
+        self,
+        atom_id: str,
+        skill_from: str,
+        skill_to: str,
+        weightscore: int,
+    ) -> None:
         with self._lock:
-            return dict(self._results)
+            assignments = self._results.setdefault(atom_id, {})
+            assignments.pop(skill_from, None)
+            assignments.pop(skill_to, None)
+            assignments[skill_to] = int(weightscore)
+
+    def get_all(self, atom_id: str) -> tuple[tuple[str, int], ...]:
+        with self._lock:
+            return tuple(self._results.get(atom_id, {}).items())
+
+    def snapshot(self) -> dict[str, tuple[tuple[str, int], ...]]:
+        with self._lock:
+            return {
+                atom_id: tuple(assignments.items())
+                for atom_id, assignments in self._results.items()
+            }
 
 
 class ClusterWriteQueue:

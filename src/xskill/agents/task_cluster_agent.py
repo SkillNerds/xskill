@@ -1,8 +1,8 @@
 """TaskClusterAgent —— AtomTask → skill 归类
 ============================================
 
-输入：单个 AtomTask（由 watcher / process 喂进来）
-副作用：往一个或多个 skill 的 .candidates.yml 写 atom 贡献（含 weightscore 0-10）；
+输入：单个或一批 AtomTask（由 watcher / process 喂进来）
+副作用：把 atom 贡献写入一个或多个 skill 的 .candidates.yml（含 weightscore 1-10）；
        如有必要先 new_skill_folder 建空 skill 目录。
 
 sysprompt 设计
@@ -140,9 +140,11 @@ def build_skill_catalog_block(skill_dir: Path, max_chars: int) -> str:
 
 SYSTEM_PROMPT_TEMPLATE = """你是 TaskClusterAgent。我会给你一个或多个 AtomTask（每个是
 用户的一段完整意图 + agent 的执行复盘）；当给你多个时**逐个独立处理**，互不影响。
-对每个 AtomTask 你决定它是否值得被某个 skill 收录，应该归到哪个已有 skill（用
+对每个 AtomTask 你决定它值得被哪些 skill 收录，应该归到哪些已有 skill（用
 add_task_to_skill / add_tasks_to_skill），或者应该新建一个 skill 容纳它（用
-NewSkillFolder 再添加）。**每个 AtomTask 都必须通过添加工具落盘，一个都不能漏。**
+NewSkillFolder 再添加）。一个 AtomTask 可以同时支撑多个语义不同的 skill，每个
+关联独立评分；不要为了多归类而写入近义、重叠的 skill。**每个 AtomTask 都必须
+通过添加工具至少落盘一次，一个都不能漏。**
 
 # 可用工具
 - AtomTaskRead(atom_id) — 读 atom 完整 JSON（intent / summary / raw_segment 全字段）
@@ -154,12 +156,14 @@ NewSkillFolder 再添加）。**每个 AtomTask 都必须通过添加工具落�
 - NewSkillFolder(skill_name, description) — 新建 baby 分支 skill。description
   必填（2-3 句中文）。**最后才考虑**——能复用就别开新的。
 - add_task_to_skill(skill_name, atom_id, weightscore) — 把 atom 加进 buffer。
-  weightscore 1-10 整数。累计满 10 触发 SkillEditAgent 写 SKILL.md。
+  weightscore 1-10 整数。累计满 10 触发 SkillEditAgent 写 SKILL.md。同一个 atom
+  如果独立支撑多个 skill，可以分别调用并为每个关联单独评分。
 - add_tasks_to_skill(skill_name, tasks) — 同一批有多个 atom 归入同一个 skill
   时优先使用；tasks 每项含 atom_id、weightscore，可选 note。整批只读写一次
   candidates 文件，不能把不同目标 skill 混进同一次调用。
 - MoveTaskTo(skill_from, skill_to, atom_id) — 把 atom 从一个 buffer 移到另一个。
-  合并近义 baby 时用 MoveTaskTo 把 atom 全搬到主 slug。
+  仅在已有某个关联放错位置，或合并近义 baby 时用 MoveTaskTo 搬到主 slug；
+  给 atom 新增另一个有效 skill 关联时不需要先 move。
   之后 from baby 空 buffer 但仍存在（保留以防后续 cluster 又往里写）。
 - score_task(atom_id, score) — 修改 atom 自身的 ux_score
 
@@ -205,8 +209,9 @@ NewSkillFolder 再添加）。**每个 AtomTask 都必须通过添加工具落�
 - 路由表里所有 baby/main/staging skill 全看一遍，重点找 desc 同类的
 
 ## Step 2: 复用判断
-- 找到 1 个 desc 精准匹配的 → 直接 add_task_to_skill（流程结束）
-- 找到 ≥2 个 desc 同类的 baby（近义 slug 泛滥）→ 进入"整合"步骤
+- 找到一个或多个语义不同且都精准匹配的 → 分别 add，每个关联独立评分
+- 找到 ≥2 个同义或高度重叠的 baby（近义 slug 泛滥）→ 进入"整合"步骤，
+  不要把它们误当成多标签目标
 - 没找到合适候选 → 跳到 Step 4
 
 ## Step 3: 整合近义 baby（用 MoveTaskTo）
@@ -223,7 +228,8 @@ NewSkillFolder 再添加）。**每个 AtomTask 都必须通过添加工具落�
 
 ## Step 5: 边缘 atom 兜底（**绝不允许直接 return 不调工具**）
 - weightscore 2-3：仍要 add_task_to_skill 把 atom 灌进 desc 最贴近的 skill；
-  ws=2/3 不会单独触发 SkillEdit（buffer 阈值 10），但 atom→skill 归属必须留底
+  ws=2/3 不会单独触发 SkillEdit（buffer 阈值 10），但至少一个 atom→skill
+  关联必须留底
 - weightscore 1：跟路由表所有 skill 都没明显交叉时，挑 desc 最不远的那个 add，
   weightscore=1；**不要**为 ws=1 atom 新开 skill（守住"≥7 才新建"门槛）
 - 任何分数都不允许"什么都不调，直接说明理由结束"——atom 不能静默蒸发
@@ -232,11 +238,12 @@ NewSkillFolder 再添加）。**每个 AtomTask 都必须通过添加工具落�
 
 多个 ClusterAgent 可以并行推理；所有目录修改会进入单线程写入队列。相同 slug 的
 并发创建会按顺序处理，后续请求复用已经创建的目录。同一批里如给了多个 atom，
-仍要逐个判断、彼此独立；判断完成后，将归入同一个 skill 的 atom 合并成一次
-add_tasks_to_skill 调用。
+仍要逐个判断、彼此独立；判断完成后，按目标 skill 分组调用 add_tasks_to_skill。
+同一 atom 可以出现在多个不同目标 skill 的调用中。
 
 # 硬禁止
-- 不要为了"做点事"乱打高分。低质 atom 就别加，会污染 candidates 触发劣质 skill。
+- 不要为了"做点事"乱打高分。低质 atom 应按分档打低分，避免污染 candidates
+  触发劣质 skill。
 - 不要伪造 atom_id；只用我给的真实 id。
 - 不要直接写 SKILL.md——那是 SkillEditAgent 的职责。
 - 使用 MoveTaskTo 整合已有 baby；ClusterAgent 暂不提供 rename_skill。
@@ -285,6 +292,7 @@ class TaskClusterAgent:
             tools=self.tools,
         )
         # 逐轮 CoT/工具调用 → logs/agents/task_cluster_agents/<traj_id>/<atom_id>.log
+        from xskill.agents import agent_tools
         from xskill.agents.agent_trace import trace_to
         sink = (
             self.logs_dir / "agents" / "task_cluster_agents"
@@ -292,7 +300,7 @@ class TaskClusterAgent:
             if self.logs_dir is not None
             else None
         )
-        with trace_to(sink):
+        with agent_tools.use_cluster_batch([atom.atom_id]), trace_to(sink):
             result = agent.run(user_msg)
         return getattr(result, "content", "") or ""
 
@@ -318,7 +326,8 @@ class TaskClusterAgent:
             + "\n\n# 本次批量调用限制\n"
             "本次只提供 add_tasks_to_skill，不提供逐条 add_task_to_skill。"
             "先逐个判断，再按目标 skill 分组；每组只调用一次 "
-            "add_tasks_to_skill，确保每个 atom_id 恰好出现一次。"
+            "add_tasks_to_skill，确保每个 atom_id 至少出现一次；如果一个 atom "
+            "独立支撑多个不同 skill，可以出现在多个分组中。"
         )
 
         blocks: list[str] = []
@@ -336,7 +345,7 @@ class TaskClusterAgent:
             )
         user_msg = (
             f"待分类 AtomTask 共 {len(atoms)} 个，请**逐个**按系统指令处理，每个都必须"
-            " 出现在某次 add_tasks_to_skill 调用中（任何分数都不允许跳过、"
+            " 至少出现在一次 add_tasks_to_skill 调用中（任何分数都不允许跳过、"
             "不能静默漏掉任何一个）：\n\n"
             + "\n\n".join(blocks)
         )
@@ -345,6 +354,7 @@ class TaskClusterAgent:
             instructions=[sysprompt],
             tools=self.tools,
         )
+        from xskill.agents import agent_tools
         from xskill.agents.agent_trace import trace_to
         # 批量可能跨轨迹——按首 atom 的 traj_id 归档，文件名带 batch 标识与规模。
         first = atoms[0]
@@ -354,6 +364,8 @@ class TaskClusterAgent:
             if self.logs_dir is not None
             else None
         )
-        with trace_to(sink):
+        with agent_tools.use_cluster_batch(
+            atom.atom_id for atom in atoms
+        ), trace_to(sink):
             result = agent.run(user_msg)
         return getattr(result, "content", "") or ""

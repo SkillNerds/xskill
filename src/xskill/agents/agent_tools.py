@@ -79,6 +79,7 @@ class AgentToolContext:
     usage_ledger: Any = None
     cluster_write_queue: Any = None
     cluster_result_recorder: Any = None
+    cluster_batch_ids: frozenset[str] = frozenset()
     skill_edit_skill_name: str | None = None
     skill_edit_batch_ids: tuple[str, ...] = ()
     grep_fallback_warned: bool = False
@@ -124,6 +125,7 @@ def create_agent_tool_context(
     usage_ledger=None,
     cluster_write_queue=None,
     cluster_result_recorder=None,
+    cluster_batch_ids=(),
     skill_edit_skill_name=None,
     skill_edit_batch_ids=(),
     registry_db_path=None,
@@ -149,6 +151,9 @@ def create_agent_tool_context(
         usage_ledger=usage_ledger,
         cluster_write_queue=cluster_write_queue,
         cluster_result_recorder=cluster_result_recorder,
+        cluster_batch_ids=frozenset(
+            str(atom_id) for atom_id in (cluster_batch_ids or ())
+        ),
         skill_edit_skill_name=(
             str(skill_edit_skill_name)
             if skill_edit_skill_name is not None
@@ -196,6 +201,18 @@ def use_agent_tool_context(
         yield context
     finally:
         reset_agent_tool_context(token)
+
+
+@contextlib.contextmanager
+def use_cluster_batch(atom_ids) -> Iterator[AgentToolContext]:
+    """Limit candidate writes to atom IDs supplied for one cluster turn."""
+    current = current_agent_tool_context()
+    bound = replace(
+        current,
+        cluster_batch_ids=frozenset(str(atom_id) for atom_id in atom_ids),
+    )
+    with use_agent_tool_context(bound):
+        yield bound
 
 
 @contextlib.contextmanager
@@ -269,6 +286,7 @@ class AgentToolConfig:
             "usage_ledger": current.usage_ledger,
             "cluster_write_queue": current.cluster_write_queue,
             "cluster_result_recorder": current.cluster_result_recorder,
+            "cluster_batch_ids": current.cluster_batch_ids,
             "skill_edit_skill_name": current.skill_edit_skill_name,
             "skill_edit_batch_ids": current.skill_edit_batch_ids,
             "grep_fallback_warned": current.grep_fallback_warned,
@@ -289,6 +307,7 @@ class AgentToolConfig:
             usage_ledger=snapshot.get("usage_ledger"),
             cluster_write_queue=snapshot.get("cluster_write_queue"),
             cluster_result_recorder=snapshot.get("cluster_result_recorder"),
+            cluster_batch_ids=snapshot.get("cluster_batch_ids") or (),
             skill_edit_skill_name=snapshot.get("skill_edit_skill_name"),
             skill_edit_batch_ids=snapshot.get("skill_edit_batch_ids") or (),
             registry_db_path=snapshot.get("registry_db_path"),
@@ -369,13 +388,13 @@ def _run_cluster_mutation(operation):
     """Run one ClusterAgent filesystem mutation in queue order."""
     context = current_agent_tool_context()
     queue = context.cluster_write_queue
-    if queue is None:
-        return operation()
 
     def run_bound():
         with use_agent_tool_context(context):
             return operation()
 
+    if queue is None:
+        return run_bound()
     return queue.call(run_bound)
 
 
@@ -383,6 +402,26 @@ def _record_cluster_result(atom_id: str, skill_name: str, weightscore: int) -> N
     recorder = current_agent_tool_context().cluster_result_recorder
     if recorder is not None:
         recorder.record(atom_id, skill_name, weightscore)
+
+
+def _move_cluster_result(
+    atom_id: str,
+    skill_from: str,
+    skill_to: str,
+    weightscore: int,
+) -> None:
+    recorder = current_agent_tool_context().cluster_result_recorder
+    if recorder is not None:
+        recorder.move(atom_id, skill_from, skill_to, weightscore)
+
+
+def _cluster_batch_membership_error(atom_id: str) -> str | None:
+    allowed_ids = current_agent_tool_context().cluster_batch_ids
+    if atom_id not in allowed_ids:
+        return (
+            f"error: atom_id {atom_id!r} is not in the current cluster batch"
+        )
+    return None
 
 
 def init_atom_task_tool_context(
@@ -1232,11 +1271,17 @@ def skill_read(skill_name: str) -> str:
 
 
 @tool(name="add_task_to_skill")
-def add_task_to_skill(skill_name: str, atom_id: str, weightscore: int) -> str:
+def add_task_to_skill(
+    skill_name: str,
+    atom_id: str,
+    weightscore: StrictInt,
+) -> str:
     """v2.1: 把 atom 加进 skill 的 candidates buffer。
 
-    同 atom 重复 add 时**覆盖**（不累加，cluster 可改主意）。返回末尾附该
-    atom 的 weightscore + buffer 总分 / 10，让 agent 看到"还差多少到阈值"。
+    同 atom + 同 skill 重复 add 时**覆盖**（不累加，cluster 可改分）。同一
+    atom 可以独立支撑多个不同 skill，每个 skill 保留自己的 weightscore。
+    返回末尾附该 atom 的 weightscore + buffer 总分 / 10，让 agent 看到
+    "还差多少到阈值"。
     """
     from xskill.skill import candidates as C
     skill_dir = agent_tool_config.atom_skill_dir
@@ -1246,10 +1291,12 @@ def add_task_to_skill(skill_name: str, atom_id: str, weightscore: int) -> str:
     target = skill_dir / slug
     if not target.is_dir():
         return f"error: skill {slug} not found; call new_skill_folder first"
-    try:
-        weightscore_value = int(weightscore)
-    except (TypeError, ValueError):
+    batch_error = _cluster_batch_membership_error(atom_id)
+    if batch_error is not None:
+        return batch_error
+    if type(weightscore) is not int:
         return f"error: weightscore must be int 1..10 (got {weightscore!r})"
+    weightscore_value = weightscore
     if not (1 <= weightscore_value <= 10):
         return (
             "error: weightscore must be 1..10 "
@@ -1281,7 +1328,7 @@ class CandidateTaskInput(BaseModel):
         min_length=1,
         description="Existing AtomTask identifier from the current batch.",
     )
-    weightscore: int = Field(
+    weightscore: StrictInt = Field(
         ge=1,
         le=10,
         description="Candidate relevance score from 1 through 10.",
@@ -1301,7 +1348,8 @@ def add_tasks_to_skill(
 
     Each item requires ``atom_id`` and ``weightscore``; ``note`` is optional.
     Use this instead of repeated ``add_task_to_skill`` calls when several atoms
-    in the current cluster batch belong to the same skill.
+    in the current cluster batch belong to the same skill. An atom may appear
+    in separate calls for different skills when it materially supports each.
     """
     from xskill.skill import candidates as C
 
@@ -1330,14 +1378,16 @@ def add_tasks_to_skill(
         if atom_id in seen_atom_ids:
             return f"error: duplicate atom_id in tasks ({atom_id})"
         seen_atom_ids.add(atom_id)
+        batch_error = _cluster_batch_membership_error(atom_id)
+        if batch_error is not None:
+            return batch_error
         weightscore = task_data.get("weightscore")
-        try:
-            weightscore_value = int(weightscore)
-        except (TypeError, ValueError):
+        if type(weightscore) is not int:
             return (
                 "error: each task.weightscore must be int 1..10 "
                 f"(got {weightscore!r})"
             )
+        weightscore_value = weightscore
         if not (1 <= weightscore_value <= 10):
             return (
                 "error: each task.weightscore must be 1..10 "
@@ -2130,7 +2180,7 @@ def move_task_to(skill_from: str, skill_to: str, atom_id: str) -> str:
         )
         if weightscore is None:
             return f"error: atom_id {atom_id} 不在 {from_slug} buffer 中"
-        _record_cluster_result(atom_id, to_slug, weightscore)
+        _move_cluster_result(atom_id, from_slug, to_slug, weightscore)
         logger.info(f"moved task: atom={atom_id} {from_slug} → {to_slug}")
         return (f"moved: atom={atom_id} from {from_slug} to {to_slug} "
                 f"(weightscore={weightscore})")

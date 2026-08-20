@@ -193,6 +193,7 @@ def cmd_init(args) -> int:
         from xskill.ecosystems import (
             detect_known_ecosystems,
             install_to_claude_code, install_to_codex, install_to_cursor,
+            install_to_deepseek_harness,
             install_to_nga3, install_to_ngagent, install_to_openclaw,
             install_to_opencode, install_to_trae,
         )
@@ -205,6 +206,7 @@ def cmd_init(args) -> int:
             "openclaw": install_to_openclaw,
             "cursor": install_to_cursor,
             "trae": install_to_trae,
+            "deepseek_harness": install_to_deepseek_harness,
         }
         skill_source = Path(str(files("xskill") / "data" / "skill" / "xskill"))
         if not (skill_source / "SKILL.md").is_file():
@@ -731,6 +733,7 @@ _DOWNLOAD_AGENT_OPTIONS = (
     ("openclaw", "openclaw", "OpenClaw"),
     ("cursor", "cursor", "Cursor"),
     ("trae", "trae", "Trae"),
+    ("deepseek_harness", "deepseek-harness", "DeepSeek Harness"),
 )
 _DOWNLOAD_AGENT_ALIASES = {
     "claude-code": "claude_code",
@@ -748,6 +751,9 @@ _DOWNLOAD_AGENT_ALIASES = {
     "open-claw": "openclaw",
     "cursor": "cursor",
     "trae": "trae",
+    "deepseek-harness": "deepseek_harness",
+    "deepseek_harness": "deepseek_harness",
+    "dsh": "deepseek_harness",
 }
 _DOWNLOAD_AGENT_CHOICES = tuple(_DOWNLOAD_AGENT_ALIASES)
 _DOWNLOAD_AGENT_LABELS = {

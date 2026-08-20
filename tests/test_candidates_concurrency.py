@@ -503,6 +503,10 @@ def test_thousand_item_batch_loads_and_saves_once(tmp_path, monkeypatch):
         atom_skill_dir=tmp_path,
         atom_store=None,
         default_traj_root=tmp_path,
+        cluster_batch_ids=[
+            f"atom-{index:04d}"
+            for index in range(1000)
+        ],
     )
     with agent_tools.use_agent_tool_context(tool_context):
         result = agent_tools.add_tasks_to_skill.entrypoint(

@@ -48,6 +48,9 @@ _HARNESS_BY_BRIDGE = {
     "ngagent_sessions": "ngagent",
     "trae_sessions": "trae",
     "cursor_sessions": "cursor",
+    # 显式映射：否则回退到 bridge 目录名去掉 _sessions = "dsh"，与生态
+    # 标识 deepseek_harness 不一致，server 侧按生态统计/路由会漂移。
+    "dsh_sessions": "deepseek_harness",
 }
 
 
@@ -129,7 +132,8 @@ class TeamCollector:
         from xskill.ecosystems import (
             detect_known_ecosystems, JsonlIngester, SqliteIngester,
             TraeIngester,
-            CC_SPEC, CODEX_SPEC, NGA3_SPEC, OPENCODE_SPEC, NGAGENT_SPEC,
+            CC_SPEC, CODEX_SPEC, DSH_SPEC, NGA3_SPEC, OPENCODE_SPEC,
+            NGAGENT_SPEC,
         )
         for det in detect_known_ecosystems(home_root=self.home_root):
             eco = det["ecosystem"]
@@ -165,6 +169,14 @@ class TeamCollector:
                 ing = TraeIngester(target_traj_dir=bridge,
                                    home_root=self.home_root,
                                    poll_interval=self.poll_interval)
+            elif eco == "deepseek_harness":
+                # DeepSeek Harness（~/.dsh/sessions）。与 nga3 同一教训：
+                # daemon 侧 watcher_factory 有这条分支，collector 这条
+                # 平行分发链也必须接上，否则 connect 后 dsh 会话不会被
+                # 镜像进 bridge，团队模式下永远采不到（PR #243 评审发现）。
+                ing = JsonlIngester(DSH_SPEC, target_traj_dir=bridge,
+                                    home_root=self.home_root,
+                                    poll_interval=self.poll_interval)
             else:
                 continue
             ing.start()

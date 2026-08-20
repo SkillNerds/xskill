@@ -183,6 +183,7 @@ xskill upload ./my-skill       # package & upload a skill folder (with SKILL.md)
 | **OpenClaw** | 🟡 implemented | `~/.openclaw/agents/` | copy → `~/.agents/skills/<name>/` |
 | **Cursor** | 🟡 implemented | `~/.cursor/projects/*/agent-transcripts/` | symlink → `~/.cursor/skills/<name>/` |
 | **Trae** | 🟡 implemented | IDE `state.vscdb` / CLI `trajectory_*.json` | symlink → `~/.trae-cn/skills/`, `~/.trae/skills/` |
+| **DeepSeek Harness (dsh)** | 🟡 implemented | `~/.dsh/sessions/` (plaintext and default zstd sessions) | symlink → `~/.dsh/skills/<name>/` |
 | **Any other agent** | manual | SDK `xskill.adapters.submit_trajectory` | copy/symlink the `SKILL.md` dir |
 
 ## 📖 Concepts

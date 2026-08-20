@@ -110,12 +110,14 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
     from xskill.canary import CanaryConfig
     from xskill.ecosystems import (
         CCSessionIngester, JsonlIngester, SqliteIngester, TraeIngester,
-        CODEX_SPEC, CURSOR_SPEC, NGA3_SPEC, NGAGENT_SPEC, OPENCLAW_SPEC,
+        CODEX_SPEC, CURSOR_SPEC, DSH_SPEC, NGA3_SPEC, NGAGENT_SPEC,
+        OPENCLAW_SPEC,
         OPENCODE_SPEC,
         detect_known_ecosystems,
         ensure_claude_code_install,
         install_all_to_claude_code,
         install_all_to_codex, install_all_to_cursor,
+        install_all_to_deepseek_harness,
         install_all_to_nga3, install_all_to_ngagent, install_all_to_opencode,
         install_all_to_openclaw, install_all_to_trae,
         make_openclaw_canary_flip_hook,
@@ -273,6 +275,27 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
                 install_history.record_fail(skill="<startup_all>", agent="cursor",
                                             reason=str(exc)[:200])
             JsonlIngester(CURSOR_SPEC, target_traj_dir=bridge, home_root=home_root,
+                          poll_interval=poll_interval,
+                          registry_db_path=registry_db_path).run_once()
+
+        elif eco == "deepseek_harness":
+            try:
+                installed = install_all_to_deepseek_harness(
+                    skill_dir, target_root=home_root,
+                )
+                for dest in installed:
+                    install_history.record(skill=dest.parent.name, side="main", sha="")
+            except Exception as exc:
+                logger.warning(
+                    "install_all_to_deepseek_harness failed", exc_info=True,
+                )
+                install_history.record_fail(
+                    skill="<startup_all>", agent="deepseek_harness",
+                    reason=str(exc)[:200],
+                )
+            # 仅明文 session.jsonl；默认的 session.jsonl.zstd 不在 glob 内，
+            # 本期不解码（见 deepseek_harness.py 模块 docstring）。
+            JsonlIngester(DSH_SPEC, target_traj_dir=bridge, home_root=home_root,
                           poll_interval=poll_interval,
                           registry_db_path=registry_db_path).run_once()
 

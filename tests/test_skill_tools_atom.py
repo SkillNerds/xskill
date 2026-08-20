@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from xskill.pipeline.atom import AtomTask, AtomTaskStore
 from xskill.agents import agent_tools
 
@@ -188,15 +191,29 @@ class TestAddTaskToSkill:
     def test_first_add_creates_entry(self, tmp_path):
         skill_dir, _ = _setup(tmp_path)
         agent_tools.new_skill_folder.entrypoint("auto-skill", "stub desc")
-        msg = agent_tools.add_task_to_skill.entrypoint("auto-skill", "atom_x_0001", 6)
+        with agent_tools.use_cluster_batch(["atom_x_0001"]):
+            msg = agent_tools.add_task_to_skill.entrypoint(
+                "auto-skill",
+                "atom_x_0001",
+                6,
+            )
         assert "buffer_total=6" in msg
 
     def test_repeated_add_overwrites(self, tmp_path):
         """v2.1: 同 atom 重复 add → 覆盖 weightscore（不累加）。"""
         _setup(tmp_path)
         agent_tools.new_skill_folder.entrypoint("auto-skill", "stub desc")
-        agent_tools.add_task_to_skill.entrypoint("auto-skill", "atom_x_0001", 4)
-        msg = agent_tools.add_task_to_skill.entrypoint("auto-skill", "atom_x_0001", 5)
+        with agent_tools.use_cluster_batch(["atom_x_0001"]):
+            agent_tools.add_task_to_skill.entrypoint(
+                "auto-skill",
+                "atom_x_0001",
+                4,
+            )
+            msg = agent_tools.add_task_to_skill.entrypoint(
+                "auto-skill",
+                "atom_x_0001",
+                5,
+            )
         assert "weightscore=5" in msg
         # buffer 仍是单条 atom，total 是覆盖后的 5（不是 4+5=9）
         assert "buffer_total=5" in msg
@@ -210,24 +227,108 @@ class TestAddTaskToSkill:
     def test_weightscore_out_of_range_returns_error(self, tmp_path):
         _setup(tmp_path)
         agent_tools.new_skill_folder.entrypoint("auto-skill", "stub desc")
-        for bad in [0, 11, -1, 100]:
-            msg = agent_tools.add_task_to_skill.entrypoint("auto-skill", "atom_x_0001", bad)
-            assert msg.startswith("error")
+        with agent_tools.use_cluster_batch(["atom_x_0001"]):
+            for bad in [0, 11, -1, 100]:
+                msg = agent_tools.add_task_to_skill.entrypoint(
+                    "auto-skill",
+                    "atom_x_0001",
+                    bad,
+                )
+                assert msg.startswith("error")
+
+    @pytest.mark.parametrize("invalid_score", [True, "8", 8.0])
+    def test_weightscore_requires_strict_integer(self, tmp_path, invalid_score):
+        _setup(tmp_path)
+        agent_tools.new_skill_folder.entrypoint("auto-skill", "stub desc")
+
+        with agent_tools.use_cluster_batch(["atom_x_0001"]):
+            with pytest.raises(ValidationError):
+                agent_tools.add_task_to_skill.entrypoint(
+                    "auto-skill",
+                    "atom_x_0001",
+                    invalid_score,
+                )
+
+    def test_rejects_write_without_current_cluster_batch(self, tmp_path):
+        skill_dir, _ = _setup(tmp_path)
+        agent_tools.new_skill_folder.entrypoint("auto-skill", "stub desc")
+
+        with agent_tools.use_cluster_batch([]):
+            message = agent_tools.add_task_to_skill.entrypoint(
+                "auto-skill",
+                "atom_x_0001",
+                7,
+            )
+
+        assert message.startswith("error:")
+        assert "current cluster batch" in message
+        from xskill.skill import candidates as C
+        assert C.load_candidates(
+            skill_dir / "auto-skill",
+        )["candidates"] == []
+
+    def test_rejects_atom_outside_current_cluster_batch(self, tmp_path):
+        skill_dir, _ = _setup(tmp_path)
+        agent_tools.new_skill_folder.entrypoint("auto-skill", "stub desc")
+
+        with agent_tools.use_cluster_batch(["atom_x_0001"]):
+            message = agent_tools.add_task_to_skill.entrypoint(
+                "auto-skill",
+                "atom_outside_batch",
+                7,
+            )
+
+        assert message.startswith("error:")
+        assert "current cluster batch" in message
+        from xskill.skill import candidates as C
+        assert C.load_candidates(
+            skill_dir / "auto-skill",
+        )["candidates"] == []
+
+    def test_allows_independent_cross_skill_associations(self, tmp_path):
+        skill_dir, _ = _setup(tmp_path)
+        agent_tools.new_skill_folder.entrypoint("skill-a", "first target")
+        agent_tools.new_skill_folder.entrypoint("skill-b", "second target")
+
+        with agent_tools.use_cluster_batch(["atom_x_0001"]):
+            first = agent_tools.add_task_to_skill.entrypoint(
+                "skill-a",
+                "atom_x_0001",
+                6,
+            )
+            second = agent_tools.add_task_to_skill.entrypoint(
+                "skill-b",
+                "atom_x_0001",
+                7,
+            )
+
+        assert first.startswith("new:")
+        assert second.startswith("new:")
+        from xskill.skill import candidates as C
+        assert C.load_candidates(skill_dir / "skill-a")["candidates"] == [{
+            "atom_id": "atom_x_0001",
+            "weightscore": 6,
+        }]
+        assert C.load_candidates(skill_dir / "skill-b")["candidates"] == [{
+            "atom_id": "atom_x_0001",
+            "weightscore": 7,
+        }]
 
     def test_batch_add_writes_every_atom(self, tmp_path):
         skill_dir, _ = _setup(tmp_path)
         agent_tools.new_skill_folder.entrypoint("auto-skill", "stub desc")
-        message = agent_tools.add_tasks_to_skill.entrypoint(
-            "auto-skill",
-            [
-                {"atom_id": "atom-a", "weightscore": 3},
-                {
-                    "atom_id": "atom-b",
-                    "weightscore": 7,
-                    "note": "strong",
-                },
-            ],
-        )
+        with agent_tools.use_cluster_batch(["atom-a", "atom-b"]):
+            message = agent_tools.add_tasks_to_skill.entrypoint(
+                "auto-skill",
+                [
+                    {"atom_id": "atom-a", "weightscore": 3},
+                    {
+                        "atom_id": "atom-b",
+                        "weightscore": 7,
+                        "note": "strong",
+                    },
+                ],
+            )
 
         assert "atoms=2" in message
         assert "new=2" in message
@@ -242,15 +343,107 @@ class TestAddTaskToSkill:
     def test_batch_add_rejects_duplicate_without_writing(self, tmp_path):
         skill_dir, _ = _setup(tmp_path)
         agent_tools.new_skill_folder.entrypoint("auto-skill", "stub desc")
-        message = agent_tools.add_tasks_to_skill.entrypoint(
-            "auto-skill",
-            [
-                {"atom_id": "atom-a", "weightscore": 3},
-                {"atom_id": "atom-a", "weightscore": 7},
-            ],
-        )
+        with agent_tools.use_cluster_batch(["atom-a"]):
+            message = agent_tools.add_tasks_to_skill.entrypoint(
+                "auto-skill",
+                [
+                    {"atom_id": "atom-a", "weightscore": 3},
+                    {"atom_id": "atom-a", "weightscore": 7},
+                ],
+            )
 
         assert message.startswith("error")
+        from xskill.skill import candidates as C
+        assert C.load_candidates(
+            skill_dir / "auto-skill",
+        )["candidates"] == []
+
+    @pytest.mark.parametrize("invalid_score", [True, "8", 8.0])
+    def test_batch_weightscore_requires_strict_integer(
+        self,
+        tmp_path,
+        invalid_score,
+    ):
+        _setup(tmp_path)
+        agent_tools.new_skill_folder.entrypoint("auto-skill", "stub desc")
+
+        with agent_tools.use_cluster_batch(["atom_x_0001"]):
+            with pytest.raises(ValidationError):
+                agent_tools.add_tasks_to_skill.entrypoint(
+                    "auto-skill",
+                    [{
+                        "atom_id": "atom_x_0001",
+                        "weightscore": invalid_score,
+                    }],
+                )
+
+    def test_batch_rejects_write_without_current_cluster_batch(self, tmp_path):
+        skill_dir, _ = _setup(tmp_path)
+        agent_tools.new_skill_folder.entrypoint("auto-skill", "stub desc")
+
+        with agent_tools.use_cluster_batch([]):
+            message = agent_tools.add_tasks_to_skill.entrypoint(
+                "auto-skill",
+                [{"atom_id": "atom_x_0001", "weightscore": 7}],
+            )
+
+        assert message.startswith("error:")
+        assert "current cluster batch" in message
+        from xskill.skill import candidates as C
+        assert C.load_candidates(
+            skill_dir / "auto-skill",
+        )["candidates"] == []
+
+    def test_batch_preserves_existing_cross_skill_association(self, tmp_path):
+        skill_dir, _ = _setup(tmp_path)
+        agent_tools.new_skill_folder.entrypoint("skill-a", "first target")
+        agent_tools.new_skill_folder.entrypoint("skill-b", "second target")
+
+        with agent_tools.use_cluster_batch(["atom_x_0001", "atom_x_0002"]):
+            agent_tools.add_task_to_skill.entrypoint(
+                "skill-a",
+                "atom_x_0001",
+                6,
+            )
+            message = agent_tools.add_tasks_to_skill.entrypoint(
+                "skill-b",
+                [
+                    {"atom_id": "atom_x_0002", "weightscore": 5},
+                    {"atom_id": "atom_x_0001", "weightscore": 7},
+                ],
+            )
+
+        assert message.startswith("batched:")
+        from xskill.skill import candidates as C
+        assert C.load_candidates(skill_dir / "skill-a")["candidates"] == [{
+            "atom_id": "atom_x_0001",
+            "weightscore": 6,
+        }]
+        assert {
+            candidate["atom_id"]: candidate["weightscore"]
+            for candidate in C.load_candidates(skill_dir / "skill-b")[
+                "candidates"
+            ]
+        } == {
+            "atom_x_0001": 7,
+            "atom_x_0002": 5,
+        }
+
+    def test_batch_membership_validation_is_all_or_nothing(self, tmp_path):
+        skill_dir, _ = _setup(tmp_path)
+        agent_tools.new_skill_folder.entrypoint("auto-skill", "stub desc")
+
+        with agent_tools.use_cluster_batch(["atom_x_0001"]):
+            message = agent_tools.add_tasks_to_skill.entrypoint(
+                "auto-skill",
+                [
+                    {"atom_id": "atom_x_0001", "weightscore": 5},
+                    {"atom_id": "atom_outside_batch", "weightscore": 7},
+                ],
+            )
+
+        assert message.startswith("error:")
+        assert "current cluster batch" in message
         from xskill.skill import candidates as C
         assert C.load_candidates(
             skill_dir / "auto-skill",
@@ -353,8 +546,9 @@ class TestReadSkillTasks:
     def test_reads_candidates_with_weightscore(self, tmp_path):
         _setup(tmp_path)
         agent_tools.new_skill_folder.entrypoint("buf", "stub")
-        agent_tools.add_task_to_skill.entrypoint("buf", "atom_a", 6)
-        agent_tools.add_task_to_skill.entrypoint("buf", "atom_b", 8)
+        with agent_tools.use_cluster_batch(["atom_a", "atom_b"]):
+            agent_tools.add_task_to_skill.entrypoint("buf", "atom_a", 6)
+            agent_tools.add_task_to_skill.entrypoint("buf", "atom_b", 8)
         result = agent_tools.read_skill_tasks.entrypoint("buf")
         assert "atom_a" in result
         assert "atom_b" in result
@@ -379,8 +573,18 @@ class TestMoveTaskTo:
         skill_dir, _ = _setup(tmp_path)
         agent_tools.new_skill_folder.entrypoint("from-skill", "stub")
         agent_tools.new_skill_folder.entrypoint("to-skill", "stub")
-        agent_tools.add_task_to_skill.entrypoint("from-skill", "atom_x", 8)
-        result = agent_tools.move_task_to.entrypoint("from-skill", "to-skill", "atom_x")
+        with agent_tools.use_cluster_batch(["atom_x"]):
+            agent_tools.add_task_to_skill.entrypoint(
+                "from-skill",
+                "atom_x",
+                8,
+            )
+        with agent_tools.use_cluster_batch(["atom_current"]):
+            result = agent_tools.move_task_to.entrypoint(
+                "from-skill",
+                "to-skill",
+                "atom_x",
+            )
         assert "moved" in result
         # source 空
         from xskill.skill import candidates as C
@@ -396,8 +600,17 @@ class TestMoveTaskTo:
         skill_dir, _ = _setup(tmp_path)
         agent_tools.new_skill_folder.entrypoint("from", "stub")
         agent_tools.new_skill_folder.entrypoint("to", "stub")
-        agent_tools.add_task_to_skill.entrypoint("from", "atom_dup", 3)
-        agent_tools.add_task_to_skill.entrypoint("to", "atom_dup", 9)
+        with agent_tools.use_cluster_batch(["atom_dup"]):
+            agent_tools.add_task_to_skill.entrypoint(
+                "from",
+                "atom_dup",
+                3,
+            )
+            agent_tools.add_task_to_skill.entrypoint(
+                "to",
+                "atom_dup",
+                9,
+            )
         agent_tools.move_task_to.entrypoint("from", "to", "atom_dup")
         # target 的 atom_dup 被覆盖为 from 的 weightscore=3
         from xskill.skill import candidates as C
@@ -407,7 +620,8 @@ class TestMoveTaskTo:
     def test_move_same_skill_noop(self, tmp_path):
         _setup(tmp_path)
         agent_tools.new_skill_folder.entrypoint("solo", "stub")
-        agent_tools.add_task_to_skill.entrypoint("solo", "atom_a", 5)
+        with agent_tools.use_cluster_batch(["atom_a"]):
+            agent_tools.add_task_to_skill.entrypoint("solo", "atom_a", 5)
         result = agent_tools.move_task_to.entrypoint("solo", "solo", "atom_a")
         assert "noop" in result
 

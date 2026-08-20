@@ -134,6 +134,7 @@ xskill upload ./my-skill            # 打包上传一个 skill 目录(含 SKILL.
 | **OpenClaw** | 🟡 已对接，not well tested | 扫 `~/.openclaw/agents/` | 拷贝 → `~/.agents/skills/<name>/` |
 | **Cursor** | 🟡 已对接，not well tested | 扫 `~/.cursor/projects/*/agent-transcripts/` | symlink → `~/.cursor/skills/<name>/` |
 | **Trae** | 🟡 已对接，not well tested | IDE：读 `%APPDATA%/Trae*/User/workspaceStorage/*/state.vscdb`；CLI：扫 `~/trajectories/trajectory_*.json` | symlink → `~/.trae-cn/skills/` 与/或 `~/.trae/skills/` |
+| **DeepSeek Harness (dsh)** | 🟡 已对接，not well tested | 扫 `~/.dsh/sessions/*/*/session.jsonl[.zstd]`（明文与默认 zstd 会话均可） | symlink → `~/.dsh/skills/<name>/` |
 | **其他 agent** | 手动 | SDK：`xskill.adapters.submit_trajectory` | 自己拷贝 / symlink `SKILL.md` 目录 |
 
 ## 几个名词

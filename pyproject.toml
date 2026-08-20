@@ -46,6 +46,12 @@ dependencies = [
     # ``python:3.9-slim``）默认没装 git，SkillEditAgent 等链路又要跑 git
     # init/commit/branch；走 dulwich 后零依赖系统 git。
     "dulwich>=0.21",
+    # DeepSeek Harness (dsh) 默认把会话写成 zstd 帧序列（session.jsonl.zstd），
+    # 采集时需要解码。列为主依赖（维护者决定，PR #243）：dsh 是重要生态，
+    # 默认安装就应能收到它的轨迹；zstandard 约 1.8 MB，Python 3.9–3.13 各
+    # 平台均有预编译包，不存在「部分环境装不上而阻断客户端自动更新」的风险
+    # （那类体积大、平台覆盖不全的库应走 optional extra，见下）。
+    "zstandard>=0.21",
     # Python 3.9 上 pydantic 需要它来求值 `X | Y` 联合注解（PEP 604 语法
     # 3.10 才原生支持）；3.10+ 不安装。
     "eval_type_backport; python_version < '3.10'",
