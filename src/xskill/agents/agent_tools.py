@@ -396,8 +396,7 @@ class AgentToolConfig:
 
     @property
     def writable_skill_dir(self) -> Path | None:
-        current = _AGENT_TOOL_CONTEXT.get()
-        return current.atom_skill_dir or current.skill_dir
+        return _writable_skill_root()
 
 
 agent_tool_config = AgentToolConfig()
@@ -754,6 +753,12 @@ def read_file(path: str, offset: int = 1, limit: int = 200) -> str:
         return f"error: limit must be >= 1 (got {line_limit})"
 
     p = Path(path)
+    if not p.is_absolute():
+        skill_root = _writable_skill_root()
+        if skill_root is not None:
+            in_skill = (skill_root / p).resolve()
+            if in_skill.is_file():
+                p = in_skill
     roots = _allowed_read_roots()
     resolved = p.resolve()
     try:
@@ -974,6 +979,17 @@ def list_candidates(skill_name: str) -> str:
     return "\n".join(lines)
 
 
+def _pin_skill_write_target(skill_name: str) -> None:
+    """把后续 write_file / edit 的相对路径根钉到这个 skill 仓。"""
+    slug = _slugify(skill_name)
+    if not slug:
+        return
+    current = current_agent_tool_context()
+    if current.skill_edit_skill_name == slug:
+        return
+    _AGENT_TOOL_CONTEXT.set(replace(current, skill_edit_skill_name=slug))
+
+
 def _writable_skill_root() -> Path | None:
     current = current_agent_tool_context()
     lib = current.atom_skill_dir or current.skill_dir
@@ -1081,11 +1097,12 @@ def write_file(path: str, content: str) -> str:
 
 @tool(name="edit")
 def edit_file(path: str, old_string: str, new_string: str) -> str:
-    """Replace one exact substring in a skill file the agent already read.
+    """改已经读过的 skill 文件里的一处原文。生成出来的文件同样用它改。
 
-    The file must have been read in this run via read_file or skill_read
-    (write_file also counts).  New files that do not exist yet should use
-    write_file instead.
+    已有文件（包括 new_skill_folder 放下的 stub SKILL.md、本趟 write_file
+    刚写的脚本）一律先 read_file 或 skill_read，再调用本工具。old_string
+    必须在文件里恰好出现一次。文件还不存在时用 write_file，不要用本工具
+    创建。相对路径按当前 skill 仓解析：SKILL.md、scripts/foo.py。
     """
     resolved, err = _resolve_skill_write_path(path)
     if err:
@@ -1349,7 +1366,10 @@ def new_skill_folder(skill_name: str, description: str) -> str:
         init_skill_repo_on_baby(str(target), name=slug, description=desc)
         return f"created on baby branch: {target}  desc={desc[:60]!r}"
 
-    return _run_cluster_mutation(mutate)
+    result = _run_cluster_mutation(mutate)
+    if not str(result).startswith("error:"):
+        _pin_skill_write_target(slug)
+    return result
 
 
 @tool(name="skill_read")
@@ -1360,6 +1380,8 @@ def skill_read(skill_name: str) -> str:
         return "error: atom task tool context not initialized"
     slug = _slugify(skill_name)
     skill_path = (skill_dir / slug).resolve()
+    if current_agent_tool_context().generate_user_id and skill_path.is_dir():
+        _pin_skill_write_target(slug)
     header = f"skill_dir: {skill_path}"
     try:
         from xskill.skill.git import current_branch
