@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -86,6 +87,13 @@ class AgentToolContext:
     # 实例 registry.db；skills_catalog 写出口从此取库，禁止隐式摸全局库。
     registry_db_path: Path | None = None
     extra_read_roots: tuple[Path, ...] = ()
+    # 探索工具（list_files/grep_files/read_file）对这些根一律拒绝——即便根
+    # 落在 extra_read_roots 的某条更宽路径之内也照挡（issue #264：team
+    # server 把每个 client 的 sessions 目录之外还额外放行 clients/ 这个
+    # 更宽的父目录，只从 extra_read_roots 里摘掉暂停成员的子目录不够，
+    # 因为它仍是 clients/ 的子路径、仍会被宽路径放行）。当前只用于
+    # GenerateAgent 屏蔽已暂停（on hold）成员的轨迹目录。
+    blocked_read_roots: tuple[Path, ...] = ()
     generate_user_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -102,6 +110,8 @@ class AgentToolContext:
             )
         extra = tuple(Path(p) for p in (self.extra_read_roots or ()))
         object.__setattr__(self, "extra_read_roots", extra)
+        blocked = tuple(Path(p) for p in (self.blocked_read_roots or ()))
+        object.__setattr__(self, "blocked_read_roots", blocked)
 
 
 _EMPTY_AGENT_TOOL_CONTEXT = AgentToolContext()
@@ -130,6 +140,7 @@ def create_agent_tool_context(
     skill_edit_batch_ids=(),
     registry_db_path=None,
     extra_read_roots=(),
+    blocked_read_roots=(),
     generate_user_id=None,
 ) -> AgentToolContext:
     """Create an immutable context without changing the current task."""
@@ -166,6 +177,9 @@ def create_agent_tool_context(
             Path(registry_db_path) if registry_db_path is not None else None
         ),
         extra_read_roots=tuple(Path(p) for p in (extra_read_roots or ())),
+        blocked_read_roots=tuple(
+            Path(p) for p in (blocked_read_roots or ())
+        ),
         generate_user_id=(
             str(generate_user_id) if generate_user_id else None
         ),
@@ -553,6 +567,20 @@ def _allowed_read_roots() -> list[Path]:
     return list(dict.fromkeys(roots))
 
 
+def _blocked_read_roots() -> list[Path]:
+    """当前工具上下文里被显式屏蔽的根（如已暂停成员的轨迹目录）。"""
+    ctx = current_agent_tool_context()
+    return [Path(p).resolve() for p in (ctx.blocked_read_roots or ())]
+
+
+def _is_on_hold(path: Path) -> bool:
+    """``path`` 落在某个屏蔽根之内（含根本身）——不看 ``_allowed_read_roots``
+    是否也放行了它：更宽的允许根（如 team server 的 ``clients/``）不能
+    盖过针对具体成员目录的屏蔽。"""
+    blocked = _blocked_read_roots()
+    return any(path == root or _is_relative_to(path, root) for root in blocked)
+
+
 def _is_sensitive_file(path: Path) -> bool:
     """密钥类文件不给 agent 读——skill 正文会分发全团队，蒸进去即泄密。"""
     lower_name = path.name.lower()
@@ -680,6 +708,11 @@ def read_file(path: str, offset: int = 1, limit: int = 200) -> str:
             f"source_path: {path}\n"
             f"resolved_path: {resolved}\n"
             f"allowed_roots:\n{allowed_block}"
+        )
+    if _is_on_hold(resolved):
+        return (
+            "error: on hold — 该成员的轨迹已暂停处理，禁止读取\n"
+            f"source_path: {path}"
         )
     if _is_sensitive_file(resolved):
         return f"error: sensitive file, not readable by agent ({path})"
@@ -1608,27 +1641,78 @@ def make_task_agent_tools(
     return tools
 
 
+# list_files 结果超过这个行数或字符数时改落盘、返回占位（issue #264）：
+# 成员一多、sessions/ 文件一多，一次性塞进模型上下文会把窗口烧光。这不是
+# 全局 spill（enable_spill）的替代品——只处理这一次 list 的返回值，不剪
+# 对话里已经存在的旧工具结果。
+LIST_FILES_SPILL_LINE_THRESHOLD = 200
+LIST_FILES_SPILL_CHAR_THRESHOLD = 10_000
+
+
+def _spill_list_files(target_directory: Path, lines: list[str]) -> str | None:
+    """结果超阈值时落盘到本次任务的 spill 根，返回落盘路径；否则返回 None。
+
+    落盘路径落在 spill_root 下——``_allowed_read_roots`` 已经把 spill_root
+    纳入只读根，所以返回的路径可以直接喂给 read_file，不需要额外放行。
+    """
+    ctx = current_agent_tool_context()
+    if ctx.spill_root is None:
+        return None
+    body = "\n".join(lines)
+    if (
+        len(lines) <= LIST_FILES_SPILL_LINE_THRESHOLD
+        and len(body) <= LIST_FILES_SPILL_CHAR_THRESHOLD
+    ):
+        return None
+    spill_dir = Path(ctx.spill_root) / "list_files"
+    spill_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(
+        str(target_directory).encode("utf-8")
+    ).hexdigest()[:16]
+    spill_path = spill_dir / f"{digest}.txt"
+    spill_path.write_text(body + "\n", encoding="utf-8")
+    return str(spill_path)
+
+
 @tool(name="list_files")
 def list_files(path: str) -> str:
     """列目录下的文件 / 子目录，返回可直接传给 read_file 的完整路径。
 
     可列 skill 仓、~/.xskill、/tmp spill 三个只读根内的任意目录——摸清 skill
-    已有文件、轨迹 / atom 数据布局都用它。越界返回 error。
+    已有文件、轨迹 / atom 数据布局都用它。越界返回 error。结果很长时不会
+    整份塞进对话，改落盘并返回占位，见返回值里的 read_file 提示。
     """
     target_directory = Path(path).resolve()
     roots = _allowed_read_roots()
     if not any(_is_relative_to(target_directory, root) for root in roots):
         allowed_block = ", ".join(str(root) for root in roots)
         return f"error: list_files restricted to {allowed_block} (tried: {path})"
+    if _is_on_hold(target_directory):
+        return (
+            "error: on hold — 该成员的轨迹已暂停处理，禁止列目录\n"
+            f"source_path: {path}"
+        )
     if not target_directory.is_dir():
         return f"error: not a directory: {path}"
-    entries = sorted(target_directory.iterdir())
+    entries = sorted(
+        entry for entry in target_directory.iterdir()
+        if not _is_on_hold(entry.resolve())
+    )
     if not entries:
         return "(empty)"
-    return "\n".join(
+    lines = [
         f"{'[dir] ' if e.is_dir() else '[file] '}{e.resolve()}{'/' if e.is_dir() else ''}"
         for e in entries
-    )
+    ]
+    spill_path = _spill_list_files(target_directory, lines)
+    if spill_path is not None:
+        return (
+            f"[list_files_spilled] {len(lines)} entries under {target_directory}, "
+            "too long for one turn.\n"
+            f"spill_path: {spill_path}\n"
+            f"用 read_file({spill_path!r}, offset=1, limit=200) 按行翻页读取完整列表。"
+        )
+    return "\n".join(lines)
 
 
 @tool(name="grep_files")
@@ -1648,6 +1732,11 @@ def grep_files(pattern: str, path: str = "", glob: str = "",
     if not any(_is_relative_to(search_root, root) for root in roots):
         allowed_block = ", ".join(str(root) for root in roots)
         return f"error: grep_files restricted to {allowed_block} (tried: {path})"
+    if _is_on_hold(search_root):
+        return (
+            "error: on hold — 该成员的轨迹已暂停处理，禁止检索\n"
+            f"source_path: {path}"
+        )
     if not search_root.exists():
         return f"error: path not found ({path})"
 
@@ -1714,8 +1803,13 @@ def grep_files(pattern: str, path: str = "", glob: str = "",
     filtered_lines: list[str] = []
     for output_line in output_lines:
         hit_match = hit_line_pattern.match(output_line)
-        # resolve() 后再判敏感：防符号链接用无害文件名包装密钥文件绕过过滤。
-        if hit_match and _is_sensitive_file(Path(hit_match.group(1)).resolve()):
+        # resolve() 后再判敏感/屏蔽：防符号链接用无害文件名包装密钥文件或
+        # 暂停成员目录绕过过滤。search_root 本身可能是 clients/ 这类更宽
+        # 的根（未被整体屏蔽），命中落在某个暂停成员子目录时逐行滤掉。
+        if hit_match and (
+            _is_sensitive_file(Path(hit_match.group(1)).resolve())
+            or _is_on_hold(Path(hit_match.group(1)).resolve())
+        ):
             continue
         filtered_lines.append(output_line)
         if len(filtered_lines) >= max_results:

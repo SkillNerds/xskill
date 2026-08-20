@@ -81,6 +81,34 @@ def safe_dir_name(user_name: str | None, client_id: str) -> str:
     return escaped
 
 
+def paused_client_dir_names(db_path: Path | str) -> set[str]:
+    """已暂停轨迹处理（``ingest_paused``）的 client，落盘目录名集合。
+
+    供 generate 等只读探索路径过滤 on hold 内容用（issue #264）：暂停只
+    停了后台入库流水线，磁盘上的 ``clients/<dir>/sessions`` 还在，
+    GenerateAgent 的探索工具须单独按目录名屏蔽。db 文件不存在（还没人
+    注册过）返回空集合，不视为错误。
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return set()
+    registry = ClientRegistry(path)
+    try:
+        names: set[str] = set()
+        for row in registry.list():
+            if not row.get("ingest_paused"):
+                continue
+            try:
+                names.add(
+                    safe_dir_name(row.get("user_name") or None, row["client_id"])
+                )
+            except ValueError:
+                continue
+        return names
+    finally:
+        registry.close()
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS clients (
     client_id      TEXT PRIMARY KEY,

@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 logger = logging.getLogger("xskill.team.generate")
 
@@ -298,11 +298,35 @@ def _write_status(job: dict[str, Any]) -> None:
         logger.warning("failed to write generate status %s", log_path, exc_info=True)
 
 
+def _under_any(path: Path, roots: list[Path]) -> bool:
+    resolved = path.resolve()
+    for root in roots:
+        if resolved == root:
+            return True
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def collect_read_roots(
     skill_dir: Path,
     traj_root: Path | None,
     db_path: Path | None = None,
+    *,
+    blocked_roots: Iterable[Path] = (),
 ) -> list[Path]:
+    """组装 generate 提示词里列出的可读根。
+
+    ``blocked_roots``（issue #264）：暂停成员的 watch 目录本身作为
+    ``list_watch_dirs`` 的一条独立根出现时，从这里摘掉——不出现在提示词
+    的「你可以读的目录」列表里。注意 ``clients/`` 这个更宽的父目录仍会
+    保留（活跃成员靠它才能被列出/检索），实际拦截靠 agent_tools 的
+    ``blocked_read_roots`` 在工具层兜底，两处配合而非互斥。
+    """
+    resolved_blocked = [Path(p).resolve() for p in blocked_roots]
     roots: list[Path] = [Path(skill_dir)]
     if traj_root is not None:
         roots.append(Path(traj_root))
@@ -321,6 +345,8 @@ def collect_read_roots(
     unique: list[Path] = []
     seen: set[str] = set()
     for path in roots:
+        if path.exists() and _under_any(path, resolved_blocked):
+            continue
         key = str(path.resolve()) if path.exists() else str(path)
         if key in seen:
             continue
@@ -442,10 +468,24 @@ def _run_generate_job_body(
     from xskill.agents import agent_tools
     from xskill.agents.agno_factory import make_default_factory
     from xskill.agents.generate_agent import GenerateAgent
-    from xskill.config import get_logs_dir, get_registry_db_path
+    from xskill.config import (
+        get_logs_dir,
+        get_registry_db_path,
+        get_team_clients_db_path,
+    )
+    from xskill.team.server.client_registry import paused_client_dir_names
 
     skill_dir = Path(skill_dir)
-    extra_roots = collect_read_roots(skill_dir, traj_root, db_path=db_path)
+    # 暂停成员的落盘目录名（issue #264）：暂停开关只停了后台入库流水线，
+    # 磁盘上的 sessions/ 还在，generate 这条快路径必须自己排除。
+    blocked_dir_names = paused_client_dir_names(get_team_clients_db_path())
+    blocked_roots = (
+        [Path(traj_root) / "clients" / name for name in blocked_dir_names]
+        if traj_root is not None else []
+    )
+    extra_roots = collect_read_roots(
+        skill_dir, traj_root, db_path=db_path, blocked_roots=blocked_roots,
+    )
     logs_dir = Path(logs_dir) if logs_dir is not None else get_logs_dir()
     spill_root = (
         logs_dir / "agents" / "generate_agents" / job["user_id"] / "spill" / job["job_id"]
@@ -461,6 +501,7 @@ def _run_generate_job_body(
         default_traj_root=traj_root,
         spill_root=spill_root,
         extra_read_roots=tuple(extra_roots),
+        blocked_read_roots=tuple(blocked_roots),
         generate_user_id=job["user_id"],
         registry_db_path=resolved_db,
     )
