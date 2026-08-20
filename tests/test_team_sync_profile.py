@@ -160,6 +160,16 @@ def _headers(client_id: str) -> dict[str, str]:
     return {"X-Xskill-Token": "tok", "X-Xskill-Client": client_id}
 
 
+# 等待后台画像刷新收尾的统一上限。这些断言验证的是「刷新最终会完成」，
+# 不是「须在多少秒内完成」——「sync 先返回、刷新在后台」的性质由响应先到
+# / 版本号未变等断言单独保障。上限从 2 秒放宽到 10 秒：Windows CI 运行器
+# 慢且负载波动大（约为 Linux 的六分之一速度），2 秒是压线值，2026-08-19
+# 同日在三个不同分支的矩阵上偶发超时（zero_slots 用例，禁用分发时 sync
+# 立即返回，后台刷新几乎没有提前量，窗口最紧）。快路径下等待立即返回，
+# 放宽上限不增加正常轮次的耗时。
+IDLE_WAIT_SECONDS = 10
+
+
 def test_sync_returns_before_uncached_embedding_finishes(team_runtime):
     engine, embed, service, client, client_id, _registry, _traj_root = team_runtime
     embed.block = True
@@ -174,7 +184,7 @@ def test_sync_returns_before_uncached_embedding_finishes(team_runtime):
     assert engine.profile_store.load(client_id) is None
     assert service.metrics["running"] == 1
     embed.release.set()
-    assert service.wait_idle(timeout=2)
+    assert service.wait_idle(timeout=IDLE_WAIT_SECONDS)
     assert engine.profile_store.load(client_id)["feature_tensor"] is not None
 
 
@@ -206,7 +216,7 @@ def test_zero_slots_skips_preference_reads_but_still_refreshes_profile(
     assert response.json()["slots"] == []
     assert preference_calls == []
     assert embed.started.wait(2)
-    assert service.wait_idle(timeout=2)
+    assert service.wait_idle(timeout=IDLE_WAIT_SECONDS)
     assert engine.profile_store.load(client_id) is not None
 
 
@@ -233,7 +243,7 @@ def test_sync_uses_old_profile_then_refreshes_in_background(team_runtime):
     assert embed.started.wait(2)
     assert engine.profile_store.get_revision(client_id)["source_revision"] == old_revision
     embed.release.set()
-    assert service.wait_idle(timeout=2)
+    assert service.wait_idle(timeout=IDLE_WAIT_SECONDS)
     assert engine.profile_store.get_revision(client_id)["source_revision"] != old_revision
 
 
@@ -292,7 +302,7 @@ def test_repeated_sync_for_same_client_is_coalesced(team_runtime):
     assert embed.calls == 1
     assert service.metrics["coalesced"] == 1
     embed.release.set()
-    assert service.wait_idle(timeout=2)
+    assert service.wait_idle(timeout=IDLE_WAIT_SECONDS)
 
 
 def test_thirty_clients_return_while_embedding_is_bounded(tmp_path, monkeypatch):
@@ -380,7 +390,7 @@ def test_thirty_clients_return_while_embedding_is_bounded(tmp_path, monkeypatch)
         assert service.metrics["queued"] + service.metrics["running"] == 30
 
         embed.release.set()
-        assert service.wait_idle(timeout=10)
+        assert service.wait_idle(timeout=IDLE_WAIT_SECONDS)
         assert embed.items == 30
         assert service.metrics["embed_items"] == 30
         assert service.metrics["failed"] == 0

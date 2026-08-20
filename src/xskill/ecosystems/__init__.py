@@ -9,6 +9,7 @@
   codex.py      — Codex CLI：适配 + install/ingest
   nga3.py       — nga3 / CodeAgent3：适配 + install/ingest
   cursor.py     — Cursor：适配 + install/ingest
+  deepseek_harness.py — DeepSeek Harness (dsh)：适配 + install/ingest
   trae.py       — Trae IDE / Trae Agent：适配 + install/ingest
   openclaw.py   — OpenClaw：适配 + install/ingest + canary flip hook
   opencode.py   — OpenCode：SqliteIngester + install/ingest
@@ -80,6 +81,16 @@ from xskill.ecosystems.cursor import (
     _cursor_session_id_from_path,
     _read_cwd_from_cursor_jsonl,
 )
+from xskill.ecosystems.deepseek_harness import (
+    DSH_SPEC,
+    install_to_deepseek_harness,
+    install_all_to_deepseek_harness,
+    ingest_deepseek_harness_sessions,
+    _dsh_sessions_path,
+    _dsh_skills_path,
+    _dsh_session_id_from_path,
+    _read_cwd_from_dsh_jsonl,
+)
 from xskill.ecosystems.trae import (
     TraeIngester,
     install_to_trae,
@@ -149,6 +160,7 @@ SQLITE_SPEC_BY_ECO: dict = {
 __all__ = [
     "EcosystemSpec", "SqliteEcosystemSpec",
     "CC_SPEC", "CODEX_SPEC", "NGA3_SPEC", "OPENCLAW_SPEC", "CURSOR_SPEC",
+    "DSH_SPEC",
     "OPENCODE_SPEC", "NGAGENT_SPEC",
     "SQLITE_SPEC_BY_ECO", "bridge_dir_for",
     "JsonlIngester", "SqliteIngester", "CCSessionIngester",
@@ -156,14 +168,17 @@ __all__ = [
     "ensure_claude_code_install",
     "install_to_claude_code", "install_to_codex", "install_to_nga3",
     "install_to_cursor",
+    "install_to_deepseek_harness",
     "install_to_trae",
     "install_to_openclaw", "install_to_opencode", "install_to_ngagent",
     "install_all_to_claude_code", "install_all_to_codex",
-    "install_all_to_nga3", "install_all_to_cursor", "install_all_to_trae",
+    "install_all_to_nga3", "install_all_to_cursor",
+    "install_all_to_deepseek_harness", "install_all_to_trae",
     "install_all_to_openclaw",
     "install_all_to_opencode", "install_all_to_ngagent",
     "ingest_claude_code_sessions", "ingest_codex_sessions",
-    "ingest_nga3_sessions", "ingest_cursor_sessions", "ingest_trae_sessions",
+    "ingest_nga3_sessions", "ingest_cursor_sessions",
+    "ingest_deepseek_harness_sessions", "ingest_trae_sessions",
     "ingest_openclaw_sessions",
     "TraeIngester", "detect_trae_record",
     "make_openclaw_canary_flip_hook",
@@ -189,6 +204,8 @@ __all__ = [
     "_nga3_session_id_from_path", "_read_cwd_from_nga3_jsonl_content",
     "_cursor_projects_path", "_cursor_skills_path",
     "_cursor_session_id_from_path", "_read_cwd_from_cursor_jsonl",
+    "_dsh_sessions_path", "_dsh_skills_path",
+    "_dsh_session_id_from_path", "_read_cwd_from_dsh_jsonl",
     "_trae_skills_roots", "_trae_workspace_storage_roots",
     "_sessions_from_chat_blob",
     "_openclaw_agents_path", "_openclaw_session_id_from_path",

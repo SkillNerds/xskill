@@ -361,10 +361,11 @@ CREATE TABLE IF NOT EXISTS ux_scores_meta (
 -- atom 在途 pending 投影：真相仍是各 skill 的 .candidates.yml；
 -- 写出口（candidates 落盘闸）同步；dashboard 读路径只查本表，禁止 per-atom 扫盘。
 CREATE TABLE IF NOT EXISTS atom_candidate_pending (
-    atom_id     TEXT PRIMARY KEY,
+    atom_id     TEXT NOT NULL,
     skill       TEXT NOT NULL,
     weightscore INTEGER NOT NULL DEFAULT 0,
-    updated_at  TEXT DEFAULT (datetime('now'))
+    updated_at  TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (atom_id, skill)
 );
 CREATE INDEX IF NOT EXISTS idx_acp_skill ON atom_candidate_pending(skill);
 
@@ -515,6 +516,68 @@ def pooled_connection(db_path: Optional[Path] = None) -> Iterator[sqlite3.Connec
         slot.busy = False
 
 
+def _migrate_atom_candidate_pending(conn: sqlite3.Connection) -> None:
+    """Replace the legacy key and invalidate stale projection readiness."""
+    table_info = conn.execute(
+        "PRAGMA table_info(atom_candidate_pending)",
+    ).fetchall()
+    primary_key = [
+        row[1]
+        for row in sorted(table_info, key=lambda row: row[5])
+        if row[5]
+    ]
+    if primary_key == ["atom_id", "skill"]:
+        return
+
+    required_columns = {"atom_id", "skill", "weightscore", "updated_at"}
+    actual_columns = {row[1] for row in table_info}
+    if not required_columns.issubset(actual_columns):
+        raise sqlite3.DatabaseError(
+            "cannot migrate atom_candidate_pending with columns "
+            f"{sorted(actual_columns)!r}",
+        )
+
+    conn.execute("SAVEPOINT migrate_atom_candidate_pending")
+    try:
+        conn.execute(
+            """
+            CREATE TABLE atom_candidate_pending_v2 (
+                atom_id     TEXT NOT NULL,
+                skill       TEXT NOT NULL,
+                weightscore INTEGER NOT NULL DEFAULT 0,
+                updated_at  TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (atom_id, skill)
+            )
+            """,
+        )
+        conn.execute(
+            """
+            INSERT INTO atom_candidate_pending_v2(
+                atom_id, skill, weightscore, updated_at
+            )
+            SELECT atom_id, skill, weightscore, updated_at
+            FROM atom_candidate_pending
+            """,
+        )
+        conn.execute("DROP TABLE atom_candidate_pending")
+        conn.execute(
+            "ALTER TABLE atom_candidate_pending_v2 "
+            "RENAME TO atom_candidate_pending",
+        )
+        conn.execute(
+            "CREATE INDEX idx_acp_skill ON atom_candidate_pending(skill)",
+        )
+        # The legacy table retained at most one skill for each Atom.  Force a
+        # reconcile from the authoritative .candidates.yml files so cached
+        # root/mtime markers cannot hide associations lost before migration.
+        conn.execute("DELETE FROM atom_candidate_pending_meta")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT migrate_atom_candidate_pending")
+        conn.execute("RELEASE SAVEPOINT migrate_atom_candidate_pending")
+        raise
+    conn.execute("RELEASE SAVEPOINT migrate_atom_candidate_pending")
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     """Add columns missing from older schema versions."""
     # ── trajectories ──
@@ -604,6 +667,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE skill_prefs ADD COLUMN side TEXT NOT NULL DEFAULT ''"
         )
+
+    _migrate_atom_candidate_pending(conn)
 
     # Backfill status from has_meta/has_embedding —— **只在首次补 status 列时跑一次**。
     # 以前每次 get_connection 都跑这条,会把任何 status='discovered' 的**活行**
@@ -1195,7 +1260,7 @@ def sync_atom_candidate_pending_for_skill(
 ) -> None:
     """按某 skill 当前 candidates 快照替换其 pending 投影行。
 
-    ``atom_id`` 为主键：同 atom 若改挂到其他 skill，ON CONFLICT 覆盖 skill 列。
+    ``(atom_id, skill)`` 为关联主键；同 atom 可独立挂到多个 skill。
     """
     rows: list[tuple[str, str, int]] = []
     for candidate in candidates or []:
@@ -1214,8 +1279,7 @@ def sync_atom_candidate_pending_for_skill(
                 """
                 INSERT INTO atom_candidate_pending(atom_id, skill, weightscore)
                 VALUES (?, ?, ?)
-                ON CONFLICT(atom_id) DO UPDATE SET
-                    skill=excluded.skill,
+                ON CONFLICT(atom_id, skill) DO UPDATE SET
                     weightscore=excluded.weightscore,
                     updated_at=datetime('now')
                 """,
@@ -1326,8 +1390,7 @@ def backfill_atom_candidate_pending(
                 """
                 INSERT INTO atom_candidate_pending(atom_id, skill, weightscore)
                 VALUES (?, ?, ?)
-                ON CONFLICT(atom_id) DO UPDATE SET
-                    skill=excluded.skill,
+                ON CONFLICT(atom_id, skill) DO UPDATE SET
                     weightscore=excluded.weightscore,
                     updated_at=datetime('now')
                 """,

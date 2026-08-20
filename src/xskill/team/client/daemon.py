@@ -907,7 +907,8 @@ def install_skill_to_ecosystems(
     """
     from xskill.ecosystems import (
         detect_known_ecosystems, install_to_claude_code,
-        install_to_codex, install_to_nga3, install_to_opencode, install_to_ngagent,
+        install_to_codex, install_to_deepseek_harness, install_to_nga3,
+        install_to_opencode, install_to_ngagent,
         install_to_openclaw, install_to_cursor, install_to_trae,
     )
     repo_dir = Path(repo_dir).resolve()
@@ -927,6 +928,7 @@ def install_skill_to_ecosystems(
         "openclaw": install_to_openclaw,
         "cursor": install_to_cursor,
         "trae": install_to_trae,
+        "deepseek_harness": install_to_deepseek_harness,
     }
     if ecosystems is None:
         ecosystem_names = [

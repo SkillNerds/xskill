@@ -280,6 +280,7 @@ skillhub:
 | **OpenClaw** | 🟡 已实现 | `~/.openclaw/agents/` | 拷贝 → `~/.agents/skills/<name>/` |
 | **Cursor** | 🟡 已实现 | `~/.cursor/projects/*/agent-transcripts/` | 软链 → `~/.cursor/skills/<name>/` |
 | **Trae** | 🟡 已实现 | IDE `state.vscdb` / CLI `trajectory_*.json` | 软链 → `~/.trae-cn/skills/`、`~/.trae/skills/` |
+| **DeepSeek Harness (dsh)** | 🟡 已实现 | `~/.dsh/sessions/`（明文与默认 zstd 会话均可） | 软链 → `~/.dsh/skills/<name>/` |
 | **任何其他 agent** | 手动 | SDK `xskill.adapters.submit_trajectory` | 拷贝/软链 `SKILL.md` 目录 |
 
 ## 📖 概念

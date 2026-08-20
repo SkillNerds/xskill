@@ -505,6 +505,7 @@ def test_candidate_writes_follow_cluster_queue_order(tmp_path):
     context = agent_tools.create_agent_tool_context(
         atom_skill_dir=skill_root,
         cluster_write_queue=queue,
+        cluster_batch_ids=["atom-a", "atom-b"],
     )
     release = threading.Event()
     executor = ThreadPoolExecutor(max_workers=3)
@@ -597,6 +598,96 @@ def test_clustered_marker_rereads_atom_and_preserves_queued_score(tmp_path):
     assert result[0]["weightscore"] == 7
     assert latest.clustered is True
     assert latest.ux_score == 9
+
+
+def test_cluster_result_preserves_every_skill_association(tmp_path):
+    from tests.test_cluster_batch import _call_tool, _tool_name
+    from xskill.pipeline.registry import pooled_connection
+    from xskill.skill.candidates import load_candidates
+
+    skill_root = tmp_path / "skills"
+    skill_root.mkdir()
+    for skill_name in ("skill-a", "skill-b", "skill-c"):
+        init_skill_repo_on_baby(
+            str(skill_root / skill_name),
+            name=skill_name,
+            description=f"{skill_name} description",
+        )
+    store = AtomTaskStore(root=tmp_path / "watch")
+    store.root.mkdir()
+    atom = AtomTask(
+        atom_id="atom_traj_multi_0000",
+        traj_id="traj_multi",
+        offset_start=1,
+        offset_end=2,
+        intent="intent",
+        summary="summary",
+        tags=[],
+        used_skills=[],
+        ux_score=7,
+    )
+    store.save(atom)
+
+    class Agent:
+        def __init__(self, *, instructions, tools):
+            del instructions
+            self.tools = {_tool_name(tool): tool for tool in tools}
+
+        def run(self, _message):
+            for skill_name, weightscore in (("skill-a", 6), ("skill-b", 7)):
+                _call_tool(
+                    self.tools["add_tasks_to_skill"],
+                    skill_name,
+                    [{
+                        "atom_id": atom.atom_id,
+                        "weightscore": weightscore,
+                    }],
+                )
+            _call_tool(
+                self.tools["move_task_to"],
+                "skill-a",
+                "skill-c",
+                atom.atom_id,
+            )
+            _call_tool(
+                self.tools["add_tasks_to_skill"],
+                "skill-c",
+                [{"atom_id": atom.atom_id, "weightscore": 9}],
+            )
+            return type("Result", (), {"content": "ok"})()
+
+    db_path = tmp_path / "registry.db"
+    result = process_atom_batch(
+        atom_ids=[atom.atom_id],
+        config={"llm": {}},
+        skill_dir=skill_root,
+        store=store,
+        embed_client=None,
+        agno_agent_factory=Agent,
+        db_path=db_path,
+    )[0]
+
+    assert result["skill_name"] == "skill-c"
+    assert result["weightscore"] == 9
+    assert {
+        item["skill_name"]: item["weightscore"]
+        for item in result["skill_assignments"]
+    } == {"skill-b": 7, "skill-c": 9}
+    assert load_candidates(skill_root / "skill-a")["candidates"] == []
+    assert load_candidates(skill_root / "skill-b")["candidates"][0][
+        "weightscore"
+    ] == 7
+    assert load_candidates(skill_root / "skill-c")["candidates"][0][
+        "weightscore"
+    ] == 9
+    with pooled_connection(db_path) as connection:
+        adoptions = [
+            (row["skill"], row["weightscore"])
+            for row in connection.execute(
+                "SELECT skill, weightscore FROM atom_adoption ORDER BY skill"
+            )
+        ]
+    assert adoptions == [("skill-b", 7), ("skill-c", 9)]
 
 
 def test_successful_cluster_write_is_marked_when_agent_fails_later(tmp_path):
