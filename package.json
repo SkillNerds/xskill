@@ -1,0 +1,42 @@
+{
+  "name": "dsh-xskill",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness bundle that mounts the local xskill skill library and adds xskill_status / xskill_list / xskill_search tools.",
+  "type": "module",
+  "main": "plugins/dsh-xskill/index.js",
+  "files": [
+    "plugins/dsh-xskill/index.js",
+    "plugins/dsh-xskill/lib.js",
+    "plugins/dsh-xskill/cordis.patch.yml",
+    "plugins/dsh-xskill/using-xskill.md",
+    "plugins/dsh-xskill/README.md"
+  ],
+  "exports": {
+    ".": "./plugins/dsh-xskill/index.js",
+    "./lib": "./plugins/dsh-xskill/lib.js",
+    "./package.json": "./package.json"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/SkillNerds/xskill",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SkillNerds/xskill.git"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "xskill",
+    "skills"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh-skill": ">=0.1.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0",
+    "@deepseek-ai/schemastery": ">=1.0.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./plugins/dsh-xskill/cordis.patch.yml"
+    }
+  }
+}
