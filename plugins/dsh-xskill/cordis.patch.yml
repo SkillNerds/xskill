@@ -1,0 +1,10 @@
+# dsh-xskill bundle layer.
+# Inserts one plugin row. skillRoot empty means: XSKILL_SKILL_DIR, then
+# skill_dir in ~/.xskill/config.yaml, then ~/.xskill/skill.
+- insert:
+    - id: dsh-xskill
+      name: dsh-xskill
+      config:
+        skillRoot: ""
+        rank: 350
+        registerGuide: true

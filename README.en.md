@@ -49,7 +49,7 @@ The moment one teammate works something out in their own session, that solution 
 
 ## 🧩 Across every agent &amp; device — one library
 
-Use Claude Code on your laptop, Codex on a server, Cursor in the IDE. xskill ingests redacted trajectories from all of them, evolves a single shared library, and syncs the result back to every agent you use.
+Use Claude Code on your laptop, Codex on a server, Cursor in the IDE, DeepSeek Harness (`dsh`) in the browser. xskill ingests redacted trajectories from all of them, evolves a single shared library, and syncs the result back to every agent you use.
 
 <div align="center">
 <img src="docs/assets/xs_crosscontext.svg" width="860" alt="Multiple agents and devices feed one trajectory watcher and one evolving skill library, which syncs back to all agents">
@@ -183,8 +183,22 @@ xskill upload ./my-skill       # package & upload a skill folder (with SKILL.md)
 | **OpenClaw** | 🟡 implemented | `~/.openclaw/agents/` | copy → `~/.agents/skills/<name>/` |
 | **Cursor** | 🟡 implemented | `~/.cursor/projects/*/agent-transcripts/` | symlink → `~/.cursor/skills/<name>/` |
 | **Trae** | 🟡 implemented | IDE `state.vscdb` / CLI `trajectory_*.json` | symlink → `~/.trae-cn/skills/`, `~/.trae/skills/` |
-| **DeepSeek Harness (dsh)** | 🟡 implemented | `~/.dsh/sessions/` (plaintext and default zstd sessions) | symlink → `~/.dsh/skills/<name>/` |
+| **DeepSeek Harness (dsh)** | 🟡 implemented | `~/.dsh/sessions/` (plaintext and default zstd sessions) | symlink → `~/.dsh/skills/<name>/`; or `dsh plugin add` the `dsh-xskill` bundle |
 | **Any other agent** | manual | SDK `xskill.adapters.submit_trajectory` | copy/symlink the `SKILL.md` dir |
+
+### Run inside DeepSeek Harness (dsh plugin)
+
+xskill already detects dsh, ingests its sessions, and symlinks evolved skills into `~/.dsh/skills/`. That is xskill pushing into dsh.
+
+dsh extensions are plugins: an npm package that declares `dsh.bundle`, installed into a profile (a bootable composition such as `web`) with `dsh plugin add`. This repo ships `dsh-xskill`. After install and a restart, dsh reads the local xskill library (default `~/.xskill/skill`) and gains `xskill_status`, `xskill_list`, and `xskill_search`.
+
+```bash
+dsh plugin --profile web add github:SkillNerds/xskill
+# local checkout:
+# dsh plugin --profile web add ./plugins/dsh-xskill
+```
+
+Restart `dsh web` (or `dsh --profile headless`). Keep `xskill serve` or `xskill connect` running so new dsh sessions become new skills. Details: [`plugins/dsh-xskill/README.md`](plugins/dsh-xskill/README.md).
 
 ## 📖 Concepts
 
@@ -208,6 +222,7 @@ xskill upload ./my-skill       # package & upload a skill folder (with SKILL.md)
 
 ## 📰 News
 
+- **2026-08-20**: DeepSeek Harness can `dsh plugin add github:SkillNerds/xskill` to load the `dsh-xskill` bundle and list or search locally evolved skills inside dsh.
 - **2026-08-14** `v0.6.31`: `xskill rebuild --force` no longer dies on a non-empty `.git/objects` directory; a full rebuild keeps skills brought in with `xskill import` and only wipes distilled ones.
 - **2026-08-14** `v0.6.30`: Team `xskill import` pins the skill onto the initiator's recommendation list; the skills library shows a hollow star to pin into your feed, plus whether a skill is already pushed or pinned; imported skills appear in the library list immediately.
 - **2026-08-14** `v0.6.30a3`: Team `xskill generate` prints queue/running status on the CLI instead of a blank wait; mixed legacy install history no longer blocks import from installing into harnesses.

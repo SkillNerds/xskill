@@ -36,7 +36,7 @@
 xskill是企业级的团队skill演进方案，支持轨迹自动蒸馏Skill，基于轨迹画像推送Skill，支持导入团队skillhub进行推荐，支持skill评价。
 
 - **高手经验自动传递**： 一个人的解法自动到达全组，让最短路径不再壮志难酬。
-- **跨Harness和设备共享进化**： Codex、Claude Code、Cursor IDE都会加入光荣的进化,齐心,协力。
+- **跨Harness和设备共享进化**： Codex、Claude Code、Cursor IDE、DeepSeek Harness（dsh）都会加入光荣的进化,齐心,协力。
 - **支持专家修改Skill**： 觉得skill不完美？直接修改本地的skill，改动会被云端自动学习。
 - **轨迹保持私有**： 会话在上传前已脱敏，秘钥密码和相关隐私不会被别人看到。
 - **不让skill烂掉**： 自动评价skill，支持分析用户实际使用轨迹给出评价分并绘制不同**skill版本的得分趋势折线图**，大数据显微镜。
@@ -278,8 +278,24 @@ skillhub:
 | **OpenClaw** | 🟡 已实现 | `~/.openclaw/agents/` | 拷贝 → `~/.agents/skills/<name>/` |
 | **Cursor** | 🟡 已实现 | `~/.cursor/projects/*/agent-transcripts/` | 软链 → `~/.cursor/skills/<name>/` |
 | **Trae** | 🟡 已实现 | IDE `state.vscdb` / CLI `trajectory_*.json` | 软链 → `~/.trae-cn/skills/`、`~/.trae/skills/` |
-| **DeepSeek Harness (dsh)** | 🟡 已实现 | `~/.dsh/sessions/`（明文与默认 zstd 会话均可） | 软链 → `~/.dsh/skills/<name>/` |
+| **DeepSeek Harness (dsh)** | 🟡 已实现 | `~/.dsh/sessions/`（明文与默认 zstd 会话均可） | 软链 → `~/.dsh/skills/<name>/`；也可 `dsh plugin add` 装 `dsh-xskill` |
 | **任何其他 agent** | 手动 | SDK `xskill.adapters.submit_trajectory` | 拷贝/软链 `SKILL.md` 目录 |
+
+### 在 DeepSeek Harness 上跑（dsh 插件）
+
+xskill 已经能发现本机的 dsh、把会话收成轨迹、再把进化后的 skill 软链到 `~/.dsh/skills/`。那是 xskill 推给 dsh。
+
+dsh 自己的扩展方式是插件：一个带 `dsh.bundle` 声明的 npm 包，用 `dsh plugin add` 装进某个 profile（一份可启动的组合，例如 web）。本仓库带了一份这样的包 `dsh-xskill`。装上并重启后，dsh 会直接读本地 xskill 技能库（默认 `~/.xskill/skill`），不必只靠那条软链；同时多三个工具：`xskill_status`、`xskill_list`、`xskill_search`。
+
+```bash
+# 从本仓库安装（根目录 package.json 已声明 dsh.bundle，无需再写子目录路径）
+dsh plugin --profile web add github:SkillNerds/xskill
+
+# 本地 checkout
+dsh plugin --profile web add ./plugins/dsh-xskill
+```
+
+然后重启 `dsh web`（或 `dsh --profile headless`）。xskill 侧照常跑 `xskill serve` 或 `xskill connect`，负责蒸馏和把 dsh 会话收进来。安装说明见 [`plugins/dsh-xskill/README.md`](plugins/dsh-xskill/README.md)。
 
 ## 📖 概念
 
@@ -303,6 +319,7 @@ skillhub:
 
 
 ## 📰 动态
+- **2026-08-20**：DeepSeek Harness 可用 `dsh plugin add github:SkillNerds/xskill` 装上 `dsh-xskill` 插件，在 dsh 里直接列出、检索本地进化出的 skill。
 - **2026-08-14** `v0.6.31`：`xskill rebuild --force` 不再因 `.git/objects` 非空中断；全量 rebuild 会留下 `xskill import` 纳入的技能，只清蒸馏产物。
 - **2026-08-14** `v0.6.30`：team `xskill import` 后钉到发起人推荐列表；技能库登录后可点空心星 pin 进自己的推荐流，并标出推给我、已钉状态；import 后技能立即出现在技能库清单。
 - **2026-08-14** `v0.6.30a3`：`xskill generate` 排队和执行时 CLI 及时打出状态，不再干等；旧安装账本混入倒退序号时仍能 import 并装回 harness。

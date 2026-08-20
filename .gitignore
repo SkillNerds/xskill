@@ -54,6 +54,10 @@ src/*.egg-info/
 .venv/
 venv/
 
+# dsh 插件本地安装残留
+node_modules/
+plugins/dsh-xskill/node_modules/
+
 # IDE
 .idea/
 .vscode/

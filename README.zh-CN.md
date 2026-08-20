@@ -21,6 +21,7 @@
 
 ## 动态
 
+- **2026-08-20** — DeepSeek Harness 可用 `dsh plugin add github:SkillNerds/xskill` 装上 `dsh-xskill`，在 dsh 里列出、检索本地进化出的 skill。
 - **2026-08-14** — `v0.6.31`：`xskill rebuild --force` 不再因 `.git/objects` 非空中断；全量 rebuild 会留下 `xskill import` 纳入的技能。详见 [Release notes](https://github.com/SkillNerds/xskill/releases/tag/v0.6.31)。
 - **2026-08-14** — `v0.6.30`：team `xskill import` 后钉到发起人推荐列表；技能库登录后可点空心星 pin 进自己的推荐流，并标出推给我、已钉状态。详见 [Release notes](https://github.com/SkillNerds/xskill/releases/tag/v0.6.30)。
 - **2026-08-03** — `v0.6.29a6`：`pymilvus` 改为可选（`xskill[milvus]`），修复 client 自动更新；「我的」页支持推给我 N 个 SKILL / 上传使用去向 / skill commit 状态。详见 [Release notes](https://github.com/SkillNerds/xskill/releases/tag/v0.6.29a6)。
@@ -66,7 +67,7 @@ embedding:
   dim:      0
 ```
 
-再跑一次 `xskill serve`，它会自动扫机器上装好的所有 agent（Claude Code、Codex、OpenCode、OpenClaw、Cursor、Trae）开始监听。如果还有一份历史轨迹归档想一起吃进来：
+再跑一次 `xskill serve`，它会自动扫机器上装好的所有 agent（Claude Code、Codex、OpenCode、OpenClaw、Cursor、Trae、DeepSeek Harness）开始监听。如果还有一份历史轨迹归档想一起吃进来：
 
 ```bash
 xskill registry add /path/to/trajectories
@@ -82,7 +83,7 @@ xskill connect <host:port> --token <token>
 ```
 
 - **无感蒸馏大佬员工** 一个人在自己工作里跑通的解法，自动可以让全团队复用，不需要任何人做任何事。（能力民主化）
-- **兼容各种 coding 方式** 用 codex、clade 还是 cursor IDE？ 都能加入，多端同步。
+- **兼容各种 coding 方式** 用 Codex、Claude Code、Cursor IDE 还是 DeepSeek Harness？ 都能加入，多端同步。
 - **轨迹隐私** 轨迹上传前先脱敏，agent 隐私功能。
 - **灰度测试驱动的进化** 一个 Skill 的改动会先在每个人身上分别衡量，赢了再扩散，人越多进化越准越快。
 - **专家指导的手动进化** 专家本地直接修改 skill，会被学习进服务器远程 `user-staging/<client_id>` 分支，作为下一步进化参考。
@@ -134,8 +135,22 @@ xskill upload ./my-skill            # 打包上传一个 skill 目录(含 SKILL.
 | **OpenClaw** | 🟡 已对接，not well tested | 扫 `~/.openclaw/agents/` | 拷贝 → `~/.agents/skills/<name>/` |
 | **Cursor** | 🟡 已对接，not well tested | 扫 `~/.cursor/projects/*/agent-transcripts/` | symlink → `~/.cursor/skills/<name>/` |
 | **Trae** | 🟡 已对接，not well tested | IDE：读 `%APPDATA%/Trae*/User/workspaceStorage/*/state.vscdb`；CLI：扫 `~/trajectories/trajectory_*.json` | symlink → `~/.trae-cn/skills/` 与/或 `~/.trae/skills/` |
-| **DeepSeek Harness (dsh)** | 🟡 已对接，not well tested | 扫 `~/.dsh/sessions/*/*/session.jsonl[.zstd]`（明文与默认 zstd 会话均可） | symlink → `~/.dsh/skills/<name>/` |
+| **DeepSeek Harness (dsh)** | 🟡 已对接，not well tested | 扫 `~/.dsh/sessions/*/*/session.jsonl[.zstd]`（明文与默认 zstd 会话均可） | symlink → `~/.dsh/skills/<name>/`；也可 `dsh plugin add` 装 `dsh-xskill` |
 | **其他 agent** | 手动 | SDK：`xskill.adapters.submit_trajectory` | 自己拷贝 / symlink `SKILL.md` 目录 |
+
+### 在 DeepSeek Harness 上跑（dsh 插件）
+
+xskill 已经能发现 dsh、收会话、把 skill 软链到 `~/.dsh/skills/`。那是 xskill 推给 dsh。
+
+dsh 的扩展方式是插件：带 `dsh.bundle` 的 npm 包，用 `dsh plugin add` 装进某个 profile。本仓库的 `dsh-xskill` 装上并重启后，dsh 会直接读本地 xskill 技能库，并提供 `xskill_status`、`xskill_list`、`xskill_search`。
+
+```bash
+dsh plugin --profile web add github:SkillNerds/xskill
+# 本地 checkout：
+# dsh plugin --profile web add ./plugins/dsh-xskill
+```
+
+重启 `dsh web`。xskill 侧照常 `xskill serve` 或 `xskill connect`。说明见 [`plugins/dsh-xskill/README.md`](plugins/dsh-xskill/README.md)。
 
 ## 几个名词
 
