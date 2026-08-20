@@ -41,10 +41,11 @@ def _patch_sweep(
 
     built = []
 
-    def fake_build(_config, **_kwargs):
+    def fake_build(_config, **kwargs):
         if build_exception is not None:
             raise build_exception
         watcher = _FakeWatcher(run_exception=run_exception)
+        watcher.build_kwargs = kwargs
         built.append(watcher)
         return watcher
 
@@ -83,6 +84,56 @@ def test_sweep_server_mode_skips_ingest_and_writes_ok(tmp_path, monkeypatch):
     status = read_status_file(tmp_path / WATCHER_STATUS_FILE)
     assert status["ok"] is True
     assert status["stats"] == {"polls": 1, "new_trajs": 0}
+
+
+def test_sweep_native_only_external_kernel_still_splits(tmp_path, monkeypatch):
+    built, ingest_calls = _patch_sweep(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "xskill.config.kernel_config",
+        lambda *args, **kwargs: {
+            "active": "openearth",
+            "plugin_dir": tmp_path / "kernels",
+        },
+    )
+    rc = _workers.run_sweep_once(server=True, native_only=True)
+    assert rc == 0
+    assert ingest_calls == []
+    assert len(built) == 1
+    assert built[0].drained is True
+    assert built[0].build_kwargs.get("native_distill") is False
+    status = read_status_file(tmp_path / WATCHER_STATUS_FILE)
+    assert status["ok"] is True
+
+
+def test_native_distill_false_skips_cluster_and_skill_edit(tmp_path, monkeypatch):
+    from xskill.pipeline.registry import register_dir
+    from xskill.pipeline.runner import DirectoryWatcher
+
+    database_path = tmp_path / "test.db"
+    watch_dir = tmp_path / "sessions"
+    watch_dir.mkdir()
+    register_dir(watch_dir, db_path=database_path)
+    watcher = DirectoryWatcher(
+        config={},
+        skill_dir=tmp_path / "skill",
+        poll_interval=0.0,
+        db_path=database_path,
+        home_root=tmp_path,
+        xskill_home=tmp_path,
+        server_mode=True,
+        native_distill=False,
+    )
+    called = []
+    monkeypatch.setattr(
+        watcher,
+        "_collect_cluster_batch",
+        lambda *args, **kwargs: called.append("cluster") or ["atom-1"],
+    )
+    monkeypatch.setattr(
+        watcher, "_run_skill_edit_step", lambda: called.append("edit"))
+    monkeypatch.setattr(watcher, "_check_canary_decisions", lambda: None)
+    watcher._scan_once()
+    assert called == []
 
 
 def test_sweep_standalone_runs_ecosystem_ingest(tmp_path, monkeypatch):

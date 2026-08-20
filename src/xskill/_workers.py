@@ -73,11 +73,27 @@ def run_sweep_once(
                 install_history_path=install_history_path,
             )
         selected = kernel_config(config, xskill_home=XSKILL_HOME)
-        if native_only and selected["active"] != "native":
+        external_selected = selected["active"] != "native"
+        if native_only and external_selected:
+            # Keep ingest/split/index so the external kernel can see ready
+            # atoms. Only native SkillEdit is skipped.
             logger.info(
-                "native sweep skipped while external kernel %s is selected",
+                "native SkillEdit skipped while external kernel %s is selected; "
+                "still running ingest and atom split",
                 selected["active"],
             )
+            watcher = build_watcher(
+                config,
+                xskill_home=XSKILL_HOME,
+                config_path=XSKILL_HOME / "config.yaml",
+                db_path=registry_db_path,
+                skill_dir=skill_dir,
+                home_root=home_root,
+                server_mode=server,
+                native_distill=False,
+            )
+            watcher.run_once_and_drain()
+            write_status_file(status_path, dict(watcher.stats), ok=True)
             return 0
         catalog = KernelCatalog(
             plugin_dir=selected["plugin_dir"],

@@ -21,7 +21,8 @@ def build_watcher(config: dict, *, home_root: Path | None = None,
                   skill_dir: Path | None = None,
                   logs_dir: Path | None = None,
                   spill_root: Path | None = None,
-                  server_mode: bool = False, on_poll_hook=None):
+                  server_mode: bool = False, on_poll_hook=None,
+                  native_distill: bool = True):
     """构造 ``DirectoryWatcher``(读 watcher 段 + 造 llm/embed 客户端)。
 
     与原 web startup 的构造收敛到一处。``on_poll_hook`` 给短命 sweep 传 None
@@ -91,6 +92,7 @@ def build_watcher(config: dict, *, home_root: Path | None = None,
         spill_root=resolved_spill_root,
         usage_ledger=usage_ledger,
         on_poll_hook=on_poll_hook,
+        native_distill=native_distill,
     )
 
 

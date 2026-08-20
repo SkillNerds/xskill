@@ -378,15 +378,33 @@ class OpenEarthKernel(BaseKernel):
 
         queued = []
         superseded = []
+        rejected = []
         rebased_immediate = 0
         for draft in result.drafts:
             current = _current_skill(context, draft.name)
-            _published, rebased, busy = _submit_or_observe_busy(
-                context,
-                draft,
-                current,
-                origin_run_id=context.run_id,
-            )
+            try:
+                _published, rebased, busy = _submit_or_observe_busy(
+                    context,
+                    draft,
+                    current,
+                    origin_run_id=context.run_id,
+                )
+            except (ValueError, RuntimeError) as exc:
+                # One draft colliding with a baby stub or a stale checkout
+                # must not abort the rest of the run.
+                rejected.append(draft.name)
+                progress(
+                    "draft_rejected",
+                    skill=draft.name,
+                    error=str(exc),
+                )
+                logger.warning(
+                    "run_id=%s stage=draft_rejected skill=%s error=%s",
+                    context.run_id,
+                    draft.name,
+                    exc,
+                )
+                continue
             if busy:
                 was_superseded = _enqueue(context, queue, draft)
                 if was_superseded:
@@ -412,6 +430,7 @@ class OpenEarthKernel(BaseKernel):
             "generated_drafts": len(result.drafts),
             "published_drafts": len(submitted),
             "queued_drafts": len(queued),
+            "rejected_drafts": len(rejected),
             "queue_superseded": len(superseded),
             "queue_pending": len(queue["pending"]),
             "queue_rebased_immediate": rebased_immediate,
@@ -427,6 +446,7 @@ class OpenEarthKernel(BaseKernel):
             generated_drafts=metrics["generated_drafts"],
             published_drafts=metrics["published_drafts"],
             queued_drafts=metrics["queued_drafts"],
+            rejected_drafts=metrics["rejected_drafts"],
             queue_pending=metrics["queue_pending"],
         )
         return KernelRunResult(

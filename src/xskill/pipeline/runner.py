@@ -100,7 +100,8 @@ class DirectoryWatcher:
                  spill_root=None,
                  usage_ledger=None,
                  server_mode=False, install_history_path=None,
-                 on_poll_hook=None, cluster_batch_size=8):
+                 on_poll_hook=None, cluster_batch_size=8,
+                 native_distill=True):
         self.llm = llm
         self.embed_client = embed_client
         self.usage_ledger = usage_ledger
@@ -115,6 +116,11 @@ class DirectoryWatcher:
         # push-edit → user-staging/<client_id> 分支）。只跑 agent 流水线
         # （split/cluster/SkillEdit/canary 判定）+ CS 归因打分。
         self.server_mode = bool(server_mode)
+        # When an external algorithm kernel is selected, the platform must
+        # still discover and split trajectories. Native SkillEdit is the
+        # part that must stay off so OpenEarth (or another kernel) owns
+        # Skill production.
+        self.native_distill = bool(native_distill)
         # XSkill 自身状态根与 Agent 生态 home_root 是两类路径，不能混用。
         from xskill.config import XSKILL_HOME
         xskill_state_root = (
@@ -307,7 +313,8 @@ class DirectoryWatcher:
         # 已满阈值的 skill 仍能在每轮 scan 中被检出 + 触发 SkillEdit。
         # 不放在 _scan_dir 内是因为 skill_dir 不是 watch_dir，跟 wd 循环
         # 无关——每个 watcher 只有一个全局 skill_dir。
-        self._run_skill_edit_step()
+        if self.native_distill:
+            self._run_skill_edit_step()
 
         # ── Step 6: 灰度判定独立轮询 ──
         # 对每个 staging 分支存在的 skill 跑 AtomCanary.check_and_decide：
@@ -1934,19 +1941,23 @@ class DirectoryWatcher:
         # （一次 LLM 往返处理多个 atom 的位置）。同 wd 同时只允许一个 cluster
         # batch future 在飞（串行——逐批让 catalog 演化可见，避免并发 agent 各自
         # 创建近义 baby slug）。轨迹 done 不在这里标，交给 _sweep_done_trajs。
+        # 外部 kernel 接管 Skill 生产时关掉这步：ClusterAgent 会 init 原生
+        # baby stub，占坑后 OpenEarth 再更新同名 Skill 会因没有 main sha 崩掉。
         if self.skill_dir:
-            cluster_in_flight = any(
-                i["stage"] == "cluster" and i["wd_id"] == wd_id
-                for i in self._futures.values()
-            )
-            if not cluster_in_flight and not self._too_many_in_flight():
-                batch = self._collect_cluster_batch(dir_path, wd_id, consumed_index, **kw)
-                if batch:
-                    fut = self._pool.submit(self._do_cluster_batch, dir_path, batch)
-                    self._futures[fut] = {
-                        "wd_id": wd_id, "stage": "cluster", "atom_ids": batch,
-                    }
-                    cluster_in_flight = True
+            cluster_in_flight = False
+            if self.native_distill:
+                cluster_in_flight = any(
+                    i["stage"] == "cluster" and i["wd_id"] == wd_id
+                    for i in self._futures.values()
+                )
+                if not cluster_in_flight and not self._too_many_in_flight():
+                    batch = self._collect_cluster_batch(dir_path, wd_id, consumed_index, **kw)
+                    if batch:
+                        fut = self._pool.submit(self._do_cluster_batch, dir_path, batch)
+                        self._futures[fut] = {
+                            "wd_id": wd_id, "stage": "cluster", "atom_ids": batch,
+                        }
+                        cluster_in_flight = True
 
             # ── done 标记：轨迹的 atom 全部落地 → done（+ 触发 ux 打分）──
             # Windows 对正在被 cluster future 原子替换的 atom JSON 会报
