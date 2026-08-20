@@ -43,6 +43,22 @@ class TestAtomTaskRead:
         assert "atom_x_0001" in out
         assert "makemigrations" in out
 
+    def test_keeps_intent_summary_drops_raw_segment(self, tmp_path):
+        import json
+
+        _setup(tmp_path)
+        out = agent_tools.atom_task_read.entrypoint("atom_x_0001")
+        data = json.loads(out)
+        assert data["intent"] == "修 django migration"
+        assert data["summary"] == "跑了 makemigrations 找冲突"
+        assert data["tags"] == ["django"]
+        assert data["offset_start"] == 1
+        assert data["offset_end"] == 3
+        assert "raw_segment" not in data
+        assert "MIGRATIONS!" not in out
+        assert data["raw_segment_chars"] == len("MIGRATIONS!")
+        assert "read_traj" in data["how_to_read"]
+
     def test_not_found_returns_error(self, tmp_path):
         _setup(tmp_path)
         out = agent_tools.atom_task_read.entrypoint("atom_nonexistent")
@@ -73,10 +89,26 @@ class TestReadTraj:
         out = agent_tools.read_traj.entrypoint("x", offset_start=0, offset_end=2)
         assert out.startswith("error")
 
-    def test_out_of_bounds_returns_error(self, tmp_path):
+    def test_out_of_bounds_clamps_to_file_and_page(self, tmp_path):
+        """要的行超过文件或超过单页上限时，截断并说明下一页，不整包返回。"""
         _setup(tmp_path)
         out = agent_tools.read_traj.entrypoint("x", offset_start=1, offset_end=999999)
-        assert out.startswith("error")
+        assert not out.startswith("error")
+        assert "[read_traj]" in out
+        assert "L1\n" in out
+        assert "L5\n" in out
+
+    def test_caps_each_call_to_max_lines(self, tmp_path):
+        skill_dir, store = _setup(tmp_path)
+        long = "\n".join(f"R{i}" for i in range(1, 251)) + "\n"
+        (store.root / "x.md").write_text(long, encoding="utf-8")
+        out = agent_tools.read_traj.entrypoint("x", offset_start=1, offset_end=251)
+        assert out.startswith("[read_traj]")
+        assert "max_lines=200" in out
+        assert "offset_start=201" in out
+        assert "R1\n" in out
+        assert "R200\n" in out
+        assert "R201\n" not in out
 
     def test_nonexistent_traj_returns_error(self, tmp_path):
         _setup(tmp_path)

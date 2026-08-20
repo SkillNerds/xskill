@@ -341,13 +341,20 @@ class TestMainNeedsUxScoreBeforeStaging:
         )
 
         assert agent.maybe_run() is True
-        assert "read_file" in _InspectingStagingStubAgno.tool_names
+        assert {
+            "read_file",
+            "list_files",
+            "write_file",
+            "edit",
+        } <= _InspectingStagingStubAgno.tool_names
         assert f"skill_base_path: {skill_dir}" in _InspectingStagingStubAgno.user_msg
         assert f"process_cwd: {Path.cwd().resolve()}" in _InspectingStagingStubAgno.user_msg
         assert "write_file / edit 相对路径按 skill_base_path 解析" in (
             _InspectingStagingStubAgno.user_msg
         )
         assert "scripts/helper.py" in _InspectingStagingStubAgno.user_msg
+        assert "先 list_files" in _InspectingStagingStubAgno.user_msg
+        assert 'edit(path="SKILL.md"' in _InspectingStagingStubAgno.user_msg
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -537,6 +544,20 @@ class TestWritingDisciplineInPrompt:
         assert "commit_to_staging" in SYSTEM_PROMPT_TEMPLATE
         assert "隐私守护" in SYSTEM_PROMPT_TEMPLATE
         assert "AtomTaskRead" in SYSTEM_PROMPT_TEMPLATE
+
+    def test_tells_agent_to_list_and_edit_existing_files(self):
+        """已有文件走 list_files → 读 → edit，不要只会整文件 write_file。"""
+        assert "怎么改文件" in SYSTEM_PROMPT_TEMPLATE
+        assert "edit(path, old_string, new_string)" in SYSTEM_PROMPT_TEMPLATE
+        assert "用 list_files 看 skill 目录" in SYSTEM_PROMPT_TEMPLATE
+        assert "不要直接整文件 write_file" in SYSTEM_PROMPT_TEMPLATE
+        assert "write_file 只用于" in SYSTEM_PROMPT_TEMPLATE
+
+    def test_atom_read_is_metadata_traj_is_paged(self):
+        """AtomTaskRead 给 intent/summary，原文按页 ReadTraj。"""
+        assert "intent、summary" in SYSTEM_PROMPT_TEMPLATE
+        assert "不含 raw_segment" in SYSTEM_PROMPT_TEMPLATE
+        assert "每次最多 200 行" in SYSTEM_PROMPT_TEMPLATE
 
 
 # ────────────────────────────────────────────────────────────────────

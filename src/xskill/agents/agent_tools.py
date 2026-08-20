@@ -243,6 +243,15 @@ def use_skill_edit_batch(
         yield bound
 
 
+@contextlib.contextmanager
+def use_skill_write_target(skill_name: str) -> Iterator[AgentToolContext]:
+    """把 write_file / edit 的相对路径根钉到这个 skill 仓，不改 commit 批次。"""
+    current = current_agent_tool_context()
+    bound = replace(current, skill_edit_skill_name=_slugify(skill_name))
+    with use_agent_tool_context(bound):
+        yield bound
+
+
 class AgentToolConfig:
     """Stateless compatibility facade over the current task's context."""
 
@@ -387,8 +396,7 @@ class AgentToolConfig:
 
     @property
     def writable_skill_dir(self) -> Path | None:
-        current = _AGENT_TOOL_CONTEXT.get()
-        return current.atom_skill_dir or current.skill_dir
+        return _writable_skill_root()
 
 
 agent_tool_config = AgentToolConfig()
@@ -745,6 +753,12 @@ def read_file(path: str, offset: int = 1, limit: int = 200) -> str:
         return f"error: limit must be >= 1 (got {line_limit})"
 
     p = Path(path)
+    if not p.is_absolute():
+        skill_root = _writable_skill_root()
+        if skill_root is not None:
+            in_skill = (skill_root / p).resolve()
+            if in_skill.is_file():
+                p = in_skill
     roots = _allowed_read_roots()
     resolved = p.resolve()
     try:
@@ -965,36 +979,66 @@ def list_candidates(skill_name: str) -> str:
     return "\n".join(lines)
 
 
+def _pin_skill_write_target(skill_name: str) -> None:
+    """把后续 write_file / edit 的相对路径根钉到这个 skill 仓。"""
+    slug = _slugify(skill_name)
+    if not slug:
+        return
+    current = current_agent_tool_context()
+    if current.skill_edit_skill_name == slug:
+        return
+    _AGENT_TOOL_CONTEXT.set(replace(current, skill_edit_skill_name=slug))
+
+
 def _writable_skill_root() -> Path | None:
-    root = agent_tool_config.writable_skill_dir
-    if root is None:
+    current = current_agent_tool_context()
+    lib = current.atom_skill_dir or current.skill_dir
+    if lib is None:
         return None
-    return Path(root).resolve()
+    lib = Path(lib).resolve()
+    name = current.skill_edit_skill_name
+    if name:
+        if lib.name == name:
+            return lib
+        return (lib / name).resolve()
+    return lib
+
+
+def _skill_write_hint_lines(skill_dir: Path) -> list[str]:
+    name = skill_dir.name
+    return [
+        f"skill_dir: {skill_dir}",
+        f"example: SKILL.md  or  {skill_dir / 'SKILL.md'}",
+        f"ok: SKILL.md  ->  {skill_dir / 'SKILL.md'}",
+        f"ok: scripts/foo.py  ->  {skill_dir / 'scripts' / 'foo.py'}",
+        "not: ./skill/SKILL.md",
+        f"not: {name}/SKILL.md",
+    ]
 
 
 def _skill_write_error(path: str, skill_dir: Path | None, detail: str) -> str:
     lines = [f"error: {detail} (tried: {path})"]
     if skill_dir is not None:
-        lines.append(f"skill_dir: {skill_dir}")
-        lines.append(f"example: SKILL.md  or  {skill_dir / 'SKILL.md'}")
+        lines.extend(_skill_write_hint_lines(skill_dir))
     return "\n".join(lines)
 
 
 def _resolve_skill_write_path(path: str) -> tuple[Path | None, str | None]:
     """把 write_file / edit 的 path 收到当前 skill_dir 下。
 
-    相对路径按 skill_dir 拼接，不按进程 cwd。``skill/`` 或 ``./skill/``
-    前缀会写成仓内套一层 skill/，直接拒掉并给出可写示例。
+    相对路径按 skill_dir 拼接，不按进程 cwd。``skill/``、``./skill/``
+    或技能文件夹名当第一段，会写成仓内再套一层，直接拒掉并给出对错例子。
     """
     skill_dir = _writable_skill_root()
     if skill_dir is None:
         return None, "error: skill directory is not configured"
     raw = Path(path)
-    if not raw.is_absolute() and raw.parts and raw.parts[0] == "skill":
+    first = raw.parts[0] if raw.parts else ""
+    if not raw.is_absolute() and first in {"skill", skill_dir.name}:
         return None, _skill_write_error(
             path,
             skill_dir,
-            "path is relative to skill_dir; do not prefix skill/",
+            f"path is relative to skill_dir; do not prefix {first}/",
         )
     candidate = raw if raw.is_absolute() else (skill_dir / raw)
     try:
@@ -1012,16 +1056,12 @@ def _resolve_skill_write_path(path: str) -> tuple[Path | None, str | None]:
 
 @tool(name="write_file")
 def write_file(path: str, content: str) -> str:
-    """Write or overwrite a file under the current skill_dir.
+    """写新文件，或必须整篇重写时覆盖当前 skill 仓里的文件。
 
-    Relative paths resolve against skill_dir, not the process working
-    directory. Use ``SKILL.md`` or ``scripts/foo.py``. Do not prefix
-    ``./skill/``. Absolute paths must stay inside skill_dir.
-
-    v2 行为：只做路径安全 + frontmatter 日期消毒。旧 v1 ``source_trajs ≥ 3``
-    gate 和 ``N/M 条轨迹`` warning 消毒已删——v2 用 ``source_atoms`` 引用 atom
-    而非 traj，且质量保障靠 candidates buffer 累计 weightscore ≥ 10 的硬门槛，
-    不需要 SKILL.md 写入端再卡一道。
+    相对路径按当前 skill 仓解析，例如 SKILL.md、scripts/foo.py，不要加
+    ./skill/ 或技能文件夹名当第一段。已有文件（本趟刚生成的也算）应先
+    read_file 或 skill_read，再用 edit 改一处原文；不要为改一段而整篇
+    write_file。绝对路径必须仍落在 skill 仓内。
     """
     resolved, err = _resolve_skill_write_path(path)
     if err:
@@ -1053,11 +1093,12 @@ def write_file(path: str, content: str) -> str:
 
 @tool(name="edit")
 def edit_file(path: str, old_string: str, new_string: str) -> str:
-    """Replace one exact substring in a skill file the agent already read.
+    """改已经读过的 skill 文件里的一处原文。生成出来的文件同样用它改。
 
-    The file must have been read in this run via read_file or skill_read
-    (write_file also counts).  New files that do not exist yet should use
-    write_file instead.
+    已有文件（包括 new_skill_folder 放下的 stub SKILL.md、本趟 write_file
+    刚写的脚本）一律先 read_file 或 skill_read，再调用本工具。old_string
+    必须在文件里恰好出现一次。文件还不存在时用 write_file，不要用本工具
+    创建。相对路径按当前 skill 仓解析：SKILL.md、scripts/foo.py。
     """
     resolved, err = _resolve_skill_write_path(path)
     if err:
@@ -1236,30 +1277,101 @@ def update_frontmatter_metadata(skill_name: str, source_trajs: Optional[list] = 
 # AtomTask-era tools (v2) — consumed by TaskClusterAgent / SkillEditAgent
 # ═══════════════════════════════════════════════════════════════════
 
+READ_TRAJ_MAX_LINES = 200
+# AtomTaskRead 原样留给模型的字段。raw_segment 不在这里——原文走 read_traj。
+_ATOM_READ_KEEP_KEYS = (
+    "atom_id",
+    "traj_id",
+    "intent",
+    "summary",
+    "tags",
+    "used_skills",
+    "offset_start",
+    "offset_end",
+    "ux_score",
+    "pre_atom_id",
+    "post_atom_id",
+    "context_prefix",
+    "source_model",
+    "clustered",
+)
+
+
+def _atom_read_payload(atom) -> dict:
+    """intent / summary / 行号等元数据；不含 raw_segment。"""
+    full = json.loads(atom.to_json())
+    raw = full.get("raw_segment") or ""
+    start = int(full.get("offset_start") or 0)
+    end = int(full.get("offset_end") or 0)
+    line_span = max(0, end - start) if end > start else 0
+    first_end = start + min(line_span, READ_TRAJ_MAX_LINES) if line_span else start
+    if line_span > READ_TRAJ_MAX_LINES:
+        page_hint = (
+            f"本 atom 共 {line_span} 行，超过单次上限。先读 "
+            f"[{start}, {first_end})，再从 {first_end} 继续。"
+        )
+    elif line_span:
+        page_hint = f"本 atom 共 {line_span} 行，一次可读完。"
+    else:
+        page_hint = "本 atom 没有有效行区间。"
+    data = {key: full.get(key) for key in _ATOM_READ_KEEP_KEYS}
+    data["raw_segment_chars"] = len(raw)
+    data["raw_segment_lines"] = line_span
+    data["how_to_read"] = (
+        f'原文请用 read_traj(traj_id="{atom.traj_id}", '
+        f"offset_start={start}, offset_end=...)。"
+        f"行号是 1-based 半开区间 [{start}, {end})。"
+        f"每次最多 {READ_TRAJ_MAX_LINES} 行。{page_hint}"
+    )
+    return data
+
+
 @tool(name="atom_task_read")
 def atom_task_read(atom_id: str) -> str:
-    """读一个 AtomTask 的完整 JSON。
+    """读 AtomTask 的 intent / summary / 行号等，不含原文。
 
-    用于 cluster / edit agent 在决定归类前查看 atom 的 intent / summary /
-    raw_segment / used_skills。
+    返回 intent、summary、tags、used_skills、ux_score、前后 atom、
+    行号区间，以及 how_to_read。原文必须用 read_traj 按行分页取。
     """
     store = agent_tool_config.atom_store
     if store is None:
         return "error: atom task tool context not initialized"
     try:
-        return store.load(atom_id).to_json()
+        atom = store.load(atom_id)
     except FileNotFoundError as e:
         return f"error: {e}"
+    return json.dumps(_atom_read_payload(atom), ensure_ascii=False, indent=2)
 
 
 @tool(name="read_traj")
 def read_traj(traj_id: str, offset_start: int, offset_end: int) -> str:
-    """按**行号**读 traj.md 片段。
+    f"""按行号读取一条轨迹的原文。这是读 traj 正文的专用工具。
 
-    用法：agent 看了 atom 摘要后想确认细节时，传 atom 的 offset_start /
-    offset_end（都是 1-based 行号，半开区间 ``[start, end)``）回来取原文。
-    校验区间合法（``offset_end > offset_start`` 且区间在文件行数内），
-    违反直接返回 error。
+    先调用 atom_task_read，拿到 traj_id、offset_start、offset_end 和
+    how_to_read。本工具只读你指定的那一段行，不会返回 atom 的 intent 或
+    summary。整段 atom 往往远超一页，必须分页，不要一次把 atom 的
+    起止行原样塞进来指望拿全文。
+
+    行号规则：1-based 半开区间 [offset_start, offset_end)，含起始行、
+    不含结束行。第一行是 1，禁止传 0。对的例子：前 200 行是
+    offset_start=1, offset_end=201。错的例子：offset_start=0。
+
+    每次最多 {READ_TRAJ_MAX_LINES} 行（offset_end - offset_start）。超过则只
+    返回前 {READ_TRAJ_MAX_LINES} 行，并在正文开头给出 continue，下一页用
+    那个 offset_start 接着读。不要因为被截断就改用 grep_files 或
+    read_file 去倒整份 traj.md。
+
+    traj_id 必须与 atom_task_read 返回的字符串完全一致，包括下划线。
+    不要把 traj_oc_xskill-debug_ses_1da2 改成带连字符的近形名字。
+
+    不要用 grep_files(pattern='.' 或 '^')、也不要用 read_file 去整包
+    读取 traj.md。grep 只适合搜关键词定位行号；定位之后仍用本工具
+    按行号精读。
+
+    Args:
+        traj_id: atom 里的轨迹 id，原样复制。
+        offset_start: 起始行号，从 1 起。
+        offset_end: 结束行号（不含），必须大于 offset_start。
     """
     traj_root = agent_tool_config.default_traj_root
     if traj_root is None:
@@ -1279,17 +1391,42 @@ def read_traj(traj_id: str, offset_start: int, offset_end: int) -> str:
     p = traj_root / f"{traj_id}.md"
     if not p.is_file():
         return f"error: traj file not found: {p}"
-    if offset_end <= offset_start:
-        return f"error: offset_end ({offset_end}) must be > offset_start ({offset_start})"
+    try:
+        start = int(offset_start)
+        end = int(offset_end)
+    except (TypeError, ValueError):
+        return f"error: offset_start/offset_end must be int (got {offset_start!r}, {offset_end!r})"
+    if end <= start:
+        return f"error: offset_end ({end}) must be > offset_start ({start})"
+    if start < 1:
+        return (
+            f"error: line range [{start}..{end}) outside file "
+            f"(offset_start must be >= 1)"
+        )
     lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
     total = len(lines)
-    # offset_end 是半开上界（行号），末 atom 可达 total + 1
-    if offset_start < 1 or offset_end > total + 1:
+    if start > total:
         return (
-            f"error: line range [{offset_start}..{offset_end}) outside file "
+            f"error: line range [{start}..{end}) outside file "
             f"line count {total}"
         )
-    return "".join(lines[offset_start - 1:offset_end - 1])
+    file_end = min(end, total + 1)
+    page_end = min(file_end, start + READ_TRAJ_MAX_LINES)
+    body = "".join(lines[start - 1:page_end - 1])
+    if page_end == end:
+        return body
+    next_hint = (
+        f"continue: read_traj(traj_id=\"{traj_id}\", "
+        f"offset_start={page_end}, offset_end=...)"
+        if page_end < file_end
+        else "no further lines in this file"
+    )
+    header = (
+        f"[read_traj] traj={traj_id} returned [{start}, {page_end}) "
+        f"requested [{start}, {end}); file_lines={total}; "
+        f"max_lines={READ_TRAJ_MAX_LINES}. {next_hint}\n"
+    )
+    return header + body
 
 
 @tool(name="new_skill_folder")
@@ -1321,7 +1458,10 @@ def new_skill_folder(skill_name: str, description: str) -> str:
         init_skill_repo_on_baby(str(target), name=slug, description=desc)
         return f"created on baby branch: {target}  desc={desc[:60]!r}"
 
-    return _run_cluster_mutation(mutate)
+    result = _run_cluster_mutation(mutate)
+    if not str(result).startswith("error:"):
+        _pin_skill_write_target(slug)
+    return result
 
 
 @tool(name="skill_read")
@@ -1332,6 +1472,8 @@ def skill_read(skill_name: str) -> str:
         return "error: atom task tool context not initialized"
     slug = _slugify(skill_name)
     skill_path = (skill_dir / slug).resolve()
+    if current_agent_tool_context().generate_user_id and skill_path.is_dir():
+        _pin_skill_write_target(slug)
     header = f"skill_dir: {skill_path}"
     try:
         from xskill.skill.git import current_branch

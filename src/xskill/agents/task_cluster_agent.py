@@ -147,8 +147,10 @@ NewSkillFolder 再添加）。一个 AtomTask 可以同时支撑多个语义不�
 通过添加工具至少落盘一次，一个都不能漏。**
 
 # 可用工具
-- AtomTaskRead(atom_id) — 读 atom 完整 JSON（intent / summary / raw_segment 全字段）
-- ReadTraj(traj_id, offset_start, offset_end) — 按行号读 traj.md 原文片段（offset 即 1-based 行号）
+- AtomTaskRead(atom_id) — 读 intent / summary / tags / used_skills / 行号等，
+  不含 raw_segment。原文用 ReadTraj 按需分页
+- ReadTraj(traj_id, offset_start, offset_end) — 按行号读 traj.md 原文（1-based
+  半开区间）；每次最多 200 行
 - SkillRead(skill_name) — 读 skill 的 SKILL.md（baby 返回 stub，main/staging 返回正版）
 - ReadSkillTasks(skill_name) — **看某 skill 的 candidates buffer 内已有哪些 atom**
   （和 SkillRead 不同——SkillRead 看 SKILL.md，ReadSkillTasks 看正在攒分的 atom
