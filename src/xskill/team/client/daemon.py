@@ -117,12 +117,17 @@ class TeamClient:
     ):
         self.state = state
         self.http = http
-        # skill working copies 落标准 skill_dir（= ~/.xskill/skill/）——与
-        # standalone 模式同一个位置，不另开 team_skills/。一台机器要么
-        # standalone 要么 client，这个目录谁来管取决于模式。
         self.skill_dir = Path(skill_dir)
-        self.skill_dir.mkdir(parents=True, exist_ok=True)
         self.home_root = Path(home_root) if home_root else Path.home()
+        # 自动触发一次老版本客户端平滑数据保留迁移（纯客户端 move / 同机 server copy）
+        from xskill.config import migrate_legacy_client_skill_dir
+        _state_root = self.home_root / ".xskill" if not (self.skill_dir.parent.name == ".xskill") else self.skill_dir.parent
+        migrate_legacy_client_skill_dir(
+            target_client_dir=self.skill_dir,
+            xskill_home=_state_root,
+        )
+        self.skill_dir.mkdir(parents=True, exist_ok=True)
+
         self.poll_interval = poll_interval
         self.history = InstallHistory(history_path)
         self.collector = TeamCollector(

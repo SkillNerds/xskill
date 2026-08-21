@@ -925,6 +925,66 @@ def get_client_skill_dir(
     )
 
 
+def migrate_legacy_client_skill_dir(
+    target_client_dir: Path,
+    legacy_skill_dir: Optional[Path] = None,
+    *,
+    xskill_home: Optional[Path] = None,
+) -> bool:
+    """平滑安全迁移：在客户端模式下，将老版本 ~/.xskill/skill/ 的存量数据安全迁移到 target_client_dir。
+
+    迁移规约：
+    1. 若 target_client_dir 已经存在且包含文件，则无需迁移，直接返回 False；
+    2. 若 legacy_skill_dir 并不存在或为空，则无需迁移，直接返回 False；
+    3. 判定本机是否为 Team Server（检测 xskill_home / 'team_server.json' 是否存在）：
+       - 若本机【不是】Server（99% 普通员工电脑）：
+         原子重命名/移动（shutil.move 或 rename），100% 完整保留员工全部本地手改、分支与工作树；
+       - 若本机【是】Server（1% 团队服务器自连接场景）：
+         采用安全全量复制（shutil.copytree），严禁移动或删除 Server 端权威母本；
+    4. 迁移成功返回 True。
+    """
+    import shutil
+    state_root = (
+        Path(xskill_home) if xskill_home is not None else XSKILL_HOME
+    ).expanduser().resolve()
+    legacy_dir = (
+        Path(legacy_skill_dir) if legacy_skill_dir is not None else state_root / "skill"
+    ).expanduser().resolve()
+    target_dir = Path(target_client_dir).expanduser().resolve()
+
+    # 路径相同无需迁移
+    if legacy_dir == target_dir:
+        return False
+
+    # 若目标目录已存在且非空，无需迁移
+    if target_dir.exists() and any(target_dir.iterdir()):
+        return False
+
+    # 若老目录不存在或为空，无需迁移
+    if not legacy_dir.exists() or not any(legacy_dir.iterdir()):
+        return False
+
+    # 检查是否为同机 Server (存在 team_server.json)
+    is_server = (state_root / "team_server.json").exists()
+
+    try:
+        if is_server:
+            # 同机 Server: 仅全量复制到 client 副本，绝对禁止移动或删除 Server 母本
+            target_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(legacy_dir, target_dir, dirs_exist_ok=True)
+            return True
+        else:
+            # 纯 Client 机器: 将老 skill 目录整体移动/重命名为 client_skill
+            if target_dir.exists():
+                target_dir.rmdir()
+            shutil.move(str(legacy_dir), str(target_dir))
+            return True
+    except Exception:
+        # 降级容错，保证 client 启动不崩溃
+        return False
+
+
+
 
 def get_logs_dir() -> Path:
 
