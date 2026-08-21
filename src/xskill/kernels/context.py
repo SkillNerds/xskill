@@ -285,14 +285,38 @@ def _trajectory_resource_from_path(
     )
 
 
+def _scan_watch_dir_trajectories(
+    watch_dir: TrajectoryDirectoryResource,
+) -> list[Path]:
+    """List ``traj_*.md`` visible from one watch directory.
+
+    A registered Registry root is a flat bucket: only direct children.
+    The synthetic no-Registry manual root (``id=root``,
+    ``ecosystem=kernel-input``) may recurse, matching ``--trajectory-dir``.
+    """
+    root = watch_dir.path
+    if not root.is_dir():
+        return []
+    recursive = (
+        watch_dir.id == "root" and watch_dir.ecosystem == "kernel-input"
+    )
+    scanner = root.rglob if recursive else root.glob
+    return sorted(
+        path
+        for path in scanner("traj_*.md")
+        if path.is_file() and not path.is_symlink()
+    )
+
+
 class TrajectoryReader:
     """Filesystem-capable facade over this invocation's trajectory input.
 
     ``root`` is the absolute input root exposed to the kernel for its own batch
     readers and filesystem tools.  Registered watch directories remain the
-    preferred source of attribution and status metadata.  When no watch
-    directory is registered, the reader falls back to recursively discovering
-    ``traj_*.md`` below ``root`` so manually supplied trajectory trees still work.
+    preferred source of attribution and status metadata, and are scanned as
+    flat trajectory buckets.  When no watch directory is registered, the
+    reader falls back to recursively discovering ``traj_*.md`` below ``root``
+    so manually supplied trajectory trees still work.
     """
 
     def __init__(
@@ -364,14 +388,17 @@ class TrajectoryReader:
 
         accepted = set(statuses) if statuses is not None else None
         registry = Registry(self._db_path)
+        seen_canonical: set[Path] = set()
         for watch_dir in self.directories():
             if directory_id is not None and str(watch_dir.id) != str(directory_id):
                 continue
             if not watch_dir.path.is_dir():
                 continue
-            for path in sorted(watch_dir.path.rglob("traj_*.md")):
-                if path.is_symlink() or not path.is_file():
+            for path in _scan_watch_dir_trajectories(watch_dir):
+                canonical = path.resolve()
+                if canonical in seen_canonical:
                     continue
+                seen_canonical.add(canonical)
                 trajectory = Trajectory.load(path, registry=registry)
                 status = trajectory.status
                 if accepted is not None and status not in accepted:
