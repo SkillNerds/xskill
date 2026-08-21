@@ -140,6 +140,15 @@ def then_temp_trajectory_pending_no_atoms(context):
     assert created.read_text() == PLATFORM_MD
 
 
+@then("the kernel-temp watch directory has auto_index enabled")
+def then_kernel_temp_watch_dir_auto_index_enabled(context):
+    reader = context["reader"]
+    temp_watch = next(
+        item for item in reader.directories() if item.ecosystem == "kernel-temp"
+    )
+    assert temp_watch.auto_index is True
+
+
 @then("the temp trajectory is absent from the feed")
 def then_temp_trajectory_absent_from_feed(context):
     reader = context["reader"]

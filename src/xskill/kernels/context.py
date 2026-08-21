@@ -442,31 +442,26 @@ class TrajectoryReader:
             raise RuntimeError(
                 "TrajectoryReader has no temp_root configured; cannot create_temp"
             )
-        from xskill.pipeline.registry import Registry, register_dir
+        from xskill.pipeline.registry import register_dir
 
         temp_root = self._temp_root
         temp_root.mkdir(parents=True, exist_ok=True)
-        if self._temp_watch_dir_id is None:
-            registry = Registry(self._db_path)
-            resolved = temp_root.resolve()
-            for item in registry.list():
-                if item.path.resolve() == resolved:
-                    self._temp_watch_dir_id = int(item.id)
-                    break
-            else:
-                self._temp_watch_dir_id = register_dir(
-                    temp_root,
-                    label="kernel-temp",
-                    ecosystem="kernel-temp",
-                    auto_index=False,
-                    db_path=self._db_path,
-                )
+        # Always re-register: register_dir is idempotent and refreshes
+        # auto_index. Temp trajectories must be watched/split like user
+        # trajectories; auto_index=False (pause-ingest) was a mistaken reuse.
+        self._temp_watch_dir_id = register_dir(
+            temp_root,
+            label="kernel-temp",
+            ecosystem="kernel-temp",
+            auto_index=True,
+            db_path=self._db_path,
+        )
         watch_dir = TrajectoryDirectoryResource(
             id=str(self._temp_watch_dir_id),
             path=temp_root,
             label="kernel-temp",
             ecosystem="kernel-temp",
-            auto_index=False,
+            auto_index=True,
             trajectory_count=0,
             indexed_count=0,
         )

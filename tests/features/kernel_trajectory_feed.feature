@@ -7,6 +7,7 @@ Feature: Platform feeds ready trajectories with atom views to algorithm kernels
     Given a trajectory reader with a temp root
     When the kernel creates a temp trajectory from platform-shaped markdown
     Then the temp trajectory is pending with no atoms
+    And the kernel-temp watch directory has auto_index enabled
     And the temp trajectory is absent from the feed
     When the platform finishes splitting the temp trajectory into one atom
     Then the temp trajectory enters the feed as ready
