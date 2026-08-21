@@ -875,6 +875,86 @@ async function loadCanary() {
 
 // ── SPA-lite 路由（hash）─────────────────────────────────────────
 const NAMES = { overview: '总览', skills: '技能库', traj: '轨迹 & 原子', users: '用户 & 画像', canary: '灰度 Canary', my: '我的', admin: '管理', kernels: '算法内核', settings: '设置' };
+let IDENT = null;   // {user, role} | null；必须在首次 route()/showPage 之前声明
+let _kernelLogES = null;
+let _kernelLogPaused = false;
+let _kernelLogLines = [];
+const KERNEL_LOG_MAX = 1000;
+
+function kernelLogPageOn() {
+  const page = document.getElementById('pg-kernels');
+  return !!(page && page.classList.contains('on'));
+}
+
+function appendKernelLog(line) {
+  const view = document.getElementById('kernel-log-view');
+  if (!view) return;
+  const stageMatch = String(line).match(/\bstage=([^\s]+)/);
+  if (stageMatch) {
+    const stageEl = document.getElementById('kernel-log-stage');
+    if (stageEl) stageEl.textContent = 'stage=' + stageMatch[1];
+  }
+  const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 32;
+  const placeholder = view.textContent === '等待连接…' || view.textContent === '正在连接…';
+  _kernelLogLines.push(line);
+  if (_kernelLogLines.length > KERNEL_LOG_MAX) {
+    _kernelLogLines = _kernelLogLines.slice(-KERNEL_LOG_MAX);
+    view.textContent = _kernelLogLines.join('\n');
+  } else if (placeholder || _kernelLogLines.length === 1) {
+    view.textContent = line;
+  } else {
+    view.append(document.createTextNode('\n' + line));
+  }
+  if (!_kernelLogPaused && atBottom) view.scrollTop = view.scrollHeight;
+}
+
+function startKernelLogStream() {
+  if (!IDENT || IDENT.role !== 'admin') return;
+  if (_kernelLogES) return;
+  _kernelLogLines = [];
+  _kernelLogPaused = false;
+  const pauseBtn = document.getElementById('kernel-log-pause');
+  if (pauseBtn) pauseBtn.textContent = '暂停滚动';
+  const stageEl = document.getElementById('kernel-log-stage');
+  if (stageEl) stageEl.textContent = 'stage=—';
+  const status = document.getElementById('kernel-log-status');
+  const view = document.getElementById('kernel-log-view');
+  if (view) view.textContent = '正在连接…';
+  if (status) status.textContent = '连接中';
+  const source = new EventSource('api/v1/dashboard/admin/kernels/logs');
+  _kernelLogES = source;
+  source.onopen = () => {
+    if (status) status.textContent = '已连接';
+  };
+  source.onmessage = ev => {
+    let payload;
+    try { payload = JSON.parse(ev.data); } catch { payload = { t: 'log', line: ev.data }; }
+    if (payload.t === 'meta') return;
+    if (payload.line != null) appendKernelLog(payload.line);
+  };
+  source.onerror = () => {
+    if (status) status.textContent = '已断开，重连中';
+  };
+}
+
+function stopKernelLogStream() {
+  const source = _kernelLogES;
+  _kernelLogES = null;
+  if (source) {
+    source.onerror = null;
+    source.onmessage = null;
+    source.onopen = null;
+    source.close();
+  }
+  const status = document.getElementById('kernel-log-status');
+  if (status) status.textContent = '未连接';
+}
+
+function syncKernelLogStream() {
+  if (kernelLogPageOn() && IDENT && IDENT.role === 'admin') startKernelLogStream();
+  else stopKernelLogStream();
+}
+
 function showPage(pg) {
   if (!document.getElementById('pg-' + pg)) pg = 'overview';
   document.querySelectorAll('.sec-page').forEach(s => s.classList.remove('on'));
@@ -888,6 +968,7 @@ function showPage(pg) {
   });
   document.getElementById('pgname').textContent = NAMES[pg] || '总览';
   window.scrollTo(0, 0);
+  syncKernelLogStream();
 }
 function route() {
   const h = decodeURIComponent(location.hash.replace(/^#/, ''));
@@ -996,7 +1077,6 @@ for (const f of [loadOverview, loadRates, loadPipeline, loadDomain, loadCost,
 }
 
 // ═════════════ P2:登录/角色 + 我的/管理/设置 ═════════════
-let IDENT = null;   // {user, role} | null
 
 async function jpost(u, body, method) {
   const r = await fetch(u, { method: method || 'POST',
@@ -1025,6 +1105,7 @@ function applyIdent() {
   document.getElementById('kernels-body').classList.toggle('hidden', !admin);
   document.getElementById('settings-guard').classList.toggle('hidden', admin);
   document.getElementById('settings-body').classList.toggle('hidden', !admin);
+  syncKernelLogStream();
 }
 
 async function initIdent() {
@@ -1285,6 +1366,25 @@ async function loadKernels() {
     <td class="text-right tabular-nums">${r.input_count} / ${r.output_count}</td><td class="text-right tabular-nums">${Number(r.duration_s).toFixed(2)}s</td>
     <td class="pl-6"><span class="text-[10px] px-1.5 py-0.5 rounded ${r.status === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}" title="${esc(r.error || '')}">${esc(r.status)}</span><div class="text-[10px] text-slate-400 font-mono mt-0.5">${esc(r.run_id.slice(0, 12))}</div></td></tr>`).join(''), '还没有内核运行记录');
 }
+
+const kernelLogPause = document.getElementById('kernel-log-pause');
+if (kernelLogPause) {
+  kernelLogPause.addEventListener('click', () => {
+    _kernelLogPaused = !_kernelLogPaused;
+    kernelLogPause.textContent = _kernelLogPaused ? '继续滚动' : '暂停滚动';
+  });
+}
+const kernelLogClear = document.getElementById('kernel-log-clear');
+if (kernelLogClear) {
+  kernelLogClear.addEventListener('click', () => {
+    _kernelLogLines = [];
+    const view = document.getElementById('kernel-log-view');
+    if (view) view.textContent = '';
+    const stageEl = document.getElementById('kernel-log-stage');
+    if (stageEl) stageEl.textContent = 'stage=—';
+  });
+}
+
 document.addEventListener('click', async e => {
   const button = e.target.closest('.kernel-activate');
   if (!button) return;

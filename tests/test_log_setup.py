@@ -31,11 +31,17 @@ def test_creates_log_files_for_each_component(tmp_path):
     logging.getLogger("xskill.canary").info("canary said hi")
     logging.getLogger("agno").warning("agno noise")
     logging.getLogger("xskill.ecosystems").info("ecosystems said hi")
+    logging.getLogger("xskill.kernel.openearth").info(
+        "run_id=probe stage=run_started"
+    )
 
     # 强制 flush（RotatingFileHandler 用 buffered IO）
     for h in logging.getLogger().handlers:
         h.flush()
-    for name in ("xskill.watcher", "xskill.canary", "agno", "xskill.ecosystems"):
+    for name in (
+        "xskill.watcher", "xskill.canary", "agno", "xskill.ecosystems",
+        "xskill.kernel",
+    ):
         for h in logging.getLogger(name).handlers:
             h.flush()
 
@@ -43,6 +49,9 @@ def test_creates_log_files_for_each_component(tmp_path):
     assert (tmp_path / "xskill.canary.log").read_text(encoding="utf-8").find("canary said hi") >= 0
     assert (tmp_path / "agno.log").read_text(encoding="utf-8").find("agno noise") >= 0
     assert (tmp_path / "xskill.ecosystems.log").read_text(encoding="utf-8").find("ecosystems said hi") >= 0
+    kernel_log = (tmp_path / "xskill.kernel.log").read_text(encoding="utf-8")
+    assert "stage=run_started" in kernel_log
+    assert "xskill.kernel.openearth" in kernel_log
 
 
 def test_xskill_log_aggregates_all_xskill_messages(tmp_path):
@@ -52,16 +61,18 @@ def test_xskill_log_aggregates_all_xskill_messages(tmp_path):
 
     logging.getLogger("xskill.watcher").info("from watcher")
     logging.getLogger("xskill.canary").info("from canary")
+    logging.getLogger("xskill.kernel.openearth").info("from openearth")
 
     for h in logging.getLogger().handlers:
         h.flush()
-    for name in ("xskill", "xskill.watcher", "xskill.canary"):
+    for name in ("xskill", "xskill.watcher", "xskill.canary", "xskill.kernel"):
         for h in logging.getLogger(name).handlers:
             h.flush()
 
     aggregate = (tmp_path / "xskill.log").read_text(encoding="utf-8")
     assert "from watcher" in aggregate
     assert "from canary" in aggregate
+    assert "from openearth" in aggregate
 
 
 def test_idempotent_no_duplicate_handlers(tmp_path):
@@ -113,6 +124,7 @@ _COMPONENT_MATRIX = [
     ("xskill.canary", "xskill.canary.log", logging.INFO),
     ("xskill.ecosystems", "xskill.ecosystems.log", logging.INFO),
     ("xskill.skill_edit_agent", "xskill.skill_edit_agent.log", logging.INFO),
+    ("xskill.kernel", "xskill.kernel.log", logging.INFO),
     ("agno", "agno.log", logging.WARNING),
     ("httpx", "httpx.log", logging.WARNING),
 ]
@@ -130,6 +142,7 @@ def test_delay_no_empty_file_for_silent_logger(tmp_path):
     assert not (tmp_path / "xskill.canary.log").exists()         # 没写 → 不建空文件
     assert not (tmp_path / "xskill.ecosystems.log").exists()
     assert not (tmp_path / "xskill.skill_edit_agent.log").exists()
+    assert not (tmp_path / "xskill.kernel.log").exists()
 
 
 def test_no_dead_logger_files_declared():
@@ -192,6 +205,7 @@ def test_judge3_key_events_land_in_correct_file(tmp_path):
         "xskill.skill_edit_agent": ("xskill.skill_edit_agent.log", "EV_EDIT"),
         "xskill.canary": ("xskill.canary.log", "EV_CANARY_DECISION"),
         "xskill.ecosystems": ("xskill.ecosystems.log", "EV_INSTALL"),
+        "xskill.kernel.openearth": ("xskill.kernel.log", "stage=distillation_started"),
     }
     for logger_name, (_f, marker) in events.items():
         logging.getLogger(logger_name).info(marker)

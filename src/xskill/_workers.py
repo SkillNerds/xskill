@@ -73,11 +73,27 @@ def run_sweep_once(
                 install_history_path=install_history_path,
             )
         selected = kernel_config(config, xskill_home=XSKILL_HOME)
-        if native_only and selected["active"] != "native":
+        external_selected = selected["active"] != "native"
+        if native_only and external_selected:
+            # Keep ingest/split/index so the external kernel can see ready
+            # atoms. Only native SkillEdit is skipped.
             logger.info(
-                "native sweep skipped while external kernel %s is selected",
+                "native SkillEdit skipped while external kernel %s is selected; "
+                "still running ingest and atom split",
                 selected["active"],
             )
+            watcher = build_watcher(
+                config,
+                xskill_home=XSKILL_HOME,
+                config_path=XSKILL_HOME / "config.yaml",
+                db_path=registry_db_path,
+                skill_dir=skill_dir,
+                home_root=home_root,
+                server_mode=server,
+                native_distill=False,
+            )
+            watcher.run_once_and_drain()
+            write_status_file(status_path, dict(watcher.stats), ok=True)
             return 0
         catalog = KernelCatalog(
             plugin_dir=selected["plugin_dir"],
@@ -183,6 +199,7 @@ def run_kernel_host(
     )
     from xskill.utils.shutdown import SHUTTING_DOWN
 
+    kernel_log = logging.getLogger("xskill.kernel.host")
     stop = stop_event or SHUTTING_DOWN
     runtime = None
     runtime_key: tuple[str, Path] | None = None
@@ -232,7 +249,7 @@ def run_kernel_host(
             previous_snapshot = {}
             first_run = True
             next_run_at = time.monotonic()
-            logger.info(
+            kernel_log.info(
                 "external kernel host selected %s (interval %.1fs, server=%s)",
                 active,
                 interval,
@@ -266,8 +283,14 @@ def run_kernel_host(
                 native_runner=lambda _invocation: KernelRunResult(),
             )
         except Exception:  # noqa: BLE001 - persistent process run boundary
-            logger.exception("external kernel %s run failed", active)
+            kernel_log.exception("external kernel %s run failed", active)
         else:
+            kernel_log.info(
+                "external kernel %s run finished (changed=%d, full_rebuild=%s)",
+                active,
+                len(changed),
+                first_run,
+            )
             previous_snapshot = current_snapshot
             first_run = False
         completed_cycles += 1
@@ -468,7 +491,22 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("profile-refresh")
     args = parser.parse_args(argv)
 
-    configure_logging(get_logs_dir(), debug=False, quiet=False, stdout=True)
+    configure_logging(
+        get_logs_dir(),
+        debug=False,
+        quiet=False,
+        # kernel-host 的 stdout 已被调度器追加进 xskill.kernel.log；再开
+        # StreamHandler 会让 xskill.kernel.openearth 进度日志写两遍。
+        stdout=args.kind != "kernel-host",
+    )
+    if args.kind == "kernel-host":
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is not None:
+                try:
+                    reconfigure(line_buffering=True)
+                except (OSError, ValueError):
+                    pass
     if args.kind == "sweep":
         return run_sweep_once(
             server=args.server,

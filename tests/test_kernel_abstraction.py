@@ -225,6 +225,7 @@ def test_publisher_creates_main_then_stages_update_with_kernel_attribution(tmp_p
     }
     assert frontmatter["metadata"]["source_trajs"] == ["1:traj_a.md"]
     assert "first" in body
+    assert not (skill_dir / ".kernel_drafts").exists()
 
     second = SkillPublisher(
         skill_dir=skill_dir,
@@ -250,6 +251,54 @@ def test_publisher_creates_main_then_stages_update_with_kernel_attribution(tmp_p
     assert (staged.parent / "references" / "new.md").read_text() == "new\n"
     assert not (staged.parent / "scripts" / "helper.py").exists()
     assert second.previous_commit_sha == first.commit_sha
+
+
+def test_publisher_cleans_failed_new_skill_draft(tmp_path, monkeypatch):
+    skill_dir = tmp_path / "skills"
+    monkeypatch.setattr(
+        "xskill.skill.git.commit_baby_to_main_branch",
+        lambda *_args, **_kwargs: False,
+    )
+    publisher = SkillPublisher(
+        skill_dir=skill_dir,
+        kernel_id="local-test",
+        kernel_version="1",
+        run_id="failed-run",
+    )
+
+    with pytest.raises(RuntimeError, match="failed to publish new skill"):
+        publisher.submit(SkillSubmission(
+            name="failed-skill",
+            skill_md=_skill_md("failed-skill"),
+        ))
+
+    assert not (skill_dir / "failed-skill").exists()
+    assert not (skill_dir / ".kernel_drafts").exists()
+
+
+def test_publisher_draft_cleanup_preserves_same_run_siblings(tmp_path):
+    skill_dir = tmp_path / "skills"
+    sibling = (
+        skill_dir / ".kernel_drafts" / "shared-run" / "other-skill"
+        / "diagnostic.txt"
+    )
+    sibling.parent.mkdir(parents=True)
+    sibling.write_text("keep", encoding="utf-8")
+
+    SkillPublisher(
+        skill_dir=skill_dir,
+        kernel_id="local-test",
+        kernel_version="1",
+        run_id="shared-run",
+    ).submit(SkillSubmission(
+        name="published-skill",
+        skill_md=_skill_md("published-skill"),
+    ))
+
+    assert sibling.read_text(encoding="utf-8") == "keep"
+    assert not (
+        skill_dir / ".kernel_drafts" / "shared-run" / "published-skill"
+    ).exists()
 
 
 def test_skill_checkout_is_editable_copy_and_submit_is_version_checked(tmp_path):
