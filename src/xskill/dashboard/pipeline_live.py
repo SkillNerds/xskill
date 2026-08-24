@@ -78,9 +78,10 @@ def pipeline_live(db_path: Optional[Path]) -> dict:
         cfg = pool_config.get(name) or {}
         workers = int(status.get("workers") or cfg.get("workers") or 0)
         seats = status.get("seats")
-        if not isinstance(seats, list) or len(seats) != workers:
-            # 老版本 worker 未上报席位簿记：显式空席，不伪造任务。
+        if not isinstance(seats, list):
             seats = [None] * workers
+        elif len(seats) < workers:
+            seats = list(seats) + [None] * (workers - len(seats))
         queue = status.get("queue")
         if not isinstance(queue, list):
             queue = []
@@ -141,7 +142,7 @@ def _project_generate_pool(edit: dict, generate_stats: dict) -> dict:
     ]
     return {
         "workers": workers,
-        "llm_weight": edit.get("llm_weight"),
+        "llm_priority": True,
         "batch_size": None,
         "seats": seats,
         "queue": queue,

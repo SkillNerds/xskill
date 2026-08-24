@@ -761,3 +761,49 @@ def test_agent_worker_status_exposes_all_four_pools(tmp_path):
         assert "inflight" in status["embedding"]
     finally:
         watcher.stop()
+
+
+def test_set_workers_grows_seats_and_capacity():
+    pool = BoundedExecutor("edit", 1)
+    try:
+        assert pool.status["workers"] == 1
+        assert pool.status["total_capacity"] == 3
+        pool.set_workers(3)
+        assert pool.status["workers"] == 3
+        assert pool.status["total_capacity"] == 9
+        assert len(pool.status["seats"]) == 3
+        assert pool.status["seats"] == [None, None, None]
+        futures = [pool.submit(lambda: "ok") for _ in range(3)]
+        assert all(future is not None for future in futures)
+        assert [future.result(2) for future in futures] == ["ok", "ok", "ok"]
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_set_workers_shrink_keeps_inflight_then_trims():
+    pool = BoundedExecutor("edit", 3)
+    gates = [threading.Event() for _ in range(3)]
+    try:
+        futures = [
+            pool.submit(gate.wait, 2, task={"n": index})
+            for index, gate in enumerate(gates)
+        ]
+        assert all(future is not None for future in futures)
+        assert _wait_for(lambda: all(pool.status["seats"]))
+        pool.set_workers(1)
+        assert pool.status["workers"] == 1
+        assert pool.status["total_capacity"] == 3
+        assert pool.submit(lambda: "no") is None
+        assert sum(1 for seat in pool.status["seats"] if seat) == 3
+        for gate in gates:
+            gate.set()
+        for future in futures:
+            assert future.result(2) is True
+        assert _wait_for(lambda: pool.status["seats"] == [None])
+        assert pool.status["workers"] == 1
+        assert len(pool.status["seats"]) == 1
+    finally:
+        for gate in gates:
+            gate.set()
+        pool.shutdown(wait=True)
+

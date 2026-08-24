@@ -21,6 +21,7 @@
 
 ## 动态
 
+- **2026-08-17** — `v0.6.32a1`：流水线按新轨迹先拆先归；看板可热改席位和配额比；generate 等大模型时硬优先；已达触发条件的 import 技能优先占编辑座。详见 [Release notes](https://github.com/SkillNerds/xskill/releases/tag/v0.6.32a1)。
 - **2026-08-14** — `v0.6.31`：`xskill rebuild --force` 不再因 `.git/objects` 非空中断；全量 rebuild 会留下 `xskill import` 纳入的技能。详见 [Release notes](https://github.com/SkillNerds/xskill/releases/tag/v0.6.31)。
 - **2026-08-14** — `v0.6.30`：team `xskill import` 后钉到发起人推荐列表；技能库登录后可点空心星 pin 进自己的推荐流，并标出推给我、已钉状态。详见 [Release notes](https://github.com/SkillNerds/xskill/releases/tag/v0.6.30)。
 - **2026-08-03** — `v0.6.29a6`：`pymilvus` 改为可选（`xskill[milvus]`），修复 client 自动更新；「我的」页支持推给我 N 个 SKILL / 上传使用去向 / skill commit 状态。详见 [Release notes](https://github.com/SkillNerds/xskill/releases/tag/v0.6.29a6)。

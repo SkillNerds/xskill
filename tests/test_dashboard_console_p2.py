@@ -119,6 +119,9 @@ def test_wrong_credentials_401(console_env):
 def test_user_hitting_admin_endpoint_403(console_env):
     alice = console_env["alice"]
     assert alice.get("/api/v1/dashboard/admin/skills").status_code == 403
+    assert alice.get(
+        "/api/v1/dashboard/admin/user/alice/recommendations"
+    ).status_code == 403
     assert alice.post(
         "/api/v1/dashboard/admin/skill/alpha/retire").status_code == 403
     assert alice.get("/api/v1/dashboard/admin/config").status_code == 403
@@ -423,6 +426,61 @@ def test_users_matrix_lists_clients_with_version(console_env):
     assert row["ingest_paused"] is False
 
 
+def test_admin_recommendation_history_is_separate_and_paginated(console_env):
+    db = console_env["db"]
+    client_id = console_env["registry"].find_by_user_name("alice")
+    with R.get_connection(db) as conn:
+        conn.executemany(
+            "INSERT INTO recommendation_log("
+            "ts,client_id,skill,side,bucket,sha) VALUES(?,?,?,?,?,?)",
+            [
+                ("2026-07-01 00:00:00", client_id, "alpha", "main",
+                 "recommended", "sha-alpha"),
+                ("2026-07-02 00:00:00", client_id, "beta", "staging",
+                 "ranked", "sha-beta"),
+                ("2026-07-03 00:00:00", client_id, "gamma", "main",
+                 "recommended", "sha-gamma"),
+                ("2026-07-04 00:00:00", "another-client", "other", "main",
+                 "recommended", "sha-other"),
+            ],
+        )
+        conn.commit()
+
+    boss = console_env["boss"]
+    first = boss.get(
+        "/api/v1/dashboard/admin/user/alice/recommendations",
+        params={"offset": 0, "limit": 2},
+    )
+    assert first.status_code == 200
+    payload = first.json()
+    assert payload == {
+        "user": "alice",
+        "total": 3,
+        "offset": 0,
+        "limit": 2,
+        "has_more": True,
+        "exposures": [
+            {"ts": "2026-07-03 00:00:00", "skill": "gamma",
+             "side": "main", "bucket": "recommended", "sha": "sha-gamma"},
+            {"ts": "2026-07-02 00:00:00", "skill": "beta",
+             "side": "staging", "bucket": "ranked", "sha": "sha-beta"},
+        ],
+    }
+    assert all("client_id" not in row for row in payload["exposures"])
+
+    second = boss.get(
+        "/api/v1/dashboard/admin/user/alice/recommendations",
+        params={"offset": 2, "limit": 2},
+    ).json()
+    assert second["total"] == 3
+    assert second["has_more"] is False
+    assert [row["skill"] for row in second["exposures"]] == ["alpha"]
+    assert boss.get(
+        "/api/v1/dashboard/admin/user/alice/recommendations",
+        params={"limit": 0},
+    ).status_code == 422
+
+
 def test_admin_ingest_control_is_authorized_idempotent_and_syncs_watch_dir(
     console_env,
 ):
@@ -489,6 +547,11 @@ def test_admin_ingest_control_is_authorized_idempotent_and_syncs_watch_dir(
     assert body["auto_index"] is False
     paused_at = body["ingest_paused_at"]
     assert R.get_watch_dir(sessions_dir, db_path=db)["auto_index"] == 0
+    from xskill.recommend.profile_dirty import list_dirty_profiles
+    dirty = list_dirty_profiles(db_path=db)
+    assert [(row["user_key"], row["generation"]) for row in dirty] == [
+        ("alice", 1),
+    ]
     paused_contributions = alice.get(
         "/api/v1/dashboard/my/contributions"
     ).json()["steps"]
@@ -501,6 +564,7 @@ def test_admin_ingest_control_is_authorized_idempotent_and_syncs_watch_dir(
     assert repeated.status_code == 200
     assert repeated.json()["ingest_paused_at"] == paused_at
     assert repeated.json()["ingest_pause_reason"] == "quality review"
+    assert list_dirty_profiles(db_path=db)[0]["generation"] == 1
 
     matrix = boss.get("/api/v1/dashboard/admin/users-matrix").json()
     user_row = next(row for row in matrix["users"] if row["client_id"] == client_id)
@@ -513,6 +577,7 @@ def test_admin_ingest_control_is_authorized_idempotent_and_syncs_watch_dir(
     assert resumed.json()["ingest_paused_at"] == ""
     assert resumed.json()["auto_index"] is True
     assert R.get_watch_dir(sessions_dir, db_path=db)["auto_index"] == 1
+    assert list_dirty_profiles(db_path=db)[0]["generation"] == 2
     assert (
         alice.get("/api/v1/dashboard/my/contributions").json()["steps"]["trajs"]
         == 2
@@ -826,3 +891,85 @@ def test_admin_skills_uses_cached_catalog_and_keeps_skillrepo_scope(
         {"name": "beta", "state": "canary", "usage_30d": 0},
         {"name": "gamma", "state": "retired", "usage_30d": 0},
     ]
+
+
+def test_user_cannot_patch_pipeline_pools(console_env):
+    alice = console_env["alice"]
+    assert alice.patch(
+        "/api/v1/dashboard/admin/pipeline/pools",
+        json={"pool": "edit", "workers": 2},
+    ).status_code == 403
+
+
+def test_admin_patch_pipeline_pools_writes_yaml(console_env, tmp_path, monkeypatch):
+    import xskill.config as C
+    from xskill.api import app as app_mod
+    cfgp = tmp_path / "config.yaml"
+    cfgp.write_text(
+        "llm:\n  base_url: http://x/v1\n"
+        "agent_worker:\n  pools:\n    edit:\n      workers: 4\n      llm_weight: 1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "CONFIG_PATH", cfgp)
+    monkeypatch.setattr(app_mod, "_config", {
+        "llm": {"base_url": "http://x/v1"},
+        "agent_worker": {"pools": {"edit": {"workers": 4, "llm_weight": 1}}},
+    })
+    boss = console_env["boss"]
+    r = boss.patch(
+        "/api/v1/dashboard/admin/pipeline/pools",
+        json={"pool": "edit", "workers": 8, "llm_weight": 2},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["needs_restart"] == []
+    text = cfgp.read_text(encoding="utf-8")
+    assert "workers: 8" in text
+    assert "llm_weight: 2" in text
+    assert app_mod._config["agent_worker"]["pools"]["edit"]["workers"] == 8
+
+
+def test_admin_patch_pipeline_pools_rejects_zero(console_env, tmp_path, monkeypatch):
+    import xskill.config as C
+    cfgp = tmp_path / "config.yaml"
+    cfgp.write_text(
+        "llm:\n  base_url: http://x/v1\n"
+        "agent_worker:\n  pools:\n    edit:\n      workers: 4\n      llm_weight: 1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "CONFIG_PATH", cfgp)
+    boss = console_env["boss"]
+    r = boss.patch(
+        "/api/v1/dashboard/admin/pipeline/pools",
+        json={"pool": "edit", "workers": 0},
+    )
+    assert r.status_code == 422
+    assert "workers: 4" in cfgp.read_text(encoding="utf-8")
+
+
+def test_reload_pool_seats_only_is_hot_not_restart(console_env, tmp_path, monkeypatch):
+    import xskill.config as C
+    from xskill.api import app as app_mod
+    cfgp = tmp_path / "config.yaml"
+    base = (
+        "llm:\n  base_url: http://x/v1\n"
+        "agent_worker:\n  pools:\n    edit:\n      workers: 4\n      llm_weight: 1\n"
+    )
+    cfgp.write_text(base, encoding="utf-8")
+    monkeypatch.setattr(C, "CONFIG_PATH", cfgp)
+    monkeypatch.setattr(app_mod, "_config", {
+        "llm": {"base_url": "http://x/v1"},
+        "agent_worker": {"pools": {"edit": {"workers": 4, "llm_weight": 1}}},
+    })
+    new = (
+        "llm:\n  base_url: http://x/v1\n"
+        "agent_worker:\n  pools:\n    edit:\n      workers: 2\n      llm_weight: 3\n"
+    )
+    r = console_env["boss"].post(
+        "/api/v1/dashboard/admin/config/reload", json={"raw": new},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "agent_worker" not in body["needs_restart"]
+    assert "agent_worker" in body["hot_reloaded"]

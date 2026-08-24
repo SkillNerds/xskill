@@ -7,7 +7,7 @@ ClusterAgent 由"每次消费 1 个 atom"改为"每次消费 cluster batch_size 
 1. **批量生效**：构造 N 条 indexed 轨迹（N > batch_size），观察 ClusterAgent
    调用次数 == ceil(总未归类 atom 数 / batch_size)，而**非** == 总 atom 数。
 2. **已落地过滤**：构造已在某 skill ``.candidates.yml`` 的 atom，确认被
-   ``_collect_cluster_atoms`` 过滤、永不进入任何 batch、不送 LLM。
+   ``_reconcile_indexed_atoms`` 过滤、永不进入任何 batch、不送 LLM。
 3. **断点续传**：消费中途"kill 进程"（丢弃 watcher + 线程池），重启（新 watcher
    同一 wd/db/skill_dir/store）后从断点继续，已落地 atom 不重复消费。
 
@@ -160,6 +160,43 @@ def _drive(watcher: DirectoryWatcher, wd_id: int, db: Path, max_rounds: int = 30
             watcher._harvest()
         if not get_trajs_by_status(wd_id, "indexed", db_path=db):
             return
+
+
+def test_cluster_catalog_reconciliation_is_low_frequency(tmp_path, monkeypatch):
+    from xskill.pipeline import runner as runner_module
+    from xskill.skill import catalog_store
+
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    watcher = DirectoryWatcher(
+        config={"watcher": {"full_reconcile_interval": 60}},
+        skill_dir=skill_dir,
+        poll_interval=1,
+        db_path=tmp_path / "registry.db",
+        home_root=tmp_path,
+        xskill_home=tmp_path / "xskill-home",
+    )
+    calls: list[Path] = []
+
+    def reconcile(path, *, db_path):
+        calls.append(Path(path))
+        return {"changed": 0}
+
+    monkeypatch.setattr(
+        catalog_store,
+        "reconcile_native_skills_catalog",
+        reconcile,
+    )
+    times = iter((100.0, 120.0, 161.0))
+    monkeypatch.setattr(runner_module.time, "monotonic", lambda: next(times))
+    try:
+        watcher._reconcile_cluster_catalog_if_due()
+        watcher._reconcile_cluster_catalog_if_due()
+        watcher._reconcile_cluster_catalog_if_due()
+    finally:
+        watcher.stop()
+
+    assert calls == [skill_dir, skill_dir]
 
 
 # ─────────────────────────────────────────────────────────────────────

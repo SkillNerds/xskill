@@ -27,6 +27,8 @@ from xskill.skill.importer import (
     import_one_skill,
     import_skill_path,
     is_harness_skill_path,
+    is_imported_skill,
+    mark_skill_imported,
     pack_import_zip,
     source_has_dirty_or_untracked,
     stash_import_dir,
@@ -523,3 +525,14 @@ def test_team_import_anonymous_does_not_pin(tmp_path, _isolate_import_registry):
     )
     assert r.status_code == 200, r.text
     assert r.json()["pinned"] == []
+
+
+def test_is_imported_skill_reads_origin_marker(tmp_path):
+    dest = tmp_path / "skill" / "foo"
+    dest.mkdir(parents=True)
+    assert is_imported_skill(dest) is False
+    mark_skill_imported(dest)
+    assert is_imported_skill(dest) is True
+    (dest / ".xskill-origin").write_text("native\n", encoding="utf-8")
+    assert is_imported_skill(dest) is False
+

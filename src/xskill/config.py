@@ -202,6 +202,8 @@ server:
 # ===== Watcher (scan scheduling only) =====
 watcher:
   poll_interval: 5              # seconds between scans of every watch_dir
+  full_reconcile_interval: 60   # idle polls only stat the directory; this
+                                # periodic full scan catches in-place rewrites
 
 # ===== Persistent agent worker =====
 # Every pool has an automatic waiting capacity of workers * 2. Running plus
@@ -463,6 +465,143 @@ def normalize_runtime_config(config_data: dict) -> dict:
 def agent_worker_config(config_data: dict) -> dict:
     """Return the validated four-pool config, including legacy defaults."""
     return normalize_runtime_config(config_data)["agent_worker"]
+
+
+def read_agent_worker_pools(path: Optional[Path] = None) -> dict:
+    """Read ``agent_worker.pools`` from config.yaml (validated, with defaults)."""
+    config_path = Path(path) if path else CONFIG_PATH
+    if not config_path.exists():
+        raise FileNotFoundError(f"xskill config not found: {config_path}")
+    with open(config_path, encoding="utf-8") as config_file:
+        config_data = yaml.safe_load(config_file) or {}
+    if not isinstance(config_data, dict):
+        raise ValueError("config.yaml 顶层必须是 mapping")
+    return agent_worker_config(config_data)["pools"]
+
+
+def patch_agent_worker_pool_yaml(
+    raw: str,
+    pool: str,
+    *,
+    workers: Optional[int] = None,
+    llm_weight: Optional[int] = None,
+) -> str:
+    """Update one pool's hot fields in a config.yaml body, keeping comments
+    when the keys already exist. Missing structure falls back to a dump of
+    the parsed mapping (comments in that case are not preserved).
+    """
+    if pool not in ("split", "cluster", "edit"):
+        raise ValueError("pool 必须是 split、cluster 或 edit")
+    if workers is None and llm_weight is None:
+        raise ValueError("workers 与 llm_weight 至少提供一个")
+    if workers is not None:
+        workers = _positive_int(workers, f"agent_worker.pools.{pool}.workers")
+    if llm_weight is not None:
+        llm_weight = _positive_int(
+            llm_weight, f"agent_worker.pools.{pool}.llm_weight",
+        )
+    try:
+        cfg = yaml.safe_load(raw) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"YAML 解析失败: {exc}") from exc
+    if not isinstance(cfg, dict):
+        raise ValueError("config.yaml 顶层必须是 mapping")
+    pools = ((cfg.get("agent_worker") or {}).get("pools") or {})
+    current = dict(pools.get(pool) or {})
+    if workers is not None:
+        current["workers"] = workers
+    if llm_weight is not None:
+        current["llm_weight"] = llm_weight
+    agent_worker = dict(cfg.get("agent_worker") or {})
+    all_pools = dict(agent_worker.get("pools") or {})
+    all_pools[pool] = current
+    agent_worker["pools"] = all_pools
+    cfg["agent_worker"] = agent_worker
+    agent_worker_config(cfg)
+
+    new_raw = raw
+    ok = True
+    if workers is not None:
+        new_raw, ok = _replace_or_insert_pool_key(new_raw, pool, "workers", workers)
+    if ok and llm_weight is not None:
+        new_raw, ok = _replace_or_insert_pool_key(
+            new_raw, pool, "llm_weight", llm_weight,
+        )
+    if ok:
+        return new_raw
+    return yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False)
+
+
+def _replace_or_insert_pool_key(
+    raw: str, pool: str, field: str, value: int,
+) -> tuple[str, bool]:
+    """Replace ``field: N`` inside ``agent_worker.pools.<pool>``. Return
+    ``(text, False)`` if that block cannot be found.
+    """
+    lines = raw.splitlines(keepends=True)
+    if not lines:
+        return raw, False
+    agent_i = pools_i = pool_i = None
+    agent_indent = pools_indent = pool_indent = None
+    for index, line in enumerate(lines):
+        stripped = line.lstrip(" \t")
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(stripped)
+        key = stripped.split(":", 1)[0].strip()
+        if key == "agent_worker" and agent_i is None:
+            agent_i, agent_indent = index, indent
+            continue
+        if agent_i is not None and indent <= agent_indent and index > agent_i:
+            break
+        if agent_i is None:
+            continue
+        if key == "pools" and indent > agent_indent and pools_i is None:
+            pools_i, pools_indent = index, indent
+            continue
+        if pools_i is None:
+            continue
+        if indent <= pools_indent and index > pools_i:
+            break
+        if key == pool and indent > pools_indent:
+            pool_i, pool_indent = index, indent
+            break
+    if pool_i is None or pool_indent is None:
+        return raw, False
+    field_line = None
+    insert_at = pool_i + 1
+    for index in range(pool_i + 1, len(lines)):
+        line = lines[index]
+        stripped = line.lstrip(" \t")
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(stripped)
+        if indent <= pool_indent:
+            break
+        key = stripped.split(":", 1)[0].strip()
+        insert_at = index + 1
+        if key == field:
+            field_line = index
+            break
+    replacement = f"{field}: {value}"
+    if field_line is not None:
+        line = lines[field_line]
+        indent_txt = line[: len(line) - len(line.lstrip(" \t"))]
+        comment = ""
+        rest = line.lstrip(" \t").split(":", 1)[1]
+        if "#" in rest:
+            comment = "  #" + rest.split("#", 1)[1].rstrip("\r\n")
+        newline = "\n" if line.endswith("\n") else ""
+        if line.endswith("\r\n"):
+            newline = "\r\n"
+        lines[field_line] = f"{indent_txt}{replacement}{comment}{newline}"
+        return "".join(lines), True
+    indent_txt = " " * (pool_indent + 2)
+    newline = "\n"
+    if lines[pool_i].endswith("\r\n"):
+        newline = "\r\n"
+    lines.insert(insert_at, f"{indent_txt}{replacement}{newline}")
+    return "".join(lines), True
 
 
 def load_config(path: Optional[Path] = None) -> dict:

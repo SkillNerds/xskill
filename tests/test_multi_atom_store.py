@@ -11,6 +11,8 @@ import logging
 import os
 from pathlib import Path
 
+import pytest
+
 from xskill.pipeline.atom import AtomTask, AtomTaskStore, MultiAtomTaskStore
 from xskill.agents import agent_tools
 
@@ -48,6 +50,27 @@ def _set_mtime(path: Path, ts: int) -> None:
 
 
 class TestMultiStoreRouting:
+    @pytest.mark.performance_contract
+    def test_load_does_not_scan_any_store_trajectory_directories(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        store_a, store_b = _two_client_stores(tmp_path)
+        multi = MultiAtomTaskStore([store_a, store_b])
+        roots = {store_a.root, store_b.root}
+        original_iterdir = Path.iterdir
+
+        def reject_store_scan(path):
+            if path in roots:
+                raise AssertionError("multi-store atom lookup scanned trajectory root")
+            return original_iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", reject_store_scan)
+
+        atom = multi.load("atom_traj_cc_b_0042")
+        assert atom.summary == "client B merged cells"
+
     def test_load_finds_atom_in_non_first_store(self, tmp_path):
         store_a, store_b = _two_client_stores(tmp_path)
         multi = MultiAtomTaskStore([store_a, store_b])

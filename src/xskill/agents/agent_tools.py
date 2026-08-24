@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -31,6 +32,12 @@ from typing import Any, Optional
 from agno.tools import tool
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
+from xskill.agents.atom_text import (
+    adjacent_atoms_are_near_duplicates,
+    detect_source_language,
+    output_language_matches,
+    stable_union,
+)
 from xskill.skill.frontmatter import (
     parse as fm_parse,
     parse_strict as fm_parse_strict,
@@ -87,6 +94,7 @@ class AgentToolContext:
     registry_db_path: Path | None = None
     extra_read_roots: tuple[Path, ...] = ()
     generate_user_id: str | None = None
+    blocked_read_roots: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -102,6 +110,8 @@ class AgentToolContext:
             )
         extra = tuple(Path(p) for p in (self.extra_read_roots or ()))
         object.__setattr__(self, "extra_read_roots", extra)
+        blocked = tuple(Path(p) for p in (self.blocked_read_roots or ()))
+        object.__setattr__(self, "blocked_read_roots", blocked)
 
 
 _EMPTY_AGENT_TOOL_CONTEXT = AgentToolContext()
@@ -131,6 +141,7 @@ def create_agent_tool_context(
     registry_db_path=None,
     extra_read_roots=(),
     generate_user_id=None,
+    blocked_read_roots=(),
 ) -> AgentToolContext:
     """Create an immutable context without changing the current task."""
     return AgentToolContext(
@@ -168,6 +179,9 @@ def create_agent_tool_context(
         extra_read_roots=tuple(Path(p) for p in (extra_read_roots or ())),
         generate_user_id=(
             str(generate_user_id) if generate_user_id else None
+        ),
+        blocked_read_roots=tuple(
+            Path(p) for p in (blocked_read_roots or ())
         ),
     )
 
@@ -293,6 +307,7 @@ class AgentToolConfig:
             "registry_db_path": current.registry_db_path,
             "extra_read_roots": current.extra_read_roots,
             "generate_user_id": current.generate_user_id,
+            "blocked_read_roots": current.blocked_read_roots,
         }
 
     def restore(self, snapshot: dict) -> None:
@@ -313,6 +328,7 @@ class AgentToolConfig:
             registry_db_path=snapshot.get("registry_db_path"),
             extra_read_roots=snapshot.get("extra_read_roots") or (),
             generate_user_id=snapshot.get("generate_user_id"),
+            blocked_read_roots=snapshot.get("blocked_read_roots") or (),
         ))
         if not snapshot.get("configured", True):
             current = _AGENT_TOOL_CONTEXT.get()
@@ -467,6 +483,74 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+_LIST_FILES_INLINE_MAX_LINES = 200
+_LIST_FILES_INLINE_MAX_CHARS = 10000
+_ONHOLD_BLOCK_ERROR = "error: on hold 轨迹，不要参考"
+
+
+def _blocked_read_roots() -> list[Path]:
+    ctx = current_agent_tool_context()
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for raw in ctx.blocked_read_roots or ():
+        path = Path(raw)
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return roots
+
+
+def _is_blocked_read_path(path: Path) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    for root in _blocked_read_roots():
+        if resolved == root or _is_relative_to(resolved, root):
+            return True
+    return False
+
+
+def _onhold_block_message(path: Path | str) -> str:
+    return f"{_ONHOLD_BLOCK_ERROR} ({path})"
+
+
+def _maybe_spill_list_files(body: str, listed_path: Path) -> str:
+    """超长列表写入 spill 文件，文件名由目录路径哈希决定，同一目录覆盖同一文件。
+
+    没有 spill_root 时保持整份列表，不截断——否则模型没有翻页入口。
+    """
+    lines = body.splitlines()
+    too_long = (
+        len(lines) > _LIST_FILES_INLINE_MAX_LINES
+        or len(body) > _LIST_FILES_INLINE_MAX_CHARS
+    )
+    if not too_long:
+        return body
+    ctx = current_agent_tool_context()
+    if ctx.spill_root is None:
+        return body
+    spill_dir = Path(ctx.spill_root) / "list_files"
+    spill_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(str(listed_path).encode("utf-8")).hexdigest()[:16]
+    spill_path = spill_dir / f"{digest}.txt"
+    spill_path.write_text(body + "\n", encoding="utf-8")
+    return "\n".join((
+        "[list_files_spilled]",
+        f"listed_path: {listed_path}",
+        f"entries: {len(lines)}",
+        f"spill_path: {spill_path}",
+        f"chars: {len(body)}",
+        "reload: 用 read_file(spill_path, offset=1, limit=200) 按行读取，需要时增大 offset 翻页。",
+    ))
 
 
 SENSITIVE_FILENAMES = frozenset({
@@ -681,6 +765,8 @@ def read_file(path: str, offset: int = 1, limit: int = 200) -> str:
             f"resolved_path: {resolved}\n"
             f"allowed_roots:\n{allowed_block}"
         )
+    if _is_blocked_read_path(resolved):
+        return _onhold_block_message(resolved)
     if _is_sensitive_file(resolved):
         return f"error: sensitive file, not readable by agent ({path})"
 
@@ -885,38 +971,73 @@ def list_candidates(skill_name: str) -> str:
     return "\n".join(lines)
 
 
+def _writable_skill_root() -> Path | None:
+    root = agent_tool_config.writable_skill_dir
+    if root is None:
+        return None
+    return Path(root).resolve()
+
+
+def _skill_write_error(path: str, skill_dir: Path | None, detail: str) -> str:
+    lines = [f"error: {detail} (tried: {path})"]
+    if skill_dir is not None:
+        lines.append(f"skill_dir: {skill_dir}")
+        lines.append(f"example: SKILL.md  or  {skill_dir / 'SKILL.md'}")
+    return "\n".join(lines)
+
+
+def _resolve_skill_write_path(path: str) -> tuple[Path | None, str | None]:
+    """把 write_file / edit 的 path 收到当前 skill_dir 下。
+
+    相对路径按 skill_dir 拼接，不按进程 cwd。``skill/`` 或 ``./skill/``
+    前缀会写成仓内套一层 skill/，直接拒掉并给出可写示例。
+    """
+    skill_dir = _writable_skill_root()
+    if skill_dir is None:
+        return None, "error: skill directory is not configured"
+    raw = Path(path)
+    if not raw.is_absolute() and raw.parts and raw.parts[0] == "skill":
+        return None, _skill_write_error(
+            path,
+            skill_dir,
+            "path is relative to skill_dir; do not prefix skill/",
+        )
+    candidate = raw if raw.is_absolute() else (skill_dir / raw)
+    try:
+        resolved = candidate.resolve()
+        if not _is_relative_to(resolved, skill_dir):
+            raise ValueError("outside skill_dir")
+    except (OSError, ValueError):
+        return None, _skill_write_error(
+            path, skill_dir, "writes restricted to skill_dir"
+        )
+    if ".git" in resolved.parts:
+        return None, f"error: writes into .git/ are forbidden (tried: {path})"
+    return resolved, None
+
+
 @tool(name="write_file")
 def write_file(path: str, content: str) -> str:
-    """Write or overwrite a file under ./skill/ only.
+    """Write or overwrite a file under the current skill_dir.
+
+    Relative paths resolve against skill_dir, not the process working
+    directory. Use ``SKILL.md`` or ``scripts/foo.py``. Do not prefix
+    ``./skill/``. Absolute paths must stay inside skill_dir.
 
     v2 行为：只做路径安全 + frontmatter 日期消毒。旧 v1 ``source_trajs ≥ 3``
     gate 和 ``N/M 条轨迹`` warning 消毒已删——v2 用 ``source_atoms`` 引用 atom
     而非 traj，且质量保障靠 candidates buffer 累计 weightscore ≥ 10 的硬门槛，
     不需要 SKILL.md 写入端再卡一道。
     """
-    p = Path(path)
-    if agent_tool_config.atom_skill_dir is not None:
-        skill_dir = agent_tool_config.atom_skill_dir
-    else:
-        skill_dir = agent_tool_config.skill_dir
-
-    try:
-        resolved = p.resolve()
-        resolved.relative_to(skill_dir.resolve())
-    except ValueError:
-        return f"error: writes restricted to ./skill/ (tried: {path})"
-
-    # 拒写 .git/ —— agent LLM 撞到 git 错误时会试图"自己修 git"，把可恢复
-    # 的 index race 变成永久 repo 损坏（实跑遇到 3 个 skill 仓被 LLM 写进
-    # .git/HEAD / .git/refs / .git/config 而毁掉）。.git 严格归 git 自己管。
-    if ".git" in resolved.parts:
-        return f"error: writes into .git/ are forbidden (tried: {path})"
+    resolved, err = _resolve_skill_write_path(path)
+    if err:
+        return err
 
     # 写 SKILL.md：先做 frontmatter 写后校验（漏拦=静默放行坏 skill），
     # 非法**不写盘**，把富误差返回给 agent 让它当场改重写；合法再消毒日期 +
     # 重序列化写入。校验逻辑见 frontmatter.parse_strict（必填 name/description、
     # description 必须非空字符串、body 非空）。
-    if p.name == "SKILL.md":
+    if resolved.name == "SKILL.md":
         try:
             fm, body = fm_parse_strict(content)
         except FrontmatterError as e:
@@ -929,11 +1050,11 @@ def write_file(path: str, content: str) -> str:
         _sanitize_frontmatter_dates(fm)
         content = fm_serialize(fm, body)
 
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
-    logger.info(f"✏️  wrote: {p} ({len(content)} bytes)")
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(content, encoding="utf-8")
+    logger.info(f"✏️  wrote: {resolved} ({len(content)} bytes)")
     _mark_file_read(resolved)
-    return f"wrote: {p} ({len(content)} chars)"
+    return f"wrote: {resolved} ({len(content)} chars)"
 
 
 @tool(name="edit")
@@ -944,19 +1065,9 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
     (write_file also counts).  New files that do not exist yet should use
     write_file instead.
     """
-    if agent_tool_config.atom_skill_dir is not None:
-        skill_dir = agent_tool_config.atom_skill_dir
-    else:
-        skill_dir = agent_tool_config.skill_dir
-    if skill_dir is None:
-        return "error: skill directory is not configured"
-    try:
-        resolved = Path(path).resolve()
-        resolved.relative_to(Path(skill_dir).resolve())
-    except (OSError, ValueError):
-        return f"error: writes restricted to the skill repository (tried: {path})"
-    if ".git" in resolved.parts:
-        return f"error: writes into .git/ are forbidden (tried: {path})"
+    resolved, err = _resolve_skill_write_path(path)
+    if err:
+        return err
     if not resolved.is_file():
         return (
             f"error: file not found ({path}). "
@@ -1420,6 +1531,19 @@ def add_tasks_to_skill(
     return _run_cluster_mutation(mutate)
 
 
+def _mark_atom_profile_dirty(atom_path: Path, reason: str) -> None:
+    """Team Atom 画像旁路事件；本地 store/投影故障不阻断工具主操作。"""
+    try:
+        from xskill.recommend.profile_dirty import mark_profile_dirty_for_store
+        mark_profile_dirty_for_store(
+            atom_path.parents[2],
+            reason=reason,
+            db_path=agent_tool_config.registry_db_path,
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.debug("profile dirty mark failed after %s", reason, exc_info=True)
+
+
 @tool(name="score_task")
 def score_task(atom_id: str, score: int) -> str:
     """覆盖 AtomTask 的 ux_score（手动修正 / 灰度链路使用）。"""
@@ -1438,7 +1562,8 @@ def score_task(atom_id: str, score: int) -> str:
         except FileNotFoundError as error:
             return f"error: {error}"
         atom.ux_score = sc
-        store.save(atom)
+        atom_path = store.save(atom)
+        _mark_atom_profile_dirty(atom_path, "atom_score_changed")
         return f"scored: {atom_id} → {sc}"
 
     return _run_cluster_mutation(mutate)
@@ -1467,7 +1592,8 @@ def add_task(
         pre_atom_id=None, post_atom_id=None,
         context_prefix="", raw_segment="",
     )
-    store.save(atom)
+    atom_path = store.save(atom)
+    _mark_atom_profile_dirty(atom_path, "atom_added")
     return f"added: {atom_id}"
 
 
@@ -1479,11 +1605,19 @@ def make_task_agent_tools(
     total_lines: int,
     all_lines: list[str],
     user_msg: str,
+    source_language: str = "unknown",
+    user_blocks: Mapping[int, str] | None = None,
     not_fit_reasons: list[str] | None = None,
 ):
-    """Create TaskAgent run-scoped tools bound to one trajectory."""
+    """Create TaskAgent run-scoped tools bound to one trajectory.
+
+    ``submit_atom`` enforces the source-language contract and merges only adjacent,
+    high-confidence lexical duplicates.  Both checks are deterministic and local.
+    """
     valid = set(valid_lines)
     ordered_valid = sorted(valid_lines)
+    source_user_blocks = dict(user_blocks or {})
+    last_valid_start_line: int | None = None
 
     @tool(name="submit_atom")
     def submit_atom(start_line: int, intent: str, summary: str,
@@ -1500,6 +1634,7 @@ def make_task_agent_tools(
             used_skills: agent 实际触发的 skill 名列表,没有传 []。
             ux_score: 1~10 整数。
         """
+        nonlocal last_valid_start_line
         if not_fit_reasons:
             return (
                 "error: 已调用 mark_not_fit，不能再调用 submit_atom；"
@@ -1515,22 +1650,62 @@ def make_task_agent_tools(
         if sl < resume_line:
             return (f"error: start_line {sl} < 续接点 {resume_line}；"
                     "只能拆续接点之后的新增内容")
-        if submitted and sl <= submitted[-1]["start_line"]:
+        if last_valid_start_line is not None and sl <= last_valid_start_line:
             return (f"error: start_line 必须严格大于上一条 "
-                    f"({submitted[-1]['start_line']})，本次 {sl}")
-        if not (intent or "").strip() or not (summary or "").strip():
+                    f"({last_valid_start_line})，本次 {sl}")
+        normalized_intent = (intent or "").strip()
+        normalized_summary = (summary or "").strip()
+        if not normalized_intent or not normalized_summary:
             return "error: intent 和 summary 必填"
         if not 1 <= ux_score <= 10:
             return f"error: ux_score 必须是 1~10 的整数 (got {ux_score})"
-        submitted.append({
+        for field_name, value in (
+            ("intent", normalized_intent),
+            ("summary", normalized_summary),
+        ):
+            if not output_language_matches(value, source_language):
+                detected = detect_source_language(value)
+                return (
+                    f"error: {field_name} 的语言 {detected} 与源轨迹主导语言 "
+                    f"{source_language} 不一致；请保持源语言后重提"
+                )
+
+        candidate = {
             "start_line": sl,
-            "intent": intent.strip(),
-            "summary": summary.strip(),
+            "intent": normalized_intent,
+            "summary": normalized_summary,
             "tags": [str(t).strip() for t in (tags or []) if str(t).strip()],
             "used_skills": [str(s).strip() for s in (used_skills or [])
                             if str(s).strip()],
             "ux_score": ux_score,
-        })
+        }
+        # A merged candidate is still a consumed boundary proposal.  Track it
+        # separately from ``submitted`` so a later out-of-order call cannot slip
+        # behind the merged line and corrupt derived ranges.
+        last_valid_start_line = sl
+        if submitted and adjacent_atoms_are_near_duplicates(
+            submitted[-1],
+            candidate,
+            current_user_text=source_user_blocks.get(sl, ""),
+        ):
+            previous = submitted[-1]
+            previous["tags"] = stable_union(previous["tags"], candidate["tags"])
+            previous["used_skills"] = stable_union(
+                previous["used_skills"], candidate["used_skills"]
+            )
+            previous["ux_score"] = min(previous["ux_score"], ux_score)
+            logger.info(
+                "TaskAgent merged near-duplicate adjacent submissions at lines "
+                "%s and %s",
+                previous["start_line"],
+                sl,
+            )
+            return (
+                "ok: 与上一 atom 高度近似，已合并其 tags / used_skills / "
+                f"ux_score (start_line={previous['start_line']})"
+            )
+
+        submitted.append(candidate)
         return f"ok: 已记录 atom #{len(submitted)} (start_line={sl})"
 
     @tool(name="mark_not_fit")
@@ -1614,21 +1789,29 @@ def list_files(path: str) -> str:
 
     可列 skill 仓、~/.xskill、/tmp spill 三个只读根内的任意目录——摸清 skill
     已有文件、轨迹 / atom 数据布局都用它。越界返回 error。
+    on hold 轨迹目录会被拦截，不出现在列表里。
+    目录条目过多时完整列表写入 spill 文件，请用 read_file 按行翻页。
     """
     target_directory = Path(path).resolve()
     roots = _allowed_read_roots()
     if not any(_is_relative_to(target_directory, root) for root in roots):
         allowed_block = ", ".join(str(root) for root in roots)
         return f"error: list_files restricted to {allowed_block} (tried: {path})"
+    if _is_blocked_read_path(target_directory):
+        return _onhold_block_message(target_directory)
     if not target_directory.is_dir():
         return f"error: not a directory: {path}"
     entries = sorted(target_directory.iterdir())
     if not entries:
         return "(empty)"
-    return "\n".join(
+    visible = [e for e in entries if not _is_blocked_read_path(e)]
+    if not visible:
+        return "(empty)"
+    body = "\n".join(
         f"{'[dir] ' if e.is_dir() else '[file] '}{e.resolve()}{'/' if e.is_dir() else ''}"
-        for e in entries
+        for e in visible
     )
+    return _maybe_spill_list_files(body, target_directory)
 
 
 @tool(name="grep_files")
@@ -1648,6 +1831,8 @@ def grep_files(pattern: str, path: str = "", glob: str = "",
     if not any(_is_relative_to(search_root, root) for root in roots):
         allowed_block = ", ".join(str(root) for root in roots)
         return f"error: grep_files restricted to {allowed_block} (tried: {path})"
+    if _is_blocked_read_path(search_root):
+        return _onhold_block_message(search_root)
     if not search_root.exists():
         return f"error: path not found ({path})"
 
@@ -1716,6 +1901,8 @@ def grep_files(pattern: str, path: str = "", glob: str = "",
         hit_match = hit_line_pattern.match(output_line)
         # resolve() 后再判敏感：防符号链接用无害文件名包装密钥文件绕过过滤。
         if hit_match and _is_sensitive_file(Path(hit_match.group(1)).resolve()):
+            continue
+        if hit_match and _is_blocked_read_path(Path(hit_match.group(1))):
             continue
         filtered_lines.append(output_line)
         if len(filtered_lines) >= max_results:

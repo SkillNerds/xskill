@@ -286,3 +286,58 @@ class TestSkillEditParallel:
         for s in ser_bodies:
             assert f"body-of-{s}" in ser_bodies[s]
             assert f"body-of-{s}" in par_bodies[s]
+
+
+def test_imported_ready_skill_is_scheduled_before_distilled(tmp_path):
+    """两边都已达 SkillEdit 触发条件时，import 进来的 skill 先占编辑席位。"""
+    from xskill.skill.importer import mark_skill_imported
+
+    skill_root = tmp_path / "skill"
+    skill_root.mkdir()
+    _seed_baby_skill(skill_root, "alpha")
+    imported = _seed_baby_skill(skill_root, "zeta")
+    mark_skill_imported(imported)
+    assert (imported / ".xskill-origin").read_text(encoding="utf-8").strip() == "import"
+    from xskill.skill.importer import is_imported_skill as _is_imp
+    assert _is_imp(imported) is True
+    assert _is_imp(skill_root / "alpha") is False
+
+    hold = threading.Event()
+
+    class _HoldStub:
+        def __init__(self, *, instructions, tools):
+            del instructions, tools
+
+        def run(self, user_message, **unused):
+            del user_message, unused
+            hold.wait(5)
+            class _Response:
+                content = ""
+            return _Response()
+
+    def factory(**kwargs):
+        return _HoldStub(**kwargs)
+
+    watcher = _make_watcher(tmp_path, skill_root, factory, edit_workers=1)
+    try:
+        watcher._check_pending_skill_edits()
+        deadline = time.time() + 2
+        seat = None
+        while time.time() < deadline:
+            seats = watcher._pools["edit"].status["seats"]
+            if seats and seats[0]:
+                seat = seats[0]
+                break
+            time.sleep(0.02)
+        assert seat is not None
+        assert seat["task"]["skill_name"] == "zeta"
+        inflight = [
+            info["skill_dir"].name
+            for info in watcher._futures.values()
+            if info.get("stage") == "skill_edit"
+        ]
+        assert inflight[0] == "zeta"
+    finally:
+        hold.set()
+        watcher.stop()
+

@@ -112,7 +112,8 @@ def test_full_status_shapes_three_monitored_pools(tmp_path):
     assert generate["workers"] == 3
     assert generate["shared_pool"] == "edit"
     assert generate["seats"] == [None, None, None]
-    assert generate["llm_weight"] == 1
+    assert generate.get("llm_priority") is True
+    assert "llm_weight" not in generate
 
 
 def test_legacy_worker_without_seat_bookkeeping_gets_explicit_empty_seats(tmp_path):

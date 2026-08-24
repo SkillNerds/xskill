@@ -1356,10 +1356,22 @@ function pmRenderStages() {
     const pool = d.pools[def.key] || {};
     const seats = pool.seats || [];
     const queue = pool.queue || [];
-    const chips = [
-      `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600" title="pools.${def.key}.workers（热更 P1 评审中，暂只读）">席位 ${pool.workers ?? '—'}</span>`,
-    ];
-    if (def.weight && pool.llm_weight != null) chips.push(`<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600" title="pools.${def.key}.llm_weight（暂只读）">配额比 ${esc(pool.llm_weight)}</span>`);
+    const chips = [];
+    const admin = typeof IDENT !== 'undefined' && IDENT && IDENT.role === 'admin' && !def.shared;
+    const seatOn = pmChipEdit && pmChipEdit.pool === def.key && pmChipEdit.field === 'workers' ? ' on' : '';
+    const seatChip = admin
+      ? `<button type="button" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 hover:bg-slate-100${seatOn}" data-pm-pool="${def.key}" data-pm-field="workers" title="点击修改席位">席位 ${pool.workers ?? '—'}</button>`
+      : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600" title="${def.shared ? '与 SkillEdit 共用座位' : 'pools.' + def.key + '.workers'}">席位 ${pool.workers ?? '—'}</span>`;
+    chips.push(seatChip);
+    if (def.shared) {
+      chips.push(`<span class="text-[10px] px-1.5 py-0.5 rounded bg-teal-50 text-teal-700" title="有 generate 在等时，大模型名额先给它">大模型优先</span>`);
+    } else if (def.weight && pool.llm_weight != null) {
+      const weightOn = pmChipEdit && pmChipEdit.pool === def.key && pmChipEdit.field === 'llm_weight' ? ' on' : '';
+      const weightChip = admin
+        ? `<button type="button" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 hover:bg-slate-100${weightOn}" data-pm-pool="${def.key}" data-pm-field="llm_weight" title="点击修改配额比">配额比 ${esc(pool.llm_weight)}</button>`
+        : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600" title="pools.${def.key}.llm_weight">配额比 ${esc(pool.llm_weight)}</span>`;
+      chips.push(weightChip);
+    }
     if (def.batch && pool.batch_size != null) chips.push(`<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600" title="pools.${def.key}.batch_size（暂只读）">批量 ${esc(pool.batch_size)}</span>`);
     const seatHtml = seats.map((seat, i) => {
       if (!seat) return `<button type="button" class="pm-seat" title="席位 ${i + 1} · 空闲"></button>`;
@@ -1508,6 +1520,148 @@ function pmStopLog() {
   if (pmLogTimer) { clearInterval(pmLogTimer); pmLogTimer = null; }
 }
 
+const PM_CHIP_COPY = {
+  workers: {
+    title: '席位',
+    hint: {
+      split: '这一栏同时拆几条轨迹。占满后新轨迹先等。下一轮扫描生效，不用重启。',
+      cluster: '这一栏同时归几批原子。占满后新批次先等。下一轮扫描生效，不用重启。',
+      edit: 'SkillEdit 和 Generate 共用这些座位。占满后新任务先等。下一轮扫描生效，不用重启。',
+    },
+  },
+  llm_weight: {
+    title: '配额比',
+    hint: {
+      split: '拆分、归类、编辑共用大模型并发。数字越大越先拿到空闲名额。有 Generate 在等时仍先给它。',
+      cluster: '拆分、归类、编辑共用大模型并发。数字越大越先拿到空闲名额。有 Generate 在等时仍先给它。',
+      edit: '拆分、归类、编辑共用大模型并发。数字越大越先拿到空闲名额。有 Generate 在等时仍先给它。',
+    },
+  },
+};
+let pmChipEdit = null;  // {pool, field, saving}
+
+function pmChipPopEl() { return document.getElementById('pm-chip-pop'); }
+function pmChipInput() { return document.getElementById('pm-chip-pop-n'); }
+
+function pmChipReadValue() {
+  const raw = String((pmChipInput() || {}).value || '').trim();
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) return null;
+  return n;
+}
+
+function pmChipSetError(msg) {
+  const el = document.getElementById('pm-chip-pop-err');
+  if (el) el.textContent = msg || '';
+}
+
+function pmPlaceChipPop() {
+  const pop = pmChipPopEl();
+  if (!pop || pop.hidden || !pmChipEdit) return;
+  const chip = document.querySelector(
+    '[data-pm-pool="' + pmChipEdit.pool + '"][data-pm-field="' + pmChipEdit.field + '"]');
+  if (!chip) return;
+  const r = chip.getBoundingClientRect();
+  const w = pop.offsetWidth || 248;
+  const h = pop.offsetHeight || 160;
+  let left = r.right - w;
+  if (left < 12) left = 12;
+  if (left + w > window.innerWidth - 12) left = Math.max(12, window.innerWidth - w - 12);
+  let top = r.bottom + 8;
+  if (top + h > window.innerHeight - 12) top = Math.max(12, r.top - h - 8);
+  pop.style.left = left + 'px';
+  pop.style.top = top + 'px';
+}
+
+function pmCloseChipPop() {
+  if (pmChipEdit && pmChipEdit.saving) return;
+  pmChipEdit = null;
+  const pop = pmChipPopEl();
+  if (pop) pop.hidden = true;
+  const chipOn = document.querySelector('[data-pm-field].on');
+  if (chipOn) chipOn.classList.remove('on');
+}
+
+function pmOpenChipPop(pool, field) {
+  if (!IDENT || IDENT.role !== 'admin') return;
+  if (pool === 'generate') return;
+  const pop = pmChipPopEl();
+  const input = pmChipInput();
+  if (!pop || !input) return;
+  if (pmChipEdit && pmChipEdit.pool === pool && pmChipEdit.field === field && !pop.hidden) {
+    pmCloseChipPop();
+    return;
+  }
+  const live = (pmState && pmState.pools && pmState.pools[pool]) || {};
+  const current = field === 'workers' ? live.workers : live.llm_weight;
+  const copy = PM_CHIP_COPY[field] || PM_CHIP_COPY.workers;
+  pmChipEdit = { pool, field, saving: false };
+  document.getElementById('pm-chip-pop-title').textContent = copy.title;
+  document.getElementById('pm-chip-pop-hint').textContent =
+    (copy.hint && copy.hint[pool]) || '';
+  pmChipSetError('');
+  const saveBtn = pop.querySelector('[data-pm-chip-save]');
+  if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存'; }
+  input.disabled = false;
+  input.value = current == null ? '' : String(current);
+  pop.hidden = false;
+  pmRenderStages();
+  pmPlaceChipPop();
+  requestAnimationFrame(() => { input.focus(); input.select(); pmPlaceChipPop(); });
+}
+
+function pmChipNudge(delta) {
+  if (!pmChipEdit || pmChipEdit.saving) return;
+  const input = pmChipInput();
+  const cur = pmChipReadValue() || 1;
+  input.value = String(Math.max(1, cur + delta));
+  pmChipSetError('');
+}
+
+async function pmSaveChipPop() {
+  if (!pmChipEdit || pmChipEdit.saving) return;
+  const n = pmChipReadValue();
+  if (n == null) {
+    pmChipSetError('请填写大于 0 的整数');
+    const input = pmChipInput();
+    if (input) input.focus();
+    return;
+  }
+  const { pool, field } = pmChipEdit;
+  const live = (pmState && pmState.pools && pmState.pools[pool]) || {};
+  const current = field === 'workers' ? live.workers : live.llm_weight;
+  if (n === Number(current)) { pmCloseChipPop(); pmRenderStages(); return; }
+  pmChipEdit.saving = true;
+  pmChipSetError('');
+  const pop = pmChipPopEl();
+  const input = pmChipInput();
+  const saveBtn = pop && pop.querySelector('[data-pm-chip-save]');
+  if (input) input.disabled = true;
+  pop.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  if (saveBtn) saveBtn.textContent = '保存中…';
+  try {
+    const r = await fetch('api/v1/dashboard/admin/pipeline/pools', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pool, [field]: n }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const detail = body.detail;
+      throw new Error(typeof detail === 'string' ? detail : (r.status + ''));
+    }
+    pmChipEdit.saving = false;
+    pmCloseChipPop();
+    await pmFetchLive();
+  } catch (err) {
+    pmChipEdit.saving = false;
+    if (input) input.disabled = false;
+    pop.querySelectorAll('button').forEach(b => { b.disabled = false; });
+    if (saveBtn) saveBtn.textContent = '保存';
+    pmChipSetError('没保存上：' + (err && err.message ? err.message : err));
+  }
+}
+
 async function pmFetchLive() {
   try {
     pmState = await j('api/v1/dashboard/pipeline/live');  // 不走 jc：每轮都要新数据
@@ -1516,8 +1670,13 @@ async function pmFetchLive() {
     pmState = { running: false, message: '流水线状态读取失败：' + e.message };
   }
   pmRenderBubbles();
+  if (pmChipEdit) {
+    pmPlaceChipPop();
+    return;
+  }
   pmRenderStages();
   pmRenderDrawer();
+  pmPlaceChipPop();
 }
 function pmSetActive(on) {
   if (on) {
@@ -1527,10 +1686,41 @@ function pmSetActive(on) {
   } else {
     if (pmPollTimer) { clearInterval(pmPollTimer); pmPollTimer = null; }
     pmStopLog();
+    pmCloseChipPop();
   }
 }
 // 席位/任务点选 + 抽屉关闭（事件委托，重渲染不丢）
 document.addEventListener('click', e => {
+  if (e.target.closest('[data-pm-chip-save]')) {
+    e.preventDefault();
+    pmSaveChipPop();
+    return;
+  }
+  if (e.target.closest('[data-pm-chip-cancel]')) {
+    e.preventDefault();
+    if (pmChipEdit) pmChipEdit.saving = false;
+    pmCloseChipPop();
+    pmRenderStages();
+    return;
+  }
+  const step = e.target.closest('[data-pm-step]');
+  if (step) {
+    e.preventDefault();
+    pmChipNudge(Number(step.dataset.pmStep) || 0);
+    return;
+  }
+  if (e.target.closest('#pm-chip-pop')) return;
+  const chip = e.target.closest('[data-pm-field]');
+  if (chip) {
+    e.preventDefault();
+    e.stopPropagation();
+    pmOpenChipPop(chip.dataset.pmPool, chip.dataset.pmField);
+    return;
+  }
+  if (pmChipEdit && !pmChipEdit.saving) {
+    pmCloseChipPop();
+    pmRenderStages();
+  }
   const open = e.target.closest('[data-pm-open]');
   if (open) {
     const [pool, seat] = open.dataset.pmOpen.split(':');
@@ -1550,6 +1740,18 @@ document.addEventListener('click', e => {
     pmRenderDrawer();
   }
 });
+document.addEventListener('keydown', e => {
+  if (!pmChipEdit) return;
+  if (e.key === 'Escape') {
+    if (pmChipEdit.saving) return;
+    pmCloseChipPop();
+    pmRenderStages();
+  } else if (e.key === 'Enter' && e.target && e.target.id === 'pm-chip-pop-n') {
+    e.preventDefault();
+    pmSaveChipPop();
+  }
+});
+window.addEventListener('resize', pmPlaceChipPop);
 
 // ── SPA-lite 路由（hash）─────────────────────────────────────────
 const NAMES = { overview: '总览', skills: '技能库', pipeline: '流水线', traj: '轨迹 & 原子', users: '用户 & 画像', canary: '灰度 Canary', my: '我的', admin: '管理', settings: '设置' };
@@ -2473,7 +2675,7 @@ async function loadAdmin() {
     const ingestState = u.ingest_paused
       ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title="${esc(pauseDetail)}">已暂停</span>`
       : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">处理中</span>';
-    const cur = u.current_slots != null ? u.current_slots : u.exposures;
+    const cur = u.current_slots != null ? u.current_slots : '—';
     const stg = u.staging_slots != null ? u.staging_slots : '—';
     return `<tr>
       <td class="py-2 font-medium">${esc(u.user)}</td>
@@ -2530,8 +2732,12 @@ async function openAdminDrawer(user) {
   d.classList.remove('hidden');
   d.innerHTML = `<div class="flex items-baseline justify-between">
       <h3 class="font-medium text-[12.5px]">${esc(user)} 的当前推送 <span class="text-[10.5px] text-slate-400 font-normal ml-1">${(assign.slots || []).length} 槽 · pinned=${p.effective.pinned.length} blocked=${p.effective.blocked.length}</span></h3>
-      <button id="adm-drawer-x" class="text-[11px] text-slate-400 hover:bg-slate-100 px-1.5 rounded">收起</button></div>
+      <div class="flex items-center gap-2">
+        <button class="adm-history-toggle text-[11px] text-teal-700 hover:bg-teal-50 px-1.5 rounded" data-user="${esc(user)}" aria-expanded="false">历史曝光</button>
+        <button id="adm-drawer-x" class="text-[11px] text-slate-400 hover:bg-slate-100 px-1.5 rounded">收起</button>
+      </div></div>
     <div class="mt-2 space-y-1.5 max-h-72 overflow-y-auto">${slotRows}</div>
+    <div id="adm-history-panel" data-user="${esc(user)}" class="hidden mt-3 pt-3 border-t border-slate-200"></div>
     <div class="mt-3 pt-3 border-t border-slate-200">
       <div class="text-[11px] text-slate-400 mb-1.5">偏好（pin / 屏蔽）</div>
       <div class="flex flex-wrap gap-1.5">${p.prefs.map(r => `
@@ -2544,6 +2750,42 @@ async function openAdminDrawer(user) {
         <button class="adm-pref px-2 py-1 rounded-lg ring-1 ring-rose-200 text-rose-700 hover:bg-rose-50 text-[11px]" data-user="${esc(user)}" data-act="block">代屏蔽</button>
       </div>
     </div>`;
+}
+
+async function loadAdminRecommendationHistory(user, offset = 0) {
+  const panel = document.getElementById('adm-history-panel');
+  if (!panel || panel.dataset.user !== user) return;
+  const limit = 20;
+  panel.classList.remove('hidden');
+  panel.innerHTML = '<span class="text-[11px] text-slate-400">历史曝光加载中…</span>';
+  const history = await j(
+    '/api/v1/dashboard/admin/user/' + encodeURIComponent(user)
+      + '/recommendations?offset=' + offset + '&limit=' + limit,
+  );
+  if (!panel.isConnected || panel.dataset.user !== user) return;
+  const exposureRows = (history.exposures || []).map(row => `
+    <div class="flex items-center gap-2 px-2.5 py-2 rounded-lg ring-1 ring-slate-100 bg-white">
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <span class="skill-jump cursor-pointer font-medium text-teal-700 text-[12px]" data-skill="${esc(row.skill)}">${esc(row.skill)}</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded ${BUCKET_CHIP[row.bucket] || 'bg-slate-100 text-slate-500'}">${esc(row.bucket)}</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded ${row.side === 'staging' ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-100' : 'bg-slate-100 text-slate-500'}">${esc(row.side || 'main')}</span>
+          ${row.sha ? `<code class="text-[10px] text-slate-400">${esc(String(row.sha).slice(0, 7))}</code>` : ''}
+        </div>
+      </div>
+      <time class="shrink-0 text-[10px] text-slate-400" title="${esc(row.ts)} UTC">${fdate(row.ts)}</time>
+    </div>`).join('') || '<span class="text-[11px] text-slate-400">暂无历史曝光</span>';
+  const exposureCount = (history.exposures || []).length;
+  const start = exposureCount ? history.offset + 1 : 0;
+  const end = exposureCount ? history.offset + exposureCount : 0;
+  panel.innerHTML = `<div class="flex items-baseline justify-between gap-2">
+      <div><span class="text-[11px] text-slate-500">历史曝光</span><span class="text-[10px] text-slate-400 ml-1">按首次曝光时间倒序 · ${start}-${end}/${history.total}</span></div>
+      <div class="flex gap-1">
+        <button class="adm-history-page text-[10px] px-1.5 py-0.5 rounded ring-1 ring-slate-200 ${history.offset > 0 ? 'hover:bg-slate-50' : 'text-slate-300 cursor-not-allowed'}" data-user="${esc(user)}" data-offset="${Math.max(0, history.offset - history.limit)}" ${history.offset > 0 ? '' : 'disabled'}>上一页</button>
+        <button class="adm-history-page text-[10px] px-1.5 py-0.5 rounded ring-1 ring-slate-200 ${history.has_more ? 'hover:bg-slate-50' : 'text-slate-300 cursor-not-allowed'}" data-user="${esc(user)}" data-offset="${history.offset + history.limit}" ${history.has_more ? '' : 'disabled'}>下一页</button>
+      </div>
+    </div>
+    <div class="mt-2 space-y-1.5 max-h-72 overflow-y-auto">${exposureRows}</div>`;
 }
 document.addEventListener('click', async e => {
   const ingest = e.target.closest('.adm-ingest');
@@ -2571,6 +2813,25 @@ document.addEventListener('click', async e => {
   const cfg = e.target.closest('.adm-cfg');
   if (cfg) { openAdminDrawer(cfg.dataset.user).catch(err => alert(err.message)); return; }
   if (e.target.id === 'adm-drawer-x') { document.getElementById('admin-drawer').classList.add('hidden'); return; }
+  const historyToggle = e.target.closest('.adm-history-toggle');
+  if (historyToggle) {
+    const panel = document.getElementById('adm-history-panel');
+    if (!panel) return;
+    const opening = panel.classList.contains('hidden');
+    historyToggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
+    historyToggle.textContent = opening ? '收起历史' : '历史曝光';
+    if (opening) loadAdminRecommendationHistory(historyToggle.dataset.user).catch(err => alert(err.message));
+    else panel.classList.add('hidden');
+    return;
+  }
+  const historyPage = e.target.closest('.adm-history-page');
+  if (historyPage && !historyPage.disabled) {
+    loadAdminRecommendationHistory(
+      historyPage.dataset.user,
+      Number(historyPage.dataset.offset || 0),
+    ).catch(err => alert(err.message));
+    return;
+  }
   const ap = e.target.closest('.adm-pref');
   if (ap) {
     const skill = ap.dataset.skill || (document.getElementById('adm-skill-in') || {}).value;

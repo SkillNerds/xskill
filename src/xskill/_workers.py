@@ -302,13 +302,19 @@ def run_ecosystem_ingest_loop(
 
 
 def run_profile_refresh_once(*, engine=None) -> int:
-    """遍历所有 client 重算画像落库即退,状态落 profile_refresh_status.json。
-
-    复用 ProfileRefreshService(短命形态:批量提交所有 client → wait_idle → stop),
-    含散点物化子系统,进程退出即销毁,不留常驻线程。``update_user_interest`` 自带
-    revision 未变早退,冷启动全量跑一遍也只对变化的 client 真算增量批量 embedding。
-    """
-    from xskill.config import XSKILL_HOME, load_config, profile_refresh_config
+    """只消费持久化脏用户；首次/版本变化/低频对账才批量标记全部 client。"""
+    from xskill.config import (
+        XSKILL_HOME,
+        load_config,
+        profile_refresh_config,
+    )
+    from xskill.pipeline.registry import get_registry_db_path
+    from xskill.recommend.profile_dirty import (
+        PROFILE_ALGORITHM_VERSION,
+        clear_profile_dirty,
+        list_dirty_profiles,
+        reconcile_profile_dirty,
+    )
     from xskill.team.server.engine_factory import build_recommend_engine
     from xskill.team.server.profile_refresh import ProfileRefreshService
     from xskill.utils.status_file import PROFILE_STATUS_FILE, write_status_file
@@ -320,17 +326,64 @@ def run_profile_refresh_once(*, engine=None) -> int:
     try:
         if engine is None:
             engine = build_recommend_engine(config)
-        client_ids = [row["client_id"] for row in engine.client_registry.list()]
+        client_rows = engine.client_registry.list()
+        key_to_client: dict[str, str] = {}
+        profile_keys: list[str] = []
+        for row in client_rows:
+            client_id = row["client_id"]
+            key_to_client[client_id] = client_id
+            try:
+                profile_key = engine.client_registry.dir_name_for(client_id)
+            except Exception:  # pylint: disable=broad-exception-caught
+                profile_key = client_id
+            key_to_client[profile_key] = client_id
+            profile_keys.append(profile_key)
+        registry_db = get_registry_db_path()
+        model = getattr(getattr(engine, "embed_client", None), "model", "") or ""
+        input_fingerprint = f"{PROFILE_ALGORITHM_VERSION}:{model}"
+        reconcile_reason = reconcile_profile_dirty(
+            profile_keys,
+            input_fingerprint=input_fingerprint,
+            db_path=registry_db,
+        )
+        dirty_rows = list_dirty_profiles(db_path=registry_db)
+        dirty_by_client: dict[str, list[dict]] = {}
+        stale_rows: list[dict] = []
+        for row in dirty_rows:
+            client_id = key_to_client.get(row["user_key"])
+            if client_id:
+                dirty_by_client.setdefault(client_id, []).append(row)
+            else:
+                stale_rows.append(row)
+        for row in stale_rows:
+            clear_profile_dirty(
+                row["user_key"], row["generation"], db_path=registry_db,
+            )
+
+        def _finish(client_id: str, succeeded: bool) -> None:
+            if not succeeded:
+                return
+            for dirty in dirty_by_client.get(client_id, []):
+                clear_profile_dirty(
+                    dirty["user_key"], dirty["generation"], db_path=registry_db,
+                )
+
         # 批量任务:settle_delay=0 立即算(settle 是给在线 sync 突发让路用的,批量无此需求)。
         service = ProfileRefreshService(
             engine, workers=pr_cfg["workers"], queue_size=pr_cfg["queue_size"],
-            settle_delay=0, autostart=True,
+            settle_delay=0, autostart=True, on_processed=_finish,
         )
-        for client_id in client_ids:
-            service.request(client_id)
+        requested = 0
+        for client_id in dirty_by_client:
+            if service.request(client_id):
+                requested += 1
         service.wait_idle()
         metrics = dict(service.metrics)
-        metrics["clients"] = len(client_ids)
+        metrics["clients"] = len(client_rows)
+        metrics["requested_clients"] = requested
+        metrics["dirty_rows"] = len(dirty_rows)
+        metrics["stale_rows"] = len(stale_rows)
+        metrics["reconcile_reason"] = reconcile_reason
         write_status_file(status_path, metrics, ok=True)
         return 0
     except Exception as exc:  # noqa: BLE001 — 顶层任务边界,落状态文件+日志后报错

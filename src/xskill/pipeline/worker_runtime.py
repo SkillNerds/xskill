@@ -19,6 +19,9 @@ from typing import Any, Callable
 
 # 排队任务预览上限：状态文件每 5s 落盘一次，队列只需够看，不许无限增长。
 _QUEUED_PREVIEW_LIMIT = 50
+# ThreadPoolExecutor 造好后不能缩线程。用一个够用的上限按需起线程，
+# 对外席位数由下面的 Condition 卡住；管理员把席位调到超过此值时再加执行器。
+_BOUNDED_EXECUTOR_THREAD_CEILING = 64
 
 
 def _install_worker_context() -> None:
@@ -36,10 +39,10 @@ class _SubmissionState:
 class BoundedExecutor:
     """A non-blocking, observable ``ThreadPoolExecutor``.
 
-    ``ThreadPoolExecutor`` itself has an unbounded waiting queue.  A semaphore
-    reserves one slot before submission, giving this wrapper a hard total
-    capacity of ``workers * 3``.  Rejected work is never submitted and the
-    caller can leave its durable DB/file state untouched for the next scan.
+    ``ThreadPoolExecutor`` itself has an unbounded waiting queue.  Occupancy
+    is capped at ``workers * 3`` under a condition lock.  Rejected work is
+    never submitted and the caller can leave its durable DB/file state
+    untouched for the next scan.
 
     Seat model for the pipeline monitor: running tasks occupy a **fixed**
     seat (index into a list of length ``workers``).  Completion only clears
@@ -56,8 +59,7 @@ class BoundedExecutor:
         self.workers = workers
         self.queue_capacity = workers * 2
         self.total_capacity = workers * 3
-        self._slots = threading.BoundedSemaphore(self.total_capacity)
-        self._lock = threading.Lock()
+        self._cond = threading.Condition()
         self._running = 0
         self._queued = 0
         self._completed = 0
@@ -66,19 +68,53 @@ class BoundedExecutor:
         # (token, task) FIFO 预览；token 用于取消/起跑时精确移除。
         self._queued_tasks: deque[tuple[int, dict]] = deque()
         self._task_token = 0
-        self._executor = ThreadPoolExecutor(
-            max_workers=workers,
+        self._seat_order: deque[int] = deque()
+        physical = max(workers, _BOUNDED_EXECUTOR_THREAD_CEILING)
+        self._physical_max = physical
+        first = ThreadPoolExecutor(
+            max_workers=physical,
             thread_name_prefix=f"xskill-{name}",
             initializer=_install_worker_context,
         )
+        self._executors = [first]
 
-    def _take_seat(self) -> int:
-        """Return the lowest free seat index (caller holds ``self._lock``)."""
-        for index, entry in enumerate(self._seats):
-            if entry is None:
+    def _find_logical_seat(self) -> int | None:
+        """Return the lowest free seat index below ``workers`` (caller holds cond)."""
+        for index in range(self.workers):
+            if index >= len(self._seats):
+                self._seats.extend([None] * (self.workers - len(self._seats)))
+            if self._seats[index] is None:
                 return index
-        # max_workers == len(seats)，跑到这里说明席位簿记与执行器脱节。
-        raise RuntimeError(f"{self.name}: no free seat for a running task")
+        return None
+
+    def _trim_idle_overflow_seats(self) -> None:
+        """Drop trailing empty seats beyond the live worker count (caller holds cond)."""
+        while len(self._seats) > self.workers and self._seats[-1] is None:
+            self._seats.pop()
+
+    def set_workers(self, workers: int) -> None:
+        """Change the advertised seat count without killing in-flight tasks."""
+        if isinstance(workers, bool) or not isinstance(workers, int) or workers <= 0:
+            raise ValueError(f"{self.name}.workers 必须是正整数")
+        with self._cond:
+            if workers == self.workers:
+                return
+            self.workers = workers
+            self.queue_capacity = workers * 2
+            self.total_capacity = workers * 3
+            if workers > len(self._seats):
+                self._seats.extend([None] * (workers - len(self._seats)))
+            else:
+                self._trim_idle_overflow_seats()
+            if workers > self._physical_max:
+                extra = ThreadPoolExecutor(
+                    max_workers=workers,
+                    thread_name_prefix=f"xskill-{self.name}",
+                    initializer=_install_worker_context,
+                )
+                self._executors.append(extra)
+                self._physical_max = workers
+            self._cond.notify_all()
 
     def submit(
         self,
@@ -97,18 +133,20 @@ class BoundedExecutor:
         candidates file) without costing the watcher thread; its result
         overrides ``task`` on the occupied seat.
         """
-        if not self._slots.acquire(blocking=False):
-            return None
-        state = _SubmissionState()
-        state_lock = threading.Lock()
-        with self._lock:
+        with self._cond:
+            if self._running + self._queued >= self.total_capacity:
+                return None
             self._queued += 1
             self._task_token += 1
             token = self._task_token
+            self._seat_order.append(token)
             if task is not None:
                 self._queued_tasks.append((token, task))
                 while len(self._queued_tasks) > _QUEUED_PREVIEW_LIMIT:
                     self._queued_tasks.popleft()
+
+        state = _SubmissionState()
+        state_lock = threading.Lock()
 
         def run():
             meta = task
@@ -120,42 +158,54 @@ class BoundedExecutor:
                     meta = task
             with state_lock:
                 state.started = True
-            with self._lock:
+            with self._cond:
+                while (
+                    not self._seat_order
+                    or self._seat_order[0] != token
+                    or self._find_logical_seat() is None
+                ):
+                    self._cond.wait()
+                self._seat_order.popleft()
+                seat = self._find_logical_seat()
+                if seat is None:
+                    raise RuntimeError(f"{self.name}: no free seat for a running task")
                 self._queued -= 1
                 self._running += 1
-                seat = self._take_seat()
                 self._seats[seat] = {
                     "seat": seat,
                     "task": meta or {},
                     "started_at": time.time(),
                 }
                 self._drop_queued(token)
+                self._cond.notify_all()
             try:
                 from xskill.utils.rate_limit import request_source
 
                 with request_source(self.name):
                     result = function(*args, **kwargs)
             except BaseException:
-                with self._lock:
+                with self._cond:
                     self._failed += 1
                 raise
             else:
-                with self._lock:
+                with self._cond:
                     self._completed += 1
                 return result
             finally:
-                with self._lock:
+                with self._cond:
                     self._running -= 1
                     self._seats[seat] = None
-                self._slots.release()
+                    self._trim_idle_overflow_seats()
+                    self._cond.notify_all()
 
         try:
-            future = self._executor.submit(run)
+            future = self._executors[-1].submit(run)
         except BaseException:
-            with self._lock:
+            with self._cond:
                 self._queued -= 1
                 self._drop_queued(token)
-            self._slots.release()
+                self._drop_seat_order(token)
+                self._cond.notify_all()
             raise
 
         def release_cancelled(_future: Future) -> None:
@@ -165,16 +215,23 @@ class BoundedExecutor:
                 if state.started:
                     return
                 state.started = True
-            with self._lock:
+            with self._cond:
                 self._queued -= 1
                 self._drop_queued(token)
-            self._slots.release()
+                self._drop_seat_order(token)
+                self._cond.notify_all()
 
         future.add_done_callback(release_cancelled)
         return future
 
+    def _drop_seat_order(self, token: int) -> None:
+        try:
+            self._seat_order.remove(token)
+        except ValueError:
+            return
+
     def _drop_queued(self, token: int) -> None:
-        """Remove a queued-preview entry by token (caller holds ``self._lock``)."""
+        """Remove a queued-preview entry by token (caller holds ``self._cond``)."""
         for item in self._queued_tasks:
             if item[0] == token:
                 self._queued_tasks.remove(item)
@@ -182,25 +239,26 @@ class BoundedExecutor:
 
     @property
     def available_capacity(self) -> int:
-        with self._lock:
-            return self.total_capacity - self._running - self._queued
+        with self._cond:
+            return max(0, self.total_capacity - self._running - self._queued)
 
     @property
     def status(self) -> dict[str, Any]:
         """Counts plus the monitor view: fixed seats (``None`` = free) and a
         FIFO preview of queued tasks.  Seats are copied so the status-file
         writer never mutates live entries."""
-        with self._lock:
+        with self._cond:
             occupied = self._running + self._queued
+            capacity = self.total_capacity
             return {
                 "workers": self.workers,
                 "queue_capacity": self.queue_capacity,
-                "total_capacity": self.total_capacity,
+                "total_capacity": capacity,
                 "running": self._running,
                 "queued": self._queued,
                 "completed": self._completed,
                 "failed": self._failed,
-                "occupancy": occupied / self.total_capacity,
+                "occupancy": occupied / capacity if capacity else 0,
                 "seats": [
                     dict(entry) if entry is not None else None
                     for entry in self._seats
@@ -209,7 +267,10 @@ class BoundedExecutor:
             }
 
     def shutdown(self, *, wait: bool = False, cancel_futures: bool = True) -> None:
-        self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+        with self._cond:
+            self._cond.notify_all()
+        for executor in self._executors:
+            executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 
 
 class ClusterResultRecorder:

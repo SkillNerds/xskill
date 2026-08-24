@@ -51,6 +51,7 @@ class ProfileRefreshService:
         scatter_materialize: bool = True,
         scatter_pool_factory: Optional[Callable[[], object]] = None,
         scatter_registry_db: Optional[Path] = None,
+        on_processed: Optional[Callable[[str, bool], None]] = None,
     ):
         if workers < 1:
             raise ValueError("workers 必须 >= 1")
@@ -67,6 +68,7 @@ class ProfileRefreshService:
         self.worker_count = workers
         self.settle_delay = float(settle_delay)
         self.interest_factory = interest_factory
+        self.on_processed = on_processed
         self._queue: queue.Queue = queue.Queue(maxsize=queue_size)
         self._condition = threading.Condition()
         self._states: dict[str, dict[str, bool | str]] = {}
@@ -272,8 +274,9 @@ class ProfileRefreshService:
                 self._metrics["running"] += 1
 
             changed = False
+            succeeded = False
             if self._wait_for_settle():
-                changed = self._run_once(client_id)
+                changed, succeeded = self._run_once(client_id)
 
             run_again = False
             with self._condition:
@@ -285,7 +288,8 @@ class ProfileRefreshService:
                     self._metrics["rerun"] += 1
                     run_again = True
             if run_again:
-                changed = self._run_once(client_id) or changed
+                rerun_changed, succeeded = self._run_once(client_id)
+                changed = rerun_changed or changed
 
             # 事件触发（在 finalize 之前,保证 wait_idle 解除时投递已发生）:画像真的
             # 变了才投递该用户 tsne+umap 两个方法的散点重算,指纹未变的空转在重算侧跳过。
@@ -311,6 +315,15 @@ class ProfileRefreshService:
                         "mark recommend dirty failed for %s", client_id, exc_info=True,
                     )
 
+            if self.on_processed is not None:
+                try:
+                    self.on_processed(client_id, succeeded)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    logger.exception(
+                        "profile refresh completion callback failed for %s",
+                        client_id,
+                    )
+
             with self._condition:
                 self._states.pop(client_id, None)
                 self._metrics["running"] -= 1
@@ -327,8 +340,8 @@ class ProfileRefreshService:
                 self._condition.wait(timeout=remaining)
             return False
 
-    def _run_once(self, client_id: str) -> bool:
-        """执行一次画像更新;返回是否产生了变更（供事件触发散点重算判定）。"""
+    def _run_once(self, client_id: str) -> tuple[bool, bool]:
+        """返回 ``(changed, succeeded)``，供派生事件与耐久队列分别判定。"""
         try:
             result = self.engine.update_user_interest(
                 self.interest_factory(client_id),
@@ -338,7 +351,7 @@ class ProfileRefreshService:
             with self._condition:
                 self._metrics["failed"] += 1
             logger.exception("profile refresh failed for client %s", client_id)
-            return False
+            return False, False
         cancelled = getattr(result, "cancelled", False)
         changed = getattr(result, "changed", True)
         with self._condition:
@@ -357,7 +370,7 @@ class ProfileRefreshService:
             self._metrics["reused_vector_items"] += int(
                 getattr(result, "reused_vector_items", 0),
             )
-        return bool(changed and not cancelled)
+        return bool(changed and not cancelled), not cancelled
 
     def _should_commit(self) -> bool:
         """供引擎在最终画像 upsert 前检查停机状态。"""
