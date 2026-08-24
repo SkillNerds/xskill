@@ -157,6 +157,19 @@ def test_appjs_routes_skillhub_detail_by_source():
     assert "/ux/atoms?days=" in js
 
 
+def test_admin_drawer_separates_current_push_from_history():
+    """当前推送不回退成历史总数；历史曝光独立按需分页。"""
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert "u.current_slots != null ? u.current_slots : '—'" in js
+    assert "u.current_slots != null ? u.current_slots : u.exposures" not in js
+    assert "adm-history-toggle" in js
+    assert "async function loadAdminRecommendationHistory(" in js
+    assert "/recommendations?offset=" in js
+    assert "按首次曝光时间倒序" in js
+    assert "adm-history-page" in js
+
+
 def test_pipeline_log_scroll_is_sticky_not_forced():
     """#178: 流水线日志仅在贴底时跟随；pmStartLog 用 kind/name 比较，避免抽屉重渲染重启轮询。"""
     js = (STATIC / "app.js").read_text(encoding="utf-8")

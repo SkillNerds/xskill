@@ -37,12 +37,14 @@ from pathlib import Path
 from xskill.config import (
     interests_config,
     interests_fingerprint,
+    read_agent_worker_pools,
     read_interests_config,
 )
 from xskill.pipeline.registry import (
     ProcessAction,
     TrajectoryStatus,
     list_watch_dirs,
+    list_watcher_dirs,
     discover_trajectories,
     get_pending_traj_ids,
     get_trajs_by_status,
@@ -89,10 +91,10 @@ class DirectoryWatcher:
 
     与 v1 (meta-level) 的差异：
     - splitting 阶段调 TaskAgent 拆 AtomTask，落盘到 ``<traj_root>/<traj_id>/tasks/``
-    - indexed 阶段以 AtomTask 为单位整批重建 ``<traj_root>/index.pkl``
+    - indexed 阶段增量维护 Atom SQLite 向量投影；``index.pkl`` 仅作发现标记
     - cluster 阶段**跨轨迹池化**：把所有 indexed 轨迹里尚未落地的 atom 汇成一池，
       按 ``cluster.batch_size`` 分批，提交给全局 cluster pool。
-    - indexed → done 由 ``_finalize_completed_trajs`` 标：一条轨迹的 atom 全部落进某个
+    - indexed → done 由 ``_reconcile_indexed_atoms`` 标：一条轨迹的 atom 全部落进某个
       skill 的 ``.candidates.yml`` 时才 done（文件系统即队列，天然去重+断点续传）。
     """
 
@@ -151,6 +153,24 @@ class DirectoryWatcher:
             else xskill_state_root / "tmp" / "spill"
         ).expanduser().resolve()
         self.poll_interval = poll_interval
+        watcher_config = self.config.get("watcher") or {}
+        configured_reconcile_interval = watcher_config.get(
+            "full_reconcile_interval",
+        )
+        # Production defaults to a low-frequency correctness sweep.  Tests and
+        # direct callers traditionally use poll_interval=0 to request an eager
+        # scan on every call, so preserve that behavior unless configured.
+        if configured_reconcile_interval is None:
+            configured_reconcile_interval = 60.0 if poll_interval > 0 else 0.0
+        self.full_reconcile_interval = max(
+            0.0,
+            float(configured_reconcile_interval),
+        )
+        # watch_dir_id -> ((device, inode, directory mtime ns), last full scan)
+        # Only the watcher thread reads/writes this map.
+        self._discovery_snapshots: dict[int, tuple[tuple[int, int, int], float]] = {}
+        self._last_skill_edit_reconcile_ts: float | None = None
+        self._last_cluster_catalog_reconcile: float | None = None
         self.max_retries = max_retries
         self.db_path = db_path
         # 每轮 _loop 在 _scan_once 之前调一次的钩子，用来让 server 端的"生态
@@ -192,6 +212,11 @@ class DirectoryWatcher:
         self.pending_atoms: deque[str] = deque()
         self.claimed_atoms: set[str] = set()
         self.cluster_futures: set[Future] = set()
+        self._round_new_atoms: list[str] = []
+        self._pool_hot_fingerprint = self._pools_hot_fingerprint(self.pool_config)
+        self._pool_disk_fingerprint_at_start = self._read_pool_disk_fingerprint()
+        from xskill.utils.rate_limit import set_llm_pool_weights
+        set_llm_pool_weights(self._llm_pool_weights())
         # SkillEdit baby 消化失败到 N=1 时释放 worker；下一轮 watcher 从 1
         # 继续，成功 checkpoint 后由 agent 自动恢复配置默认值。仅驻留内存，
         # 进程重启后自然回到配置值。
@@ -205,6 +230,8 @@ class DirectoryWatcher:
         # 单机 canary 轮转节流：上次真跑 _reconcile_skill_sides 的时间戳。
         # None = 从未跑过（首轮 scan 必跑一次）。
         self._last_rotate_ts: float | None = None
+        # Canary 正常轮询读 catalog 活跃集；该时间戳控制低频磁盘事实源对账。
+        self._last_canary_catalog_reconcile_ts: float | None = None
         self._stats = {
             "polls": 0, "new_trajs": 0,
             "atoms_extracted": 0,    # v2: 累计 atom 数（替代 meta_extracted）
@@ -278,7 +305,10 @@ class DirectoryWatcher:
             # 看板「流水线」页配置 chip 的展示值（席位/配额比/批量）；
             # 配置键不变，热更在 P1 另行评审。
             "pool_config": {
-                name: dict(self.pool_config.get(name) or {})
+                name: {
+                    **dict(self.pool_config.get(name) or {}),
+                    "workers": self._pools[name].workers,
+                }
                 for name in ("split", "cluster", "edit")
             },
             "generate": {
@@ -318,6 +348,67 @@ class DirectoryWatcher:
             reset_count,
         )
 
+    def _llm_pool_weights(self) -> dict[str, int]:
+        return {
+            name: int((self.pool_config.get(name) or {}).get("llm_weight") or 1)
+            for name in ("split", "cluster", "edit")
+        }
+
+    @staticmethod
+    def _pools_hot_fingerprint(pools: dict) -> tuple:
+        return tuple(
+            (
+                name,
+                int((pools.get(name) or {}).get("workers") or 0),
+                int((pools.get(name) or {}).get("llm_weight") or 0),
+            )
+            for name in ("split", "cluster", "edit", "embed")
+        )
+
+    def _read_pool_disk_fingerprint(self) -> tuple | None:
+        try:
+            return self._pools_hot_fingerprint(
+                read_agent_worker_pools(self.config_path),
+            )
+        except (FileNotFoundError, ValueError, OSError):
+            return None
+
+    def _refresh_pool_config(self):
+        """Hot-reload pool seats and LLM weights without restarting the worker."""
+        try:
+            pools = read_agent_worker_pools(self.config_path)
+        except FileNotFoundError:
+            return
+        except Exception:
+            logger.exception("agent_worker pool config reload failed")
+            return
+        fingerprint = self._pools_hot_fingerprint(pools)
+        if fingerprint == self._pool_hot_fingerprint:
+            return
+        # 测试常注入 pool_config，config.yaml 仍是进程默认那份；磁盘没变就
+        # 不要用文件里的席位覆盖构造参数。管理员改盘之后指纹会离开启动快照。
+        if fingerprint == self._pool_disk_fingerprint_at_start:
+            return
+        for name, pool in self._pools.items():
+            new_workers = int((pools.get(name) or {}).get("workers") or pool.workers)
+            if new_workers != pool.workers:
+                pool.set_workers(new_workers)
+            current = dict(self.pool_config.get(name) or {})
+            current["workers"] = new_workers
+            if "llm_weight" in (pools.get(name) or {}):
+                current["llm_weight"] = int(pools[name]["llm_weight"])
+            self.pool_config[name] = current
+        from xskill.utils.rate_limit import set_llm_pool_weights
+        set_llm_pool_weights(self._llm_pool_weights())
+        self._pool_hot_fingerprint = fingerprint
+        self._pool_disk_fingerprint_at_start = fingerprint
+        logger.info(
+            "agent_worker pools reloaded: %s",
+            {name: {"workers": self._pools[name].workers,
+                    "llm_weight": (self.pool_config.get(name) or {}).get("llm_weight")}
+             for name in ("split", "cluster", "edit")},
+        )
+
     # ───────────────────────────────────────────────────────────
     # Main loop
     # ───────────────────────────────────────────────────────────
@@ -340,11 +431,13 @@ class DirectoryWatcher:
             self._stop.wait(self.poll_interval)
 
     def _scan_once(self):
-        """一次扫描：收割 → 发现 → 提交任务 → 独立扫 pending skill edits。"""
+        """一次扫描：收割 → 发现 → 提交任务 → 调度 pending skill edits。"""
         self._last_poll = time.time()
         self._stats["polls"] += 1
         kw = self._db_kw()
         self._refresh_interests()
+        self._refresh_pool_config()
+        self._round_new_atoms.clear()
 
         # ── Step 0: 收割已完成的 futures ──
         self._harvest()
@@ -357,36 +450,28 @@ class DirectoryWatcher:
         consumed_index = LazyConsumedIndex(self.skill_dir)
 
         # ── Step 1-4: 对每个目录扫描 + 提交 split/embed + 收集 cluster atom ──
-        watch_dirs = list_watch_dirs(**kw)
-        active_watch_dirs = []
+        watch_dirs = list_watcher_dirs(**kw)
         for wd in watch_dirs:
             if self._stop.is_set():
                 break
             if not wd.get("auto_index"):
                 continue
-            active_watch_dirs.append(wd)
             self._scan_dir(wd, consumed_index, **kw)
 
+        if self._round_new_atoms:
+            self.pending_atoms.extendleft(reversed(self._round_new_atoms))
+            self._round_new_atoms.clear()
         # 全部 watch_dir 共用一个 pending/claimed 队列；持续提交到 cluster 池满。
         # 最后不足 batch_size 的尾批也立即提交。
         self._submit_cluster_batches()
-
-        # 已完成归类的轨迹在下一次 durable atom 检查中进入 done。
-        if self.skill_dir:
-            for wd in active_watch_dirs:
-                dir_path = Path(wd["path"])
-                if dir_path.is_dir():
-                    self._finalize_completed_trajs(
-                        wd["id"], dir_path, consumed_index, **kw,
-                    )
 
         # ── Step 5a: 用户点名的 generate 入队到 SkillEdit 同一线程池 ──
         # 先于自动 SkillEdit 提交，避免后台整理把用户任务挤到池外。
         self._submit_generate_jobs()
 
-        # ── Step 5: 独立扫所有 skill 目录的 candidates buffer ──
-        # 这步与具体 atom 处理解耦：即便某些 atom cluster 失败，buffer
-        # 已满阈值的 skill 仍能在每轮 scan 中被检出 + 触发 SkillEdit。
+        # ── Step 5: 从持久脏队列调度 candidates buffer ──
+        # 这步与具体 atom 处理解耦：候选落盘会把所属 skill 标脏；低频全量
+        # reconciliation 兜住进程重启、外部写入和时间型 jam gate。
         # 不放在 _scan_dir 内是因为 skill_dir 不是 watch_dir，跟 wd 循环
         # 无关——每个 watcher 只有一个全局 skill_dir。
         self._run_skill_edit_step()
@@ -512,7 +597,7 @@ class DirectoryWatcher:
         cold_start_signal.consume()
 
     def _check_pending_skill_edits(self, threshold=None):
-        """遍历每个 skill 目录调 SkillEditAgent.maybe_run()。
+        """从持久脏队列选出 skill，调 ``SkillEditAgent.maybe_run()``。
 
         ``threshold``：None 时各 skill 用默认 ATOM_PROMOTION_THRESHOLD；cold
         start 显式传同一个常量，避免在配置里散落另一套数值。
@@ -527,8 +612,204 @@ class DirectoryWatcher:
         """
         if self.skill_dir is None or not self.skill_dir.is_dir():
             return
+        from xskill.pipeline.registry import (
+            acknowledge_skill_edit_dirty,
+            list_skill_edit_dirty,
+            reconcile_skill_edit_dirty,
+        )
+
+        now = time.monotonic()
+        reconcile_due = (
+            self._last_skill_edit_reconcile_ts is None
+            or self.full_reconcile_interval == 0
+            or now - self._last_skill_edit_reconcile_ts
+            >= self.full_reconcile_interval
+        )
+        if reconcile_due:
+            try:
+                reconcile_skill_edit_dirty(
+                    self.skill_dir,
+                    **self._db_kw(),
+                )
+            except Exception:
+                # YAML/skill 目录是真相源；队列投影失败不能阻断其余流水线。
+                logger.exception("skill_edit dirty reconciliation failed")
+            finally:
+                # 持续的文件系统/DB 故障不应让每个快速 poll 都退化成全量
+                # skill_dir 扫描；下一次周期对账仍会继续修复投影。
+                self._last_skill_edit_reconcile_ts = now
+        try:
+            dirty_rows = list_skill_edit_dirty(
+                self.skill_dir,
+                **self._db_kw(),
+            )
+        except Exception:
+            logger.exception("skill_edit dirty queue read failed")
+            return
+        if not dirty_rows:
+            return
+
+        def _acknowledge_dirty(skill: str, generation: int) -> bool:
+            try:
+                return acknowledge_skill_edit_dirty(
+                    self.skill_dir,
+                    skill,
+                    generation,
+                    **self._db_kw(),
+                )
+            except Exception:
+                logger.exception(
+                    "skill_edit dirty acknowledgement failed: %s",
+                    skill,
+                )
+                return False
+
+        dirty_skills: list[tuple[Path, int]] = []
+        for row in dirty_rows:
+            skill_path = self.skill_dir / str(row["skill"])
+            generation = int(row["generation"])
+            if (
+                not skill_path.is_dir()
+                or skill_path.name.startswith(".")
+            ):
+                _acknowledge_dirty(skill_path.name, generation)
+                continue
+            dirty_skills.append((skill_path, generation))
+        if not dirty_skills:
+            return
+
+        skill_edit_in_flight = {
+            info.get("skill_dir") for info in self._futures.values()
+            if info.get("stage") in ("skill_edit", "skill_scripting")
+        }
+        dirty_skills = [
+            item for item in dirty_skills if item[0] not in skill_edit_in_flight
+        ]
+        if not dirty_skills:
+            return
+
         from xskill.agents.skill_edit_agent import SkillEditAgent
         from xskill.canary import CanaryConfig
+        # ── 跨技能并行写正文，且不阻塞扫描循环 ──
+        # 每个 skill 文件夹是独立 git 仓（skill/git.py 各自 git init），仓锁
+        # _repo_lock_for(repo_dir) 是 per-skill 的 → 不同技能 = 不同锁 = 零冲突，
+        # 跨技能并发安全。每个 future 显式绑定自己的不可变 AgentToolContext；
+        # write_file / commit_baby_to_main / commit_to_staging / skill_read 都从
+        # 当前 task context 取根目录，不共享进程级可变路径。
+        #
+        # 不在这里 as_completed 等待：SkillEditAgent 现在支持多轮渐进式消化，
+        # 单个 skill 的 maybe_run() 可能跑到小时级（buffer 攒了几十上百批候选
+        # 时）。像 split/cluster 一样把每个 skill 的 maybe_run() 提交进
+        # self._futures（stage="skill_edit"），本方法立即返回；结果由
+        # ``_harvest``（每轮 scan 开头）收割 + 做 _stats 自增/即时 install。
+        # 同一个 skill 同时只允许一个 skill_edit future 在飞，避免同一 skill
+        # 被并发跑两个 maybe_run（第二个进来时前一个多半仍在改 candidates/git）。
+        from xskill.skill import candidates as candidate_buffer
+        from xskill.skill.git import current_branch, run_git
+        from xskill.canary import evaluate_jam_gates, load_ux_scores
+        from xskill.skill.importer import is_imported_skill
+
+        jam_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
+        edit_threshold = (
+            int(threshold)
+            if threshold is not None
+            else candidate_buffer.ATOM_PROMOTION_THRESHOLD
+        )
+
+        def _skill_edit_actionable(
+            skill_path: Path,
+        ) -> tuple[bool | None, int]:
+            """与 maybe_run 守门对齐：不会开 LLM 的 skill 不进 edit 池。
+
+            单目录异常只排除该 skill，禁止拖垮整轮 edit submit。
+            无 ``.git`` 的目录仍返回 True：交由 worker 侧 ``_run_one`` /
+            ``maybe_run`` 吞错（与过滤前提交语义一致），避免 listcomp 里
+            ``current_branch`` 抛穿扫描；也不把「脏目录」误当成可过滤的
+            伪 skill 状态机。
+            """
+            try:
+                data = candidate_buffer.load_candidates(skill_path)
+                candidates = list(data.get("candidates") or [])
+                pending_count = len(candidates)
+                if not (skill_path / ".git").exists():
+                    logger.warning(
+                        "SkillEdit schedule: %s has no .git; submit and let "
+                        "worker isolate failures",
+                        skill_path.name,
+                    )
+                    return True, pending_count
+                total_ws = 0
+                for item in candidates:
+                    try:
+                        total_ws += int(item.get("weightscore") or 0)
+                    except (TypeError, ValueError):
+                        pass
+                staging_exists = run_git(
+                    ["rev-parse", "--verify", "staging"],
+                    cwd=str(skill_path),
+                )[0] == 0
+                # jam：age ∧ plateau ∧ ws 三条件合取（见 evaluate_jam_gates）
+                jam = False
+                if staging_exists:
+                    gates = evaluate_jam_gates(
+                        skill_path, total_ws=total_ws, config=jam_cfg,
+                    )
+                    jam = bool(gates.get("ok"))
+                    if not jam:
+                        return False, pending_count
+                if jam:
+                    return True, pending_count
+                ready = bool(
+                    candidate_buffer.ready_for_promotion_v2(
+                        data, threshold=edit_threshold,
+                    )
+                )
+                baby_checkpoint = run_git(
+                    ["rev-parse", "baby~1"],
+                    cwd=str(skill_path),
+                )[0] == 0
+                branch = current_branch(str(skill_path)) or ""
+                if branch == "baby":
+                    return baby_checkpoint or ready, pending_count
+                if branch == "main":
+                    if not ready:
+                        return False, pending_count
+                    try:
+                        scores = load_ux_scores(skill_path)
+                    except Exception:
+                        logger.exception(
+                            "load_ux_scores failed during skill_edit "
+                            "filter: %s",
+                            skill_path.name,
+                        )
+                        return None, pending_count
+                    return (
+                        any(score.get("side") == "main" for score in scores),
+                        pending_count,
+                    )
+                if "_turn" in branch:
+                    return baby_checkpoint or ready, pending_count
+                return False, pending_count
+            except Exception:
+                logger.exception(
+                    "skill_edit actionable check failed: %s",
+                    skill_path.name,
+                )
+                return None, 0
+
+        actionable_skills: list[tuple[Path, int]] = []
+        for skill_path, generation in dirty_skills:
+            actionable, pending_count = _skill_edit_actionable(skill_path)
+            if actionable is None:
+                # 读取/门控异常保留脏项，下一轮沿用现有重试行为。
+                continue
+            if not actionable:
+                _acknowledge_dirty(skill_path.name, generation)
+                continue
+            actionable_skills.append((skill_path, pending_count))
+        if not actionable_skills:
+            return
+
         factory = self._factory()
         # store 选哪个：edit agent 工具 (atom_task_read/read_traj) 需要 store +
         # traj_root 才能读到 atom 原文。单机只有一个 watch_dir（cc_sessions）。
@@ -569,144 +850,21 @@ class DirectoryWatcher:
             usage_ledger=self.usage_ledger,
             registry_db_path=self.db_path,
         )
-        # ── 跨技能并行写正文，且不阻塞扫描循环 ──
-        # 每个 skill 文件夹是独立 git 仓（skill/git.py 各自 git init），仓锁
-        # _repo_lock_for(repo_dir) 是 per-skill 的 → 不同技能 = 不同锁 = 零冲突，
-        # 跨技能并发安全。每个 future 显式绑定自己的不可变 AgentToolContext；
-        # write_file / commit_baby_to_main / commit_to_staging / skill_read 都从
-        # 当前 task context 取根目录，不共享进程级可变路径。
-        #
-        # 不在这里 as_completed 等待：SkillEditAgent 现在支持多轮渐进式消化，
-        # 单个 skill 的 maybe_run() 可能跑到小时级（buffer 攒了几十上百批候选
-        # 时）。像 split/cluster 一样把每个 skill 的 maybe_run() 提交进
-        # self._futures（stage="skill_edit"），本方法立即返回；结果由
-        # ``_harvest``（每轮 scan 开头）收割 + 做 _stats 自增/即时 install。
-        # 同一个 skill 同时只允许一个 skill_edit future 在飞，避免同一 skill
-        # 被并发跑两个 maybe_run（第二个进来时前一个多半仍在改 candidates/git）。
-        from xskill.skill import candidates as candidate_buffer
-        from xskill.skill.git import current_branch, run_git
-        from xskill.canary import evaluate_jam_gates, load_ux_scores
 
-        skill_dirs = [
-            d for d in self.skill_dir.iterdir()
-            if d.is_dir() and not d.name.startswith(".")
-        ]
-        if not skill_dirs:
-            return
-
-        jam_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
-        edit_threshold = (
-            int(threshold)
-            if threshold is not None
-            else candidate_buffer.ATOM_PROMOTION_THRESHOLD
-        )
-
-        def _pending_atom_count(skill_path: Path) -> int:
-            try:
-                data = candidate_buffer.load_candidates(skill_path)
-            except Exception:
-                logger.exception(
-                    "failed to load candidates for skill_edit sort: %s",
-                    skill_path.name,
-                )
-                raise
-            return len(data.get("candidates") or [])
-
-        def _skill_edit_actionable(skill_path: Path) -> bool:
-            """与 maybe_run 守门对齐：不会开 LLM 的 skill 不进 edit 池。
-
-            单目录异常只排除该 skill，禁止拖垮整轮 edit submit。
-            无 ``.git`` 的目录仍返回 True：交由 worker 侧 ``_run_one`` /
-            ``maybe_run`` 吞错（与过滤前提交语义一致），避免 listcomp 里
-            ``current_branch`` 抛穿扫描；也不把「脏目录」误当成可过滤的
-            伪 skill 状态机。
-            """
-            if not (skill_path / ".git").exists():
-                logger.warning(
-                    "SkillEdit schedule: %s has no .git; submit and let "
-                    "worker isolate failures",
-                    skill_path.name,
-                )
-                return True
-            try:
-                data = candidate_buffer.load_candidates(skill_path)
-                candidates = list(data.get("candidates") or [])
-                total_ws = 0
-                for item in candidates:
-                    try:
-                        total_ws += int(item.get("weightscore") or 0)
-                    except (TypeError, ValueError):
-                        pass
-                staging_exists = run_git(
-                    ["rev-parse", "--verify", "staging"],
-                    cwd=str(skill_path),
-                )[0] == 0
-                # jam：age ∧ plateau ∧ ws 三条件合取（见 evaluate_jam_gates）
-                jam = False
-                if staging_exists:
-                    gates = evaluate_jam_gates(
-                        skill_path, total_ws=total_ws, config=jam_cfg,
-                    )
-                    jam = bool(gates.get("ok"))
-                    if not jam:
-                        return False
-                if jam:
-                    return True
-                ready = bool(
-                    candidate_buffer.ready_for_promotion_v2(
-                        data, threshold=edit_threshold,
-                    )
-                )
-                baby_checkpoint = run_git(
-                    ["rev-parse", "baby~1"],
-                    cwd=str(skill_path),
-                )[0] == 0
-                branch = current_branch(str(skill_path)) or ""
-                if branch == "baby":
-                    return baby_checkpoint or ready
-                if branch == "main":
-                    if not ready:
-                        return False
-                    try:
-                        scores = load_ux_scores(skill_path)
-                    except Exception:
-                        logger.exception(
-                            "load_ux_scores failed during skill_edit "
-                            "filter: %s",
-                            skill_path.name,
-                        )
-                        return False
-                    return any(
-                        score.get("side") == "main" for score in scores
-                    )
-                if "_turn" in branch:
-                    return baby_checkpoint or ready
-                return False
-            except Exception:
-                logger.exception(
-                    "skill_edit actionable check failed: %s",
-                    skill_path.name,
-                )
-                return False
-
-        skill_dirs = [
-            path for path in skill_dirs if _skill_edit_actionable(path)
-        ]
-        if not skill_dirs:
-            return
-
-        # 错误少优先；有候选优先于空 buffer；再 lean-first。
+        # 错误少优先；已纳入且已达触发条件的 skill 先于自动蒸馏；
+        # 有候选优先于空 buffer；再 lean-first。
         # 无 .git 等「仍提交」的空目录靠 empty-last 避免抢窗。
-        def _skill_edit_sort_key(path: Path):
-            pending = _pending_atom_count(path)
+        def _skill_edit_sort_key(item: tuple[Path, int]):
+            path, pending = item
             return (
                 self._skill_edit_error_counts.get(path, 0),
+                0 if is_imported_skill(path) else 1,
                 0 if pending > 0 else 1,
                 pending,
                 path.name,
             )
 
-        skill_dirs.sort(key=_skill_edit_sort_key)
+        actionable_skills.sort(key=_skill_edit_sort_key)
 
         base_llm_cfg = self.config.get("llm", {}) or {}
         skill_llm_override = self.config.get("llm_skill", {}) or {}
@@ -751,13 +909,7 @@ class DirectoryWatcher:
                         self.skill_edit_batch_size,
                     )
 
-        skill_edit_in_flight = {
-            info.get("skill_dir") for info in self._futures.values()
-            if info.get("stage") in ("skill_edit", "skill_scripting")
-        }
-        for d in skill_dirs:
-            if d in skill_edit_in_flight:
-                continue
+        for d, _pending_count in actionable_skills:
             fut = self._pools["edit"].submit(
                 _run_one,
                 d,
@@ -838,6 +990,35 @@ class DirectoryWatcher:
                     self._skill_edit_n1_fail_counts[d] = fails
         if not ok:
             return
+        # 成功且 buffer 已空时立即确认观察到的脏版本。若此处与 cluster 并发写入，
+        # candidate 落盘钩子会递增 generation，compare-and-delete 自然失败，
+        # 新候选仍留给下一轮调度。
+        try:
+            from xskill.pipeline.registry import (
+                acknowledge_skill_edit_dirty,
+                skill_edit_dirty_generation,
+            )
+            from xskill.skill.candidates import load_candidates
+
+            dirty_generation = skill_edit_dirty_generation(
+                d,
+                **self._db_kw(),
+            )
+            if (
+                dirty_generation is not None
+                and not (load_candidates(d).get("candidates") or [])
+            ):
+                acknowledge_skill_edit_dirty(
+                    d.parent,
+                    d.name,
+                    dirty_generation,
+                    **self._db_kw(),
+                )
+        except Exception:
+            logger.exception(
+                "failed to acknowledge completed skill_edit: %s",
+                d.name,
+            )
         self._stats["skills_edited"] += 1
         logger.info("SkillEditAgent promoted: %s", d.name)
         # 即时 install 让 Claude Code 立刻看到新生成的 SKILL.md，不必等
@@ -1228,6 +1409,83 @@ class DirectoryWatcher:
             except Exception:
                 logger.exception("user edit absorb failed: %s", d.name)
 
+    def _active_canary_skill_paths(self, *, history, target: str) -> list[Path]:
+        """返回 staging 或待恢复事务对应的 skill 路径。
+
+        正常轮询只查 ``skills_catalog``；启动和低频周期从 Git refs 修复投影。
+        没有显式 registry DB 的测试/嵌入调用保持旧的全目录扫描语义。
+        """
+        if self.skill_dir is None or not self.skill_dir.is_dir():
+            return []
+        if self.db_path is None:
+            return [
+                path
+                for path in sorted(self.skill_dir.iterdir())
+                if path.is_dir() and not path.name.startswith(".")
+            ]
+        from xskill.skill.catalog_store import (
+            list_active_native_canaries,
+            reconcile_native_canary_catalog,
+        )
+
+        now = time.monotonic()
+        reconcile_due = (
+            self._last_canary_catalog_reconcile_ts is None
+            or self.full_reconcile_interval == 0
+            or now - self._last_canary_catalog_reconcile_ts
+            >= self.full_reconcile_interval
+        )
+        try:
+            if reconcile_due:
+                reconcile_native_canary_catalog(
+                    self.skill_dir,
+                    db_path=Path(self.db_path),
+                )
+                self._last_canary_catalog_reconcile_ts = now
+            names = set(list_active_native_canaries(
+                self.skill_dir,
+                db_path=Path(self.db_path),
+            ))
+        except Exception:  # pylint: disable=broad-exception-caught
+            # 投影只是可重建加速层；损坏或暂时不可用时回退磁盘事实源。
+            logger.exception("canary catalog unavailable; falling back to disk scan")
+            names = {
+                path.name
+                for path in self.skill_dir.iterdir()
+                if path.is_dir() and not path.name.startswith(".")
+            }
+        names.update(history.pending_recovery_skills(target))
+        unsafe_names = {
+            name
+            for name in names
+            if (
+                not name
+                or name in (".", "..")
+                or "/" in name
+                or "\\" in name
+            )
+        }
+        if unsafe_names:
+            logger.error(
+                "canary catalog contains %d unsafe skill identities",
+                len(unsafe_names),
+            )
+            names.difference_update(unsafe_names)
+        return [self.skill_dir / name for name in sorted(names)]
+
+    def _refresh_canary_catalog_skill(self, skill_path: Path) -> None:
+        """事务成功后立刻按磁盘真相更新单条 Canary 投影。"""
+        if self.db_path is None:
+            return
+        from xskill.skill.catalog_store import (
+            notify_native_delete,
+            notify_native_upsert,
+        )
+        if skill_path.is_dir():
+            notify_native_upsert(skill_path, db_path=Path(self.db_path))
+        else:
+            notify_native_delete(skill_path.name, db_path=Path(self.db_path))
+
     def _check_canary_decisions(self):
         """灰度判定独立轮询：对每个有 staging 分支的 skill 调 check_and_decide。
 
@@ -1250,12 +1508,6 @@ class DirectoryWatcher:
         )
         from xskill.pipeline.registry import model_share
         from xskill.skill.git import run_git
-        canary_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
-        # 模型分桶权重:使用量 top-N 模型的人口占比(unknown 等已被排除)。
-        # 有合格模型 → 按模型加权裁决;一个都没有(全 unknown)→ None = 单桶均分,
-        # 不让纯 unknown 部署的灰度永远卡住。
-        weights = eligible_models(model_share(**self._db_kw()),
-                                  canary_cfg.scope_top_n) or None
         history = self._install_history()
         target_root = self._resolve_target_root()
         claude_code_detected = (
@@ -1269,10 +1521,24 @@ class DirectoryWatcher:
             if claude_code_detected
             else "canary_state" if self.server_mode else "working_tree"
         )
-        for d in sorted(self.skill_dir.iterdir()):
-            if not d.is_dir() or d.name.startswith("."):
+        active_paths = self._active_canary_skill_paths(
+            history=history,
+            target=target,
+        )
+        if not active_paths:
+            return
+        canary_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
+        # 模型分桶权重:使用量 top-N 模型的人口占比(unknown 等已被排除)。
+        # 有合格模型 → 按模型加权裁决;一个都没有(全 unknown)→ None = 单桶均分,
+        # 不让纯 unknown 部署的灰度永远卡住。
+        weights = eligible_models(model_share(**self._db_kw()),
+                                  canary_cfg.scope_top_n) or None
+        for d in active_paths:
+            if not d.is_dir():
+                self._refresh_canary_catalog_skill(d)
                 continue
             if not (d / ".git").is_dir():
+                self._refresh_canary_catalog_skill(d)
                 continue
             code, _, _ = run_git(["rev-parse", "--verify", "staging"], cwd=str(d))
             if code != 0:
@@ -1289,6 +1555,8 @@ class DirectoryWatcher:
                             "terminal transaction recovery failed: %s",
                             d.name,
                         )
+                        continue
+                self._refresh_canary_catalog_skill(d)
                 continue  # 无 staging，跳过
             try:
                 expected_generation = canary_generation(d)
@@ -1469,6 +1737,7 @@ class DirectoryWatcher:
                     recovery_candidate=recovery_telemetry,
                 )
                 if action in ("promoted", "rejected", "timeout_discarded"):
+                    self._refresh_canary_catalog_skill(d)
                     logger.info("canary decision %s: %s — %s",
                                 d.name, action, decision)
             except Exception:
@@ -2253,7 +2522,7 @@ class DirectoryWatcher:
 
         cluster batch 与 split/embed 不同：一个 batch future 覆盖一批跨轨迹的
         atom，没有单一 fname。它只负责"把 atom 写进 candidates"（agent 用工具
-        完成）+ 记日志；轨迹 done 由 ``_finalize_completed_trajs`` 独立核对落地情况后标。
+        完成）+ 记日志；轨迹 done 由 ``_reconcile_indexed_atoms`` 独立核对落地情况后标。
         batch 整体抛异常（如 LLM 余额耗尽）时，atom 留在未落地池，下一轮 scan
         重新进池重试——无单独重试计数，靠重池化自愈（cluster prompt 要求每个
         atom 必落地，永久失败不会发生，失败都是瞬时的）。
@@ -2352,7 +2621,7 @@ class DirectoryWatcher:
                 update_traj_status(wd_id, fname, "discovered", **kw)
 
         # 跨轨迹批处理下 watcher 不再把轨迹置 "clustering"（done 由
-        # _finalize_completed_trajs 按 atom 落地情况标）。任何遗留的 "clustering"
+        # _reconcile_indexed_atoms 按 atom 落地情况标）。任何遗留的 "clustering"
         # （旧 daemon 升级残留 / 历史数据）一律回退 "indexed" 让其重新进池——
         # 已落地的 atom 会在 _collect_cluster_batch 被去重跳过，不会重复消费。
         for fname in get_trajs_by_status(wd_id, "clustering", **kw):
@@ -2364,8 +2633,9 @@ class DirectoryWatcher:
             increment_retry(wd_id, fname, **kw)
             self._stats["retries"] += 1
 
-        # 发现新文件
-        new = discover_trajectories(wd_id, dir_path, **kw)
+        # 发现新文件。稳态轮询只 stat 目录本身；目录项变化时立即协调，已有
+        # 文件被原地覆盖（目录 mtime 可能不变）则由低频全量扫描兜底。
+        new = self._discover_if_needed(wd_id, dir_path, **kw)
         if new:
             self._stats["new_trajs"] += len(new)
             logger.info("[%s] discovered %d new", dir_path.name, len(new))
@@ -2413,9 +2683,18 @@ class DirectoryWatcher:
         # ── 提交 embed 任务（split_done → indexed，整批一个任务） ──
         if self.embed_client is not None:
             split_done_files = get_trajs_by_status(wd_id, "split_done", **kw)
-            if split_done_files and not any(
+            store = self._store_for(dir_path)
+            embed_in_flight = any(
                 i["stage"] == "embed" and i["wd_id"] == wd_id for i in self._futures.values()
-            ):
+            )
+            split_in_flight = any(
+                i["stage"] == "split" and i["wd_id"] == wd_id
+                for i in self._futures.values()
+            )
+            reconcile_due = (
+                not split_in_flight and store.vector_index_reconcile_due()
+            )
+            if (split_done_files or reconcile_due) and not embed_in_flight:
                 fut = self._pools["embed"].submit(
                     self._do_atom_index,
                     dir_path,
@@ -2430,11 +2709,51 @@ class DirectoryWatcher:
                         "stage": "embed",
                     }
 
-        # ── Cluster：只收集到全局 pending，不在目录循环内等待或串行 ──
+        # ── Cluster：逐轨迹收集 pending 并判断完成，不在目录循环内等待 ──
         if self.skill_dir:
-            self._collect_cluster_atoms(
+            self._reconcile_indexed_atoms(
                 dir_path, wd_id, consumed_index, **kw,
             )
+
+    def _discover_if_needed(self, watch_dir_id, dir_path, **kw):
+        """按目录变化增量触发发现，并周期性执行全量 correctness sweep。
+
+        新建、删除、rename/atomic replace 会改变目录身份或 mtime，因此下一轮
+        poll 立即执行 ``discover_trajectories``。普通的原地覆盖不一定改变目录
+        mtime，最迟会在 ``full_reconcile_interval`` 内由全量扫描发现。首次
+        poll、目录被替换和进程重启都无快照，必定全量扫描。
+        """
+        if not kw:
+            kw = self._db_kw()
+        try:
+            directory_stat = dir_path.stat()
+        except OSError:
+            return []
+        directory_token = (
+            directory_stat.st_dev,
+            directory_stat.st_ino,
+            directory_stat.st_mtime_ns,
+        )
+        now = time.monotonic()
+        previous = self._discovery_snapshots.get(watch_dir_id)
+        full_reconcile_due = (
+            previous is None
+            or self.full_reconcile_interval == 0
+            or now - previous[1] >= self.full_reconcile_interval
+        )
+        if (
+            previous is not None
+            and previous[0] == directory_token
+            and not full_reconcile_due
+        ):
+            return []
+
+        discovered = discover_trajectories(watch_dir_id, dir_path, **kw)
+        # Record the token observed before scanning.  If a writer changes the
+        # directory while discovery is running, the next poll sees a mismatch
+        # instead of hiding that race until the periodic sweep.
+        self._discovery_snapshots[watch_dir_id] = (directory_token, now)
+        return discovered
 
     # ───────────────────────────────────────────────────────────
     # Helpers: store / agno factory 按需获取
@@ -2561,8 +2880,8 @@ class DirectoryWatcher:
         store.rebuild_vector_index(self.embed_client)
         return (wd_id, filenames)
 
-    def _collect_cluster_atoms(self, dir_path, wd_id, consumed_index, **kw):
-        """Collect every new unclustered atom into the global pending queue.
+    def _reconcile_indexed_atoms(self, dir_path, wd_id, consumed_index, **kw):
+        """Read each indexed trajectory once, then release its full Atom view.
 
         过滤靠 atom 的耐久 ``clustered`` 标记——已消费 atom（含上一批刚写入的、
         以及进程被 kill 前已消费的）一律跳过。这从机制上同时实现了**去重**与
@@ -2572,21 +2891,51 @@ class DirectoryWatcher:
         atom 看起来又"未消费"而被重复送 LLM。
 
         ``claimed_atoms`` covers both pending and running batches, so repeated
-        scans never enqueue the same atom twice.
+        scans never enqueue the same atom twice.  Collection, completion, and
+        scoring share one stable tuple for the current trajectory; the helper
+        returns before the next trajectory is loaded, bounding retained full
+        Atom content to one trajectory instead of the entire indexed backlog.
         """
         store = self._store_for(dir_path)
         for fname in get_trajs_by_status(wd_id, "indexed", **kw):
-            traj_id = (dir_path / fname).stem
-            for atom in store.list_by_traj(traj_id):
-                if self._atom_consumed(atom, consumed_index):
-                    continue  # 已消费 → 跳过（去重 + 断点续传）
-                if atom.atom_id in self.claimed_atoms:
-                    continue
-                self.claimed_atoms.add(atom.atom_id)
-                self.pending_atoms.append(atom.atom_id)
+            self._reconcile_indexed_traj(
+                store, dir_path, wd_id, fname, consumed_index, **kw,
+            )
+
+    def _reconcile_indexed_traj(
+        self, store, dir_path, wd_id, fname, consumed_index, **kw,
+    ):
+        """Reconcile one trajectory against a single durable Atom snapshot."""
+        traj_id = (dir_path / fname).stem
+        atoms = tuple(store.list_by_traj(traj_id))
+        all_consumed = True
+        for atom in atoms:
+            if self._atom_consumed(atom, consumed_index):
+                continue  # 已消费 → 跳过（去重 + 断点续传）
+            all_consumed = False
+            if atom.atom_id in self.claimed_atoms:
+                continue
+            self.claimed_atoms.add(atom.atom_id)
+            self._round_new_atoms.append(atom.atom_id)
+
+        if not all_consumed:
+            return
+        update_traj_status(
+            wd_id, fname, "done", process_action="clustered", **kw,
+        )
+        # 该轨迹所有 atom 已落盘——ux_score 使用同一份快照，避免再次读 JSON。
+        if self.server_mode:
+            self._score_atoms_for_traj_server(
+                wd_id, fname, atoms=atoms, **kw,
+            )
+        else:
+            self._score_atoms_for_traj(wd_id, fname, atoms=atoms, **kw)
 
     def _submit_cluster_batches(self) -> None:
         """Fill the cluster pool without ever waiting in the watcher thread."""
+        if not self.pending_atoms or self._pools["cluster"].available_capacity <= 0:
+            return
+        self._reconcile_cluster_catalog_if_due()
         while self.pending_atoms:
             batch_size = min(self.cluster_batch_size, len(self.pending_atoms))
             atom_ids = list(self.pending_atoms)[:batch_size]
@@ -2604,6 +2953,34 @@ class DirectoryWatcher:
                 "atom_ids": atom_ids,
             }
             self.cluster_futures.add(future)
+
+    def _reconcile_cluster_catalog_if_due(self) -> None:
+        """低频修复磁盘→catalog 投影漂移；正常 batch 只读 generation 快照。"""
+        if self.db_path is None or self.skill_dir is None:
+            return
+        now = time.monotonic()
+        due = (
+            self._last_cluster_catalog_reconcile is None
+            or self.full_reconcile_interval == 0
+            or now - self._last_cluster_catalog_reconcile
+            >= self.full_reconcile_interval
+        )
+        if not due:
+            return
+        try:
+            from xskill.skill.catalog_store import reconcile_native_skills_catalog
+
+            stats = reconcile_native_skills_catalog(
+                self.skill_dir,
+                db_path=self.db_path,
+            )
+            if stats["changed"]:
+                logger.info("cluster catalog reconciled: %s", stats)
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.warning("cluster catalog reconciliation failed", exc_info=True)
+        finally:
+            # Avoid hammering a broken filesystem/DB on every fast watcher poll.
+            self._last_cluster_catalog_reconcile = now
 
     def _atom_consumed(self, atom, consumed_index) -> bool:
         """atom 是否已被 cluster 消费。耐久标记 ``clustered`` 为主（O(1)，扛得住
@@ -2696,6 +3073,18 @@ class DirectoryWatcher:
             tasks_extracted=total_atoms, **kw,
         )
         self._stats["atoms_extracted"] += n_atoms
+        if n_atoms:
+            try:
+                from xskill.recommend.profile_dirty import (
+                    mark_profile_dirty_for_store,
+                )
+                mark_profile_dirty_for_store(
+                    matched[0]["path"],
+                    reason="atom_split",
+                    db_path=kw.get("db_path"),
+                )
+            except Exception:  # pylint: disable=broad-exception-caught
+                logger.debug("profile dirty mark failed after split", exc_info=True)
 
     def _on_embed_done(self, wd_id, _filename, result, **kw):
         _wd_id, filenames = result
@@ -2709,7 +3098,7 @@ class DirectoryWatcher:
         轨迹状态。
 
         轨迹 done 与具体 batch 解耦——一个 batch 跨多条轨迹，done 由
-        ``_finalize_completed_trajs`` 按"该轨迹 atom 是否全落地"独立判定。
+        ``_reconcile_indexed_atoms`` 按"该轨迹 atom 是否全落地"独立判定。
         """
         n_total = len(results)
         in_skills = [r for r in results if _result_skill_assignments(r)]
@@ -2745,39 +3134,37 @@ class DirectoryWatcher:
             )
         self._stats["atoms_clustered"] += len(in_skills)
 
-    def _finalize_completed_trajs(self, wd_id, dir_path, consumed_index, **kw):
-        """把"所有 atom 都已落进某个 skill .candidates.yml"的 indexed 轨迹标
-        done，并触发该轨迹的 ux 打分。
-
-        这是跨轨迹批处理下 done 的唯一判据：cluster batch 不再 1:1 对应一条
-        轨迹，所以每轮 scan 重新核对每条 indexed 轨迹是否已被完全消费。0-atom
-        轨迹（无可拆 User 回合）视为已消费 → 直接 done。标 done 后该轨迹离开
-        indexed，下一轮不再重复处理 → 打分每条只触发一次。
-
-        判据用 atom 的耐久 ``clustered`` 标记（非 .candidates.yml 成员）——
-        SkillEdit 晋升会清空 .candidates.yml，用它判 done 会让已消费 atom 看起来
-        又未消费、轨迹永不 done。
-        """
-        store = self._store_for(dir_path)
-        for fname in get_trajs_by_status(wd_id, "indexed", **kw):
-            traj_id = (dir_path / fname).stem
-            atoms = store.list_by_traj(traj_id)
-            if any(not self._atom_consumed(a, consumed_index) for a in atoms):
-                continue  # 还有未消费 atom → 等后续 batch 消费
-            update_traj_status(
-                wd_id, fname, "done", process_action="clustered", **kw,
-            )
-            # 该轨迹所有 atom 已落盘——ux_score 应当跑的时机。
-            if self.server_mode:
-                self._score_atoms_for_traj_server(wd_id, fname, **kw)
-            else:
-                self._score_atoms_for_traj(wd_id, fname, **kw)
-
     # ───────────────────────────────────────────────────────────
     # ux_score
     # ───────────────────────────────────────────────────────────
 
-    def _score_atoms_for_traj(self, wd_id, fname, **kw):
+    def _notify_skill_edit_ux_change(self, skill_path: Path, **kw) -> None:
+        """自有 skill 新增 UX 分数后立即重新检查 SkillEdit 门控。
+
+        SkillHub 目录不属于本 watcher 的 SkillEdit 状态机，不能写入自有
+        ``skill_edit_dirty`` root。通知失败只影响触发时效；低频盘→库对账仍会
+        从事实源修复。
+        """
+        if self.skill_dir is None or Path(skill_path).parent != self.skill_dir:
+            return
+        registry_db_path = kw.get("db_path") or self.db_path
+        if registry_db_path is None:
+            return
+        try:
+            from xskill.pipeline.registry import mark_skill_edit_dirty
+
+            mark_skill_edit_dirty(
+                skill_path,
+                reason="ux_score",
+                db_path=registry_db_path,
+            )
+        except Exception:
+            logger.exception(
+                "skill_edit dirty UX notification failed: %s",
+                Path(skill_path).name,
+            )
+
+    def _score_atoms_for_traj(self, wd_id, fname, atoms=None, **kw):
         """对一条已跑完 cluster 的 traj 扫所有 atom 打 ux_score。
 
         前置：
@@ -2814,8 +3201,8 @@ class DirectoryWatcher:
             return
         skill_name = header["skill"]
         traj_id = md_path.stem
-        store = self._store_for(dir_path)
-        atoms = store.list_by_traj(traj_id)
+        if atoms is None:
+            atoms = self._store_for(dir_path).list_by_traj(traj_id)
         if not atoms:
             return
         skill_sub, side, commit_sha = self._resolve_skill_for_scoring(
@@ -2844,6 +3231,8 @@ class DirectoryWatcher:
         # check_and_decide 不再绑在打分链路里——移到 watcher 周期性
         # _check_canary_decisions() 独立轮询，保证灰度系统自治不依赖
         # traj 触发。这里只负责打分落盘。
+        if new_scores:
+            self._notify_skill_edit_ux_change(skill_sub, **kw)
         mark_skill_used(wd_id, fname, skill_name, side, **kw)
         if new_scores:
             self._emit_feedback_event(
@@ -2872,7 +3261,7 @@ class DirectoryWatcher:
             return None, "", ""
         return hub_sub, "main", hub.content_sha(skill_name) or ""
 
-    def _score_atoms_for_traj_server(self, wd_id, fname, **kw):
+    def _score_atoms_for_traj_server(self, wd_id, fname, atoms=None, **kw):
         """CS 模式打分：遍历每个 atom 的 used_skills，对每个用到的 team skill
         用 pick_side(client_id, ...) 现算 side，逐个 score + AtomCanary.append。
 
@@ -2906,8 +3295,8 @@ class DirectoryWatcher:
         if not md_path.is_file():
             return
         traj_id = md_path.stem
-        store = self._store_for(dir_path)
-        atoms = store.list_by_traj(traj_id)
+        if atoms is None:
+            atoms = self._store_for(dir_path).list_by_traj(traj_id)
         if not atoms:
             return
         canary_cfg = CanaryConfig.from_dict(self.config.get("canary", {}))
@@ -2939,7 +3328,13 @@ class DirectoryWatcher:
                     ):
                         entry = new_by_skill.setdefault(
                             skill_name,
-                            {"scores": [], "side": side, "sha": sha})
+                            {
+                                "scores": [],
+                                "side": side,
+                                "sha": sha,
+                                "skill_path": skill_sub,
+                            },
+                        )
                         entry["scores"].append(float(atom.ux_score))
                     self._stats["scores"] += 1
                     used_any = True
@@ -2947,6 +3342,7 @@ class DirectoryWatcher:
                     logger.exception("CS score_atom failed: %s/%s/%s",
                                      fname, atom.atom_id, skill_name)
         for skill_name, entry in new_by_skill.items():
+            self._notify_skill_edit_ux_change(entry["skill_path"], **kw)
             self._emit_feedback_event(
                 wd_id, fname, skill_name=skill_name, traj_id=traj_id,
                 scores=entry["scores"], side=entry["side"],
@@ -3139,6 +3535,7 @@ def _process_atom_task_bound(*, atom_id: str, config: dict,
         agno_agent_factory=agno_agent_factory,
         llm_cfg=config.get("llm", {}),
         logs_dir=logs_dir,
+        db_path=db_path,
         tools=[
             agent_tools.atom_task_read, agent_tools.read_traj,
             agent_tools.skill_read, agent_tools.read_skill_tasks,
@@ -3276,6 +3673,7 @@ def _process_atom_batch_bound(*, atom_ids: list[str], config: dict,
         agno_agent_factory=agno_agent_factory,
         llm_cfg=config.get("llm", {}),
         logs_dir=logs_dir,
+        db_path=db_path,
         tools=[
             agent_tools.atom_task_read, agent_tools.read_traj,
             agent_tools.skill_read, agent_tools.read_skill_tasks,

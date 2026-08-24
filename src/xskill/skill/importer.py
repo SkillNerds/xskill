@@ -212,17 +212,23 @@ def mark_skill_imported(target: Path) -> None:
     )
 
 
+def is_imported_skill(path: Path) -> bool:
+    """目录是否带 ``xskill import`` 纳入标记（``.xskill-origin`` 首行为 import）。"""
+    marker = Path(path) / ORIGIN_FILENAME
+    if not marker.is_file():
+        return False
+    try:
+        line = marker.read_text(encoding="utf-8").strip().splitlines()
+    except OSError:
+        return False
+    return bool(line) and line[0].strip() == ORIGIN_IMPORT
+
+
 def skill_kept_on_rebuild(path: Path) -> bool:
     """用户 ``xskill import`` 纳入的技能，全量 rebuild --force 不得删。"""
     path = Path(path)
-    marker = path / ORIGIN_FILENAME
-    if marker.is_file():
-        try:
-            line = marker.read_text(encoding="utf-8").strip().splitlines()
-        except OSError:
-            line = []
-        if line and line[0].strip() == ORIGIN_IMPORT:
-            return True
+    if is_imported_skill(path):
+        return True
     if not (path / ".git").is_dir():
         return False
     from xskill.skill.git import commit_history_has_subject_prefix

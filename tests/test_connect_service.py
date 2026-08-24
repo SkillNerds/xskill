@@ -127,6 +127,7 @@ def test_systemd_install_writes_unit_and_starts(tmp_path, monkeypatch):
 
 
 def test_linux_selects_detached_when_systemd_unavailable(monkeypatch):
+    monkeypatch.setattr(svc, "_is_wsl", lambda: False)
     monkeypatch.setattr(svc, "_systemd_user_available", lambda: False)
     monkeypatch.setattr(
         svc.DetachedProcessBackend, "install_and_start",

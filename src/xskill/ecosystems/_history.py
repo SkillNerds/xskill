@@ -504,6 +504,51 @@ class InstallHistory:
         """目标是否有尚未确认追加完成的事务日志。"""
         return self._recovery_path(skill, target).is_file()
 
+    def pending_recovery_skills(self, target: str) -> set[str]:
+        """列出指定目标仍有事务日志的 skill，供恢复调度重建活跃集。"""
+        transaction_dir = self.path.parent / ".install_transactions"
+        if not transaction_dir.is_dir():
+            return set()
+        pending: set[str] = set()
+        for recovery_path in sorted(transaction_dir.glob("*.json")):
+            try:
+                candidate = json.loads(recovery_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                logger.error(
+                    "install recovery discovery failed path=%s error_type=%s",
+                    recovery_path,
+                    type(exc).__name__,
+                )
+                raise InstallHistoryCorruptError(
+                    f"invalid install recovery: {recovery_path}"
+                ) from exc
+            if not isinstance(candidate, dict):
+                raise InstallHistoryCorruptError(
+                    f"install recovery is not an object: {recovery_path}"
+                )
+            skill = candidate.get("skill")
+            candidate_target = candidate.get("target")
+            if (
+                not isinstance(skill, str)
+                or not skill
+                or skill in (".", "..")
+                or "/" in skill
+                or "\\" in skill
+                or not isinstance(candidate_target, str)
+            ):
+                raise InstallHistoryCorruptError(
+                    f"invalid install recovery identity: {recovery_path}"
+                )
+            if self._recovery_path(skill, candidate_target) != recovery_path:
+                raise InstallHistoryCorruptError(
+                    f"install recovery path does not match identity: {recovery_path}"
+                )
+            # Reuse the strict schema validation used by transaction recovery.
+            self._read_recovery(skill, candidate_target)
+            if candidate_target == target:
+                pending.add(skill)
+        return pending
+
     @staticmethod
     def _file_signature(
         stat_result: os.stat_result,

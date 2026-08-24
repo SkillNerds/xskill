@@ -300,7 +300,8 @@ commit message 写明本次基于哪些 atom_id 整理，以及**行为级**变�
 - list_files(path) — 列目录文件，返回可直接传给 read_file 的完整路径
 - grep_files(pattern, path="", glob="", max_results=100) — 全文检索（ripgrep），
   返回「文件:行号:内容」；先检索定位、再 read_file 精读，别逐个翻文件
-- write_file(path, content) — 写任意文件到 skill_dir 下
+- write_file(path, content) — 写到 skill_dir 下；相对路径如 SKILL.md、
+  scripts/foo.py，不要加 ./skill/ 前缀
 - commit_baby(skill_name, message) — 仅 baby 分支可用；checkpoint 当前批次
 - commit_to_staging(skill_name, message) — 仅 main 分支可用
 
@@ -402,9 +403,13 @@ class SkillEditAgent:
 
     def _skill_tree_context_lines(self, max_entries: int = 80) -> list[str]:
         """返回当前 skill 根目录与文件树，供 agent 决定是否 read_file。"""
+        cwd = Path.cwd().resolve()
         lines = [
             "",
+            f"process_cwd: {cwd}",
             f"skill_base_path: {self.skill_dir}",
+            "write_file / edit 相对路径按 skill_base_path 解析（SKILL.md、scripts/foo.py）。不要加 ./skill/ 前缀。",
+            "read_file / list_files / grep_files 相对路径按 process_cwd 解析；list_files 返回的完整路径可直接给 read_file。",
             "# 当前 skill 文件树（相对 skill_base_path；需要内容时用 read_file 读取）",
         ]
         entries: list[str] = []

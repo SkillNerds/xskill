@@ -55,6 +55,18 @@
   .pm-log .dim{color:#94a3b8}
   .pm-btn{border:1px solid #e2e8f0;background:#fff;border-radius:7px;padding:4px 8px;cursor:pointer;font-size:11px;color:#334155}
   .pm-btn.ghost{background:transparent}
+  button[data-pm-field].on{background:#f0fdfa;color:#0f766e;box-shadow:inset 0 0 0 1px #99f6e4}
+  .pm-chip-pop{position:fixed;z-index:55;width:248px;background:#fff;border-radius:14px;padding:12px 12px 11px;border:1px solid #e2e8f0;box-shadow:0 18px 40px rgba(15,23,42,.14)}
+  .pm-chip-pop[hidden]{display:none}
+  .pm-chip-pop-title{font-size:13px;font-weight:600;color:#0f172a}
+  .pm-chip-pop-hint{margin-top:4px;font-size:11px;color:#64748b;line-height:1.5}
+  .pm-chip-pop .push-step{margin-top:10px}
+  .pm-chip-pop-err{min-height:16px;margin-top:6px;font-size:11.5px;color:#e11d48}
+  .pm-chip-pop-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
+  .pm-chip-pop-actions .pm-btn{border-radius:10px;padding:5px 12px;font-size:12.5px}
+  .pm-chip-pop-actions .pm-btn.primary{background:#0d9488;border-color:#0d9488;color:#fff}
+  .pm-chip-pop-actions .pm-btn.primary:hover{background:#0f766e}
+  .pm-chip-pop-actions .pm-btn:disabled{opacity:.45;cursor:not-allowed}
   .feed-tri{display:inline-flex;align-items:center;justify-content:center;width:28px;height:22px;border-radius:6px;background:#f1f5f9;color:#64748b;border:none;cursor:pointer}
   .feed-tri:hover:not(:disabled){background:#e2e8f0;color:#0f766e}
   .feed-tri:disabled{opacity:.35;cursor:not-allowed}
@@ -541,6 +553,27 @@
     </div>
 
   </main>
+</div>
+
+<div id="pm-chip-pop" class="pm-chip-pop" hidden role="dialog" aria-labelledby="pm-chip-pop-title">
+  <div class="pm-chip-pop-title" id="pm-chip-pop-title">席位</div>
+  <div class="pm-chip-pop-hint" id="pm-chip-pop-hint"></div>
+  <div class="push-step">
+    <input id="pm-chip-pop-n" class="n" type="number" min="1" step="1" inputmode="numeric" aria-label="数值">
+    <div class="push-step-btns">
+      <button type="button" data-pm-step="1" title="增加" aria-label="增加">
+        <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor"><path d="M5 0l5 6H0z"/></svg>
+      </button>
+      <button type="button" data-pm-step="-1" title="减少" aria-label="减少">
+        <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor"><path d="M5 6L0 0h10z"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="pm-chip-pop-err" id="pm-chip-pop-err"></div>
+  <div class="pm-chip-pop-actions">
+    <button type="button" class="pm-btn" data-pm-chip-cancel>取消</button>
+    <button type="button" class="pm-btn primary" data-pm-chip-save>保存</button>
+  </div>
 </div>
 
 <!-- 登录弹窗 -->

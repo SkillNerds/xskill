@@ -25,6 +25,9 @@ _REQUEST_SOURCE: contextvars.ContextVar[str] = contextvars.ContextVar(
     "xskill_request_source", default="other",
 )
 
+GENERATE_SOURCE = "generate"
+_LIVE_LLM_POOL_WEIGHTS: Optional[dict[str, int]] = None
+
 
 @contextlib.contextmanager
 def request_source(source: str):
@@ -206,8 +209,23 @@ class _WeightedInflightGate:
         self._scores: dict[str, int] = defaultdict(int)
         self._active = 0
 
+    def set_weights(self, weights: Optional[dict[str, int]] = None) -> None:
+        """Replace split/cluster/edit weights. generate 不参与配额比。"""
+        with self._condition:
+            self.weights = {
+                name: max(1, int(weight))
+                for name, weight in (weights or {}).items()
+                if name != GENERATE_SOURCE
+            }
+            self._grant_locked()
+
     def _select_locked(self) -> str:
-        active_sources = [name for name, queue in self._waiting.items() if queue]
+        if self._waiting.get(GENERATE_SOURCE):
+            return GENERATE_SOURCE
+        active_sources = [
+            name for name, queue in self._waiting.items()
+            if queue and name != GENERATE_SOURCE
+        ]
         total_weight = sum(self.weights.get(name, 1) for name in active_sources)
         for name in active_sources:
             self._scores[name] += self.weights.get(name, 1)
@@ -474,6 +492,9 @@ def get_or_create_request_limiter(
 ) -> SharedRequestLimiter:
     """Return the process-wide limiter shared by one request endpoint."""
     key = (kind, base_url)
+    effective_weights = dict(weights or {})
+    if kind == "llm" and _LIVE_LLM_POOL_WEIGHTS is not None:
+        effective_weights.update(_LIVE_LLM_POOL_WEIGHTS)
     with _LIMITERS_LOCK:
         if key not in _LIMITERS:
             bucket = None
@@ -492,9 +513,16 @@ def get_or_create_request_limiter(
                 request_burst=request_burst,
                 token_burst=token_burst,
                 max_inflight=max_inflight,
-                weights=weights,
+                weights=effective_weights,
             )
-        return _LIMITERS[key]
+        limiter = _LIMITERS[key]
+        if (
+            kind == "llm"
+            and limiter._gate is not None
+            and effective_weights
+        ):
+            limiter._gate.set_weights(effective_weights)
+        return limiter
 
 
 def request_limiter_status(kind: str) -> dict[str, int]:
@@ -524,8 +552,30 @@ def end_retry_wait(kind: str, base_url: str) -> None:
         limiter.end_retry_wait()
 
 
+def set_llm_pool_weights(weights: dict[str, int]) -> None:
+    """Hot-update split/cluster/edit LLM weights on every live llm limiter."""
+    global _LIVE_LLM_POOL_WEIGHTS
+    cleaned = {
+        name: max(1, int(weight))
+        for name, weight in weights.items()
+        if name != GENERATE_SOURCE
+    }
+    _LIVE_LLM_POOL_WEIGHTS = cleaned
+    with _LIMITERS_LOCK:
+        limiters = [
+            limiter
+            for (kind, _), limiter in _LIMITERS.items()
+            if kind == "llm"
+        ]
+    for limiter in limiters:
+        if limiter._gate is not None:
+            limiter._gate.set_weights(cleaned)
+
+
 def reset_buckets_for_testing() -> None:
     """测试用 —— 清空注册表,各测试间隔离。"""
+    global _LIVE_LLM_POOL_WEIGHTS
+    _LIVE_LLM_POOL_WEIGHTS = None
     with _LIMITERS_LOCK:
         _LIMITERS.clear()
     with _BUCKETS_LOCK:

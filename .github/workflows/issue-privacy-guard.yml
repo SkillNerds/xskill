@@ -32,7 +32,7 @@ jobs:
       && github.event.sender.type != 'Bot'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # pull_request_target runs in base context; use default ref (base).
           persist-credentials: false

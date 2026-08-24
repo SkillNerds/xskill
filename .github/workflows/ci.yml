@@ -1,19 +1,10 @@
-# CI workflow — see docs/dev-plan/ci-workflow-draft.yml and docs/dev-plan/testing-strategy.md
-#
-# Phase status:
-#   P1            — ut-it (3 OS × 4 py) + verify-build live.
-#   P2/P3         — Codex / OpenCode adapters add tests but don't change this file.
-#   P4 (this PR)  — smoke-e2e body filled: install codex/opencode CLI (real npm)
-#                   + run `pytest tests/e2e/test_smoke.py -k <agent>`.
-#                   real-llm-e2e / live-agent-e2e jobs gated on
-#                   ``secrets.DEEPSEEK_API_KEY`` presence; if secret missing
-#                   they emit a warning and skip gracefully (so forks without
-#                   secrets don't break the run).
+# CI workflow — see docs/dev-plan/testing-strategy.md
 #
 # Trigger matrix:
-#   pull_request         → ut-it + verify-build + smoke/connect/live-agent E2E
-#   push to main         → same + real-llm-e2e (graceful skip without secret)
-#   workflow_dispatch / schedule → same as push to main
+#   pull_request / push to main → risk-axis ut-it + smoke/team lifecycle/BDD/build
+#                                 + Ubuntu live-agent E2E
+#   workflow_dispatch / schedule → same + cross-platform live-agent E2E
+#                                  + real-llm-e2e (graceful skip without secret)
 #   300×300 control-plane stress runs only in the dedicated nightly workflow.
 
 name: CI
@@ -38,11 +29,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        # Split platform and Python compatibility axes instead of running the
+        # full 3 OS × 4 Python Cartesian product.
+        include:
+          - os: ubuntu-latest
+            python-version: "3.9"
+          - os: ubuntu-latest
+            python-version: "3.10"
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.11"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -52,21 +56,31 @@ jobs:
       - name: Install package with dev extras
         run: pip install -e .[dev]
       - name: Run UT + IT
-        # Excludes tests under tests/e2e/ (covered by smoke-e2e job in P4).
+        if: runner.os != 'Windows'
+        # E2E and aimock BDD each have a dedicated job below.
         # ``nightly`` 标记的负载/平台时序敏感测试移出 PR 矩阵，
         # 由 nightly-control-plane-stress.yml 的 nightly-flaky _job 按平台跑。
-        run: pytest tests/ --ignore=tests/e2e -q -m "not nightly"
+        run: >-
+          pytest tests/ --ignore=tests/e2e --ignore=tests/bdd
+          -q -m "not nightly" --durations=25
+      - name: Run UT + IT
+        if: runner.os == 'Windows'
+        # Known timing-sensitive tests carry their own ``flaky`` marker. Do not
+        # globally retry unrelated Windows regressions.
+        run: >-
+          pytest tests/ --ignore=tests/e2e --ignore=tests/bdd
+          -q -m "not nightly" --durations=25
 
   skill-edit-bdd:
     name: skill-edit BDD (aimock)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
       - name: Install xskill test dependencies
@@ -74,20 +88,18 @@ jobs:
       - name: Run all SkillEdit behavior scenarios
         env:
           XSKILL_AIMOCK_E2E: "1"
-        run: pytest tests/bdd -v --timeout=120
+        run: pytest tests/bdd -v --timeout=120 --durations=25
 
   smoke-e2e:
-    name: smoke-e2e (${{ matrix.os }}, ${{ matrix.agent }})
-    needs: ut-it
+    name: smoke-e2e (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        agent: [claude_code, codex, opencode]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -96,34 +108,25 @@ jobs:
         run: git config --global core.autocrlf input
       - name: Install xskill (with dev extras)
         run: pip install -e .[dev]
-      - name: Install agent CLI (codex / opencode)
-        if: matrix.agent != 'claude_code'
-        shell: bash
-        run: |
-          if [ "${{ matrix.agent }}" = "codex" ]; then
-            npm i -g @openai/codex
-            codex --version
-          elif [ "${{ matrix.agent }}" = "opencode" ]; then
-            npm i -g opencode-ai@latest
-            opencode --version
-          fi
       - name: Smoke E2E (stub LLM + fixture, no network)
-        run: pytest tests/e2e/test_smoke.py -v -k "${{ matrix.agent }}"
+        run: pytest tests/e2e/test_smoke.py -v --durations=25
 
   connect-lifecycle-e2e:
-    name: connect lifecycle e2e (linux/wsl mode)
-    needs: ut-it
+    name: connect + team C/S lifecycle e2e (linux/wsl mode)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
       - name: Install xskill (with dev extras)
         run: pip install -e .[dev]
-      - name: Connect lifecycle E2E (local stub, no network)
-        run: pytest tests/e2e/test_connect_lifecycle_e2e.py -v
+      - name: Team lifecycle E2E (local fake LLM, no network)
+        run: >-
+          pytest tests/e2e/test_connect_lifecycle_e2e.py
+          tests/e2e/test_team_cs_e2e.py
+          -v --durations=25
 
   real-llm-e2e:
     name: real-llm-e2e (linux)
@@ -132,8 +135,8 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -163,7 +166,7 @@ jobs:
           # real DeepSeek endpoint via OpenAI-compat base_url. Tests live under
           # ``tests/live/`` and self-gate on ``XSKILL_REAL_LLM_E2E`` env.
           if [ -d tests/live ]; then
-            pytest tests/live -v -m "real_llm" --timeout=300 || exit_code=$?
+            pytest tests/live -v -m "real_llm" --timeout=300 --durations=25 || exit_code=$?
             # continue-on-error at job level lets PRs surface failures without
             # blocking merge to main on transient API errors.
             exit ${exit_code:-0}
@@ -176,19 +179,19 @@ jobs:
 
   live-agent-e2e:
     # **mock LLM** drives real codex/opencode processes — no secret needed.
-    # Runs on every PR across 3 OS × 2 agent matrix.
+    # PRs and main pushes run the canonical Ubuntu contracts. Nightly/manual
+    # runs expand the same job to the complete cross-platform matrix.
     name: live-agent-e2e (${{ matrix.os }}, ${{ matrix.agent }})
-    needs: smoke-e2e
     runs-on: ${{ matrix.os }}
-    continue-on-error: true
+    continue-on-error: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') }}
         agent: [codex, opencode]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -197,14 +200,26 @@ jobs:
       - name: Install codex CLI
         if: matrix.agent == 'codex'
         shell: bash
+        env:
+          PINNED_CODEX_VERSION: "0.149.0"
         run: |
-          npm i -g @openai/codex
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            npm i -g @openai/codex@latest
+          else
+            npm i -g "@openai/codex@${PINNED_CODEX_VERSION}"
+          fi
           codex --version
       - name: Install opencode CLI
         if: matrix.agent == 'opencode'
         shell: bash
+        env:
+          PINNED_OPENCODE_VERSION: "1.18.21"
         run: |
-          npm i -g opencode-ai@latest
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            npm i -g opencode-ai@latest
+          else
+            npm i -g "opencode-ai@${PINNED_OPENCODE_VERSION}"
+          fi
           opencode --version
       - name: Live-agent E2E (real ${{ matrix.agent }} + mock LLM)
         shell: bash
@@ -215,16 +230,16 @@ jobs:
           # No external LLM API key required — fully offline E2E.
           pytest tests/live/test_${{ matrix.agent }}_live.py -v \
             --override-ini="addopts=" \
-            -m live_agent --timeout=300
+            -m live_agent --timeout=300 --durations=25
 
   verify-build:
     name: verify-build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip

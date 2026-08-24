@@ -131,6 +131,8 @@ markers = [
     "estimate: token estimation accuracy behavior",
     "coverage: message field coverage in token estimation",
     "overhead: token estimation overhead bounds",
+    "performance_contract: deterministic hot-path complexity contract",
+    "algorithm_replay: deterministic Atom splitting and routing quality replay",
     "family-band: model family error band behavior",
     "trigger: spill/compact trigger behavior",
     "spill: spill trigger behavior",

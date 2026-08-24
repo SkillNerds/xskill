@@ -13,7 +13,7 @@ import operator
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from xskill.dashboard.auth import require_admin, require_user
@@ -103,6 +103,66 @@ def _client_to_user(registry) -> dict[str, str]:
     for row in registry.list():
         out[row["client_id"]] = row.get("user_name") or row["client_id"]
     return out
+
+
+def _recommendation_history_for_user(
+    *,
+    user: str,
+    registry,
+    db_path: Optional[Path],
+    offset: int,
+    limit: int,
+) -> dict:
+    """Return one user's first-exposure records, newest first.
+
+    ``recommendation_log`` and ``ClientRegistry`` live in separate databases,
+    so resolve all client ids for the user before querying the log.  Anonymous
+    clients keep their client id as the user key, matching ``_client_to_user``.
+    """
+    client_ids = sorted({
+        row["client_id"]
+        for row in registry.list()
+        if (row.get("user_name") or row["client_id"]) == user
+    })
+    if not client_ids:
+        return {
+            "user": user,
+            "total": 0,
+            "offset": offset,
+            "limit": limit,
+            "has_more": False,
+            "exposures": [],
+        }
+
+    placeholders = ",".join("?" for _ in client_ids)
+    with pooled_connection(db_path) as conn:
+        total = int(conn.execute(
+            f"SELECT COUNT(*) FROM recommendation_log "
+            f"WHERE client_id IN ({placeholders})",
+            client_ids,
+        ).fetchone()[0])
+        rows = conn.execute(
+            "SELECT ts,skill,side,bucket,sha FROM recommendation_log "
+            f"WHERE client_id IN ({placeholders}) "
+            "ORDER BY ts DESC,id DESC LIMIT ? OFFSET ?",
+            [*client_ids, limit, offset],
+        ).fetchall()
+
+    exposures = [{
+        "ts": row["ts"] or "",
+        "skill": row["skill"] or "",
+        "side": row["side"] or "main",
+        "bucket": row["bucket"] or "recommended",
+        "sha": row["sha"] or "",
+    } for row in rows]
+    return {
+        "user": user,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(exposures) < total,
+        "exposures": exposures,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +633,12 @@ class ConfigPayload(BaseModel):
     raw: str               # config.yaml 全文(原文编辑器提交)
 
 
+class PipelinePoolPatch(BaseModel):
+    pool: Literal["split", "cluster", "edit"]
+    workers: Optional[int] = Field(default=None, gt=0)
+    llm_weight: Optional[int] = Field(default=None, gt=0)
+
+
 # 热加载范围显式声明(2.9):这些段改完即生效(读方每次现取);
 # llm/embedding/agent_worker/watcher 涉及进程级资源，改动需重启 serve。
 HOT_RELOAD_SECTIONS = ("dashboard", "canary", "recommend", "skillhub")
@@ -626,6 +692,48 @@ def _team_change_is_hot_only(old_cfg: dict, new_cfg: dict) -> bool:
         old_server.pop(key, None)
         new_server.pop(key, None)
     return old_server == new_server
+
+
+HOT_AGENT_WORKER_POOL_KEYS = ("workers", "llm_weight")
+
+
+def _agent_worker_change_is_hot_only(old_cfg: dict, new_cfg: dict) -> bool:
+    """agent_worker 这次是否只改了各池的席位和配额比。"""
+    old_aw = dict(old_cfg.get("agent_worker") or {})
+    new_aw = dict(new_cfg.get("agent_worker") or {})
+    old_rest = {k: v for k, v in old_aw.items() if k != "pools"}
+    new_rest = {k: v for k, v in new_aw.items() if k != "pools"}
+    if old_rest != new_rest:
+        return False
+    old_pools = dict(old_aw.get("pools") or {})
+    new_pools = dict(new_aw.get("pools") or {})
+    if set(old_pools) != set(new_pools):
+        return False
+    for name in old_pools:
+        old_pool = dict(old_pools.get(name) or {})
+        new_pool = dict(new_pools.get(name) or {})
+        for key in HOT_AGENT_WORKER_POOL_KEYS:
+            old_pool.pop(key, None)
+            new_pool.pop(key, None)
+        if old_pool != new_pool:
+            return False
+    return True
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    import os
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".yaml.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _normalize_pref_side(side: Optional[str]) -> Optional[str]:
@@ -1264,6 +1372,23 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
         slots = _manifest_slots_for_user(ctx, user=user_key, db_path=db_path)
         return {"user": user_key, "slots": slots}
 
+    @router.get("/admin/user/{user_key}/recommendations")
+    def admin_user_recommendations(
+        user_key: str,
+        offset: int = Query(0, ge=0),
+        limit: int = Query(20, ge=1, le=100),
+        _=Depends(require_admin),
+    ):
+        """管理抽屉：某用户历史推荐曝光，与当前 manifest 分开分页。"""
+        ctx = _require_team_ctx()
+        return _recommendation_history_for_user(
+            user=user_key,
+            registry=ctx.client_registry,
+            db_path=db_path,
+            offset=offset,
+            limit=limit,
+        )
+
     @router.put("/admin/client/{client_id}/ingest")
     def admin_client_ingest(
         client_id: str,
@@ -1273,6 +1398,7 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
         """暂停或恢复指定 client 的后续轨迹处理；显式目标状态保证幂等。"""
         ctx = _require_team_ctx()
         try:
+            was_paused = ctx.client_registry.is_ingest_paused(client_id)
             row = ctx.client_registry.set_ingest_paused(
                 client_id,
                 req.paused,
@@ -1295,6 +1421,19 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
                 status_code=503,
                 detail="暂停状态已保存，但 watch_dir 同步失败；可安全重试",
             ) from exc
+
+        if was_paused != bool(row.get("ingest_paused")):
+            try:
+                from xskill.recommend.profile_dirty import mark_profile_dirty
+                mark_profile_dirty(
+                    watch_state["dir_name"],
+                    reason="ingest_privacy_changed",
+                    db_path=db_path,
+                )
+            except Exception:  # pylint: disable=broad-exception-caught
+                logger.debug(
+                    "画像脏标记失败: client_id=%s", client_id, exc_info=True,
+                )
 
         logger.info(
             "admin %s set client %s ingest_paused=%s",
@@ -1540,8 +1679,6 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         from xskill.config import CONFIG_PATH
-        import os
-        import tempfile as _tf
         from xskill.api import app as app_mod
 
         old_cfg = dict(app_mod._config or {})
@@ -1549,17 +1686,7 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
             k for k in set(old_cfg) | set(new_cfg)
             if old_cfg.get(k) != new_cfg.get(k))
         # 原子落盘:同目录 tmp + rename,写一半断电不会留半个 config
-        fd, tmp = _tf.mkstemp(dir=str(CONFIG_PATH.parent), suffix=".yaml.tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(req.raw)
-            os.replace(tmp, str(CONFIG_PATH))
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        _atomic_write_text(CONFIG_PATH, req.raw)
         # 原地更新:所有持引用的读方(watcher self.config 等)即刻看到新值
         if app_mod._config is not None:
             app_mod._config.clear()
@@ -1569,10 +1696,50 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
         # team 段若只改了热子键(推荐个数等),现取即生效,别误标要重启
         if "team" in needs_restart and _team_change_is_hot_only(old_cfg, new_cfg):
             needs_restart.remove("team")
+        if (
+            "agent_worker" in needs_restart
+            and _agent_worker_change_is_hot_only(old_cfg, new_cfg)
+        ):
+            needs_restart.remove("agent_worker")
         hot = [k for k in changed if k not in needs_restart]
         logger.info("admin %s reloaded config (hot=%s, needs_restart=%s)",
                     ident["user"], hot, needs_restart)
         return {"ok": True, "hot_reloaded": hot, "needs_restart": needs_restart}
+
+    @router.patch("/admin/pipeline/pools")
+    def admin_pipeline_pools(req: PipelinePoolPatch, ident=Depends(require_admin)):
+        """只改某一栏的席位或配额比，落盘后由 agent-worker 下一轮扫描热更。"""
+        if req.workers is None and req.llm_weight is None:
+            raise HTTPException(
+                status_code=400, detail="workers 与 llm_weight 至少提供一个")
+        from xskill.config import CONFIG_PATH, patch_agent_worker_pool_yaml
+        from xskill.api import app as app_mod
+        if not CONFIG_PATH.is_file():
+            raise HTTPException(
+                status_code=404, detail=f"config 不存在: {CONFIG_PATH}")
+        raw = CONFIG_PATH.read_text(encoding="utf-8")
+        try:
+            new_raw = patch_agent_worker_pool_yaml(
+                raw, req.pool, workers=req.workers, llm_weight=req.llm_weight,
+            )
+            new_cfg = _validate_config_text(new_raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _atomic_write_text(CONFIG_PATH, new_raw)
+        if app_mod._config is not None:
+            app_mod._config.clear()
+            app_mod._config.update(new_cfg)
+        logger.info(
+            "admin %s patched pipeline pool %s workers=%s llm_weight=%s",
+            ident["user"], req.pool, req.workers, req.llm_weight,
+        )
+        return {
+            "ok": True,
+            "pool": req.pool,
+            "workers": req.workers,
+            "llm_weight": req.llm_weight,
+            "needs_restart": [],
+        }
 
     return router
 

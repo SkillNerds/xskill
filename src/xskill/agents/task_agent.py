@@ -48,6 +48,7 @@ from operator import attrgetter
 from pathlib import Path
 from typing import Any, Callable
 
+from xskill.agents.atom_text import dominant_language
 from xskill.config import interests_config
 from xskill.pipeline.atom import AtomTask, AtomTaskStore
 
@@ -98,6 +99,8 @@ SYSTEM_PROMPT = """你是 AtomTask 拆分员。给你一条 agent 与用户的�
 3. **不要**因为 tool 切换、代码块出现、子目录变化、agent 自我更正等结构性事件
    而切——避免过度拆分。
 4. 如果整条轨迹只完成一件事,输出 1 个 atom 即可。不要硬凑数量。
+5. **禁止同义重复**：同一目标的澄清、加细、催促不得换一种措辞再提交第二个
+   atom。拿不准就用 ``look``；确认仍是同一目标时保留为一个 atom。
 
 边界与坐标（重要）
 ==================
@@ -133,6 +136,15 @@ SYSTEM_PROMPT = """你是 AtomTask 拆分员。给你一条 agent 与用户的�
 - tags（3-5 个,小写下划线）
 - used_skills（这段对话里 agent 实际触发了哪些 skill 名；没有就传空列表）
 - ux_score（1~10 整数；只评这段 atom 的用户体验,不评整条 traj）
+
+输出语言（重要）
+================
+- 元信息里的 ``source_language`` 是从源轨迹 **User 消息正文**确定性识别的主导
+  语言；代码、路径、URL 和命令不参与识别。
+- ``intent`` 和 ``summary`` 必须使用 ``source_language``。代码、路径、命令及
+  专有名词保持原文；本规则暂不约束 tags / used_skills。
+- ``submit_atom`` 会拒绝与已知源语言明显相反的 intent/summary；收到 error 后按
+  source_language 改正再提交。source_language=unknown 时按用户自然语言上下文写。
 
 ux_score 严格分档表
 ====================
@@ -181,6 +193,7 @@ USER_MSG_TEMPLATE = """\
   trajid: {traj_id}
   trajpath: {traj_path}
   source_model: {source_model}
+  source_language: {source_language}
   total_lines: {total_lines}
   上次拆分到（续接点）: 第 {resume_line} 行
 
@@ -287,8 +300,24 @@ def _extract_user_queries(lines: list[str]) -> list[tuple[int, str]]:
     用户意图边界,不让 agent 误切。摘要取该回合标题后第一条非空、非新标题的
     行,截 80 字。
     """
-    out: list[tuple[int, str]] = []
-    n = len(lines)
+    return [
+        (line_no, _first_nonblank(block_lines)[:80])
+        for line_no, block_lines in _extract_user_blocks(lines).items()
+    ]
+
+
+def _first_nonblank(lines: list[str]) -> str:
+    """Return the first nonblank line in one user-message body."""
+    for line in lines:
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _extract_user_blocks(lines: list[str]) -> dict[int, list[str]]:
+    """Return non-noise user-message bodies keyed by their 1-based header line."""
+    out: dict[int, list[str]] = {}
     for i, line in enumerate(lines):
         body = line.rstrip("\r\n").rstrip()
         if not _is_user_header(body):
@@ -296,15 +325,7 @@ def _extract_user_queries(lines: list[str]) -> list[tuple[int, str]]:
         block = _block_after_user(lines, i)
         if _is_machine_noise_block(block):
             continue
-        snippet = ""
-        for j in range(i + 1, n):
-            t = lines[j].strip()
-            if t.startswith("## "):
-                break
-            if t:
-                snippet = t
-                break
-        out.append((i + 1, snippet[:80]))
+        out[i + 1] = block
     return out
 
 
@@ -365,7 +386,16 @@ class TaskAgent:
         if resume_line > total_lines:
             return []  # 没有新增行,省一次 LLM 调用
 
-        queries = _extract_user_queries(lines)
+        user_blocks = _extract_user_blocks(lines)
+        queries = [
+            (line_no, _first_nonblank(block_lines)[:80])
+            for line_no, block_lines in user_blocks.items()
+        ]
+        source_language = dominant_language(
+            line
+            for block_lines in user_blocks.values()
+            for line in block_lines
+        )
         # 续拆：只保留 ≥ resume_line 的 User 回合作为可切边界。
         new_queries = [(ln, snip) for ln, snip in queries if ln >= resume_line]
         if not new_queries:
@@ -376,6 +406,11 @@ class TaskAgent:
 
         prior_atoms = self.store.list_by_traj(traj_id)
         prior_atom = prior_atoms[-1] if prior_atoms else None
+        # Do not feed ``prior_atom`` into the in-run deduper.  A persisted Atom
+        # may already have been embedded, clustered, and consumed by SkillEdit;
+        # mutating it here would require an explicit downstream invalidation and
+        # replay transaction.  This PR only compacts adjacent submissions within
+        # one TaskAgent run.
         valid_lines = [ln for ln, _ in new_queries]
 
         submitted = self._run_agent(
@@ -383,6 +418,7 @@ class TaskAgent:
             resume_line=resume_line, prior_atoms=prior_atoms,
             all_lines=lines, total_lines=total_lines,
             queries=queries, valid_lines=valid_lines,
+            user_blocks=user_blocks, source_language=source_language,
         )
         if not submitted:
             # 有 User 轮却 0 提交 → 静默空,绝不收下（设计 §4.4）。
@@ -425,10 +461,9 @@ class TaskAgent:
         if prior_atom is not None:
             new_atoms[0].pre_atom_id = prior_atom.atom_id
             prior_atom.post_atom_id = new_atoms[0].atom_id
-            self.store.save(prior_atom)
-
-        for a in new_atoms:
-            self.store.save(a)
+        self.store.save_many(
+            ([prior_atom] if prior_atom is not None else []) + new_atoms
+        )
 
         self._assert_eof_coverage(traj_id, resume_line=resume_line,
                                   total_lines=total_lines)
@@ -473,7 +508,7 @@ class TaskAgent:
 
     def _run_agent(self, *, traj_id, traj_path, source_model, resume_line,
                    prior_atoms, all_lines, total_lines, queries,
-                   valid_lines) -> list[dict]:
+                   valid_lines, user_blocks, source_language) -> list[dict]:
         """构造 agent + run-scoped 工具,跑一趟工具调用循环。
 
         返回按提交顺序的 ``submitted`` 列表。``submit_atom`` 把校验通过的 atom
@@ -486,6 +521,7 @@ class TaskAgent:
             traj_id=traj_id, traj_path=traj_path, source_model=source_model,
             resume_line=resume_line, prior_atoms=prior_atoms,
             total_lines=total_lines, queries=queries,
+            source_language=source_language,
         )
         from xskill.agents import agent_tools
         tools = agent_tools.make_task_agent_tools(
@@ -495,6 +531,11 @@ class TaskAgent:
             total_lines=total_lines,
             all_lines=all_lines,
             user_msg=user_msg,
+            source_language=source_language,
+            user_blocks={
+                line_no: "".join(user_blocks[line_no])
+                for line_no in valid_lines
+            },
             not_fit_reasons=not_fit_reasons if self.interests else None,
         )
         agent = self.agno_agent_factory(
@@ -561,7 +602,8 @@ class TaskAgent:
         return text[:200] + f"\n\n[省略 {char_off - 200} 字符]\n\n"
 
     def _build_user_msg(self, *, traj_id, traj_path, source_model, resume_line,
-                        prior_atoms, total_lines, queries) -> str:
+                        prior_atoms, total_lines, queries,
+                        source_language) -> str:
         """构造 user 消息（discover / update 共用一份模板）。
 
         context-0 只放 User 提问地图（不含 assistant 正文）+ 元信息 + 续拆衔接块。
@@ -594,6 +636,7 @@ class TaskAgent:
             traj_id=str(traj_id),
             traj_path=str(traj_path),
             source_model=source_model or "(unknown)",
+            source_language=str(source_language),
             total_lines=str(total_lines),
             resume_line=str(resume_line),
             prior_block=prior_block,

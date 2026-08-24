@@ -46,6 +46,7 @@ canary:
 watcher:
   poll_interval: 30      # 每隔 30 秒扫描一次所有 watch_dir，检测新轨迹
                          # 调小加快入库，但会增加 LLM 调用频率
+  full_reconcile_interval: 60 # 目录无变化时跳过全量扫描；原地覆盖最迟在此周期发现
 
 agent_worker:
   pools:

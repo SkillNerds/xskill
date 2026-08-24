@@ -11,16 +11,27 @@
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# Virtual environments and build trees may contain third-party activation scripts.
+GENERATED_DIRS = {".git", ".venv", "venv", "node_modules", "build", "dist"}
 
-PS1_FILES = sorted(
-    p for p in REPO_ROOT.rglob("*.ps1")
-    if ".git" not in p.parts and "node_modules" not in p.parts
-)
+
+def _project_ps1_files(root: Path) -> list[Path]:
+    files = []
+    for directory, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in GENERATED_DIRS]
+        files.extend(
+            Path(directory, name) for name in filenames if name.endswith(".ps1")
+        )
+    return sorted(files)
+
+
+PS1_FILES = _project_ps1_files(REPO_ROOT)
 
 UTF8_BOM = b"\xef\xbb\xbf"
 
@@ -28,6 +39,17 @@ UTF8_BOM = b"\xef\xbb\xbf"
 def test_found_ps1_scripts():
     """守护自身有效性：仓库确实有 .ps1，glob 没有悄悄失效。"""
     assert PS1_FILES, "仓库里应存在 .ps1 脚本；若已全部删除请同步删除本测试"
+
+
+def test_generated_ps1_scripts_are_not_collected(tmp_path):
+    source = tmp_path / "scripts" / "source.ps1"
+    generated = tmp_path / ".venv" / "bin" / "activate.ps1"
+    source.parent.mkdir()
+    generated.parent.mkdir(parents=True)
+    source.touch()
+    generated.touch()
+
+    assert _project_ps1_files(tmp_path) == [source]
 
 
 @pytest.mark.parametrize("ps1", PS1_FILES, ids=lambda p: str(p.relative_to(REPO_ROOT)))

@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
+import gc
 import threading
 import time
 from unittest.mock import Mock
+import weakref
+
+import pytest
 
 from xskill.pipeline.atom import AtomTaskStore
 from xskill.pipeline.registry import (
@@ -244,6 +248,153 @@ def _seed_indexed_with_atoms(wd, store, db, n_trajs, atoms_per_traj):
     for n in range(n_trajs):
         update_traj_status(wd_id, f"traj_{n}.md", "indexed", db_path=db)
     return wd_id
+
+
+class TestPollAtomSnapshot:
+    """每条轨迹共享 Atom 视图；下一条前释放，下一轮重读 durable JSON。"""
+
+    @pytest.mark.performance_contract
+    def test_indexed_traj_is_loaded_once_per_poll(self, tmp_path, monkeypatch):
+        db = tmp_path / "test.db"
+        wd = tmp_path / "wd"
+        wd.mkdir()
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        store = AtomTaskStore(root=wd)
+        wd_id = _seed_indexed_with_atoms(
+            wd, store, db, n_trajs=1, atoms_per_traj=1,
+        )
+        watcher = DirectoryWatcher(
+            llm=None,
+            embed_client=None,
+            config={},
+            skill_dir=skill_dir,
+            poll_interval=0.0,
+            pool_config=pool_config(workers=1),
+            db_path=db,
+            store=store,
+            home_root=tmp_path,
+        )
+        monkeypatch.setattr(watcher, "_submit_cluster_batches", lambda: None)
+        scored = []
+        monkeypatch.setattr(
+            watcher,
+            "_score_atoms_for_traj",
+            lambda _wd_id, _fname, atoms=None, **_kw: scored.append(atoms),
+        )
+
+        loaded = []
+        original_list_by_traj = store.list_by_traj
+
+        def counted_list_by_traj(traj_id):
+            loaded.append(traj_id)
+            return original_list_by_traj(traj_id)
+
+        monkeypatch.setattr(store, "list_by_traj", counted_list_by_traj)
+
+        watcher._scan_once()
+
+        assert loaded == ["traj_0"]
+        assert get_trajs_by_status(wd_id, "indexed", db_path=db) == [
+            "traj_0.md"
+        ]
+
+        # 本轮之后落盘的 cluster 结果不改写旧快照；下一轮重新读取并完成轨迹。
+        atom = original_list_by_traj("traj_0")[0]
+        atom.clustered = True
+        store.save(atom)
+
+        watcher._scan_once()
+
+        assert loaded == ["traj_0", "traj_0"]
+        assert get_trajs_by_status(wd_id, "done", db_path=db) == ["traj_0.md"]
+        assert len(scored) == 1
+        assert isinstance(scored[0], tuple)
+        assert scored[0][0].clustered is True
+        watcher.stop()
+
+    def test_empty_traj_snapshot_is_reused_for_finalization(
+        self, tmp_path, monkeypatch,
+    ):
+        db = tmp_path / "test.db"
+        wd = tmp_path / "wd"
+        wd.mkdir()
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        store = AtomTaskStore(root=wd)
+        wd_id = _seed_indexed_with_atoms(
+            wd, store, db, n_trajs=1, atoms_per_traj=0,
+        )
+        watcher = DirectoryWatcher(
+            llm=None,
+            embed_client=None,
+            config={},
+            skill_dir=skill_dir,
+            poll_interval=0.0,
+            pool_config=pool_config(workers=1),
+            db_path=db,
+            store=store,
+            home_root=tmp_path,
+        )
+
+        loaded = []
+        original_list_by_traj = store.list_by_traj
+
+        def counted_list_by_traj(traj_id):
+            loaded.append(traj_id)
+            return original_list_by_traj(traj_id)
+
+        monkeypatch.setattr(store, "list_by_traj", counted_list_by_traj)
+
+        watcher._scan_once()
+
+        assert loaded == ["traj_0"]
+        assert get_trajs_by_status(wd_id, "done", db_path=db) == ["traj_0.md"]
+        watcher.stop()
+
+    def test_full_atom_snapshot_is_released_before_loading_next_traj(
+        self, tmp_path, monkeypatch,
+    ):
+        db = tmp_path / "test.db"
+        wd = tmp_path / "wd"
+        wd.mkdir()
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        store = AtomTaskStore(root=wd)
+        _seed_indexed_with_atoms(
+            wd, store, db, n_trajs=3, atoms_per_traj=1,
+        )
+        watcher = DirectoryWatcher(
+            llm=None,
+            embed_client=None,
+            config={},
+            skill_dir=skill_dir,
+            poll_interval=0.0,
+            pool_config=pool_config(workers=1),
+            db_path=db,
+            store=store,
+            home_root=tmp_path,
+        )
+        monkeypatch.setattr(watcher, "_submit_cluster_batches", lambda: None)
+
+        previous_atom = None
+        original_list_by_traj = store.list_by_traj
+
+        def tracked_list_by_traj(traj_id):
+            nonlocal previous_atom
+            if previous_atom is not None:
+                gc.collect()
+                assert previous_atom() is None
+            atoms = original_list_by_traj(traj_id)
+            previous_atom = weakref.ref(atoms[0])
+            return atoms
+
+        monkeypatch.setattr(store, "list_by_traj", tracked_list_by_traj)
+
+        watcher._scan_once()
+
+        assert watcher._stats["polls"] == 1
+        watcher.stop()
 
 
 class TestClusterParallel:

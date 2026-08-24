@@ -11,6 +11,8 @@ import site
 
 import pytest
 
+from xskill.team.client.service import _is_wsl
+
 
 class _LocalTeamAndPypiHandler(BaseHTTPRequestHandler):
     def _json(self, payload: dict, status: int = 200) -> None:
@@ -58,7 +60,10 @@ def _json_output(result: subprocess.CompletedProcess) -> dict:
     return json.loads(result.stdout)
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux service E2E")
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux") or _is_wsl(),
+    reason="non-WSL Linux service E2E",
+)
 def test_linux_connect_update_status_start_stop_lifecycle(tmp_path):
     """
     AC: 普通 Linux 用户关闭终端后 connect 常驻，且 start/stop/status/update 可用。

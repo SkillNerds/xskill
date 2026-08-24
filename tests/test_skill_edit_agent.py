@@ -343,6 +343,10 @@ class TestMainNeedsUxScoreBeforeStaging:
         assert agent.maybe_run() is True
         assert "read_file" in _InspectingStagingStubAgno.tool_names
         assert f"skill_base_path: {skill_dir}" in _InspectingStagingStubAgno.user_msg
+        assert f"process_cwd: {Path.cwd().resolve()}" in _InspectingStagingStubAgno.user_msg
+        assert "write_file / edit 相对路径按 skill_base_path 解析" in (
+            _InspectingStagingStubAgno.user_msg
+        )
         assert "scripts/helper.py" in _InspectingStagingStubAgno.user_msg
 
 

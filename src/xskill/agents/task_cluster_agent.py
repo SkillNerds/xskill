@@ -19,6 +19,8 @@ budget 控制（``build_skill_catalog_block``）：
 from __future__ import annotations
 
 import logging
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -31,6 +33,25 @@ logger = logging.getLogger("xskill.task_cluster_agent")
 
 _DESC_MIN_CHARS = 75   # 约 25 token；低于这个值就只留 name
 _DESC_HARD_CAP = 300   # 单条 desc 上限（即使预算够也别全塞）
+_CATALOG_CACHE_MAX_ENTRIES = 32
+_CATALOG_CACHE_MAX_CHARS = 1_000_000
+
+
+class _CatalogFlight:
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.value = ""
+        self.error: BaseException | None = None
+
+
+_CATALOG_CACHE_LOCK = threading.Lock()
+_CATALOG_CACHE: OrderedDict[
+    tuple[str, int, int, str, int, int], str
+] = OrderedDict()
+_CATALOG_CACHE_CHARS = 0
+_CATALOG_FLIGHTS: dict[
+    tuple[str, int, int, str, int, int], _CatalogFlight
+] = {}
 
 
 def _scan_skill_state(skill_dir: Path) -> list[tuple[str, str, str]]:
@@ -103,18 +124,11 @@ def _scan_skill_state(skill_dir: Path) -> list[tuple[str, str, str]]:
     return out
 
 
-def build_skill_catalog_block(skill_dir: Path, max_chars: int) -> str:
-    """构造 sysprompt 中的 skill 路由表块。
-
-    展示**所有** skill 目录（含 wip 空骨架），让 cluster agent 看到完整画
-    像——避免对近义场景反复 ``new_skill_folder`` 创建近义 slug。
-
-    每行格式：``- <name>[<state>]: <desc>``
-    state 有 main / staging / main+staging / wip 四种。
-
-    无 skill 时返回 ``(no skills yet)``。
-    """
-    entries = _scan_skill_state(skill_dir)
+def _format_skill_catalog_block(
+    entries: list[tuple[str, str, str]],
+    max_chars: int,
+) -> str:
+    """把稳定目录快照格式化为 sysprompt 路由表。"""
     if not entries:
         return "(no skills yet)"
 
@@ -136,6 +150,137 @@ def build_skill_catalog_block(skill_dir: Path, max_chars: int) -> str:
             truncated = d[:cap] + ("…" if len(d) > cap else "")
             out_lines.append(f"- {n}[{s}]: {truncated}")
     return "\n".join(out_lines)
+
+
+def _projected_catalog_entries(rows: list[dict]) -> list[tuple[str, str, str]]:
+    entries: list[tuple[str, str, str]] = []
+    for row in rows:
+        name = str(row["name"])
+        state = str(row["state"])
+        if state == "unknown":
+            desc = "(skill 无 git 仓库)"
+        else:
+            desc = str(row.get("description") or "")
+        if state == "baby":
+            count = int(row.get("candidates_count") or 0)
+            suffix = f"({count} cand in buffer)" if desc else f"({count} cand)"
+            desc = f"{desc} {suffix}" if desc else suffix
+        entries.append((name, state, desc))
+    return entries
+
+
+def _cache_catalog_block(
+    key: tuple[str, int, int, str, int, int],
+    builder: Callable[[], str],
+) -> str:
+    """同 generation 单飞构建；LRU 条目数和总字符数双重有界。"""
+    global _CATALOG_CACHE_CHARS  # pylint: disable=global-statement
+    with _CATALOG_CACHE_LOCK:
+        cached = _CATALOG_CACHE.get(key)
+        if cached is not None:
+            _CATALOG_CACHE.move_to_end(key)
+            return cached
+        flight = _CATALOG_FLIGHTS.get(key)
+        if flight is None:
+            flight = _CatalogFlight()
+            _CATALOG_FLIGHTS[key] = flight
+            owner = True
+        else:
+            owner = False
+
+    if not owner:
+        flight.done.wait()
+        if flight.error is not None:
+            raise flight.error
+        return flight.value
+
+    try:
+        value = builder()
+    except BaseException as error:
+        flight.error = error
+        raise
+    else:
+        flight.value = value
+        with _CATALOG_CACHE_LOCK:
+            if len(value) <= _CATALOG_CACHE_MAX_CHARS:
+                _CATALOG_CACHE[key] = value
+                _CATALOG_CACHE.move_to_end(key)
+                _CATALOG_CACHE_CHARS += len(value)
+                while (
+                    len(_CATALOG_CACHE) > _CATALOG_CACHE_MAX_ENTRIES
+                    or _CATALOG_CACHE_CHARS > _CATALOG_CACHE_MAX_CHARS
+                ):
+                    _, evicted = _CATALOG_CACHE.popitem(last=False)
+                    _CATALOG_CACHE_CHARS -= len(evicted)
+        return value
+    finally:
+        with _CATALOG_CACHE_LOCK:
+            if _CATALOG_FLIGHTS.get(key) is flight:
+                _CATALOG_FLIGHTS.pop(key, None)
+            flight.done.set()
+
+
+def _clear_catalog_block_cache() -> None:
+    """测试和显式进程内重置用；generation 仍是生产失效机制。"""
+    global _CATALOG_CACHE_CHARS  # pylint: disable=global-statement
+    with _CATALOG_CACHE_LOCK:
+        _CATALOG_CACHE.clear()
+        _CATALOG_CACHE_CHARS = 0
+
+
+def _catalog_db_identity(db_path: Path) -> tuple[int, int]:
+    stat = db_path.stat()
+    return stat.st_dev, stat.st_ino
+
+
+def _projected_catalog_block(skill_dir: Path, max_chars: int, db_path: Path) -> str:
+    from xskill.skill.catalog_store import (
+        catalog_root_key,
+        list_native_cluster_catalog,
+        native_catalog_generation,
+    )
+
+    root = catalog_root_key(skill_dir)
+    resolved_path = Path(db_path).expanduser().resolve(strict=False)
+    generation = native_catalog_generation(skill_dir, db_path=Path(db_path))
+    db_device, db_inode = _catalog_db_identity(resolved_path)
+    key = (
+        str(resolved_path), db_device, db_inode,
+        root, int(max_chars), generation,
+    )
+
+    def build() -> str:
+        rows = list_native_cluster_catalog(skill_dir, db_path=Path(db_path))
+        return _format_skill_catalog_block(_projected_catalog_entries(rows), max_chars)
+
+    return _cache_catalog_block(key, build)
+
+
+def build_skill_catalog_block(
+    skill_dir: Path,
+    max_chars: int,
+    *,
+    db_path: Path | None = None,
+) -> str:
+    """构造 sysprompt 中的 skill 路由表块。
+
+    展示**所有** skill 目录（含 wip 空骨架），让 cluster agent 看到完整画
+    像——避免对近义场景反复 ``new_skill_folder`` 创建近义 slug。
+
+    每行格式：``- <name>[<state>]: <desc>``
+    state 有 main / staging / main+staging / wip 四种。
+
+    无 skill 时返回 ``(no skills yet)``。
+    """
+    if db_path is not None:
+        try:
+            return _projected_catalog_block(Path(skill_dir), max_chars, Path(db_path))
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "cluster catalog projection unavailable; falling back to disk scan",
+                exc_info=True,
+            )
+    return _format_skill_catalog_block(_scan_skill_state(skill_dir), max_chars)
 
 
 SYSTEM_PROMPT_TEMPLATE = """你是 TaskClusterAgent。我会给你一个或多个 AtomTask（每个是
@@ -261,16 +406,19 @@ class TaskClusterAgent:
     # 更大，按 plan 用 20% 作为软门槛）
     sysprompt_budget_chars: int = 25000
     logs_dir: Path | None = None
+    db_path: Path | None = None
 
     def __post_init__(self) -> None:
         self.skill_dir = Path(self.skill_dir)
         if self.logs_dir is not None:
             self.logs_dir = Path(self.logs_dir)
+        if self.db_path is not None:
+            self.db_path = Path(self.db_path)
 
     def process(self, atom: AtomTask) -> str:
         """跑一次 cluster 决策，返回 agent 的 final content（日志用）。"""
         catalog = build_skill_catalog_block(
-            self.skill_dir, self.sysprompt_budget_chars,
+            self.skill_dir, self.sysprompt_budget_chars, db_path=self.db_path,
         )
         sysprompt = SYSTEM_PROMPT_TEMPLATE.format(skill_catalog=catalog)
 
@@ -319,7 +467,7 @@ class TaskClusterAgent:
         if not atoms:
             return ""
         catalog = build_skill_catalog_block(
-            self.skill_dir, self.sysprompt_budget_chars,
+            self.skill_dir, self.sysprompt_budget_chars, db_path=self.db_path,
         )
         sysprompt = (
             SYSTEM_PROMPT_TEMPLATE.format(skill_catalog=catalog)
