@@ -14,6 +14,7 @@ _EVENT_SNIP = 180
 _MAX_EVENTS = 8
 _CARD_CHAR_BUDGET = 2200
 _JSON_CARD_MAX_BYTES = 400_000
+_MD_CARD_MAX_BYTES = 100_000
 _SCAN_MAX_FILES = 400
 
 
@@ -60,6 +61,16 @@ def _session_roots() -> list[Path]:
     return roots
 
 
+def _is_within_root(path: Path, root: Path) -> bool:
+    if root.is_file():
+        return path == root
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 def _iter_traj_files(roots: list[Path]) -> list[Path]:
     from xskill.agents.agent_tools import _is_blocked_read_path
 
@@ -70,7 +81,8 @@ def _iter_traj_files(roots: list[Path]) -> list[Path]:
             continue
         candidates: list[Path] = []
         if root.is_file():
-            candidates.append(root)
+            if root.suffix in {".json", ".md"} and _TRAJ_FILE.match(root.name):
+                candidates.append(root)
         else:
             try:
                 for path in root.rglob("traj_*.*"):
@@ -84,19 +96,48 @@ def _iter_traj_files(roots: list[Path]) -> list[Path]:
                         candidates.append(path)
             except OSError:
                 continue
-        for path in candidates:
+        for path in sorted(candidates):
             try:
                 resolved = path.resolve()
             except OSError:
-                resolved = path
+                continue
             key = str(resolved)
-            if key in seen or _is_blocked_read_path(resolved):
+            if (
+                key in seen
+                or not _is_within_root(resolved, root)
+                or _is_blocked_read_path(resolved)
+            ):
                 continue
             seen.add(key)
             found.append(resolved)
             if len(found) >= _SCAN_MAX_FILES:
                 return found
     return found
+
+
+def _session_file_index(roots: list[Path]) -> dict[str, dict[str, Path]]:
+    index: dict[str, dict[str, Path]] = {}
+    for path in _iter_traj_files(roots):
+        sidecars = index.setdefault(path.stem, {})
+        sidecars.setdefault(path.suffix, path)
+    return index
+
+
+def _read_text_prefix(path: Path, max_bytes: int) -> tuple[str, bool]:
+    with path.open("rb") as handle:
+        raw = handle.read(max_bytes + 1)
+    truncated = len(raw) > max_bytes
+    return raw[:max_bytes].decode("utf-8", errors="replace"), truncated
+
+
+def _strip_frontmatter(text: str) -> str:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return text
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            return "\n".join(lines[index + 1 :]).lstrip()
+    return text
 
 
 def _timeline_lines(events: list[dict[str, Any]]) -> list[str]:
@@ -140,15 +181,18 @@ def _timeline_lines(events: list[dict[str, Any]]) -> list[str]:
 def summarize_session_file(path: Path) -> dict[str, Any]:
     """把一条会话文件收成短摘要，不读 17MB 原文进上下文。"""
     traj_id = path.stem
-    size = path.stat().st_size if path.is_file() else 0
+    try:
+        size = path.stat().st_size if path.is_file() else 0
+    except OSError:
+        size = 0
     item: dict[str, Any] = {
         "traj_id": traj_id,
-        "path": str(path),
         "bytes": size,
         "source": "session",
         "query": "",
         "turns": 0,
         "tools": [],
+        "_provided": set(),
     }
     if path.suffix == ".json":
         if size > _JSON_CARD_MAX_BYTES:
@@ -160,11 +204,37 @@ def summarize_session_file(path: Path) -> dict[str, Any]:
             item["query"] = "(json 读失败)"
             return item
         if isinstance(obj, dict):
-            item["source"] = str(obj.get("source") or obj.get("category") or "json")
-            item["query"] = _one_line(_secret_scrub(str(obj.get("query") or "")), _QUERY_SNIP)
+            source = obj.get("source") or obj.get("category")
+            if source:
+                item["source"] = str(source)
+                item["_provided"].add("source")
+            else:
+                item["source"] = "json"
+            if obj.get("query"):
+                item["query"] = _one_line(
+                    _secret_scrub(str(obj["query"])), _QUERY_SNIP
+                )
+                item["_provided"].add("query")
             timeline = obj.get("timeline") or []
-            item["turns"] = int(obj.get("total_turns") or (len(timeline) if isinstance(timeline, list) else 0) or 0)
-            tools = [str(x) for x in (obj.get("tool_names") or []) if x]
+            timeline = timeline if isinstance(timeline, list) else []
+            total_turns = obj.get("total_turns")
+            if (
+                isinstance(total_turns, int)
+                and not isinstance(total_turns, bool)
+                and total_turns >= 0
+            ):
+                item["turns"] = total_turns
+                item["_provided"].add("turns")
+            else:
+                item["turns"] = len(timeline)
+            raw_tools = obj.get("tool_names")
+            tools = (
+                [str(value) for value in raw_tools if isinstance(value, str) and value]
+                if isinstance(raw_tools, list)
+                else []
+            )
+            if isinstance(raw_tools, list):
+                item["_provided"].add("tools")
             if not tools and isinstance(timeline, list):
                 tools = sorted({
                     str(ev.get("tool"))
@@ -172,10 +242,10 @@ def summarize_session_file(path: Path) -> dict[str, Any]:
                     if isinstance(ev, dict) and ev.get("tool")
                 })
             item["tools"] = tools[:12]
-            item["_timeline"] = [ev for ev in timeline if isinstance(ev, dict)] if isinstance(timeline, list) else []
+            item["_timeline"] = [ev for ev in timeline if isinstance(ev, dict)]
         return item
     try:
-        text = path.read_text(encoding="utf-8")
+        text, truncated = _read_text_prefix(path, _MD_CARD_MAX_BYTES)
     except OSError:
         item["query"] = "(md 读失败)"
         return item
@@ -185,20 +255,48 @@ def summarize_session_file(path: Path) -> dict[str, Any]:
             item["traj_id"] = line.split(":", 1)[1].strip() or traj_id
         if line.startswith("source:"):
             item["source"] = line.split(":", 1)[1].strip() or item["source"]
+            item["_provided"].add("source")
         if line.startswith("turns:"):
             try:
                 item["turns"] = int(line.split(":", 1)[1].strip() or 0)
+                item["_provided"].add("turns")
             except ValueError:
                 pass
         if line.startswith("tools:"):
             item["tools"] = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()][:12]
+            item["_provided"].add("tools")
     if "# query" in text:
         after = text.split("# query", 1)[1]
         item["query"] = _one_line(_secret_scrub(after.split("#", 1)[0]), _QUERY_SNIP)
     elif not item["query"]:
         item["query"] = _one_line(_secret_scrub(text), _QUERY_SNIP)
+    if item["query"]:
+        item["_provided"].add("query")
     item["_md"] = text
+    item["_md_truncated"] = truncated
     return item
+
+
+def summarize_session_files(
+    traj_id: str, sidecars: dict[str, Path]
+) -> dict[str, Any]:
+    summaries = {
+        suffix: summarize_session_file(path) for suffix, path in sidecars.items()
+    }
+    json_item = summaries.get(".json")
+    md_item = summaries.get(".md")
+    primary = dict(json_item or md_item or {})
+    primary["traj_id"] = traj_id
+    primary["bytes"] = sum(int(item.get("bytes") or 0) for item in summaries.values())
+    primary["formats"] = [suffix[1:] for suffix in sorted(summaries)]
+    if json_item and md_item:
+        provided = json_item.get("_provided") or set()
+        for field in ("source", "query", "turns", "tools"):
+            if field not in provided:
+                primary[field] = md_item.get(field)
+        primary["_md"] = md_item.get("_md")
+        primary["_md_truncated"] = md_item.get("_md_truncated", False)
+    return primary
 
 
 def render_session_card(item: dict[str, Any]) -> str:
@@ -210,7 +308,7 @@ def render_session_card(item: dict[str, Any]) -> str:
         f"turns: {item.get('turns') or 0}",
         f"tools: {tools}",
         f"bytes: {item.get('bytes') or 0}",
-        f"path: {item.get('path')}",
+        f"formats: {','.join(item.get('formats') or []) or 'unknown'}",
         "level: session-white",
         "---",
         "",
@@ -221,28 +319,32 @@ def render_session_card(item: dict[str, Any]) -> str:
     ]
     if item.get("_timeline"):
         body.extend(_timeline_lines(item["_timeline"]))
-    elif item.get("_md"):
-        # 已是短卡片就原样截断；长 md 只留头
-        text = str(item["_md"])
-        if len(text) > _CARD_CHAR_BUDGET:
-            text = text[: _CARD_CHAR_BUDGET - 20] + "\n…[card truncated]\n"
-        return text if text.endswith("\n") else text + "\n"
     else:
         body.append("- (no timeline on card)")
-    text = "\n".join(body) + "\n"
+    if item.get("_md"):
+        body.extend(["", "# session body", _strip_frontmatter(str(item["_md"]))])
+        if item.get("_md_truncated"):
+            body.append("…[source truncated]")
+    text = _secret_scrub("\n".join(body) + "\n")
     if len(text) > _CARD_CHAR_BUDGET:
         text = text[: _CARD_CHAR_BUDGET - 20] + "\n…[card truncated]\n"
     return text
 
 
-def _find_by_id(traj_id: str) -> Path | None:
+def _session_card_from_index(
+    traj_id: str, index: dict[str, dict[str, Path]]
+) -> str:
     tid = (traj_id or "").strip()
     if not tid:
-        return None
-    for path in _iter_traj_files(_session_roots()):
-        if path.stem == tid:
-            return path
-    return None
+        return "error: traj_id 为空"
+    if "/" in tid or "\\" in tid or tid.endswith(".md") or tid.endswith(".json"):
+        return "error: traj_id 只要 id 本身，不要带路径或后缀"
+    sidecars = index.get(tid)
+    if sidecars is None:
+        return f"error: 找不到会话 {tid}。先 list_sessions。"
+    item = summarize_session_files(tid, sidecars)
+    formats = ",".join(item.get("formats") or []) or "unknown"
+    return f"traj_id={tid}\nformats={formats}\n\n{render_session_card(item)}"
 
 
 @tool(name="list_sessions")
@@ -251,14 +353,19 @@ def list_sessions(offset: int = 0, limit: int = 60, query: str = "") -> str:
 
     要看某一条的时间线，用 session_card 或 session_cards。不要 read_file 原始大 json。
     """
-    files = _iter_traj_files(_session_roots())
-    items = [summarize_session_file(path) for path in files]
+    try:
+        start = max(0, int(offset))
+        take = max(1, min(int(limit), 80))
+    except (TypeError, ValueError):
+        return "error: offset/limit 必须是整数"
+    index = _session_file_index(_session_roots())
+    traj_ids = sorted(index)
     needle = (query or "").strip().lower()
     if needle:
-        items = [
-            item
-            for item in items
-            if needle in " ".join(
+        matched = []
+        for traj_id in traj_ids:
+            item = summarize_session_files(traj_id, index[traj_id])
+            haystack = " ".join(
                 [
                     str(item.get("traj_id") or ""),
                     str(item.get("source") or ""),
@@ -266,15 +373,16 @@ def list_sessions(offset: int = 0, limit: int = 60, query: str = "") -> str:
                     " ".join(item.get("tools") or []),
                 ]
             ).lower()
-        ]
-    try:
-        start = max(0, int(offset))
-        take = max(1, min(int(limit), 80))
-    except (TypeError, ValueError):
-        return "error: offset/limit 必须是整数"
-    page = items[start : start + take]
+            if needle in haystack:
+                matched.append(item)
+        page = matched[start : start + take]
+        matched_count = len(matched)
+    else:
+        page_ids = traj_ids[start : start + take]
+        page = [summarize_session_files(tid, index[tid]) for tid in page_ids]
+        matched_count = len(traj_ids)
     lines = [
-        f"level=session-white total={len(files)} matched={len(items)} "
+        f"level=session-white total={len(index)} matched={matched_count} "
         f"showing={len(page)} offset={start}",
         "精读用 session_card(traj_id) 或 session_cards（一次最多 10 个 id）。",
     ]
@@ -284,7 +392,7 @@ def list_sessions(offset: int = 0, limit: int = 60, query: str = "") -> str:
             f"{item.get('traj_id')}\tsource={item.get('source')}\tturns={item.get('turns')}\t"
             f"tools={tools}\tquery={item.get('query')}"
         )
-    if start + take < len(items):
+    if start + take < matched_count:
         lines.append(
             f"continue: list_sessions(offset={start + take}, limit={take}, query={query!r})"
         )
@@ -294,16 +402,8 @@ def list_sessions(offset: int = 0, limit: int = 60, query: str = "") -> str:
 @tool(name="session_card")
 def session_card(traj_id: str) -> str:
     """读一条会话级白盒卡片：query、工具、截断时间线。不要把原始大 json 倒进上下文。"""
-    tid = (traj_id or "").strip()
-    if not tid:
-        return "error: traj_id 为空"
-    if "/" in tid or "\\" in tid or tid.endswith(".md") or tid.endswith(".json"):
-        return "error: traj_id 只要 id 本身，不要带路径或后缀"
-    path = _find_by_id(tid)
-    if path is None:
-        return f"error: 找不到会话 {tid}。先 list_sessions。"
-    item = summarize_session_file(path)
-    return f"traj_id={tid}\ncard={path}\n\n{render_session_card(item)}"
+    index = _session_file_index(_session_roots())
+    return _session_card_from_index(traj_id, index)
 
 
 @tool(name="session_cards")
@@ -315,5 +415,6 @@ def session_cards(traj_ids: str) -> str:
         return "error: traj_ids 为空"
     if len(ids) > 10:
         return f"error: 一次最多 10 条，这次给了 {len(ids)}。拆成多次。"
-    chunks = [session_card.entrypoint(traj_id=tid) for tid in ids]
+    index = _session_file_index(_session_roots())
+    chunks = [_session_card_from_index(tid, index) for tid in ids]
     return f"batch={len(ids)}\n\n" + "\n\n----\n\n".join(chunks)
