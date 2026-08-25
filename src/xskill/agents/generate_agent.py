@@ -39,8 +39,11 @@ scripts/ 下放可执行脚本、在 references/ 下放长参考材料。价值�
 
 {read_roots_block}
 
-用 list_files 摸清结构，用 grep_files 按关键词搜索，用 read_file 按行精读。
-看某个已有 skill 的现状用 skill_read。
+会话级（白盒完整会话，不是 atom）先用 list_sessions 扫面。要参考很多条时，
+用 session_cards 一次最多 10 个 traj_id，不要 read_file 原始大 json。
+每看完一批，用 wiki_write 更新 pages/survey.md（每条一行 traj_id 和要点）。
+上下文被压缩之后先 wiki_status，再 wiki_read pages/survey.md，只补表里没有的 id。
+看某个已有 skill 的现状用 skill_read。深挖单条轨迹才用 read_file / grep_files。
 
 # 怎么写
 
@@ -53,10 +56,14 @@ scripts/ 下放可执行脚本、在 references/ 下放长参考材料。价值�
   （staging）提交工具。
 - commit message 写清你新建还是改了哪个 skill、依据是什么。系统会自动在
   前面加上发起人 ID。
-- 轨迹里若有密钥、token、密码、内网地址，不要原样写进 skill，用占位符。
+- 轨迹里若有密钥、token、密码、内网地址，不要原样写进 skill 或 wiki，用占位符。
+- 若指令要求参考多条会话，SKILL.md 用一节列出真正 session_card / session_cards 过的 traj_id。
 
 # 可用工具
 
+- list_sessions(offset=0, limit=60, query="")：会话级目录
+- session_card(traj_id) / session_cards(traj_ids)：短卡片，一次最多 10 条
+- wiki_status / wiki_read / wiki_write / wiki_search / wiki_log
 - list_files(path)：目录条目过多时完整列表写入 spill 文件，用 read_file 按行翻页。
 - grep_files(pattern, path="", glob="", max_results=100)
 - read_file(path, offset=1, limit=200)
@@ -109,6 +116,7 @@ class GenerateAgent:
         preferred_names: list[str] | None = None,
     ) -> str:
         from xskill.agents import agent_tools
+        from xskill.agents import llm_wiki, session_catalog
         from xskill.agents.agent_trace import trace_to
         from xskill.agents.context_budget import (
             DEFAULT_MAX_CONTEXT,
@@ -124,6 +132,14 @@ class GenerateAgent:
             read_roots_block=_read_roots_block(list(self.extra_read_roots)),
         )
         tools = [
+            session_catalog.list_sessions,
+            session_catalog.session_card,
+            session_catalog.session_cards,
+            llm_wiki.wiki_status,
+            llm_wiki.wiki_read,
+            llm_wiki.wiki_write,
+            llm_wiki.wiki_search,
+            llm_wiki.wiki_log,
             agent_tools.list_files,
             agent_tools.grep_files,
             agent_tools.read_file,

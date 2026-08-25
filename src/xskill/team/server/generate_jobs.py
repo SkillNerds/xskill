@@ -495,6 +495,7 @@ def _run_generate_job_body(
     from xskill.agents import agent_tools
     from xskill.agents.agno_factory import make_default_factory
     from xskill.agents.generate_agent import GenerateAgent
+    from xskill.agents.llm_wiki import seed_generate_wiki
     from xskill.config import get_logs_dir, get_registry_db_path
 
     skill_dir = Path(skill_dir)
@@ -508,6 +509,10 @@ def _run_generate_job_body(
         logs_dir / "agents" / "generate_agents" / job["user_id"] / "spill" / job["job_id"]
     )
     spill_root.mkdir(parents=True, exist_ok=True)
+    wiki_root = seed_generate_wiki(
+        logs_dir / "agents" / "generate_agents" / job["user_id"] / "wiki" / job["job_id"]
+    )
+    extra_roots = list(extra_roots) + [wiki_root]
     resolved_db = Path(db_path) if db_path is not None else get_registry_db_path()
     agent_tools.reset_generate_session()
     tool_context = agent_tools.create_agent_tool_context(
@@ -521,6 +526,7 @@ def _run_generate_job_body(
         generate_user_id=job["user_id"],
         registry_db_path=resolved_db,
         blocked_read_roots=blocked_roots,
+        wiki_root=wiki_root,
     )
     llm_cfg = {**(config.get("llm") or {}), **(config.get("llm_skill") or {})}
     factory = make_default_factory(

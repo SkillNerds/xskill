@@ -71,10 +71,14 @@ CJK_TOKENS_PER_CHAR_BY_FAMILY = {
 _TRIMMABLE_TOOLS = (
     "look", "readfile", "read_file", "atom_task_read", "read_traj", "skill_read",
     "grep_files", "list_files", "edit",
+    "list_sessions", "session_card", "session_cards",
+    "wiki_read", "wiki_search", "wiki_status",
 )
 _SPILLABLE_TOOLS = (
     "readfile", "read_file", "atom_task_read", "read_traj", "skill_read",
     "grep_files", "edit",
+    "list_sessions", "session_card", "session_cards",
+    "wiki_read", "wiki_search", "wiki_status",
 )
 _TRIM_MARK = "[…look 旧结果已剪裁,需要可重新 look…]"
 _COMPACT_MARK = "[compacted_agent_memory]"
@@ -91,6 +95,8 @@ _COMPACT_ACTION_TOOLS = (
     "commit_baby_to_main",
     "commit_to_staging",
     "commit_update_main",
+    "wiki_write",
+    "wiki_log",
 )
 _COMPACT_SUCCESS_PREFIXES = {
     "new_skill_folder": ("created on baby branch:",),
@@ -101,6 +107,8 @@ _COMPACT_SUCCESS_PREFIXES = {
     "commit_baby_to_main": ("graduated baby → main:",),
     "commit_to_staging": ("committed to staging:",),
     "commit_update_main": ("updated on main:",),
+    "wiki_write": ("ok created", "ok updated"),
+    "wiki_log": ("ok appended",),
 }
 
 # Handoff prompt: Pi's structured checkpoint + Codex's "another LLM resumes"
