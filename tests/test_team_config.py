@@ -71,3 +71,27 @@ def test_team_server_section_malformed_raises_valueerror_not_attributeerror():
     # allow_anonymous_user 走同一个 section 解析,行为一致
     with pytest.raises(ValueError, match="team 必须是 mapping"):
         C.allow_anonymous_user({"team": "foo"})
+
+
+def test_resolve_team_client_skill_dir_relocates_when_colocated(tmp_path, monkeypatch):
+    xhome = tmp_path / ".xskill"
+    canonical = xhome / "skill"
+    canonical.mkdir(parents=True)
+    (xhome / "team_server.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(C, "XSKILL_HOME", xhome)
+    monkeypatch.setattr(C, "get_team_server_state_path", lambda: xhome / "team_server.json")
+    monkeypatch.setattr(C, "get_skill_dir", lambda: canonical)
+    assert C.resolve_team_client_skill_dir(canonical) == xhome / "client_skill"
+    other = tmp_path / "elsewhere" / "skill"
+    other.mkdir(parents=True)
+    assert C.resolve_team_client_skill_dir(other) == other
+
+
+def test_resolve_team_client_skill_dir_unchanged_without_server(tmp_path, monkeypatch):
+    xhome = tmp_path / ".xskill"
+    canonical = xhome / "skill"
+    canonical.mkdir(parents=True)
+    monkeypatch.setattr(C, "XSKILL_HOME", xhome)
+    monkeypatch.setattr(C, "get_team_server_state_path", lambda: xhome / "missing.json")
+    monkeypatch.setattr(C, "get_skill_dir", lambda: canonical)
+    assert C.resolve_team_client_skill_dir(canonical) == canonical

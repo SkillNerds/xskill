@@ -117,10 +117,16 @@ class TeamClient:
     ):
         self.state = state
         self.http = http
-        # skill working copies 落标准 skill_dir（= ~/.xskill/skill/）——与
-        # standalone 模式同一个位置，不另开 team_skills/。一台机器要么
-        # standalone 要么 client，这个目录谁来管取决于模式。
-        self.skill_dir = Path(skill_dir)
+        # 普通 client：工作副本落 ~/.xskill/skill/，与 standalone 同一位置。
+        # 本机已是 team server 时不能再用自有仓——cleanup 会按派发清单删目录。
+        from xskill.config import resolve_team_client_skill_dir
+        requested = Path(skill_dir)
+        self.skill_dir = resolve_team_client_skill_dir(requested)
+        if self.skill_dir != requested:
+            logger.warning(
+                "colocated team client skill_dir=%s (server canonical preserved)",
+                self.skill_dir,
+            )
         self.skill_dir.mkdir(parents=True, exist_ok=True)
         self.home_root = Path(home_root) if home_root else Path.home()
         self.poll_interval = poll_interval
@@ -191,6 +197,17 @@ class TeamClient:
         manifest.slots = list(manifest.slots[:n])
         return manifest
 
+    def _refuse_canonical_skill_dir(self, action: str) -> bool:
+        """本机 team server 自有仓禁止当 client working copy 来改、删。"""
+        from xskill.config import is_team_server_canonical_skill_dir
+        if not is_team_server_canonical_skill_dir(self.skill_dir):
+            return False
+        logger.error(
+            "refusing client %s of team server skill repo",
+            action,
+        )
+        return True
+
     # ── ③ reconcile ─────────────────────────────────────────────
     def reconcile_skill_sides(self, manifest: SyncResponse) -> None:
         """对 manifest 每个 slot：拉 bundle → 对齐 side → 装到本机生态。
@@ -199,6 +216,8 @@ class TeamClient:
         就是读 manifest slot 的 side/sha；步骤 2/3/4 走共享
         reconcile_skill_side。
         """
+        if self._refuse_canonical_skill_dir("reconcile"):
+            return
         for slot in manifest.slots:
             repo_dir = self.skill_dir / slot.skill_name
             # 拉 bundle 落地/刷新本地 working copy
@@ -361,6 +380,8 @@ class TeamClient:
         自动到 working copy。每个 skill 先跑 reverse_sync_openclaw_dest 把
         dest 改灌回 working copy，下面 git status 才能看到。
         """
+        if self._refuse_canonical_skill_dir("push-edit"):
+            return 0
         from xskill.agents.user_edit_absorb_agent import (
             ReverseSyncStatus,
             reverse_sync_openclaw_dest,
@@ -483,6 +504,8 @@ class TeamClient:
         get_default_ledger().migrate_from_sidecars(
             _ecosystem_skill_roots(self.home_root),
         )
+        if self._refuse_canonical_skill_dir("cleanup"):
+            return
         keep = {s.skill_name for s in manifest.slots}
         for repo_dir in sorted(self.skill_dir.iterdir()):
             if (

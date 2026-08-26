@@ -320,6 +320,17 @@ def cmd_connect(args) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 1
 
+    from xskill.config import (
+        XSKILL_HOME, get_team_server_state_path, resolve_team_client_skill_dir,
+    )
+    client_skill = resolve_team_client_skill_dir(XSKILL_HOME / "skill")
+    if get_team_server_state_path().is_file() and client_skill != XSKILL_HOME / "skill":
+        print(
+            "warning: 本机已是 team server。client 工作副本放到 "
+            f"{client_skill}，不会清理 server 自有仓 {XSKILL_HOME / 'skill'}",
+            file=sys.stderr,
+        )
+
     from xskill.team.client.service import ServiceError, get_backend
     backend = get_backend()
 
@@ -407,7 +418,10 @@ def _run_team_client_forever(state, *, use_proxy: bool,
     """构造 TeamClient 并阻塞跑守护循环。"""
     import httpx
     from xskill.config import (
-        XSKILL_HOME, get_team_client_cursor_path, get_team_client_history_path,
+        XSKILL_HOME,
+        get_team_client_cursor_path,
+        get_team_client_history_path,
+        resolve_team_client_skill_dir,
     )
     from xskill.team.client.daemon import TeamClient
 
@@ -415,7 +429,7 @@ def _run_team_client_forever(state, *, use_proxy: bool,
                         trust_env=use_proxy)
     client = TeamClient(
         state=state, http=http,
-        skill_dir=XSKILL_HOME / "skill",
+        skill_dir=resolve_team_client_skill_dir(XSKILL_HOME / "skill"),
         cursor_path=get_team_client_cursor_path(state.server_url),
         history_path=get_team_client_history_path(state.server_url),
         auto_update=auto_update,

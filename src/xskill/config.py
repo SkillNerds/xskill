@@ -1213,6 +1213,44 @@ def get_team_server_state_path() -> Path:
     return XSKILL_HOME / "team_server.json"
 
 
+def _canonical_server_skill_dir() -> Path:
+    try:
+        return get_skill_dir()
+    except Exception:  # pylint: disable=broad-exception-caught
+        return XSKILL_HOME / "skill"
+
+
+def is_team_server_canonical_skill_dir(skill_dir: Path | str) -> bool:
+    """这条目录是不是本机 team server 的自有仓。
+
+    本机既 ``serve --server`` 又 ``connect`` 时，client 默认也会指向
+    ``~/.xskill/skill/``。cleanup 会按派发清单删仓，把自有仓收成只剩
+    分给这个 client 的那几十上百个。
+    """
+    if not get_team_server_state_path().is_file():
+        return False
+    try:
+        return (
+            Path(skill_dir).expanduser().resolve()
+            == _canonical_server_skill_dir().expanduser().resolve()
+        )
+    except (OSError, RuntimeError):
+        return False
+
+
+def resolve_team_client_skill_dir(skill_dir: Path | str) -> Path:
+    """client 工作副本目录。与 server 自有仓撞车时改放到 ``client_skill/``。"""
+    requested = Path(skill_dir)
+    if not is_team_server_canonical_skill_dir(requested):
+        return requested
+    relocated = XSKILL_HOME / "client_skill"
+    logger.warning(
+        "team client colocated with team server; using %s instead of %s",
+        relocated, requested,
+    )
+    return relocated
+
+
 def get_team_clients_db_path() -> Path:
     """server 端 client 注册表 SQLite。"""
     return XSKILL_HOME / "team_clients.db"
