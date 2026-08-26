@@ -18,6 +18,8 @@ test_team_client_privacy.py -- 客户端本地上传排除规则（issue #244）
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -230,6 +232,32 @@ def test_corrupt_policy_file_fails_loud_not_silent_allow(tmp_path):
         _collector(home).pending()
 
 
+@pytest.mark.parametrize("metadata", [None, "{not json"])
+def test_project_rules_fail_closed_when_cwd_metadata_is_unreadable(
+        tmp_path, monkeypatch, metadata):
+    home = tmp_path
+    md = _write_traj(
+        home / ".xskill", "cc_sessions", "traj_unknown_project",
+        cwd="/w/private",
+    )
+    sidecar = md.with_suffix(".json")
+    if metadata is None:
+        sidecar.unlink()
+    else:
+        sidecar.write_text(metadata, encoding="utf-8")
+    pol = pv.PrivacyPolicy()
+    pol.deny_project("/w/private")
+    pv.save_policy(pol, home / ".xskill" / "privacy.json")
+    collector = _collector(home)
+    monkeypatch.setattr(
+        collector,
+        "_read_trajectory_text",
+        lambda path: pytest.fail(f"不得读取无法判定项目的轨迹正文: {path}"),
+    )
+
+    assert collector.pending() == []
+
+
 # ── T10 CLI ────────────────────────────────────────────────────
 
 def test_cli_privacy_roundtrip(tmp_path, monkeypatch, capsys):
@@ -295,3 +323,20 @@ def test_cli_privacy_help_mentions_cursor_trae_limitation():
     help_text = sub.choices["privacy"].format_help()
     assert "Cursor 与 Trae" in help_text
     assert "deny-project" in help_text and "allow-trajectory" in help_text
+
+
+def test_python_module_entrypoint_can_run_privacy_command(tmp_path):
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    env["USERPROFILE"] = str(tmp_path)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "xskill.cli", "privacy", "list"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "(no privacy rules)" in completed.stdout

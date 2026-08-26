@@ -27,6 +27,7 @@ from typing import Callable
 from xskill.team.client.upload_state import TrajectoryUploadStateStore
 from xskill.team.client.privacy import (
     PrivacyPolicy, load_policy, read_trajectory_cwd,
+    read_trajectory_source, source_lacks_cwd,
 )
 from xskill.team.client.redact import redact_text
 
@@ -214,6 +215,15 @@ class TeamCollector:
                 if rule is not None:
                     logger.debug("privacy: skip %s (%s)", traj_id, rule)
                     continue
+                if policy.projects and cwd is None:
+                    source = read_trajectory_source(md)
+                    if not source_lacks_cwd(source):
+                        logger.warning(
+                            "privacy: skip %s because project rules are active "
+                            "but its cwd metadata is missing or unreadable",
+                            traj_id,
+                        )
+                        continue
             try:
                 stat = md.stat()
             except OSError:
