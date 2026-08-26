@@ -43,7 +43,9 @@ def local_skill_dir(tmp_path, monkeypatch) -> Path:
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
     import xskill.config as config_module
-    monkeypatch.setattr(config_module, "get_skill_dir", lambda: skill_dir)
+    monkeypatch.setattr(
+        config_module, "resolve_local_skill_dir", lambda **_kw: skill_dir,
+    )
     return skill_dir
 
 
@@ -165,11 +167,12 @@ def test_local_bm25_survives_missing_config(monkeypatch, capsys, tmp_path):
     import xskill.config as config_module
     from xskill import runtime
 
-    def _raise_missing_config():
+    def _raise_missing_config(*_a, **_k):
         raise FileNotFoundError("xskill config not found")
 
     monkeypatch.setattr(runtime, "read_status", lambda: {"running": False})
-    monkeypatch.setattr(config_module, "get_skill_dir", _raise_missing_config)
+    # 完整 get_config 会因缺 llm 等字段失败；search 只窥视 skill_dir。
+    monkeypatch.setattr(config_module, "get_config", _raise_missing_config)
     monkeypatch.setattr(config_module, "XSKILL_HOME", tmp_path)
     _write_skill(tmp_path / "skill", "copy-align", "处理前端文案对齐任务")
     rc = cli._cmd_search_local(_args())
