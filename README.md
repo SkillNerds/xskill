@@ -270,6 +270,8 @@ xskill search <KEYWORDS> --download     # 检索的同时下载到本地(老的�
 xskill download <skill-id>          # 交互多选安装 harness, 会持久化到本地, 会随云端更新
 xskill download <skill-id> --agent claude-code --agent codex -y   # 非交互式安装到指定harness
 xskill upload ./my-skill            # 打包上传一个 skill 目录(含 SKILL.md),全队立即可搜到
+xskill privacy deny-project ~/code/secret   # 该项目（含子目录）的轨迹不再上传；规则只存本机
+xskill privacy deny-trajectory <traj-id>    # 排除某一条轨迹；xskill privacy list 查看全部规则
 ```
 
 #### 额外功能：SkillHub支持

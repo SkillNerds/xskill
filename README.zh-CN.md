@@ -127,6 +127,8 @@ xskill search docker --download     # 命中写入 10 槽 LRU 并自动安装
 xskill download <skill-id>          # 交互多选安装 harness
 xskill download <skill-id> --agent claude-code --agent codex -y
 xskill upload ./my-skill            # 打包上传一个 skill 目录(含 SKILL.md),全队立即可搜到
+xskill privacy deny-project ~/code/secret   # 该项目（含子目录）的轨迹不再上传；规则只存本机
+xskill privacy deny-trajectory <traj-id>    # 排除某一条轨迹；xskill privacy list 查看全部规则
 ```
 
 `search` 使用 BM25 关键词+语义向量混合检索、与推荐画像无关；语义服务不可用时自动退化为 BM25。默认只输出精简元信息、排名和 ID，不修改本机；`search --download` 保留原来的 **10 个槽位**滚动淘汰逻辑。`download` 按 ID 持久下载，人类可交互多选 harness，agent/脚本应重复传 `--agent` 并加 `-y`。`upload` 在 server 端落到 `skillhub/user_skill_hub/<你的用户名>/` 下。本机轨迹/技能的语义搜索已从 CLI 移除（不再有 `xskill search traj|skill <query>`），改用 dashboard 或 API（`POST /api/v1/skills/search`）。

@@ -25,6 +25,9 @@ from pathlib import Path
 from typing import Callable
 
 from xskill.team.client.upload_state import TrajectoryUploadStateStore
+from xskill.team.client.privacy import (
+    PrivacyPolicy, load_policy, read_trajectory_cwd,
+)
 from xskill.team.client.redact import redact_text
 
 logger = logging.getLogger("xskill.team.client.collector")
@@ -93,6 +96,7 @@ class TeamCollector:
         poll_interval: float = 10.0,
         time_fn: Callable[[], float] = time.time,
         state_db_path: Path | None = None,
+        privacy_path: Path | None = None,
     ):
         self.cursor_path = Path(cursor_path)
         self.quiet_seconds = quiet_seconds
@@ -121,6 +125,17 @@ class TeamCollector:
             home_root=self.home_root,
             time_fn=self._now,
         )
+        # 本机上传排除规则（issue #244）：默认 <home>/.xskill/privacy.json，
+        # 全局、跨 server；每轮 pending() 重新加载，规则改动下一轮即生效。
+        self.privacy_path = (
+            Path(privacy_path) if privacy_path
+            else self._bridge_root / "privacy.json"
+        )
+
+    def _load_privacy_policy(self) -> "PrivacyPolicy":
+        """每轮扫描重读一次规则文件（很小）。文件损坏时抛错而不是当作
+        「无规则」——静默放行会让用户以为受保护的项目其实在上传。"""
+        return load_policy(self.privacy_path)
 
     def mark_uploaded(self, traj_id: str, sha256: str) -> None:
         """记录某 traj 的某版本已上传。同时清掉它的去抖状态（该版本已落地）。"""
@@ -224,11 +239,21 @@ class TeamCollector:
         now = self._now()
         out: list[PendingTrajectory] = []
         seen_ids: set[str] = set()
+        policy = self._load_privacy_policy()
         for md in sorted(self._bridge_root.glob("*_sessions/traj_*.md")):
             if not md.is_file():
                 continue
             traj_id = md.stem
             seen_ids.add(traj_id)
+            # 隐私闸门（issue #244）：在读正文、算摘要、写状态之前判定。
+            # 命中即跳过，且**不**记录任何上传状态——删掉规则后它会像新
+            # 轨迹一样正常进入上传流程。cwd 来自旁边的元数据小文件。
+            if not policy.is_empty:
+                cwd = read_trajectory_cwd(md)
+                rule = policy.denied_by(traj_id, cwd)
+                if rule is not None:
+                    logger.debug("privacy: skip %s (%s)", traj_id, rule)
+                    continue
             try:
                 stat = md.stat()
             except OSError:
