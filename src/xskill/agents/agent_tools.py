@@ -32,6 +32,12 @@ from typing import Any, Optional
 from agno.tools import tool
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
+from xskill.agents.atom_text import (
+    adjacent_atoms_are_near_duplicates,
+    detect_source_language,
+    output_language_matches,
+    stable_union,
+)
 from xskill.skill.frontmatter import (
     parse as fm_parse,
     parse_strict as fm_parse_strict,
@@ -1532,6 +1538,19 @@ def add_tasks_to_skill(
     return _run_cluster_mutation(mutate)
 
 
+def _mark_atom_profile_dirty(atom_path: Path, reason: str) -> None:
+    """Team Atom 画像旁路事件；本地 store/投影故障不阻断工具主操作。"""
+    try:
+        from xskill.recommend.profile_dirty import mark_profile_dirty_for_store
+        mark_profile_dirty_for_store(
+            atom_path.parents[2],
+            reason=reason,
+            db_path=agent_tool_config.registry_db_path,
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.debug("profile dirty mark failed after %s", reason, exc_info=True)
+
+
 @tool(name="score_task")
 def score_task(atom_id: str, score: int) -> str:
     """覆盖 AtomTask 的 ux_score（手动修正 / 灰度链路使用）。"""
@@ -1550,7 +1569,8 @@ def score_task(atom_id: str, score: int) -> str:
         except FileNotFoundError as error:
             return f"error: {error}"
         atom.ux_score = sc
-        store.save(atom)
+        atom_path = store.save(atom)
+        _mark_atom_profile_dirty(atom_path, "atom_score_changed")
         return f"scored: {atom_id} → {sc}"
 
     return _run_cluster_mutation(mutate)
@@ -1579,7 +1599,8 @@ def add_task(
         pre_atom_id=None, post_atom_id=None,
         context_prefix="", raw_segment="",
     )
-    store.save(atom)
+    atom_path = store.save(atom)
+    _mark_atom_profile_dirty(atom_path, "atom_added")
     return f"added: {atom_id}"
 
 
@@ -1591,11 +1612,19 @@ def make_task_agent_tools(
     total_lines: int,
     all_lines: list[str],
     user_msg: str,
+    source_language: str = "unknown",
+    user_blocks: Mapping[int, str] | None = None,
     not_fit_reasons: list[str] | None = None,
 ):
-    """Create TaskAgent run-scoped tools bound to one trajectory."""
+    """Create TaskAgent run-scoped tools bound to one trajectory.
+
+    ``submit_atom`` enforces the source-language contract and merges only adjacent,
+    high-confidence lexical duplicates.  Both checks are deterministic and local.
+    """
     valid = set(valid_lines)
     ordered_valid = sorted(valid_lines)
+    source_user_blocks = dict(user_blocks or {})
+    last_valid_start_line: int | None = None
 
     @tool(name="submit_atom")
     def submit_atom(start_line: int, intent: str, summary: str,
@@ -1612,6 +1641,7 @@ def make_task_agent_tools(
             used_skills: agent 实际触发的 skill 名列表,没有传 []。
             ux_score: 1~10 整数。
         """
+        nonlocal last_valid_start_line
         if not_fit_reasons:
             return (
                 "error: 已调用 mark_not_fit，不能再调用 submit_atom；"
@@ -1627,22 +1657,62 @@ def make_task_agent_tools(
         if sl < resume_line:
             return (f"error: start_line {sl} < 续接点 {resume_line}；"
                     "只能拆续接点之后的新增内容")
-        if submitted and sl <= submitted[-1]["start_line"]:
+        if last_valid_start_line is not None and sl <= last_valid_start_line:
             return (f"error: start_line 必须严格大于上一条 "
-                    f"({submitted[-1]['start_line']})，本次 {sl}")
-        if not (intent or "").strip() or not (summary or "").strip():
+                    f"({last_valid_start_line})，本次 {sl}")
+        normalized_intent = (intent or "").strip()
+        normalized_summary = (summary or "").strip()
+        if not normalized_intent or not normalized_summary:
             return "error: intent 和 summary 必填"
         if not 1 <= ux_score <= 10:
             return f"error: ux_score 必须是 1~10 的整数 (got {ux_score})"
-        submitted.append({
+        for field_name, value in (
+            ("intent", normalized_intent),
+            ("summary", normalized_summary),
+        ):
+            if not output_language_matches(value, source_language):
+                detected = detect_source_language(value)
+                return (
+                    f"error: {field_name} 的语言 {detected} 与源轨迹主导语言 "
+                    f"{source_language} 不一致；请保持源语言后重提"
+                )
+
+        candidate = {
             "start_line": sl,
-            "intent": intent.strip(),
-            "summary": summary.strip(),
+            "intent": normalized_intent,
+            "summary": normalized_summary,
             "tags": [str(t).strip() for t in (tags or []) if str(t).strip()],
             "used_skills": [str(s).strip() for s in (used_skills or [])
                             if str(s).strip()],
             "ux_score": ux_score,
-        })
+        }
+        # A merged candidate is still a consumed boundary proposal.  Track it
+        # separately from ``submitted`` so a later out-of-order call cannot slip
+        # behind the merged line and corrupt derived ranges.
+        last_valid_start_line = sl
+        if submitted and adjacent_atoms_are_near_duplicates(
+            submitted[-1],
+            candidate,
+            current_user_text=source_user_blocks.get(sl, ""),
+        ):
+            previous = submitted[-1]
+            previous["tags"] = stable_union(previous["tags"], candidate["tags"])
+            previous["used_skills"] = stable_union(
+                previous["used_skills"], candidate["used_skills"]
+            )
+            previous["ux_score"] = min(previous["ux_score"], ux_score)
+            logger.info(
+                "TaskAgent merged near-duplicate adjacent submissions at lines "
+                "%s and %s",
+                previous["start_line"],
+                sl,
+            )
+            return (
+                "ok: 与上一 atom 高度近似，已合并其 tags / used_skills / "
+                f"ux_score (start_line={previous['start_line']})"
+            )
+
+        submitted.append(candidate)
         return f"ok: 已记录 atom #{len(submitted)} (start_line={sl})"
 
     @tool(name="mark_not_fit")

@@ -18,8 +18,9 @@
 """
 from __future__ import annotations
 
-import json
+import codecs
 import hashlib
+import json
 import logging
 import os
 import secrets
@@ -680,9 +681,12 @@ def _copy_verified_file_to_stage(
 
 
 def _hash_verified_file(
-    root: Path, file_info: _SafeDestFile,
+    root: Path,
+    file_info: _SafeDestFile,
+    *,
+    normalize_utf8_newlines: bool = False,
 ) -> str:
-    """在目录锚点下 nofollow 读取并校验一个普通文件的内容摘要。"""
+    """安全读取文件并返回摘要；非文本的换行规范化摘要为空字符串。"""
     open_flags = os.O_RDONLY
     open_flags |= getattr(os, "O_BINARY", 0)
     open_flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -761,11 +765,50 @@ def _hash_verified_file(
         if os.name != "nt":
             os.set_blocking(file_descriptor, True)
         digest = hashlib.sha256()
-        while True:
-            file_chunk = os.read(file_descriptor, 1024 * 1024)
-            if not file_chunk:
-                break
-            digest.update(file_chunk)
+        pending_cr = False
+        is_text = True
+        if not normalize_utf8_newlines:
+            while True:
+                file_chunk = os.read(file_descriptor, 1024 * 1024)
+                if not file_chunk:
+                    break
+                digest.update(file_chunk)
+        else:
+            def raw_chunks():
+                while True:
+                    file_chunk = os.read(file_descriptor, 1024 * 1024)
+                    if not file_chunk:
+                        break
+                    yield file_chunk
+
+            try:
+                decoded_chunks = codecs.iterdecode(
+                    raw_chunks(), "utf-8", errors="strict",
+                )
+                for decoded_chunk in decoded_chunks:
+                    if "\x00" in decoded_chunk:
+                        is_text = False
+                        break
+                    if pending_cr:
+                        digest.update(b"\n")
+                        if decoded_chunk.startswith("\n"):
+                            decoded_chunk = decoded_chunk[1:]
+                        pending_cr = False
+                    if decoded_chunk.endswith("\r"):
+                        decoded_chunk = decoded_chunk[:-1]
+                        pending_cr = True
+                    digest.update(
+                        decoded_chunk.replace("\r\n", "\n")
+                        .replace("\r", "\n")
+                        .encode("utf-8"),
+                    )
+            except UnicodeDecodeError:
+                is_text = False
+            if not is_text:
+                while os.read(file_descriptor, 1024 * 1024):
+                    pass
+            elif pending_cr:
+                digest.update(b"\n")
         final_stat = os.fstat(file_descriptor)
         if (
             final_stat.st_dev,
@@ -783,7 +826,7 @@ def _hash_verified_file(
             opened_stat.st_ctime_ns,
         ):
             raise OSError("file changed while reading")
-        return digest.hexdigest()
+        return digest.hexdigest() if is_text else ""
     finally:
         os.close(file_descriptor)
         for directory_descriptor in reversed(opened_directories):
@@ -1385,10 +1428,23 @@ def reverse_sync_copy_dest(
                     and source_hash != baseline_hash
                     and source_hash != dest_hash
                 ):
-                    _log_reverse_sync_failure(
-                        dest_dir, "REVERSE_SYNC_CONTENT_CONFLICT",
+                    # 历史孤儿基线可能按 Git blob 的 LF 字节计算，而 Windows
+                    # worktree 是 CRLF。只在将要报冲突时补做一次 UTF-8 换行
+                    # 规范化比较；二进制仍严格按字节冲突，正常轮询没有额外 IO。
+                    normalized_source_hash = (
+                        _hash_verified_file(
+                            source_dir,
+                            source_file_info,
+                            normalize_utf8_newlines=True,
+                        )
+                        if source_file_info is not None
+                        else None
                     )
-                    return ReverseSyncStatus.FAILED
+                    if normalized_source_hash != baseline_hash:
+                        _log_reverse_sync_failure(
+                            dest_dir, "REVERSE_SYNC_CONTENT_CONFLICT",
+                        )
+                        return ReverseSyncStatus.FAILED
                 if source_hash != dest_hash:
                     changed_files.append(
                         (file_info, dest_hash, source_hash),

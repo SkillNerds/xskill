@@ -25,6 +25,8 @@ from xskill.utils.llm import ssl_verify
 
 logger = logging.getLogger("xskill.agno_factory")
 
+AGENT_LLM_STAGES = frozenset(("split", "cluster", "edit"))
+
 
 def _discard_log(*args, **kwargs) -> None:
     del args, kwargs
@@ -188,12 +190,25 @@ def build_chat_model(
                              connect=min(connect_timeout, request_timeout))
     client_max_retries = int(llm_cfg.get("client_max_retries", 0) or 0)
 
+    # Keep the agentic Agno path aligned with ``LLMClient`` and the public
+    # config template.  Previously these documented settings were silently
+    # dropped, so providers used their own temperature/output defaults.
+    max_tokens = int(llm_cfg.get("max_tokens", 10000))
+    if max_tokens <= 0:
+        raise ValueError("llm.max_tokens must be a positive integer")
+    temperature = float(llm_cfg.get("temperature", 0.0))
+    extra_body = llm_cfg.get("extra_body")
+    if extra_body is not None and not isinstance(extra_body, dict):
+        raise ValueError("llm.extra_body must be a mapping")
+
     common_kwargs = dict(
         id=model_id,
         base_url=llm_cfg.get("base_url", ""),
         api_key=api_key,
         timeout=timeout,
         max_retries=client_max_retries,
+        max_tokens=max_tokens,
+        temperature=temperature,
         role_map={
             "system": "system",
             "user": "user",
@@ -202,6 +217,12 @@ def build_chat_model(
             "model": "assistant",
         },
     )
+    if extra_body is not None:
+        # ``extra_body`` is the OpenAI SDK's explicit extension point for
+        # provider-owned options (for example llama.cpp/Qwen chat-template
+        # flags).  Copy the top-level mapping so model construction cannot
+        # mutate the caller's config object.
+        common_kwargs["extra_body"] = dict(extra_body)
 
     if "api.deepseek.com" in base_url:
         from agno.models.deepseek import DeepSeek
@@ -353,8 +374,51 @@ def _wrap_with_trace(model):
     return model
 
 
+def resolve_agent_llm_config(config: dict, stage: str | None = None) -> dict:
+    """Resolve one Agno agent's effective LLM configuration.
+
+    ``llm`` and ``llm_skill`` keep their existing inheritance contract.  An
+    optional ``llm_agents.<stage>`` mapping is the final partial override, so
+    old configurations produce byte-for-byte equivalent effective values while
+    split, cluster, and edit can opt into different endpoints or models.
+    """
+    if stage is not None and stage not in AGENT_LLM_STAGES:
+        raise ValueError(
+            f"agent LLM stage must be one of {sorted(AGENT_LLM_STAGES)!r}, "
+            f"got {stage!r}"
+        )
+
+    base_cfg = config.get("llm", {}) or {}
+    skill_cfg = config.get("llm_skill", {}) or {}
+    llm_cfg = {
+        **base_cfg,
+        **{key: value for key, value in skill_cfg.items() if value},
+    }
+    if stage is not None:
+        stage_cfg = ((config.get("llm_agents", {}) or {}).get(stage, {}) or {})
+        stage_override = {
+            key: value
+            for key, value in stage_cfg.items()
+            if value not in (None, "")
+        }
+        stage_rate_limit = stage_override.pop("rate_limit", None)
+        llm_cfg.update(stage_override)
+        if stage_rate_limit:
+            llm_cfg["rate_limit"] = {
+                **(llm_cfg.get("rate_limit", {}) or {}),
+                **stage_rate_limit,
+            }
+
+    pool_cfg = (config.get("agent_worker", {}) or {}).get("pools", {}) or {}
+    llm_cfg["_pool_weights"] = {
+        name: int((pool_cfg.get(name, {}) or {}).get("llm_weight", 1))
+        for name in ("split", "cluster", "edit")
+    }
+    return llm_cfg
+
+
 def make_default_factory(
-    config: dict, *, usage_ledger=None, spill_root=None,
+    config: dict, *, stage: str | None = None, usage_ledger=None, spill_root=None,
 ) -> Callable[..., Any]:
     """生产环境的 agno Agent 工厂。
 
@@ -362,19 +426,12 @@ def make_default_factory(
     匹配 ``TaskClusterAgent`` / ``SkillEditAgent`` / ``process_atom_task``
     对 ``agno_agent_factory`` 的契约。
 
-    LLM 配置：优先 ``config['llm_skill']``（质量敏感的 cluster/edit），缺
-    项 fall back 到 ``config['llm']``。这与旧 ``run_agent`` 的行为一致。
+    LLM 配置：先按现有契约从 ``llm`` 合并 ``llm_skill``，再应用可选的
+    ``llm_agents.<stage>`` 局部覆盖。未传 ``stage`` 或未配置覆盖时与旧行为一致。
     """
     from agno.agent import Agent
 
-    base_cfg = config.get("llm", {}) or {}
-    override_cfg = config.get("llm_skill", {}) or {}
-    llm_cfg = {**base_cfg, **{k: v for k, v in override_cfg.items() if v}}
-    pool_cfg = (config.get("agent_worker", {}) or {}).get("pools", {}) or {}
-    llm_cfg["_pool_weights"] = {
-        name: int((pool_cfg.get(name, {}) or {}).get("llm_weight", 1))
-        for name in ("split", "cluster", "edit")
-    }
+    llm_cfg = resolve_agent_llm_config(config, stage)
 
     def factory(*, instructions, tools, **kwargs):
         model = build_chat_model(

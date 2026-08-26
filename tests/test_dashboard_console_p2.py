@@ -547,6 +547,11 @@ def test_admin_ingest_control_is_authorized_idempotent_and_syncs_watch_dir(
     assert body["auto_index"] is False
     paused_at = body["ingest_paused_at"]
     assert R.get_watch_dir(sessions_dir, db_path=db)["auto_index"] == 0
+    from xskill.recommend.profile_dirty import list_dirty_profiles
+    dirty = list_dirty_profiles(db_path=db)
+    assert [(row["user_key"], row["generation"]) for row in dirty] == [
+        ("alice", 1),
+    ]
     paused_contributions = alice.get(
         "/api/v1/dashboard/my/contributions"
     ).json()["steps"]
@@ -559,6 +564,7 @@ def test_admin_ingest_control_is_authorized_idempotent_and_syncs_watch_dir(
     assert repeated.status_code == 200
     assert repeated.json()["ingest_paused_at"] == paused_at
     assert repeated.json()["ingest_pause_reason"] == "quality review"
+    assert list_dirty_profiles(db_path=db)[0]["generation"] == 1
 
     matrix = boss.get("/api/v1/dashboard/admin/users-matrix").json()
     user_row = next(row for row in matrix["users"] if row["client_id"] == client_id)
@@ -571,6 +577,7 @@ def test_admin_ingest_control_is_authorized_idempotent_and_syncs_watch_dir(
     assert resumed.json()["ingest_paused_at"] == ""
     assert resumed.json()["auto_index"] is True
     assert R.get_watch_dir(sessions_dir, db_path=db)["auto_index"] == 1
+    assert list_dirty_profiles(db_path=db)[0]["generation"] == 2
     assert (
         alice.get("/api/v1/dashboard/my/contributions").json()["steps"]["trajs"]
         == 2
@@ -966,4 +973,3 @@ def test_reload_pool_seats_only_is_hot_not_restart(console_env, tmp_path, monkey
     body = r.json()
     assert "agent_worker" not in body["needs_restart"]
     assert "agent_worker" in body["hot_reloaded"]
-

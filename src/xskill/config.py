@@ -94,6 +94,10 @@ llm:
   # compact_keep_recent_messages: 6 # optional; recent complete message blocks
                          # kept verbatim after compact. Default 6.
   # temperature: 0.0     # optional; default 0 (deterministic)
+  # extra_body:          # optional provider-specific OpenAI request fields;
+  #   chat_template_kwargs:  # e.g. llama.cpp/Qwen chat-template controls.
+  #     enable_thinking: false # changing reasoning can affect quality; replay
+                         # representative trajectories before disabling it.
   # request_timeout: 60  # optional; per-request wall-clock cap in seconds
                          # (default 60). Explicit so an unreachable endpoint
                          # fails loud instead of hanging forever.
@@ -108,6 +112,19 @@ llm:
     # tpm: 100000        # optional tokens per minute
     # token_burst: 20000 # optional token burst capacity (separate from requests)
   # See docs/adr/0001-rate-limit-diy-not-litellm.md for the design rationale.
+
+# Optional. Give split, cluster, or edit their own model or endpoint if you want.
+# Anything you leave out falls back to llm_skill, then llm. Leave this commented
+# and your existing config keeps working as before.
+# llm_agents:
+#   split:
+#     model: qwen-plus
+#   cluster:
+#     model: deepseek-v4-flash
+#   edit:
+#     base_url: http://localhost:8000/v1
+#     model: local-skill-editor
+#     api_key: local
 
 # ===== Embedding (vector retrieval) =====
 # Any OpenAI-compatible embeddings endpoint. dim: 0 auto-probes on first call.
@@ -204,6 +221,16 @@ watcher:
   poll_interval: 5              # seconds between scans of every watch_dir
   full_reconcile_interval: 60   # idle polls only stat the directory; this
                                 # periodic full scan catches in-place rewrites
+
+# ===== Logical Task Graph =====
+# Deterministic semantic branch above Session/Atom; it never changes Atom→Skill routing, and uncertain links remain proposed without consuming LLM tokens.
+task_graph:
+  enabled: false                 # enable after ADR/replay-baseline review
+  top_k: 8                      # hard bound on classified candidates per Atom
+  recent_k: 6                   # same-Session recent Task candidates
+  posting_cap: 64               # bounded inverted-index posting list
+  max_scopes_per_run: 4         # fairness bound for one background pass
+  source_cache_size: 128        # bounded in-memory cache for unchanged source evidence
 
 # ===== Persistent agent worker =====
 # Every pool has an automatic waiting capacity of workers * 2. Running plus
@@ -339,6 +366,26 @@ def normalize_runtime_config(config_data: dict) -> dict:
     watcher.pop("cluster_batch_size", None)
     runtime_config["watcher"] = watcher
 
+    task_graph = runtime_config.get("task_graph")
+    if task_graph is None:
+        task_graph = {}
+    if not isinstance(task_graph, dict):
+        raise ValueError("task_graph 必须是 mapping")
+    task_graph = dict(task_graph)
+    enabled = task_graph.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("task_graph.enabled 必须是布尔")
+    task_graph["enabled"] = enabled
+    for field_name, default in (
+        ("top_k", 8), ("recent_k", 6),
+        ("posting_cap", 64), ("max_scopes_per_run", 4),
+        ("source_cache_size", 128),
+    ):
+        task_graph[field_name] = _positive_int_or_default(
+            task_graph.get(field_name), f"task_graph.{field_name}", default,
+        )
+    runtime_config["task_graph"] = task_graph
+
     worker = runtime_config.get("agent_worker")
     if worker is None:
         worker = {}
@@ -443,6 +490,42 @@ def normalize_runtime_config(config_data: dict) -> dict:
                     skill_rate.setdefault("token_burst", skill_burst)
             llm_skill["rate_limit"] = skill_rate
         runtime_config["llm_skill"] = llm_skill
+
+    llm_agents = runtime_config.get("llm_agents")
+    if llm_agents is not None:
+        if not isinstance(llm_agents, dict):
+            raise ValueError("llm_agents 必须是 mapping")
+        unknown_stages = set(llm_agents) - {"split", "cluster", "edit"}
+        if unknown_stages:
+            raise ValueError(
+                f"llm_agents 包含未知阶段: {sorted(unknown_stages)!r}"
+            )
+        normalized_agents: dict[str, dict] = {}
+        for stage, stage_value in llm_agents.items():
+            if not isinstance(stage_value, dict):
+                raise ValueError(f"llm_agents.{stage} 必须是 mapping")
+            stage_cfg = dict(stage_value)
+            if "rate_limit" in stage_cfg:
+                stage_rate = stage_cfg.get("rate_limit")
+                if stage_rate is None:
+                    stage_rate = {}
+                if not isinstance(stage_rate, dict):
+                    raise ValueError(
+                        f"llm_agents.{stage}.rate_limit 必须是 mapping"
+                    )
+                stage_rate = dict(stage_rate)
+                stage_burst = stage_rate.pop("burst", None)
+                if stage_burst is not None:
+                    stage_burst = _positive_int(
+                        stage_burst,
+                        f"llm_agents.{stage}.rate_limit.burst",
+                    )
+                    stage_rate.setdefault("request_burst", stage_burst)
+                    if "tpm" in stage_rate:
+                        stage_rate.setdefault("token_burst", stage_burst)
+                stage_cfg["rate_limit"] = stage_rate
+            normalized_agents[stage] = stage_cfg
+        runtime_config["llm_agents"] = normalized_agents
 
     embedding = runtime_config.get("embedding") or {}
     if not isinstance(embedding, dict):

@@ -162,6 +162,43 @@ def _drive(watcher: DirectoryWatcher, wd_id: int, db: Path, max_rounds: int = 30
             return
 
 
+def test_cluster_catalog_reconciliation_is_low_frequency(tmp_path, monkeypatch):
+    from xskill.pipeline import runner as runner_module
+    from xskill.skill import catalog_store
+
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    watcher = DirectoryWatcher(
+        config={"watcher": {"full_reconcile_interval": 60}},
+        skill_dir=skill_dir,
+        poll_interval=1,
+        db_path=tmp_path / "registry.db",
+        home_root=tmp_path,
+        xskill_home=tmp_path / "xskill-home",
+    )
+    calls: list[Path] = []
+
+    def reconcile(path, *, db_path):
+        calls.append(Path(path))
+        return {"changed": 0}
+
+    monkeypatch.setattr(
+        catalog_store,
+        "reconcile_native_skills_catalog",
+        reconcile,
+    )
+    times = iter((100.0, 120.0, 161.0))
+    monkeypatch.setattr(runner_module.time, "monotonic", lambda: next(times))
+    try:
+        watcher._reconcile_cluster_catalog_if_due()
+        watcher._reconcile_cluster_catalog_if_due()
+        watcher._reconcile_cluster_catalog_if_due()
+    finally:
+        watcher.stop()
+
+    assert calls == [skill_dir, skill_dir]
+
+
 # ─────────────────────────────────────────────────────────────────────
 # 验收 1：批量生效 —— 调用次数 == ceil(总 atom / batch_size) 而非 == 总 atom
 # ─────────────────────────────────────────────────────────────────────

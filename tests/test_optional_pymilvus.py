@@ -78,4 +78,4 @@ def test_pyproject_keeps_pymilvus_optional_only():
     deps_block = text[deps_start:extras_start]
     assert "pymilvus" not in deps_block
     assert 'milvus = [' in text or 'milvus=[' in text
-    assert 'pymilvus>=2.4.2' in text[extras_start:]
+    assert 'pymilvus[milvus_lite]>=2.4.2' in text[extras_start:]

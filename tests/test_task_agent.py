@@ -52,12 +52,15 @@ def autosplit_submit(user_msg: str, tools: dict) -> None:
     submit = tools.get("submit_atom")
     if submit is None:
         return
+    source_is_zh = bool(re.search(
+        r"^\s*source_language:\s*zh\s*$", user_msg, re.MULTILINE,
+    ))
     for ln in [int(n) for n in re.findall(r"\[line:(\d+)\]", user_msg)]:
         _call_tool(
             submit,
             start_line=ln,
-            intent="stub intent",
-            summary="stub summary",
+            intent="测试意图" if source_is_zh else "stub intent",
+            summary="测试摘要" if source_is_zh else "stub summary",
             tags=["stub"],
             used_skills=[],
             ux_score=7,
@@ -276,10 +279,16 @@ class TestFirstRunSinglePass:
         traj_path.write_text(_TRAJ_MD, encoding="utf-8")
         store = AtomTaskStore(root=traj_dir)
         factory = _scripted_factory([
-            dict(start_line=5, intent="部署", summary="克隆并部署 xquiz",
-                 tags=["deploy"], used_skills=[], ux_score=7),
-            dict(start_line=17, intent="前端", summary="编辑 CSS",
-                 tags=["frontend"], used_skills=["frontend-design"], ux_score=8),
+            dict(
+                start_line=5, intent="Deploy xquiz",
+                summary="Clone and deploy xquiz", tags=["deploy"],
+                used_skills=[], ux_score=7,
+            ),
+            dict(
+                start_line=17, intent="Redesign frontend",
+                summary="Edit the CSS", tags=["frontend"],
+                used_skills=["frontend-design"], ux_score=8,
+            ),
         ])
         atoms = TaskAgent(agno_agent_factory=factory, store=store).run(
             traj_id="traj_p", traj_path=traj_path)
@@ -368,9 +377,11 @@ class TestIncrementalRun:
         total_lines = len(full.splitlines(keepends=True))
 
         factory = _scripted_factory([
-            dict(start_line=new_user_line, intent="补单元测试",
-                 summary="用户要求加测试；agent 写 pytest",
-                 tags=["testing"], used_skills=[], ux_score=7),
+            dict(
+                start_line=new_user_line, intent="Add unit tests",
+                summary="The user requested tests and the agent wrote pytest",
+                tags=["testing"], used_skills=[], ux_score=7,
+            ),
         ])
         new_atoms = TaskAgent(agno_agent_factory=factory, store=store).run(
             traj_id="traj_y", traj_path=traj_path)
@@ -573,6 +584,161 @@ class TestSubmitValidation:
         assert len(atoms) == 1
         assert atoms[0].ux_score == 8
 
+    def test_source_language_mismatch_rejected_then_corrected(self, tmp_path):
+        traj_path, store = self._setup(tmp_path)
+        factory = _scripted_factory([
+            dict(
+                start_line=5, intent="部署服务", summary="克隆并部署应用",
+                ux_score=7,
+            ),
+            dict(
+                start_line=5, intent="Deploy the service",
+                summary="Clone and deploy the application", ux_score=7,
+            ),
+        ])
+
+        atoms = TaskAgent(agno_agent_factory=factory, store=store).run(
+            traj_id="traj_e", traj_path=traj_path)
+
+        assert factory.captured["results"][0].startswith("error:")
+        assert "源轨迹主导语言 en" in factory.captured["results"][0]
+        assert factory.captured["results"][1].startswith("ok:")
+        assert len(atoms) == 1
+        assert atoms[0].intent == "Deploy the service"
+        assert "source_language: en" in factory.captured["user_msg"]
+
+    def test_chinese_request_with_technical_identifiers_stays_chinese(self, tmp_path):
+        traj_dir = tmp_path / "cc-sessions"
+        traj_dir.mkdir()
+        traj_path = traj_dir / "traj_technical.md"
+        traj_path.write_text(
+            "## User\n\n"
+            "请把 atom_candidate_pending 的 PRIMARY KEY 改成 atom_id 和 skill。\n\n"
+            "## Assistant\n\n已完成。\n",
+            encoding="utf-8",
+        )
+        store = AtomTaskStore(root=traj_dir)
+        factory = _scripted_factory([
+            dict(
+                start_line=1,
+                intent="修改待处理 Atom 的联合主键",
+                summary="将待处理关联改为 Atom 与 Skill 的联合主键。",
+                ux_score=8,
+            ),
+        ])
+
+        atoms = TaskAgent(agno_agent_factory=factory, store=store).run(
+            traj_id="traj_technical", traj_path=traj_path)
+
+        assert factory.captured["results"] == [
+            "ok: 已记录 atom #1 (start_line=1)"
+        ]
+        assert "source_language: zh" in factory.captured["user_msg"]
+        assert len(atoms) == 1
+
+    def test_adjacent_near_duplicates_merge_metadata_and_ranges(self, tmp_path):
+        traj_path, store = self._setup(tmp_path)
+        traj_path.write_text(
+            _TRAJ_MD.replace(
+                "Now redesign the frontend.",
+                "Keep improving the same Python file helper.",
+            ),
+            encoding="utf-8",
+        )
+        factory = _scripted_factory([
+            dict(
+                start_line=5,
+                intent="Create a Python file utility",
+                summary="Write the requested reusable file helper.",
+                tags=["python", "files"],
+                used_skills=["skill-a", "skill-b"],
+                ux_score=8,
+            ),
+            dict(
+                start_line=17,
+                intent="Build a reusable Python file helper",
+                summary="The later turns continue the same file-helper task.",
+                tags=["files", "reusable"],
+                used_skills=["skill-b", "skill-c", "skill-d"],
+                ux_score=6,
+            ),
+        ])
+
+        atoms = TaskAgent(agno_agent_factory=factory, store=store).run(
+            traj_id="traj_e", traj_path=traj_path)
+
+        assert len(atoms) == 1
+        assert atoms[0].offset_start == 1
+        assert atoms[0].offset_end == 24
+        assert atoms[0].tags == ["python", "files", "reusable"]
+        assert atoms[0].used_skills == [
+            "skill-a", "skill-b", "skill-c", "skill-d",
+        ]
+        assert atoms[0].ux_score == 6
+        assert "已合并" in factory.captured["results"][1]
+
+    def test_similar_sibling_tasks_remain_separate(self, tmp_path):
+        traj_path, store = self._setup(tmp_path)
+        factory = _scripted_factory([
+            dict(
+                start_line=5,
+                intent="Create a CSV file utility",
+                summary="Create a reusable helper for CSV rows.",
+                ux_score=8,
+            ),
+            dict(
+                start_line=17,
+                intent="Create a JSON file utility",
+                summary="Create a reusable helper for JSON data.",
+                ux_score=8,
+            ),
+        ])
+
+        atoms = TaskAgent(agno_agent_factory=factory, store=store).run(
+            traj_id="traj_e", traj_path=traj_path)
+
+        assert len(atoms) == 2
+        assert atoms[0].offset_end == atoms[1].offset_start == 17
+
+    def test_merged_submission_still_advances_start_line_guard(self, tmp_path):
+        traj_path, store = self._setup(tmp_path)
+        traj_path.write_text(
+            _TRAJ_MD.replace(
+                "Now redesign the frontend.",
+                "Keep improving the same Python file helper.",
+            ),
+            encoding="utf-8",
+        )
+        factory = _scripted_factory([
+            dict(
+                start_line=5,
+                intent="Create a Python file utility",
+                summary="Write the requested reusable file helper.",
+                ux_score=8,
+            ),
+            dict(
+                start_line=17,
+                intent="Build a reusable Python file helper",
+                summary="The later turns continue the same file-helper task.",
+                ux_score=7,
+            ),
+            dict(
+                start_line=5,
+                intent="Create a JSON parser utility",
+                summary="Parse JSON payloads in a separate utility.",
+                ux_score=8,
+            ),
+        ])
+
+        atoms = TaskAgent(agno_agent_factory=factory, store=store).run(
+            traj_id="traj_e", traj_path=traj_path)
+
+        assert factory.captured["results"][1].startswith("ok:")
+        assert "已合并" in factory.captured["results"][1]
+        assert factory.captured["results"][2].startswith("error:")
+        assert "上一条 (17)" in factory.captured["results"][2]
+        assert len(atoms) == 1
+
 
 # ────────────────────────────────────────────────────────────────────
 # look 工具：读某行附近原文（含向前看）
@@ -688,6 +854,10 @@ class TestSystemPrompt:
         # 弃窗 + 撤销原则
         assert "弃窗单趟" in system_msg
         assert "撤销" in system_msg
+        # #21/#24: no synonymous duplicate Atom and source-language output.
+        assert "禁止同义重复" in system_msg
+        assert "source_language" in system_msg
+        assert "intent" in system_msg and "summary" in system_msg
 
     def test_literal_braces_in_query_snippet_are_safe(self, tmp_path):
         """User 提问含 ``{}`` 字面量时,模板注入不二次解析。"""
@@ -700,7 +870,7 @@ class TestSystemPrompt:
         )
         store = AtomTaskStore(root=traj_dir)
         factory = _scripted_factory([
-            dict(start_line=1, intent="i", summary="s", ux_score=7),
+            dict(start_line=1, intent="测试意图", summary="测试摘要", ux_score=7),
         ])
         atoms = TaskAgent(agno_agent_factory=factory, store=store).run(
             traj_id="traj_b", traj_path=traj_path)

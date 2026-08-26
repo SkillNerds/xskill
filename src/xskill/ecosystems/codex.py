@@ -218,9 +218,14 @@ def _adapt_codex_rollout_jsonl(content: str, metadata: dict) -> tuple[str, dict]
     originator = ""
     cli_version = ""
     model_provider = ""
+    source_model = ""
+    current_model = ""
     first_user_query = ""
+    execution_usage_events: list[dict] = []
+    previous_cumulative_usage: dict = {}
     t = 0
     response_count = 0
+    usage_ordinal = 0
 
     for raw_line in content.splitlines():
         raw_line = raw_line.strip()
@@ -256,6 +261,72 @@ def _adapt_codex_rollout_jsonl(content: str, metadata: dict) -> tuple[str, dict]
                         "content": msg[:2000],
                     })
                     t += 1
+            elif sub_type == "token_count":
+                info = payload.get("info") or {}
+                usage = info.get("last_token_usage") or {}
+                usage_ordinal += 1
+                if isinstance(usage, dict) and usage:
+                    execution_usage_events.append({
+                        "source_event_id": (
+                            f"{session_id or 'codex'}:token-last:"
+                            f"{event.get('ordinal') or usage_ordinal}"
+                        ),
+                        "usage": {
+                            "input_tokens": usage.get("input_tokens"),
+                            "output_tokens": usage.get("output_tokens"),
+                            "total_tokens": usage.get("total_tokens"),
+                            "cached_input_tokens": usage.get(
+                                "cached_input_tokens"
+                            ),
+                        },
+                        "model": {
+                            "model_id": current_model or source_model or None,
+                            "provider": model_provider or None,
+                        },
+                        "observed_at": event.get("timestamp"),
+                    })
+                    if isinstance(info.get("total_token_usage"), dict):
+                        previous_cumulative_usage = dict(
+                            info["total_token_usage"]
+                        )
+                elif isinstance(info.get("total_token_usage"), dict):
+                    cumulative_usage = info["total_token_usage"]
+                    delta_usage = {}
+                    for field_name in (
+                        "input_tokens", "output_tokens", "total_tokens",
+                        "cached_input_tokens",
+                    ):
+                        current_value = cumulative_usage.get(field_name)
+                        previous_value = previous_cumulative_usage.get(field_name)
+                        if not isinstance(current_value, int):
+                            delta_usage[field_name] = None
+                        elif (
+                            isinstance(previous_value, int)
+                            and current_value >= previous_value
+                        ):
+                            delta_usage[field_name] = current_value - previous_value
+                        else:
+                            delta_usage[field_name] = current_value
+                    execution_usage_events.append({
+                        "source_event_id": (
+                            f"{session_id or 'codex'}:token-delta:"
+                            f"{event.get('ordinal') or usage_ordinal}"
+                        ),
+                        "usage": delta_usage,
+                        "model": {
+                            "model_id": current_model or source_model or None,
+                            "provider": model_provider or None,
+                        },
+                        "observed_at": event.get("timestamp"),
+                    })
+                    previous_cumulative_usage = dict(cumulative_usage)
+            continue
+
+        if ev_type == "turn_context":
+            model = payload.get("model")
+            if model:
+                current_model = str(model)
+                source_model = source_model or current_model
             continue
 
         if ev_type == "response_item":
@@ -289,7 +360,7 @@ def _adapt_codex_rollout_jsonl(content: str, metadata: dict) -> tuple[str, dict]
             t += 1
             continue
 
-        # turn_context / compacted / 未来变体：透传，不深析
+        # compacted / 未来变体：透传，不深析
         timeline.append({
             "t": t, "role": "event",
             "kind": ev_type or "unknown",
@@ -346,6 +417,20 @@ def _adapt_codex_rollout_jsonl(content: str, metadata: dict) -> tuple[str, dict]
         meta.setdefault("cli_version", cli_version)
     if model_provider:
         meta.setdefault("model_provider", model_provider)
+        meta.setdefault("source_provider", model_provider)
+    if source_model:
+        meta.setdefault("source_model", source_model)
+    if execution_usage_events:
+        for usage_event in execution_usage_events:
+            usage_event.setdefault("model", {
+                "model_id": source_model or None,
+                "provider": model_provider or None,
+            })
+            usage_event["harness"] = {
+                "name": "codex",
+                "version": cli_version or None,
+            }
+        meta["execution_usage_events"] = execution_usage_events
     meta["timeline"] = timeline
     meta["total_turns"] = len(timeline)
     meta["response_items"] = response_count

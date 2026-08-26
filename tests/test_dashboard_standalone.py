@@ -36,6 +36,13 @@ _STANDALONE_ALLOWED_OPERATIONS = {
 _BUILTIN_ONLY_OPERATIONS = {
     # 用户、原始轨迹、原子、skill 内容及逐 case 数据。
     ("get", "/api/v1/dashboard/users"),
+    ("get", "/api/v1/dashboard/task-graph/overview"),
+    ("get", "/api/v1/dashboard/task-graph/scopes"),
+    ("get", "/api/v1/dashboard/task-graph/tasks"),
+    ("get", "/api/v1/dashboard/task-graph/by-session"),
+    ("get", "/api/v1/dashboard/task-graph/by-atom"),
+    ("get", "/api/v1/dashboard/task-graph/task/{task_id}"),
+    ("post", "/api/v1/dashboard/task-graph/override"),
     # 单任务 agent trace 日志尾巴（内容级）。
     ("get", "/api/v1/dashboard/pipeline/log"),
     ("get", "/api/v1/dashboard/skill/{name}/detail"),

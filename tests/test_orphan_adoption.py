@@ -223,6 +223,39 @@ def test_revsync_orphan_backports_when_worktree_has_crlf(tmp_path):
     assert (src / "SKILL.md").read_bytes() == b"v2-user-edit\r\n"
 
 
+def test_revsync_orphan_backports_crlf_edit_after_source_head_advances(
+    tmp_path,
+):
+    """HEAD 前进后，blob LF 基线不应把 worktree CRLF 误判为源侧修改。"""
+    src, install_sha = _git_source(tmp_path, {"SKILL.md": "v1\n"})
+    (src / "notes.md").write_text("source-only\n", encoding="utf-8")
+    repo = porcelain.open_repo(str(src))
+    try:
+        porcelain.add(repo, paths=["notes.md"])
+        porcelain.commit(
+            repo,
+            message=b"advance source head",
+            author=b"t <t@example.com>",
+            committer=b"t <t@example.com>",
+        )
+    finally:
+        repo.close()
+    (src / "SKILL.md").write_bytes(b"v1\r\n")
+    dest = _orphan_dest(
+        tmp_path, {"SKILL.md": "v1\r\n"}, install_sha,
+    )
+    (dest / "SKILL.md").write_bytes(b"v2-user-edit\r\n")
+
+    status = reverse_sync_copy_dest(
+        dest, src,
+        exclude=_REVSYNC_EXCLUDE,
+        quiet_seconds=0,
+    )
+
+    assert status == ReverseSyncStatus.SYNCED
+    assert (src / "SKILL.md").read_bytes() == b"v2-user-edit\r\n"
+
+
 def test_revsync_orphan_unedited_is_no_edit(tmp_path):
     src, sha = _git_source(tmp_path, {"SKILL.md": "v1\n"})
     dest = _orphan_dest(tmp_path, {"SKILL.md": "v1\n"}, sha)

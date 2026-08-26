@@ -6,6 +6,8 @@ import sqlite3
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from xskill.dashboard.explore import TrajExplorer, skill_lineage
 from xskill.pipeline import registry as reg
 from xskill.skill.candidates import (
@@ -217,6 +219,7 @@ def test_candidates_save_syncs_pending_projection(tmp_path: Path) -> None:
     assert left == [("atom_t1_0001", "bar", 3)]
 
 
+@pytest.mark.performance_contract
 def test_backfill_and_dashboard_keep_multi_skill_pending_associations(
     tmp_path: Path,
 ) -> None:

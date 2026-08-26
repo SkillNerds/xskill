@@ -1,10 +1,26 @@
 """TaskClusterAgent + build_skill_catalog_block 单测"""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
+from xskill.agents import task_cluster_agent as task_cluster_module
 from xskill.pipeline.atom import AtomTask, AtomTaskStore
-from xskill.agents.task_cluster_agent import TaskClusterAgent, build_skill_catalog_block
+from xskill.agents.task_cluster_agent import (
+    TaskClusterAgent,
+    _clear_catalog_block_cache,
+    _format_skill_catalog_block,
+    build_skill_catalog_block,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_cluster_catalog_cache():
+    _clear_catalog_block_cache()
+    yield
+    _clear_catalog_block_cache()
 
 
 def _make_skill_on_main(skill_dir: Path, name: str, desc: str):
@@ -60,23 +76,19 @@ class TestSkillCatalogBudget:
         assert "a-skill[main]: deals with A" in block
         assert "b-skill[main]: deals with B" in block
 
-    def test_overflow_truncates_descriptions(self, tmp_path):
-        skill_dir = tmp_path / "skill"
+    def test_overflow_truncates_descriptions(self):
         # 100 skills, desc 100 chars 各，约 10k chars desc；预算 4000 强制截断
-        for i in range(100):
-            _make_skill(skill_dir, f"s-{i:03d}", "x" * 100)
-        block = build_skill_catalog_block(skill_dir, max_chars=4000)
+        entries = [(f"s-{i:03d}", "main", "x" * 100) for i in range(100)]
+        block = _format_skill_catalog_block(entries, max_chars=4000)
         for i in range(100):
             assert f"s-{i:03d}" in block
         # 不允许完整 100 字 desc
         assert "x" * 100 not in block
 
-    def test_extreme_overflow_drops_all_descriptions(self, tmp_path):
-        skill_dir = tmp_path / "skill"
+    def test_extreme_overflow_drops_all_descriptions(self):
         # 500 skills, 200 字 desc → 100k 字 desc，预算 5000 → per_desc 远 < 75
-        for i in range(500):
-            _make_skill(skill_dir, f"big-{i:04d}", "y" * 200)
-        block = build_skill_catalog_block(skill_dir, max_chars=5000)
+        entries = [(f"big-{i:04d}", "main", "y" * 200) for i in range(500)]
+        block = _format_skill_catalog_block(entries, max_chars=5000)
         for i in range(500):
             assert f"big-{i:04d}" in block
         # 该模式下不留 desc
@@ -130,6 +142,145 @@ class TestSkillCatalogBudget:
         skill_dir.mkdir()
         block = build_skill_catalog_block(skill_dir, max_chars=10000)
         assert "no skills" in block.lower()
+
+    @pytest.mark.performance_contract
+    def test_projection_snapshot_singleflights_until_generation_changes(
+        self, tmp_path, monkeypatch,
+    ):
+        """同 generation 并发 batch 只读一次目录行；写入后下一批立即刷新。"""
+        from xskill.skill import catalog_store
+
+        skill_dir = tmp_path / "skill"
+        registry = tmp_path / "registry.db"
+        _make_skill(skill_dir, "alpha", "first description")
+
+        calls: list[None] = []
+        disk_reads: list[None] = []
+        original = catalog_store.list_native_cluster_catalog
+        original_read = catalog_store._read_native_row
+
+        def counted(*args, **kwargs):
+            calls.append(None)
+            return original(*args, **kwargs)
+
+        def counted_disk_read(*args, **kwargs):
+            disk_reads.append(None)
+            return original_read(*args, **kwargs)
+
+        monkeypatch.setattr(catalog_store, "list_native_cluster_catalog", counted)
+        monkeypatch.setattr(catalog_store, "_read_native_row", counted_disk_read)
+        monkeypatch.setattr(
+            task_cluster_module,
+            "_scan_skill_state",
+            lambda _path: pytest.fail("projection path must not run legacy Git scan"),
+        )
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            blocks = list(executor.map(
+                lambda _: build_skill_catalog_block(
+                    skill_dir, max_chars=20000, db_path=registry,
+                ),
+                range(16),
+            ))
+
+        assert len(calls) == 1
+        assert len(disk_reads) == 1
+        assert all("alpha[main]: first description" in block for block in blocks)
+
+        _make_skill_on_baby(skill_dir, "beta", "new baby description")
+        catalog_store.upsert_native_skill(skill_dir / "beta", db_path=registry)
+        refreshed = build_skill_catalog_block(
+            skill_dir, max_chars=20000, db_path=registry,
+        )
+        assert len(calls) == 2
+        assert len(disk_reads) == 2
+        assert "beta[baby]: new baby description (0 cand in buffer)" in refreshed
+
+    def test_projection_failure_falls_back_to_disk_scan(self, tmp_path, monkeypatch):
+        from xskill.skill import catalog_store
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+
+        def unavailable(*_args, **_kwargs):
+            raise OSError("registry unavailable")
+
+        monkeypatch.setattr(catalog_store, "native_catalog_generation", unavailable)
+        monkeypatch.setattr(
+            task_cluster_module,
+            "_scan_skill_state",
+            lambda _path: [("fallback", "main", "disk truth")],
+        )
+
+        block = build_skill_catalog_block(
+            skill_dir, max_chars=10000, db_path=tmp_path / "registry.db",
+        )
+        assert block == "- fallback[main]: disk truth"
+
+    def test_replaced_registry_file_cannot_reuse_old_generation(self, tmp_path, monkeypatch):
+        from xskill.skill import catalog_store
+
+        skill_dir = tmp_path / "skill"
+        registry = tmp_path / "registry.db"
+        rows = [{
+            "name": "alpha", "state": "main", "description": "first",
+            "candidates_count": 0,
+        }]
+        calls: list[None] = []
+        identity = {"value": (1, 1)}
+
+        monkeypatch.setattr(
+            catalog_store, "native_catalog_generation", lambda *_args, **_kwargs: 1,
+        )
+        monkeypatch.setattr(
+            catalog_store,
+            "list_native_cluster_catalog",
+            lambda *_args, **_kwargs: calls.append(None) or list(rows),
+        )
+        monkeypatch.setattr(
+            task_cluster_module,
+            "_catalog_db_identity",
+            lambda _path: identity["value"],
+        )
+
+        first = build_skill_catalog_block(
+            skill_dir, max_chars=10000, db_path=registry,
+        )
+        assert build_skill_catalog_block(
+            skill_dir, max_chars=10000, db_path=registry,
+        ) == first
+        assert len(calls) == 1
+
+        rows[0] = {
+            "name": "beta", "state": "main", "description": "replacement",
+            "candidates_count": 0,
+        }
+        identity["value"] = (1, 2)
+        replaced = build_skill_catalog_block(
+            skill_dir, max_chars=10000, db_path=registry,
+        )
+        assert "beta[main]: replacement" in replaced
+        assert len(calls) == 2
+
+    def test_projection_cache_has_hard_entry_and_size_bounds(self):
+        value = "x" * 100
+        for generation in range(40):
+            key = ("db", 1, 1, "root", 1000, generation)
+            task_cluster_module._cache_catalog_block(key, lambda: value)
+
+        assert len(task_cluster_module._CATALOG_CACHE) == 32
+        assert sum(
+            len(block) for block in task_cluster_module._CATALOG_CACHE.values()
+        ) <= task_cluster_module._CATALOG_CACHE_MAX_CHARS
+
+        _clear_catalog_block_cache()
+        large_value = "x" * 600_000
+        for generation in range(2):
+            key = ("db", 1, 1, "root", 1000, generation)
+            task_cluster_module._cache_catalog_block(key, lambda: large_value)
+        assert len(task_cluster_module._CATALOG_CACHE) == 1
+        assert sum(
+            len(block) for block in task_cluster_module._CATALOG_CACHE.values()
+        ) <= task_cluster_module._CATALOG_CACHE_MAX_CHARS
 
 
 class TestClusterAgentPrompt:

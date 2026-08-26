@@ -5,10 +5,13 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from xskill.pipeline.atom import AtomTask, AtomTaskStore
+from xskill.skill.skill import Skill
+from xskill.team.server import skill_manifest
 from xskill.team.server.profile_reco import ClientProfileRecommender
-from xskill.team.server.skill_manifest import build_manifest, _ROUTER
+from xskill.team.server.skill_manifest import _ROUTER, build_manifest
 
 
 def _git(args, cwd):
@@ -70,17 +73,47 @@ def test_manifest_skips_baby_skill_without_main(tmp_path):
     assert "still-baby" not in names
 
 
-def test_manifest_caps_total_slots(tmp_path):
+def test_manifest_caps_total_slots(tmp_path, monkeypatch):
     skill_dir = tmp_path / "skill"
-    skill_dir.mkdir()
-    for i in range(150):
-        _make_skill(skill_dir, f"skill-{i:03d}")
-    resp = build_manifest(client_id="cid-1", skill_dir=skill_dir,
-                          probability=0.2, ranked_slots=80, total_slots=100)
+    names = [f"skill-{i:03d}" for i in range(150)]
+    skills = tuple(Skill(skill_dir / name) for name in names)
+    refs = {
+        name: (f"{index + 1:040x}", None)
+        for index, name in enumerate(names)
+    }
+    catalog = skill_manifest._CatalogSnapshot(
+        skills=skills,
+        refs=refs,
+        search_by_id={},
+        built_at=0.0,
+    )
+    # Capacity semantics consume an immutable catalog snapshot.  Neighboring
+    # tests retain the real-repository coverage for catalog construction.
+    monkeypatch.setattr(skill_manifest._catalog_cache, "get", lambda _path: catalog)
+    monkeypatch.setattr(
+        skill_manifest,
+        "main_sha",
+        lambda _path: pytest.fail("capacity test must use snapshot refs"),
+    )
+    monkeypatch.setattr(
+        skill_manifest,
+        "staging_sha",
+        lambda _path: pytest.fail("capacity test must use snapshot refs"),
+    )
+    resp = build_manifest(
+        client_id="cid-1",
+        skill_dir=skill_dir,
+        probability=0.2,
+        ranked_slots=80,
+        total_slots=100,
+        telemetry_submit=lambda _func: True,
+    )
     assert len(resp.slots) == 100
     ranked = [s for s in resp.slots if s.bucket == "ranked"]
     recommended = [s for s in resp.slots if s.bucket == "recommended"]
     assert len(ranked) == 80 and len(recommended) == 20
+    assert [slot.skill_name for slot in ranked] == names[:80]
+    assert [slot.skill_name for slot in recommended] == names[80:100]
 
 
 def test_manifest_can_defer_recommendation_telemetry(tmp_path, monkeypatch):

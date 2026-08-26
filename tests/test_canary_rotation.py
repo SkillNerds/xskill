@@ -176,6 +176,112 @@ def _make_watcher(skill_dir: Path, tmp_path: Path, *, probability: float):
 
 
 class TestRotateCanarySide:
+    @pytest.mark.performance_contract
+    def test_canary_decisions_probe_only_projected_active_skills(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """稳态 Git 探测随 staging 数增长，低频对账修复外部建分支。"""
+        from xskill import canary as canary_module
+        from xskill.skill import git as skill_git
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        active = _init_repo(skill_dir / "active")
+        _make_staging(active)
+        late = _init_repo(skill_dir / "late")
+        for index in range(20):
+            path = skill_dir / f"inactive-{index:02d}"
+            (path / ".git" / "refs" / "heads").mkdir(parents=True)
+            (path / ".git" / "refs" / "heads" / "main").write_text(
+                "a" * 40 + "\n",
+                encoding="ascii",
+            )
+            (path / "SKILL.md").write_text("main", encoding="utf-8")
+        watcher = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={
+                "canary": {},
+                "watcher": {"full_reconcile_interval": 60},
+            },
+            install_history_path=tmp_path / "install_history.jsonl",
+            home_root=tmp_path,
+            db_path=tmp_path / "registry.db",
+        )
+        clock = [100.0]
+        monkeypatch.setattr(
+            "xskill.pipeline.runner.time.monotonic",
+            lambda: clock[0],
+        )
+        monkeypatch.setattr(
+            "xskill.pipeline.registry.model_share",
+            lambda **_kwargs: [],
+        )
+        monkeypatch.setattr(
+            canary_module.AtomCanary,
+            "plan_decision",
+            lambda *_args, **_kwargs: {"action": "waiting"},
+        )
+        probes = []
+        original_run_git = skill_git.run_git
+
+        def count_staging_probe(args, cwd):
+            if args == ["rev-parse", "--verify", "staging"]:
+                probes.append(Path(cwd).name)
+            return original_run_git(args, cwd=cwd)
+
+        monkeypatch.setattr(skill_git, "run_git", count_staging_probe)
+
+        watcher._check_canary_decisions()
+        _make_staging(late)
+        clock[0] = 101.0
+        watcher._check_canary_decisions()
+        clock[0] = 161.0
+        watcher._check_canary_decisions()
+
+        assert probes == ["active", "active", "active", "late"]
+
+    def test_pending_recovery_is_scheduled_outside_staging_projection(
+        self,
+        tmp_path,
+    ):
+        from xskill.ecosystems._history import InstallHistory
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        skill_path = _init_repo(skill_dir / "recover-me")
+        history = InstallHistory(tmp_path / "install_history.jsonl")
+        history._write_recovery(
+            skill=skill_path.name,
+            target="working_tree",
+            transaction_id="transaction-1",
+            records=[{"record_id": "record-1", "action": "install"}],
+            decision_ids=("decision-1",),
+            side="main",
+            sha="a" * 40,
+            generation=f"{'a' * 40}:",
+            source_generation=f"{'a' * 40}:{'b' * 40}",
+            state="applying",
+        )
+        watcher = DirectoryWatcher(
+            skill_dir=skill_dir,
+            config={"watcher": {"full_reconcile_interval": 60}},
+            install_history_path=history.path,
+            home_root=tmp_path,
+            db_path=tmp_path / "registry.db",
+        )
+
+        paths = watcher._active_canary_skill_paths(
+            history=history,
+            target="working_tree",
+        )
+
+        assert paths == [skill_path]
+        assert history.pending_recovery_skills("working_tree") == {
+            "recover-me",
+        }
+
     def test_twenty_five_skills_share_one_history_parse(
         self,
         tmp_path,
@@ -515,6 +621,11 @@ class TestRotateCanarySide:
         assert latest["side"] == "main"
         assert latest["generation"] == canary_generation(skill_path)
         assert latest["generation"].endswith(":")
+        from xskill.skill.catalog_store import list_active_native_canaries
+        assert list_active_native_canaries(
+            skill_dir,
+            db_path=tmp_path / "registry.db",
+        ) == []
 
     def test_terminal_receipts_recover_after_staging_is_gone(
         self,

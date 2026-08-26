@@ -134,6 +134,7 @@ class TeamCollector:
             TraeIngester,
             CC_SPEC, CODEX_SPEC, DSH_SPEC, NGA3_SPEC, OPENCODE_SPEC,
             NGAGENT_SPEC,
+            ensure_zstandard_for_dsh,
         )
         for det in detect_known_ecosystems(home_root=self.home_root):
             eco = det["ecosystem"]
@@ -174,6 +175,7 @@ class TeamCollector:
                 # daemon 侧 watcher_factory 有这条分支，collector 这条
                 # 平行分发链也必须接上，否则 connect 后 dsh 会话不会被
                 # 镜像进 bridge，团队模式下永远采不到（PR #243 评审发现）。
+                ensure_zstandard_for_dsh(self.home_root)
                 ing = JsonlIngester(DSH_SPEC, target_traj_dir=bridge,
                                     home_root=self.home_root,
                                     poll_interval=self.poll_interval)

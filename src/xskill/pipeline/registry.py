@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 import threading
 import time
 import zlib
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import Enum
@@ -125,6 +127,7 @@ CREATE TABLE IF NOT EXISTS watch_dirs (
     label      TEXT DEFAULT '',
     auto_index INTEGER DEFAULT 1,
     ecosystem  TEXT DEFAULT 'manual',
+    source_scope_id TEXT UNIQUE,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -162,7 +165,20 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     completion   INTEGER DEFAULT 0,
     total        INTEGER DEFAULT 0,
     cost_usd     REAL DEFAULT 0,
-    price_source TEXT
+    price_source TEXT,
+    usage_event_id TEXT UNIQUE,
+    usage_plane TEXT DEFAULT 'xskill_processing',
+    measurement_quality TEXT,
+    allocation_mode TEXT DEFAULT 'unattributed',
+    estimation_method TEXT,
+    unavailable_reason TEXT,
+    tenant_id TEXT,
+    task_scope_id TEXT,
+    source_scope_id TEXT,
+    traj_id TEXT,
+    atom_id TEXT,
+    generation_id TEXT,
+    legacy INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_llm_usage_ts ON llm_usage(ts);
 
@@ -261,7 +277,8 @@ CREATE INDEX IF NOT EXISTS idx_skills_catalog_root_state
 CREATE TABLE IF NOT EXISTS skills_catalog_meta (
     root_key      TEXT PRIMARY KEY,
     backfilled_at TEXT NOT NULL,
-    skillhub_key  TEXT NOT NULL DEFAULT ''
+    skillhub_key  TEXT NOT NULL DEFAULT '',
+    generation    INTEGER NOT NULL DEFAULT 0
 );
 
 -- 预计算推荐结果：/sync 只读；重活进程写入（脏算）。
@@ -278,6 +295,43 @@ CREATE TABLE IF NOT EXISTS recommend_dirty (
     user_key   TEXT PRIMARY KEY,
     reason     TEXT NOT NULL DEFAULT '',
     marked_at  TEXT NOT NULL
+);
+
+-- skills_catalog → vector index 增量同步队列。generation 是消费 fence：
+-- worker 只能清理自己实际处理的版本，并发晚到写入会保留到下一轮。
+CREATE TABLE IF NOT EXISTS catalog_vector_dirty (
+    catalog_key TEXT PRIMARY KEY,
+    generation  INTEGER NOT NULL DEFAULT 1,
+    dirty       INTEGER NOT NULL DEFAULT 1 CHECK(dirty IN (0,1)),
+    operation   TEXT NOT NULL CHECK(operation IN ('upsert','delete')),
+    content_sha TEXT NOT NULL DEFAULT '',
+    marked_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_catalog_vector_dirty_marked
+    ON catalog_vector_dirty(dirty, marked_at, catalog_key);
+
+-- 全量向量对账水位：首次升级、模型/算法变化和低频修复时更新。
+CREATE TABLE IF NOT EXISTS catalog_vector_sync_meta (
+    singleton          INTEGER PRIMARY KEY CHECK(singleton=1),
+    model_fingerprint  TEXT NOT NULL DEFAULT '',
+    reconciled_at      REAL NOT NULL DEFAULT 0
+);
+
+-- 用户画像脏队列：generation 让“计算期间又发生变化”不会被旧任务误清。
+CREATE TABLE IF NOT EXISTS profile_dirty (
+    user_key    TEXT PRIMARY KEY,
+    generation  INTEGER NOT NULL DEFAULT 1,
+    reason      TEXT NOT NULL DEFAULT '',
+    marked_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_profile_dirty_marked
+    ON profile_dirty(marked_at, user_key);
+
+-- 画像算法/embedding 输入版本与低频全量对账水位。
+CREATE TABLE IF NOT EXISTS profile_refresh_meta (
+    singleton          INTEGER PRIMARY KEY CHECK(singleton=1),
+    input_fingerprint  TEXT NOT NULL DEFAULT '',
+    reconciled_at      REAL NOT NULL DEFAULT 0
 );
 
 -- P3-3.1 events:四类既有事实源的消费者(D7),通知+世界消息共用。
@@ -376,6 +430,17 @@ CREATE TABLE IF NOT EXISTS atom_candidate_pending_meta (
     backfilled_at TEXT NOT NULL
 );
 
+-- SkillEdit 持久脏队列：候选写入只合并同一 skill 的 generation；watcher
+-- 以 compare-and-delete 确认已观察版本，避免编辑期间的新写入被旧任务误清。
+CREATE TABLE IF NOT EXISTS skill_edit_dirty (
+    root_key   TEXT NOT NULL,
+    skill      TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 1,
+    reason     TEXT NOT NULL DEFAULT '',
+    marked_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (root_key, skill)
+);
+
 -- 纳入 / generate 发起人。首次写入生效，供自动灰度对象（与用量最多的用户取并）。
 CREATE TABLE IF NOT EXISTS skill_origin (
     skill_name TEXT PRIMARY KEY,
@@ -384,6 +449,261 @@ CREATE TABLE IF NOT EXISTS skill_origin (
     ts         TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_skill_origin_user ON skill_origin(user_key);
+
+-- Logical Task 事实源位于 task_graph/scopes；下列表均为可重建查询投影。
+CREATE TABLE IF NOT EXISTS task_graph_generations (
+    tenant_id          TEXT NOT NULL,
+    task_scope_id      TEXT NOT NULL,
+    generation_id     TEXT NOT NULL,
+    source_revision    TEXT NOT NULL,
+    generator_json    TEXT NOT NULL DEFAULT '{}',
+    base_override_seq  INTEGER NOT NULL,
+    created_at         TEXT NOT NULL,
+    task_count         INTEGER NOT NULL DEFAULT 0,
+    atom_count         INTEGER NOT NULL DEFAULT 0,
+    candidate_count    INTEGER NOT NULL DEFAULT 0,
+    model_judgement_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (tenant_id, task_scope_id)
+);
+
+CREATE TABLE IF NOT EXISTS logical_tasks (
+    tenant_id          TEXT NOT NULL,
+    task_scope_id      TEXT NOT NULL,
+    task_id            TEXT NOT NULL,
+    generation_id      TEXT NOT NULL,
+    title              TEXT NOT NULL DEFAULT '',
+    summary            TEXT NOT NULL DEFAULT '',
+    lifecycle          TEXT NOT NULL,
+    outcome            TEXT NOT NULL,
+    verification       TEXT NOT NULL,
+    user_disposition   TEXT NOT NULL,
+    created_at         TEXT NOT NULL,
+    tombstoned         INTEGER NOT NULL DEFAULT 0,
+    aliases_json       TEXT NOT NULL DEFAULT '[]',
+    decisions_json     TEXT NOT NULL DEFAULT '[]',
+    primary_atom_count INTEGER NOT NULL DEFAULT 0,
+    attempt_count      INTEGER NOT NULL DEFAULT 0,
+    execution_tokens   INTEGER,
+    execution_cost_usd REAL,
+    PRIMARY KEY (tenant_id, task_scope_id, task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_logical_tasks_scope_state
+    ON logical_tasks(tenant_id, task_scope_id, tombstoned, created_at, task_id);
+CREATE INDEX IF NOT EXISTS idx_logical_tasks_tenant_state
+    ON logical_tasks(tenant_id, tombstoned, created_at, task_id);
+
+CREATE TABLE IF NOT EXISTS task_atom_memberships (
+    tenant_id        TEXT NOT NULL,
+    task_scope_id    TEXT NOT NULL,
+    membership_id   TEXT NOT NULL,
+    generation_id   TEXT NOT NULL,
+    task_id          TEXT NOT NULL,
+    source_scope_id TEXT NOT NULL,
+    traj_id          TEXT NOT NULL,
+    atom_id          TEXT NOT NULL,
+    role             TEXT NOT NULL,
+    decision         TEXT NOT NULL,
+    confidence       REAL,
+    decided_by       TEXT NOT NULL,
+    algorithm_version TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+    observed_at      TEXT NOT NULL,
+    stale            INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (tenant_id, task_scope_id, membership_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_membership_atom
+    ON task_atom_memberships(
+        tenant_id, task_scope_id, source_scope_id, traj_id, atom_id, decision, role
+    );
+CREATE INDEX IF NOT EXISTS idx_task_membership_task
+    ON task_atom_memberships(tenant_id, task_scope_id, task_id, decision, role);
+CREATE INDEX IF NOT EXISTS idx_task_membership_session
+    ON task_atom_memberships(
+        tenant_id, source_scope_id, traj_id, atom_id, decision, role
+    );
+
+CREATE TABLE IF NOT EXISTS task_relations (
+    tenant_id        TEXT NOT NULL,
+    task_scope_id    TEXT NOT NULL,
+    relation_id     TEXT NOT NULL,
+    generation_id   TEXT NOT NULL,
+    from_task_id    TEXT NOT NULL,
+    to_task_id      TEXT NOT NULL,
+    relation_type   TEXT NOT NULL,
+    decision        TEXT NOT NULL,
+    confidence      REAL,
+    decided_by      TEXT NOT NULL,
+    algorithm_version TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+    observed_at     TEXT NOT NULL,
+    stale           INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (tenant_id, task_scope_id, relation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_relations_from
+    ON task_relations(tenant_id, task_scope_id, from_task_id, decision);
+CREATE INDEX IF NOT EXISTS idx_task_relations_to
+    ON task_relations(tenant_id, task_scope_id, to_task_id, decision);
+
+CREATE TABLE IF NOT EXISTS task_attempts (
+    tenant_id        TEXT NOT NULL,
+    task_scope_id    TEXT NOT NULL,
+    attempt_id       TEXT NOT NULL,
+    generation_id   TEXT NOT NULL,
+    task_id          TEXT NOT NULL,
+    started_at       TEXT NOT NULL,
+    ended_at         TEXT,
+    lifecycle        TEXT NOT NULL,
+    outcome          TEXT NOT NULL,
+    verification     TEXT NOT NULL,
+    user_disposition TEXT NOT NULL,
+    decisions_json   TEXT NOT NULL DEFAULT '[]',
+    execution_identity_json TEXT NOT NULL DEFAULT '{}',
+    evidence_count   INTEGER NOT NULL DEFAULT 0,
+    execution_tokens INTEGER,
+    execution_cost_usd REAL,
+    PRIMARY KEY (tenant_id, task_scope_id, attempt_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_attempts_task
+    ON task_attempts(tenant_id, task_scope_id, task_id, started_at, attempt_id);
+
+CREATE TABLE IF NOT EXISTS task_evidence_ranges (
+    tenant_id        TEXT NOT NULL,
+    task_scope_id    TEXT NOT NULL,
+    evidence_id      TEXT NOT NULL,
+    generation_id   TEXT NOT NULL,
+    attempt_id       TEXT NOT NULL,
+    source_scope_id TEXT NOT NULL,
+    traj_id          TEXT NOT NULL,
+    atom_id          TEXT,
+    locator_kind     TEXT NOT NULL,
+    locator_start    TEXT NOT NULL,
+    locator_end      TEXT NOT NULL,
+    content_hash     TEXT NOT NULL,
+    atom_hash        TEXT NOT NULL DEFAULT '',
+    stale            INTEGER NOT NULL DEFAULT 0,
+    model_json       TEXT NOT NULL DEFAULT '{}',
+    harness_json     TEXT NOT NULL DEFAULT '{}',
+    skills_json      TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (tenant_id, task_scope_id, evidence_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_evidence_session
+    ON task_evidence_ranges(tenant_id, task_scope_id, source_scope_id, traj_id);
+CREATE INDEX IF NOT EXISTS idx_task_evidence_attempt
+    ON task_evidence_ranges(tenant_id, task_scope_id, attempt_id);
+
+CREATE TABLE IF NOT EXISTS task_attempt_relations (
+    tenant_id        TEXT NOT NULL,
+    task_scope_id    TEXT NOT NULL,
+    relation_id      TEXT NOT NULL,
+    generation_id    TEXT NOT NULL,
+    from_attempt_id  TEXT NOT NULL,
+    to_attempt_id    TEXT NOT NULL,
+    relation_type    TEXT NOT NULL,
+    decision         TEXT NOT NULL,
+    confidence       REAL,
+    decided_by       TEXT NOT NULL,
+    algorithm_version TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+    observed_at      TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, task_scope_id, relation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_attempt_relations_from
+    ON task_attempt_relations(tenant_id, task_scope_id, from_attempt_id);
+CREATE INDEX IF NOT EXISTS idx_task_attempt_relations_to
+    ON task_attempt_relations(tenant_id, task_scope_id, to_attempt_id);
+
+-- 原 Harness execution usage 是不可由 Atom 重建的 append-only 事实。
+CREATE TABLE IF NOT EXISTS execution_usage_events (
+    usage_event_id      TEXT PRIMARY KEY,
+    usage_plane         TEXT NOT NULL CHECK(usage_plane='execution'),
+    source_event_id     TEXT NOT NULL,
+    tenant_id           TEXT NOT NULL,
+    task_scope_id       TEXT NOT NULL,
+    source_scope_id     TEXT NOT NULL,
+    traj_id             TEXT NOT NULL,
+    model_json          TEXT NOT NULL DEFAULT '{}',
+    harness_json        TEXT NOT NULL DEFAULT '{}',
+    prompt_tokens       INTEGER,
+    completion_tokens   INTEGER,
+    total_tokens        INTEGER,
+    cache_read_tokens   INTEGER,
+    cost_usd            REAL,
+    measurement_quality TEXT NOT NULL,
+    estimation_method   TEXT NOT NULL DEFAULT '',
+    unavailable_reason  TEXT NOT NULL DEFAULT '',
+    observed_at         TEXT NOT NULL,
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_execution_usage_session
+    ON execution_usage_events(
+        tenant_id, task_scope_id, source_scope_id, traj_id, observed_at
+    );
+
+CREATE TABLE IF NOT EXISTS task_usage_allocations (
+    tenant_id        TEXT NOT NULL,
+    task_scope_id    TEXT NOT NULL,
+    allocation_id   TEXT NOT NULL,
+    generation_id   TEXT NOT NULL,
+    usage_event_id  TEXT NOT NULL,
+    usage_plane     TEXT NOT NULL,
+    allocation_mode TEXT NOT NULL,
+    fraction        REAL NOT NULL,
+    task_id         TEXT,
+    attempt_id      TEXT,
+    processing_step TEXT,
+    prompt_tokens   INTEGER,
+    completion_tokens INTEGER,
+    total_tokens    INTEGER,
+    cache_read_tokens INTEGER,
+    cost_usd        REAL,
+    method          TEXT NOT NULL DEFAULT '',
+    method_version  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (tenant_id, task_scope_id, allocation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_usage_task
+    ON task_usage_allocations(tenant_id, task_scope_id, task_id, usage_plane);
+CREATE INDEX IF NOT EXISTS idx_task_usage_event
+    ON task_usage_allocations(usage_plane, usage_event_id);
+
+CREATE TABLE IF NOT EXISTS task_graph_source_state (
+    tenant_id        TEXT NOT NULL,
+    task_scope_id    TEXT NOT NULL,
+    source_scope_id TEXT NOT NULL,
+    watch_dir_id     INTEGER NOT NULL,
+    traj_id          TEXT NOT NULL,
+    source_revision  TEXT NOT NULL,
+    generation_id    TEXT NOT NULL,
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (source_scope_id, traj_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_source_scope
+    ON task_graph_source_state(tenant_id, task_scope_id);
+
+CREATE TABLE IF NOT EXISTS task_graph_dirty_sources (
+    watch_dir_id     INTEGER NOT NULL,
+    filename         TEXT NOT NULL,
+    source_scope_id TEXT,
+    tenant_id        TEXT,
+    task_scope_id    TEXT,
+    deleted          INTEGER NOT NULL DEFAULT 0,
+    generation       INTEGER NOT NULL DEFAULT 1,
+    reason           TEXT NOT NULL DEFAULT '',
+    marked_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (watch_dir_id, filename)
+);
+CREATE INDEX IF NOT EXISTS idx_task_dirty_marked
+    ON task_graph_dirty_sources(marked_at, watch_dir_id, filename);
+
+CREATE TABLE IF NOT EXISTS task_graph_dirty_scopes (
+    tenant_id        TEXT NOT NULL,
+    task_scope_id    TEXT NOT NULL,
+    generation       INTEGER NOT NULL DEFAULT 1,
+    reason           TEXT NOT NULL DEFAULT '',
+    marked_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (tenant_id, task_scope_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_dirty_scope_marked
+    ON task_graph_dirty_scopes(marked_at, tenant_id, task_scope_id);
 """
 
 _WATCH_STATUS_INDEX_SQL = """
@@ -673,6 +993,104 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
         # 已有行历史上都是用户手动 register，标 'manual'
         conn.execute("UPDATE watch_dirs SET ecosystem='manual' WHERE ecosystem IS NULL")
+    if "source_scope_id" not in wd_cols:
+        conn.execute("ALTER TABLE watch_dirs ADD COLUMN source_scope_id TEXT")
+    missing_source_scopes = conn.execute(
+        "SELECT id, path FROM watch_dirs"
+        " WHERE source_scope_id IS NULL OR source_scope_id=''"
+    ).fetchall()
+    for watch_dir_row in missing_source_scopes:
+        conn.execute(
+            "UPDATE watch_dirs SET source_scope_id=? WHERE id=?",
+            (f"src_{uuid.uuid4().hex}", watch_dir_row["id"]),
+        )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_watch_dirs_source_scope"
+        " ON watch_dirs(source_scope_id)"
+        " WHERE source_scope_id IS NOT NULL AND source_scope_id != ''"
+    )
+
+    # Logical Task usage identity.  Historical rows intentionally retain their
+    # original numeric values without inventing measurement quality or scope.
+    cur = conn.execute("PRAGMA table_info(llm_usage)")
+    usage_cols = {row[1] for row in cur.fetchall()}
+    usage_migrations = [
+        ("usage_event_id", "TEXT"),
+        ("usage_plane", "TEXT DEFAULT 'xskill_processing'"),
+        ("measurement_quality", "TEXT"),
+        ("allocation_mode", "TEXT DEFAULT 'unattributed'"),
+        ("estimation_method", "TEXT"),
+        ("unavailable_reason", "TEXT"),
+        ("tenant_id", "TEXT"),
+        ("task_scope_id", "TEXT"),
+        ("source_scope_id", "TEXT"),
+        ("traj_id", "TEXT"),
+        ("atom_id", "TEXT"),
+        ("generation_id", "TEXT"),
+        ("legacy", "INTEGER NOT NULL DEFAULT 0"),
+    ]
+    for column_name, column_type in usage_migrations:
+        if column_name not in usage_cols:
+            conn.execute(
+                f"ALTER TABLE llm_usage ADD COLUMN {column_name} {column_type}"
+            )
+    conn.execute(
+        "UPDATE llm_usage SET usage_event_id='xsp_legacy_' || id,"
+        " usage_plane='xskill_processing', allocation_mode='unattributed',"
+        " legacy=1 WHERE usage_event_id IS NULL OR usage_event_id=''"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_usage_event"
+        " ON llm_usage(usage_event_id) WHERE usage_event_id IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_llm_usage_scope"
+        " ON llm_usage(tenant_id, task_scope_id, usage_plane)"
+    )
+    task_usage_columns = {
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info(task_usage_allocations)"
+        ).fetchall()
+    }
+    if "cache_read_tokens" not in task_usage_columns:
+        conn.execute(
+            "ALTER TABLE task_usage_allocations"
+            " ADD COLUMN cache_read_tokens INTEGER"
+        )
+    task_evidence_columns = {
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info(task_evidence_ranges)"
+        ).fetchall()
+    }
+    if "atom_hash" not in task_evidence_columns:
+        conn.execute(
+            "ALTER TABLE task_evidence_ranges"
+            " ADD COLUMN atom_hash TEXT NOT NULL DEFAULT ''"
+        )
+    execution_usage_columns = {
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info(execution_usage_events)"
+        ).fetchall()
+    }
+    if "estimation_method" not in execution_usage_columns:
+        conn.execute(
+            "ALTER TABLE execution_usage_events"
+            " ADD COLUMN estimation_method TEXT NOT NULL DEFAULT ''"
+        )
+    task_generation_columns = {
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info(task_graph_generations)"
+        ).fetchall()
+    }
+    if "generator_json" not in task_generation_columns:
+        conn.execute(
+            "ALTER TABLE task_graph_generations"
+            " ADD COLUMN generator_json TEXT NOT NULL DEFAULT '{}'"
+        )
 
     # skills_catalog.content_sha：与 Milvus 向量索引对齐的一致性键
     cur = conn.execute("PRAGMA table_info(skills_catalog)")
@@ -680,6 +1098,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "content_sha" not in sc_cols:
         conn.execute(
             "ALTER TABLE skills_catalog ADD COLUMN content_sha TEXT NOT NULL DEFAULT ''"
+        )
+
+    # skills_catalog_meta.generation：Cluster 路由表的跨进程失效键。必须先补列，
+    # 后续 catalog 写出口才能在同一事务内 bump；旧库从 0 起步，下一次目录
+    # 语义变化会推进版本。
+    cur = conn.execute("PRAGMA table_info(skills_catalog_meta)")
+    scm_cols = {row[1] for row in cur.fetchall()}
+    if "generation" not in scm_cols:
+        conn.execute(
+            "ALTER TABLE skills_catalog_meta"
+            " ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
         )
 
     # skill_prefs.side：pin 时可钉灰度侧（空=自动分流）
@@ -716,18 +1145,91 @@ def _migrate(conn: sqlite3.Connection) -> None:
 # LLM usage / cost accounting  (Issue #43)  —— 唯一"无家可归"数据的持久化
 # ---------------------------------------------------------------------------
 
-def record_usage(*, step: str, model: str, prompt: int, completion: int,
-                 total: int, cost_usd: float, price_source: str,
-                 db_path: Optional[Path] = None) -> None:
+def record_usage(*, step: str, model: str, prompt: Optional[int],
+                 completion: Optional[int], total: Optional[int],
+                 cost_usd: Optional[float], price_source: str,
+                 usage_event_id: Optional[str] = None,
+                 measurement_quality: str = "measured",
+                 allocation_mode: str = "unattributed",
+                 estimation_method: Optional[str] = None,
+                 unavailable_reason: Optional[str] = None,
+                 tenant_id: Optional[str] = None,
+                 task_scope_id: Optional[str] = None,
+                 source_scope_id: Optional[str] = None,
+                 traj_id: Optional[str] = None,
+                 atom_id: Optional[str] = None,
+                 generation_id: Optional[str] = None,
+                 db_path: Optional[Path] = None) -> str:
     """追加一条 LLM/embedding 调用的 token+成本记录。旁路 telemetry。"""
+    if measurement_quality not in ("measured", "estimated", "unavailable"):
+        raise ValueError("invalid measurement_quality")
+    if allocation_mode not in ("direct", "shared", "unattributed"):
+        raise ValueError("invalid allocation_mode")
+    if usage_event_id is None:
+        event_id = f"xsp_{uuid.uuid4().hex}"
+    elif not isinstance(usage_event_id, str) or not usage_event_id.strip():
+        raise ValueError("usage_event_id must be a non-empty string")
+    else:
+        event_id = usage_event_id.strip()
+    if len(event_id) > 200:
+        raise ValueError("usage_event_id is limited to 200 characters")
+
+    def non_negative_number(value, name: str, *, integer: bool):
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError(f"{name} must be numeric or None")
+        if integer:
+            if not isinstance(value, int):
+                raise ValueError(f"{name} must be an integer or None")
+            normalized = value
+        else:
+            if not isinstance(value, (int, float)):
+                raise ValueError(f"{name} must be numeric or None")
+            normalized = float(value)
+        if not math.isfinite(float(normalized)) or normalized < 0:
+            raise ValueError(f"{name} must be non-negative")
+        return normalized
+
+    prompt_value = non_negative_number(prompt, "prompt", integer=True)
+    completion_value = non_negative_number(
+        completion, "completion", integer=True,
+    )
+    total_value = non_negative_number(total, "total", integer=True)
+    cost_value = non_negative_number(cost_usd, "cost_usd", integer=False)
+    if measurement_quality == "estimated" and not str(
+        estimation_method or ""
+    ).strip():
+        raise ValueError("estimated usage requires estimation_method")
+    if measurement_quality == "unavailable":
+        if not str(unavailable_reason or "").strip():
+            raise ValueError("unavailable usage requires unavailable_reason")
+        prompt_value = completion_value = total_value = cost_value = None
+    elif all(
+        value is None
+        for value in (
+            prompt_value, completion_value, total_value, cost_value,
+        )
+    ):
+        raise ValueError("measured or estimated usage requires a numeric value")
     with pooled_connection(db_path) as conn:
         conn.execute(
-            "INSERT INTO llm_usage(step,model,prompt,completion,total,cost_usd,price_source)"
-            " VALUES(?,?,?,?,?,?,?)",
-            (step, model, int(prompt), int(completion), int(total),
-             float(cost_usd), price_source),
+            "INSERT INTO llm_usage("
+            "step,model,prompt,completion,total,cost_usd,price_source,"
+            "usage_event_id,usage_plane,measurement_quality,allocation_mode,"
+            "estimation_method,unavailable_reason,tenant_id,task_scope_id,"
+            "source_scope_id,traj_id,atom_id,generation_id,legacy)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)",
+            (
+                step, model, prompt_value, completion_value, total_value,
+                cost_value, price_source, event_id, "xskill_processing",
+                measurement_quality, allocation_mode, estimation_method,
+                unavailable_reason, tenant_id, task_scope_id, source_scope_id,
+                traj_id, atom_id, generation_id,
+            ),
         )
         conn.commit()
+    return event_id
 
 
 # ---------------------------------------------------------------------------
@@ -1189,12 +1691,28 @@ def retire_skill(*, skill_name: str, set_by: str,
                  db_path: Optional[Path] = None) -> None:
     """下线:停止分发与推荐,数据与 git 历史保留。幂等。"""
     with pooled_connection(db_path) as conn:
+        already_retired = conn.execute(
+            "SELECT 1 FROM skill_lifecycle WHERE skill_name=? AND state='retired'",
+            (skill_name,),
+        ).fetchone() is not None
         conn.execute(
             "INSERT INTO skill_lifecycle(skill_name,state,set_by) VALUES(?,?,?)"
             " ON CONFLICT(skill_name) DO UPDATE SET state='retired',"
             " set_by=excluded.set_by, ts=datetime('now')",
             (skill_name, "retired", set_by),
         )
+        if not already_retired:
+            rows = conn.execute(
+                "SELECT catalog_key FROM skills_catalog WHERE name=?",
+                (skill_name,),
+            ).fetchall()
+            from xskill.recommend.vector_dirty import (
+                mark_catalog_vector_dirty_on_connection,
+            )
+            for row in rows:
+                mark_catalog_vector_dirty_on_connection(
+                    conn, row["catalog_key"], operation="delete",
+                )
         conn.commit()
 
 
@@ -1203,6 +1721,30 @@ def unretire_skill(*, skill_name: str, db_path: Optional[Path] = None) -> bool:
     with pooled_connection(db_path) as conn:
         cur = conn.execute(
             "DELETE FROM skill_lifecycle WHERE skill_name=?", (skill_name,))
+        if cur.rowcount > 0:
+            from xskill.recommend.skill_vector_store import (
+                catalog_row_is_indexable,
+            )
+            from xskill.recommend.vector_dirty import (
+                mark_catalog_vector_dirty_on_connection,
+            )
+            rows = conn.execute(
+                """
+                SELECT catalog_key, name, source, description, content_sha,
+                       distributable
+                FROM skills_catalog WHERE name=?
+                """,
+                (skill_name,),
+            ).fetchall()
+            for row in rows:
+                stored = dict(row)
+                if catalog_row_is_indexable(stored):
+                    mark_catalog_vector_dirty_on_connection(
+                        conn,
+                        row["catalog_key"],
+                        operation="upsert",
+                        content_sha=row["content_sha"] or "",
+                    )
         conn.commit()
         return cur.rowcount > 0
 
@@ -1282,6 +1824,7 @@ def sync_atom_candidate_pending_for_skill(
     candidates: list,
     *,
     db_path: Optional[Path] = None,
+    dirty_root_key: str | None = None,
 ) -> None:
     """按某 skill 当前 candidates 快照替换其 pending 投影行。
 
@@ -1310,6 +1853,13 @@ def sync_atom_candidate_pending_for_skill(
                 """,
                 rows,
             )
+        if dirty_root_key is not None:
+            _mark_skill_edit_dirty_conn(
+                conn,
+                root_key=dirty_root_key,
+                skill=skill,
+                reason="candidates",
+            )
         conn.commit()
 
 
@@ -1317,11 +1867,19 @@ def delete_atom_candidate_pending_for_skill(
     skill: str,
     *,
     db_path: Optional[Path] = None,
+    dirty_root_key: str | None = None,
 ) -> None:
     with pooled_connection(db_path) as conn:
         conn.execute(
             "DELETE FROM atom_candidate_pending WHERE skill=?", (skill,),
         )
+        if dirty_root_key is not None:
+            _mark_skill_edit_dirty_conn(
+                conn,
+                root_key=dirty_root_key,
+                skill=skill,
+                reason="candidates_missing",
+            )
         conn.commit()
 
 
@@ -1342,7 +1900,10 @@ def notify_atom_pending_sync(
             )
             return
         sync_atom_candidate_pending_for_skill(
-            Path(skill_path).name, candidates, db_path=resolved,
+            Path(skill_path).name,
+            candidates,
+            db_path=resolved,
+            dirty_root_key=_atom_pending_root_key(Path(skill_path).parent),
         )
     except Exception:  # pylint: disable=broad-exception-caught
         logger.exception(
@@ -1369,6 +1930,129 @@ def notify_atom_pending_delete(
         logger.exception(
             "atom_candidate_pending delete failed: %s", skill,
         )
+
+
+def _mark_skill_edit_dirty_conn(
+    conn: sqlite3.Connection,
+    *,
+    root_key: str,
+    skill: str,
+    reason: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO skill_edit_dirty(root_key, skill, generation, reason)
+        VALUES (?, ?, 1, ?)
+        ON CONFLICT(root_key, skill) DO UPDATE SET
+            generation=skill_edit_dirty.generation + 1,
+            reason=excluded.reason,
+            marked_at=datetime('now')
+        """,
+        (root_key, skill, reason),
+    )
+
+
+def mark_skill_edit_dirty(
+    skill_path: Path | str,
+    *,
+    reason: str = "candidates",
+    db_path: Optional[Path] = None,
+) -> None:
+    """持久标记一个 skill；重复标记只递增 generation，不增加队列行。"""
+    path = Path(skill_path)
+    with pooled_connection(db_path) as conn:
+        _mark_skill_edit_dirty_conn(
+            conn,
+            root_key=_atom_pending_root_key(path.parent),
+            skill=path.name,
+            reason=reason,
+        )
+        conn.commit()
+
+
+def list_skill_edit_dirty(
+    skill_dir: Path | str,
+    *,
+    db_path: Optional[Path] = None,
+) -> list[dict]:
+    """返回一个 skill root 当前待检查的持久脏项。"""
+    root_key = _atom_pending_root_key(skill_dir)
+    with pooled_connection(db_path) as conn:
+        return [
+            dict(row)
+            for row in conn.execute(
+                "SELECT skill, generation, reason, marked_at "
+                "FROM skill_edit_dirty WHERE root_key=? ORDER BY skill",
+                (root_key,),
+            ).fetchall()
+        ]
+
+
+def skill_edit_dirty_generation(
+    skill_path: Path | str,
+    *,
+    db_path: Optional[Path] = None,
+) -> int | None:
+    """读取一个 skill 当前 generation；无脏项返回 ``None``。"""
+    path = Path(skill_path)
+    with pooled_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT generation FROM skill_edit_dirty "
+            "WHERE root_key=? AND skill=?",
+            (_atom_pending_root_key(path.parent), path.name),
+        ).fetchone()
+    return None if row is None else int(row["generation"])
+
+
+def acknowledge_skill_edit_dirty(
+    skill_dir: Path | str,
+    skill: str,
+    generation: int,
+    *,
+    db_path: Optional[Path] = None,
+) -> bool:
+    """仅确认仍是所观察 generation 的脏项，避免吞掉并发候选写入。"""
+    root_key = _atom_pending_root_key(skill_dir)
+    with pooled_connection(db_path) as conn:
+        cursor = conn.execute(
+            "DELETE FROM skill_edit_dirty "
+            "WHERE root_key=? AND skill=? AND generation=?",
+            (root_key, skill, int(generation)),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def reconcile_skill_edit_dirty(
+    skill_dir: Path | str,
+    *,
+    db_path: Optional[Path] = None,
+) -> int:
+    """低频扫一次 skill root，为缺失的脏项补行；已有行不改 generation。"""
+    root = Path(skill_dir)
+    if not root.is_dir():
+        return 0
+    skill_names = sorted(
+        path.name
+        for path in root.iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    )
+    if not skill_names:
+        return 0
+    root_key = _atom_pending_root_key(root)
+    with pooled_connection(db_path) as conn:
+        before = conn.total_changes
+        conn.executemany(
+            """
+            INSERT INTO skill_edit_dirty(root_key, skill, generation, reason)
+            VALUES (?, ?, 1, 'reconcile')
+            ON CONFLICT(root_key, skill) DO NOTHING
+            """,
+            ((root_key, skill) for skill in skill_names),
+        )
+        inserted = conn.total_changes - before
+        conn.commit()
+    return inserted
 
 
 _ATOM_PENDING_BACKFILL_LOCK = threading.Lock()
@@ -1535,6 +2219,15 @@ def clear_rebuild_derived_state(
         deleted_counts["canary_decision"] = cursor.rowcount
         cursor = connection.execute("DELETE FROM skill_trigger_eval")
         deleted_counts["skill_trigger_eval"] = cursor.rowcount
+        for table_name in (
+            "task_usage_allocations", "task_attempt_relations",
+            "task_evidence_ranges", "task_attempts", "task_relations",
+            "task_atom_memberships", "logical_tasks", "task_graph_generations",
+            "task_graph_source_state",
+            "task_graph_dirty_sources",
+            "task_graph_dirty_scopes",
+        ):
+            connection.execute(f"DELETE FROM {table_name}")
         connection.commit()
         return deleted_counts
 
@@ -1674,18 +2367,49 @@ def register_dir(
     """
     dir_path = str(Path(dir_path).resolve())
     with pooled_connection(db_path) as conn:
+        source_scope_id = f"src_{uuid.uuid4().hex}"
         conn.execute(
-            "INSERT INTO watch_dirs (path, label, auto_index, ecosystem)"
-            " VALUES (?, ?, ?, ?)"
+            "INSERT INTO watch_dirs (path, label, auto_index, ecosystem, source_scope_id)"
+            " VALUES (?, ?, ?, ?, ?)"
             " ON CONFLICT(path) DO UPDATE SET"
             "   label=excluded.label,"
             "   auto_index=excluded.auto_index,"
             "   ecosystem=excluded.ecosystem",
-            (dir_path, label, int(auto_index), ecosystem),
+            (dir_path, label, int(auto_index), ecosystem, source_scope_id),
         )
         conn.commit()
         row = conn.execute("SELECT id FROM watch_dirs WHERE path=?", (dir_path,)).fetchone()
         return row["id"]
+
+
+def ensure_watch_dir_source_scope(
+    watch_dir_id: int, *, db_path: Optional[Path] = None,
+) -> str:
+    """Return the persisted opaque ingestion namespace for one watch dir."""
+    if isinstance(watch_dir_id, bool) or not isinstance(watch_dir_id, int):
+        raise ValueError("watch_dir_id must be an integer")
+    with pooled_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT source_scope_id FROM watch_dirs WHERE id=?",
+            (watch_dir_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"watch_dir id={watch_dir_id} does not exist")
+        existing = str(row["source_scope_id"] or "").strip()
+        if existing:
+            return existing
+        source_scope_id = f"src_{uuid.uuid4().hex}"
+        conn.execute(
+            "UPDATE watch_dirs SET source_scope_id=?"
+            " WHERE id=? AND (source_scope_id IS NULL OR source_scope_id='')",
+            (source_scope_id, watch_dir_id),
+        )
+        conn.commit()
+        resolved = conn.execute(
+            "SELECT source_scope_id FROM watch_dirs WHERE id=?",
+            (watch_dir_id,),
+        ).fetchone()["source_scope_id"]
+        return str(resolved)
 
 
 def unregister_dir(dir_path: str | Path, *, db_path: Optional[Path] = None) -> bool:
@@ -1696,17 +2420,40 @@ def unregister_dir(dir_path: str | Path, *, db_path: Optional[Path] = None) -> b
     """
     dir_path = str(Path(dir_path).resolve())
     with pooled_connection(db_path) as conn:
-        stems = [
-            (r["filename"][:-3] if r["filename"].endswith(".md") else r["filename"])
-            for r in conn.execute(
-                "SELECT t.filename FROM trajectories t"
-                " JOIN watch_dirs w ON t.watch_dir_id=w.id WHERE w.path=?",
-                (dir_path,),
-            ).fetchall()
-        ]
-        for stem in stems:
+        source_rows = conn.execute(
+            "SELECT t.watch_dir_id,t.filename,w.source_scope_id"
+            " FROM trajectories t JOIN watch_dirs w ON t.watch_dir_id=w.id"
+            " WHERE w.path=?",
+            (dir_path,),
+        ).fetchall()
+        for source_row in source_rows:
+            stem = (
+                source_row["filename"][:-3]
+                if source_row["filename"].endswith(".md")
+                else source_row["filename"]
+            )
             conn.execute("DELETE FROM atom_adoption WHERE atom_id GLOB ?",
                          (f"atom_{stem}_*",))
+            state = conn.execute(
+                "SELECT tenant_id,task_scope_id FROM task_graph_source_state"
+                " WHERE source_scope_id=? AND traj_id=?",
+                (source_row["source_scope_id"], stem),
+            ).fetchone()
+            if state is not None:
+                conn.execute(
+                    "INSERT INTO task_graph_dirty_sources("
+                    "watch_dir_id,filename,source_scope_id,tenant_id,task_scope_id,"
+                    "deleted,generation,reason,marked_at)"
+                    " VALUES(?,?,?,?,?,1,1,'watch_dir_removed',datetime('now'))"
+                    " ON CONFLICT(watch_dir_id,filename) DO UPDATE SET"
+                    " deleted=1,generation=generation+1,reason='watch_dir_removed',"
+                    " marked_at=datetime('now')",
+                    (
+                        source_row["watch_dir_id"], source_row["filename"],
+                        source_row["source_scope_id"], state["tenant_id"],
+                        state["task_scope_id"],
+                    ),
+                )
         cur = conn.execute("DELETE FROM watch_dirs WHERE path=?", (dir_path,))
         conn.commit()
         return cur.rowcount > 0
@@ -2179,7 +2926,7 @@ def reset_not_fit_for_interest_change(
         return 0
     with pooled_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT t.id, t.filename, w.path FROM trajectories t "
+            "SELECT t.id, t.filename, t.user_key, w.path FROM trajectories t "
             "JOIN watch_dirs w ON t.watch_dir_id = w.id "
             "WHERE t.status=? AND t.process_action=? "
             "AND (t.interest_fingerprint IS NULL OR t.interest_fingerprint != ?)",
@@ -2190,6 +2937,8 @@ def reset_not_fit_for_interest_change(
             ),
         ).fetchall()
         directories_seen: set[str] = set()
+        profile_store_roots: set[str] = set()
+        trajectories_by_directory: dict[str, set[str]] = {}
         for row in rows:
             conn.execute(
                 "UPDATE trajectories SET status=?, process_action=NULL, "
@@ -2209,7 +2958,28 @@ def reset_not_fit_for_interest_change(
                 for atom_file in tasks_directory.glob("atom_*.json"):
                     atom_file.unlink()
             directories_seen.add(row["path"])
+            if row["user_key"]:
+                profile_store_roots.add(row["path"])
+            trajectories_by_directory.setdefault(row["path"], set()).add(
+                trajectory_stem,
+            )
+        if profile_store_roots:
+            from xskill.recommend.profile_dirty import (
+                mark_profile_dirty_on_connection,
+                profile_user_key_for_store_root,
+            )
+            for store_root in profile_store_roots:
+                mark_profile_dirty_on_connection(
+                    conn,
+                    profile_user_key_for_store_root(store_root),
+                    reason="atom_reset",
+                )
         conn.commit()
+        from xskill.pipeline.atom import AtomTaskStore
+        for directory_path, trajectory_ids in trajectories_by_directory.items():
+            AtomTaskStore(Path(directory_path)).remove_locations_for_trajs(
+                trajectory_ids,
+            )
         for directory_path in directories_seen:
             index_path = Path(directory_path) / "index.pkl"
             if index_path.is_file():
@@ -2231,8 +3001,8 @@ def reset_trajectories(
     而不删 atom 文件 → ``last_offset ≥ EOF`` → TaskAgent 直接返回空 → 重拆失效
     （0.6.1a1 的洞）。因此本函数**必删 atom 文件**，这才是真正触发重拆的动作。
 
-    同时删该目录的 ``index.pkl``（atom 的向量索引）——否则 atom 已删而索引仍留
-    陈旧 embedding，cluster 阶段向量检索会命中已不存在的 atom。
+    同时删对应的 Atom 向量投影行和该目录的 ``index.pkl`` 兼容标记——否则
+    cluster 阶段向量检索可能命中已不存在的 atom。
 
     DB ``status`` 翻回 ``discovered`` 让 watcher 下轮重新排 split；轨迹级
     skill / canary / UX 派生字段一并清空，避免 rebuild 后看板继续挂旧 skill。
@@ -2246,7 +3016,8 @@ def reset_trajectories(
     """
     with pooled_connection(db_path) as conn:
         query_text = (
-            "SELECT t.id, t.filename, w.path FROM trajectories t "
+            "SELECT t.id, t.watch_dir_id, t.filename, t.user_key, w.path,"
+            " w.source_scope_id FROM trajectories t "
             "JOIN watch_dirs w ON t.watch_dir_id = w.id WHERE 1=1"
         )
         query_parameters: list = []
@@ -2259,6 +3030,8 @@ def reset_trajectories(
         trajectory_rows = conn.execute(query_text, query_parameters).fetchall()
 
         directories_seen: set[str] = set()
+        profile_store_roots: set[str] = set()
+        trajectories_by_directory: dict[str, set[str]] = {}
         for trajectory_row in trajectory_rows:
             conn.execute(
                 "UPDATE trajectories SET status='discovered', process_action=NULL, "
@@ -2283,9 +3056,53 @@ def reset_trajectories(
             # 否则采纳率分子留历史累计、分母归零后比率虚高（审计 P1-7）。
             conn.execute("DELETE FROM atom_adoption WHERE atom_id GLOB ?",
                          (f"atom_{trajectory_stem}_*",))
+            source_state = conn.execute(
+                "SELECT tenant_id,task_scope_id FROM task_graph_source_state"
+                " WHERE source_scope_id=? AND traj_id=?",
+                (trajectory_row["source_scope_id"], trajectory_stem),
+            ).fetchone()
+            if source_state is not None:
+                conn.execute(
+                    "INSERT INTO task_graph_dirty_sources("
+                    "watch_dir_id,filename,source_scope_id,tenant_id,task_scope_id,"
+                    "deleted,generation,reason,marked_at)"
+                    " VALUES(?,?,?,?,?,1,1,'atom_reset',datetime('now'))"
+                    " ON CONFLICT(watch_dir_id,filename) DO UPDATE SET"
+                    " deleted=1,generation=generation+1,reason='atom_reset',"
+                    " marked_at=datetime('now')",
+                    (
+                        trajectory_row["watch_dir_id"],
+                        trajectory_row["filename"],
+                        trajectory_row["source_scope_id"],
+                        source_state["tenant_id"],
+                        source_state["task_scope_id"],
+                    ),
+                )
             directories_seen.add(trajectory_row["path"])
+            if trajectory_row["user_key"]:
+                profile_store_roots.add(trajectory_row["path"])
+            trajectories_by_directory.setdefault(
+                trajectory_row["path"],
+                set(),
+            ).add(trajectory_stem)
+        if profile_store_roots:
+            from xskill.recommend.profile_dirty import (
+                mark_profile_dirty_on_connection,
+                profile_user_key_for_store_root,
+            )
+            for store_root in profile_store_roots:
+                mark_profile_dirty_on_connection(
+                    conn,
+                    profile_user_key_for_store_root(store_root),
+                    reason="atom_reset",
+                )
         conn.commit()
-        # 清各目录的陈旧向量索引（AtomTaskStore.INDEX_FILE = "index.pkl"）。
+        from xskill.pipeline.atom import AtomTaskStore
+        for directory_path, trajectory_ids in trajectories_by_directory.items():
+            AtomTaskStore(Path(directory_path)).remove_locations_for_trajs(
+                trajectory_ids,
+            )
+        # 向量投影行已按轨迹清理；再删兼容发现标记，等待重拆后重新发布。
         for directory_path in directories_seen:
             index_path = Path(directory_path) / "index.pkl"
             if index_path.is_file():

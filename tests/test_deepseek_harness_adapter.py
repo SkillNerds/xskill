@@ -132,6 +132,8 @@ class TestAdapter:
         assert "agent_preset" not in meta  # headless run wrote no agentPreset
         assert meta["source"] == "deepseek_harness_session_jsonl"
         assert meta["category"] == "deepseek_harness_session"
+        assert meta["execution_usage_events"]
+        assert meta["execution_usage_events"][0]["source_event_id"]
 
     def test_adapter_handles_empty(self):
         md, meta = adapt_trajectory("", "deepseek_harness_session_jsonl")
@@ -301,6 +303,8 @@ class TestIngest:
 
         monkeypatch.setattr(builtins, "__import__", _no_zstd)
         monkeypatch.setattr(dsh_mod, "_ZSTD_MISSING_WARNED", False)
+        monkeypatch.setattr(dsh_mod, "ensure_zstandard_for_dsh", lambda *_a, **_k: False)
+        monkeypatch.setattr(dsh_mod, "zstandard_available", lambda: False)
 
         z1 = tmp_path / ".dsh" / "sessions" / "--p--" / "z1"
         z2 = tmp_path / ".dsh" / "sessions" / "--p--" / "z2"
@@ -455,7 +459,7 @@ class TestInstall:
         started = []
 
         class _FakeIngester:
-            def __init__(self, spec=None, *a, **kw):
+            def __init__(self, spec=None, *_a, **_kw):
                 self.spec = spec
 
             def start(self):

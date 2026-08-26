@@ -36,7 +36,11 @@ PROFILE_REFRESH_INTERVAL_S = 1.0
 PROFILE_REFRESH_POLL_INTERVAL_S = 0.2
 WATCHER_COUNT_FIELDS = (
     "polls", "new_trajs", "atoms_extracted", "indexed", "atoms_clustered",
-    "skills_edited", "scores", "errors", "retries", "in_flight",
+    "skills_edited", "scores", "errors", "retries", "scans",
+)
+PROFILE_REFRESH_COUNT_FIELDS = ("queued", "running", "failed", "embed_items")
+RECOMMEND_HEAVY_COUNT_FIELDS = (
+    "profile_rc", "vector_upserted", "vector_deleted", "recommends",
 )
 logger = logging.getLogger("xskill.loadtest.control_plane")
 
@@ -188,8 +192,12 @@ def _skill_from_messages(messages: list[dict[str, Any]]) -> tuple[str, str]:
 def _tool_call_response(body: dict[str, Any], request_number: int) -> dict[str, Any]:
     messages = body.get("messages") or []
     model = body.get("model", "mock-tool-model")
-    has_tool_result = any(m.get("role") == "tool" for m in messages if isinstance(m, dict))
-    if has_tool_result:
+    tool_results = [
+        str(message.get("content") or "")
+        for message in messages
+        if isinstance(message, dict) and message.get("role") == "tool"
+    ]
+    if any("Created baby checkpoint" in result for result in tool_results):
         return {
             "id": f"chatcmpl-final-{request_number}",
             "object": "chat.completion",
@@ -216,27 +224,27 @@ def _tool_call_response(body: dict[str, Any], request_number: int) -> dict[str, 
         f"# {skill_name}\n\n"
         f"Mock-generated content for {skill_name}.\n"
     )
-    tool_calls = [
-        {
+    if any("wrote:" in result for result in tool_results):
+        tool_calls = [{
+            "id": f"call-commit-{request_number}",
+            "type": "function",
+            "function": {
+                "name": "commit_baby",
+                "arguments": json.dumps({
+                    "skill_name": skill_name,
+                    "message": f"mock load test: checkpoint {skill_name}",
+                }),
+            },
+        }]
+    else:
+        tool_calls = [{
             "id": f"call-write-{request_number}",
             "type": "function",
             "function": {
                 "name": "write_file",
                 "arguments": json.dumps({"path": skill_path, "content": content}),
             },
-        },
-        {
-            "id": f"call-commit-{request_number}",
-            "type": "function",
-            "function": {
-                "name": "commit_baby_to_main",
-                "arguments": json.dumps({
-                    "skill_name": skill_name,
-                    "message": f"mock load test: graduate {skill_name}",
-                }),
-            },
-        },
-    ]
+        }]
     return {
         "id": f"chatcmpl-tool-{request_number}",
         "object": "chat.completion",
@@ -687,17 +695,34 @@ async def _profile_metrics(client) -> dict[str, Any] | None:
         if not isinstance(stats, dict):
             raise StatusContractError("profile_refresh stats is not an object")
         if profile_status["ok"]:
-            for key in ("queued", "running", "failed", "embed_items"):
-                value = stats.get(key)
-                if (
-                    not isinstance(value, int)
-                    or isinstance(value, bool)
-                    or value < 0
-                ):
-                    raise StatusContractError(
-                        f"profile_refresh {key} is not a non-negative integer"
-                    )
+            _profile_status_kind(stats)
     return profile_status
+
+
+def _profile_status_kind(stats: dict[str, Any]) -> str:
+    if any(key in stats for key in RECOMMEND_HEAVY_COUNT_FIELDS):
+        kind = "recommend_heavy"
+        required_fields = RECOMMEND_HEAVY_COUNT_FIELDS
+    elif any(key in stats for key in PROFILE_REFRESH_COUNT_FIELDS):
+        kind = "profile_refresh"
+        required_fields = PROFILE_REFRESH_COUNT_FIELDS
+    else:
+        raise StatusContractError("profile_refresh stats has no recognized schema")
+    for key in required_fields:
+        value = stats.get(key)
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+        ):
+            raise StatusContractError(
+                f"profile_refresh {key} is not a non-negative integer"
+            )
+    if kind == "recommend_heavy" and stats["profile_rc"] != 0:
+        raise StatusContractError(
+            "profile_refresh profile_rc is nonzero for a successful round"
+        )
+    return kind
 
 
 def _profile_round_ended_at(profile_status: dict[str, Any] | None) -> float | None:
@@ -721,7 +746,7 @@ def _safe_profile_status(
     if isinstance(stats, dict):
         safe_stats = {
             key: stats[key]
-            for key in ("queued", "running", "failed", "embed_items")
+            for key in (*PROFILE_REFRESH_COUNT_FIELDS, *RECOMMEND_HEAVY_COUNT_FIELDS)
             if isinstance(stats.get(key), int) and not isinstance(stats[key], bool)
         }
     return {
@@ -768,11 +793,13 @@ async def _wait_profile_idle(
                 )
             current_ended_at = _profile_round_ended_at(last_status)
             stats = last_status["stats"]
-            counters = (stats["queued"], stats["running"])
             is_new_round = (
                 after_ended_at is None or current_ended_at > after_ended_at
             )
-            if is_new_round and counters == (0, 0):
+            # recommend-heavy first writes an intermediate profile-refresh
+            # status, then overwrites it after vector reconcile + precompute.
+            # Only the combined status proves the scheduled round completed.
+            if is_new_round and _profile_status_kind(stats) == "recommend_heavy":
                 return stats
         await asyncio.sleep(PROFILE_REFRESH_POLL_INTERVAL_S)
     safe_status = _safe_profile_status(last_status, last_poll_error_type)
@@ -816,14 +843,14 @@ async def _watcher_status(client) -> dict[str, Any] | None:
             raise StatusContractError("watcher running is not boolean")
         if not isinstance(stats.get("paused"), bool):
             raise StatusContractError("watcher paused is not boolean")
-        last_poll = stats.get("last_poll")
+        last_scan = stats.get("last_scan")
         if (
-            not isinstance(last_poll, (int, float))
-            or isinstance(last_poll, bool)
-            or last_poll < 0
+            not isinstance(last_scan, (int, float))
+            or isinstance(last_scan, bool)
+            or last_scan < 0
         ):
             raise StatusContractError(
-                "watcher last_poll is not a non-negative number"
+                "watcher last_scan is not a non-negative number"
             )
     return payload
 
@@ -926,7 +953,6 @@ async def run_sync_wave(
     join_token: str,
     state: MockState,
     server_pid: int,
-    profile_workers: int,
     gated_embedding: bool,
     wave: dict[str, Any],
     checkpoint,
@@ -955,9 +981,8 @@ async def run_sync_wave(
     phase_error: Exception | None = None
     try:
         if gated_embedding:
-            desired_active = min(len(client_rows), profile_workers)
             additional_starts = max(
-                0, desired_active - int(embedding_before["active"]),
+                0, min(1, len(client_rows)) - int(embedding_before["active"]),
             )
             target_started = (
                 int(embedding_before["request_count"]) + additional_starts
@@ -1028,7 +1053,11 @@ async def run_sync_wave(
     return wave
 
 
-def _seed_delta_atoms(client_rows: list[dict[str, str]]) -> None:
+def _seed_delta_atoms(
+    client_rows: list[dict[str, str]], *, registry_db: Path,
+) -> None:
+    from xskill.recommend.profile_dirty import mark_profile_dirty_for_store
+
     for row in client_rows:
         index = int(row["index"])
         _write_atom(
@@ -1036,6 +1065,9 @@ def _seed_delta_atoms(client_rows: list[dict[str, str]]) -> None:
             traj_id=f"traj_client_{index:03d}",
             atom_id=f"atom_client_{index:03d}_0002",
             summary=f"delta summary client {index:03d}",
+        )
+        mark_profile_dirty_for_store(
+            row["root"], reason="loadtest_delta", db_path=registry_db,
         )
 
 
@@ -1248,7 +1280,6 @@ async def run_scenario(
                 join_token=prepared["join_token"],
                 state=state,
                 server_pid=process.pid,
-                profile_workers=args.profile_refresh_workers,
                 gated_embedding=True,
                 wave=cold_wave,
                 checkpoint=checkpoint,
@@ -1285,7 +1316,6 @@ async def run_scenario(
                 join_token=prepared["join_token"],
                 state=state,
                 server_pid=process.pid,
-                profile_workers=args.profile_refresh_workers,
                 gated_embedding=False,
                 wave=cached_wave,
                 checkpoint=checkpoint,
@@ -1308,7 +1338,10 @@ async def run_scenario(
             # 先关 embedding gate 再写增量，避免 1s 周期恰好在基线与写入之间
             # 启动并完成，导致本波变化被上一轮提前消费。
             state.set_embed_phase("one_new_atom", released=False)
-            _seed_delta_atoms(prepared["clients"])
+            _seed_delta_atoms(
+                prepared["clients"],
+                registry_db=Path(prepared["xhome"]) / "registry.db",
+            )
             await run_sync_wave(
                 client,
                 phase="one_new_atom",
@@ -1316,7 +1349,6 @@ async def run_scenario(
                 join_token=prepared["join_token"],
                 state=state,
                 server_pid=process.pid,
-                profile_workers=args.profile_refresh_workers,
                 gated_embedding=True,
                 wave=delta_wave,
                 checkpoint=checkpoint,
@@ -1506,9 +1538,9 @@ def validate_result(result: dict[str, Any]) -> list[str]:
             failures.append(f"{phase}: sync max={latency['max_s']}")
         if phase != "cache_hit" and not wave.get("all_sync_completed_before_embedding_release"):
             failures.append(f"{phase}: sync remained blocked by embedding gate")
-        idle = wave.get("profile_idle_metrics", {})
-        if idle.get("queued") != 0 or idle.get("running") != 0:
-            failures.append(f"{phase}: profile service not idle: {idle}")
+        completed = wave.get("profile_idle_metrics", {})
+        if completed.get("profile_rc") != 0:
+            failures.append(f"{phase}: recommend-heavy did not complete: {completed}")
 
     probes = _all_probes(result)
     for probe in probes:
@@ -1529,16 +1561,23 @@ def validate_result(result: dict[str, Any]) -> list[str]:
 
     mock = result.get("mock", {})
     llm = mock.get("llm", {})
-    if llm.get("initial_requests") != skills or llm.get("followup_requests") != skills:
+    if (
+        llm.get("initial_requests") != skills
+        or llm.get("followup_requests") != 2 * skills
+    ):
         failures.append(f"LLM request split incorrect: {llm}")
-    if llm.get("started") != 2 * skills or llm.get("completed") != 2 * skills:
+    if llm.get("started") != 3 * skills or llm.get("completed") != 3 * skills:
         failures.append(f"LLM completion count incorrect: {llm}")
     if int(llm.get("max_active", workers + 1)) > int(config["llm_max_inflight"]):
         failures.append(f"LLM active limit exceeded: {llm.get('max_active')}")
 
     embedding = mock.get("embedding", {})
     items_by_phase = embedding.get("items_by_phase", {})
-    expected_items = {"cold": clients, "cache_hit": 0, "one_new_atom": clients}
+    expected_items = {
+        "cold": skills + clients,
+        "cache_hit": 0,
+        "one_new_atom": clients,
+    }
     actual_items = {phase: int(items_by_phase.get(phase, 0)) for phase in expected_items}
     if actual_items != expected_items:
         failures.append(f"embedding phase items incorrect: {actual_items}")
@@ -1548,11 +1587,11 @@ def validate_result(result: dict[str, Any]) -> list[str]:
     }
     if actual_requests != expected_items:
         failures.append(f"embedding phase requests incorrect: {actual_requests}")
-    if embedding.get("input_item_count") != 2 * clients:
+    if embedding.get("input_item_count") != skills + 2 * clients:
         failures.append(f"embedding item count incorrect: {embedding.get('input_item_count')}")
-    if embedding.get("request_count") != 2 * clients:
+    if embedding.get("request_count") != skills + 2 * clients:
         failures.append(f"embedding request count incorrect: {embedding.get('request_count')}")
-    if embedding.get("unique_inputs") != 2 * clients:
+    if embedding.get("unique_inputs") != skills + 2 * clients:
         failures.append(f"embedding unique inputs incorrect: {embedding.get('unique_inputs')}")
     if embedding.get("duplicate_input_calls") != 0:
         failures.append(f"embedding duplicate inputs: {embedding.get('duplicate_input_calls')}")
@@ -1562,12 +1601,10 @@ def validate_result(result: dict[str, Any]) -> list[str]:
     final_metrics = result.get("profile_metrics", {}).get("final_idle", {})
     if (
         not isinstance(final_metrics, dict)
-        or type(final_metrics.get("queued")) is not int
-        or type(final_metrics.get("running")) is not int
-        or final_metrics["queued"] != 0
-        or final_metrics["running"] != 0
+        or type(final_metrics.get("profile_rc")) is not int
+        or final_metrics["profile_rc"] != 0
     ):
-        failures.append(f"profile service final state is not idle: {final_metrics}")
+        failures.append(f"recommend-heavy final state is invalid: {final_metrics}")
     profile_rounds = []
     for round_name in ("after_cold", "after_cache_hit", "after_one_new_atom"):
         metrics = result.get("profile_metrics", {}).get(round_name)
@@ -1576,7 +1613,7 @@ def validate_result(result: dict[str, Any]) -> list[str]:
             continue
         invalid_fields = [
             field_name
-            for field_name in ("queued", "running", "failed", "embed_items")
+            for field_name in RECOMMEND_HEAVY_COUNT_FIELDS
             if type(metrics.get(field_name)) is not int
         ]
         if invalid_fields:
@@ -1585,30 +1622,10 @@ def validate_result(result: dict[str, Any]) -> list[str]:
             )
             continue
         profile_rounds.append(metrics)
-    if len(profile_rounds) == 3:
-        failed_profiles = sum(metrics["failed"] for metrics in profile_rounds)
-        if failed_profiles != 0:
-            failures.append(f"profile refresh failures: {failed_profiles}")
-        # 状态文件只保留最近一次短命画像进程；cold 的实际计算轮可能在读取前
-        # 已被紧随其后的 unchanged 空轮覆盖，因此不能把三份“最近一轮”快照
-        # 相加当累计值。累计量由上面的 mock phase 计数和最终 DB 收敛共同校验。
-        cold_embed_items = profile_rounds[0]["embed_items"]
-        cache_hit_embed_items = profile_rounds[1]["embed_items"]
-        delta_embed_items = profile_rounds[2]["embed_items"]
-        if cold_embed_items not in (0, clients):
-            failures.append(
-                f"cold profile embed_items incorrect: {cold_embed_items}"
-            )
-        if cache_hit_embed_items != 0:
-            failures.append(
-                f"cache_hit profile embed_items incorrect: "
-                f"{cache_hit_embed_items}"
-            )
-        if delta_embed_items != clients:
-            failures.append(
-                f"one_new_atom profile embed_items incorrect: "
-                f"{delta_embed_items}"
-            )
+    if len(profile_rounds) == 3 and any(
+        metrics["profile_rc"] != 0 for metrics in profile_rounds
+    ):
+        failures.append(f"profile refresh failures: {profile_rounds}")
 
     skill = result.get("skill_convergence", {})
     if (
@@ -1687,13 +1704,13 @@ def validate_result(result: dict[str, Any]) -> list[str]:
                 invalid_final_fields.append("running")
             if not isinstance(final_watcher_stats.get("paused"), bool):
                 invalid_final_fields.append("paused")
-            final_last_poll = final_watcher_stats.get("last_poll")
+            final_last_scan = final_watcher_stats.get("last_scan")
             if (
-                not isinstance(final_last_poll, (int, float))
-                or isinstance(final_last_poll, bool)
-                or final_last_poll < 0
+                not isinstance(final_last_scan, (int, float))
+                or isinstance(final_last_scan, bool)
+                or final_last_scan < 0
             ):
-                invalid_final_fields.append("last_poll")
+                invalid_final_fields.append("last_scan")
         if final_watcher_status.get("ok") is not True:
             invalid_final_fields.append("ok")
         final_ended_at = final_watcher_status.get("ended_at")

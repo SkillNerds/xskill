@@ -131,7 +131,7 @@ class MilvusLiteSkillVectorIndex:
     """``~/.xskill/skill_vectors.db`` 嵌入式 Milvus Lite。"""
 
     def __init__(self, db_path: Path | str, *, dim: int = DEFAULT_DIM) -> None:
-        from pymilvus import DataType, MilvusClient
+        from pymilvus import MilvusClient
 
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,7 +143,26 @@ class MilvusLiteSkillVectorIndex:
         from pymilvus import DataType
 
         if self._client.has_collection(COLLECTION):
-            return
+            try:
+                described = self._client.describe_collection(COLLECTION)
+                current_dim = self._described_vector_dim(described)
+            except Exception:  # pylint: disable=broad-exception-caught
+                logger.warning(
+                    "cannot inspect existing Milvus collection dimension; "
+                    "keeping collection",
+                    exc_info=True,
+                )
+                return
+            if current_dim is None or current_dim == self.dim:
+                return
+            # 向量索引是 skills_catalog 的可重建投影。维度变化时 Milvus 不能原地
+            # 修改 schema，只能删 collection 后由本轮 model_changed 全量重灌。
+            logger.info(
+                "Milvus skill vector dimension changed: %s -> %s; rebuilding",
+                current_dim,
+                self.dim,
+            )
+            self._client.drop_collection(COLLECTION)
         schema = self._client.create_schema(auto_id=False, enable_dynamic_field=True)
         schema.add_field("id", DataType.INT64, is_primary=True)
         schema.add_field("catalog_key", DataType.VARCHAR, max_length=512)
@@ -156,6 +175,19 @@ class MilvusLiteSkillVectorIndex:
         self._client.create_collection(
             collection_name=COLLECTION, schema=schema, index_params=index_params,
         )
+
+    @staticmethod
+    def _described_vector_dim(description: dict) -> int | None:
+        """兼容 pymilvus 2.4+ describe_collection 的字段形状。"""
+        for field in description.get("fields", []) or []:
+            if field.get("name") != "vector":
+                continue
+            value = (field.get("params") or {}).get("dim", field.get("dim"))
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+        return None
 
     def upsert(
         self,
@@ -247,13 +279,24 @@ class MilvusLiteSkillVectorIndex:
 EmbedFn = Callable[[str], list[float]]
 
 
+def catalog_row_is_indexable(row: dict) -> bool:
+    """该 catalog 行当前是否可进入推荐向量索引。"""
+    if row.get("retired"):
+        return False
+    if not (row.get("description") or "").strip():
+        return False
+    # SkillHub 条目没有 native Git 分支，历史上 distributable 固定为 0，
+    # 但仍是可检索第三方技能；native 则只索引 main/staging 成品。
+    return row.get("source") == "skillhub" or bool(row.get("distributable", 1))
+
+
 def indexable_catalog_rows(rows: Iterable[dict]) -> list[dict]:
-    """过滤应写入向量索引的投影行（需非空 description）。"""
+    """过滤应写入向量索引的投影行。"""
     out = []
     for row in rows:
-        desc = (row.get("description") or "").strip()
-        if not desc:
+        if not catalog_row_is_indexable(row):
             continue
+        desc = (row.get("description") or "").strip()
         sha = row.get("content_sha") or content_sha_for_text(desc)
         out.append({**row, "content_sha": sha, "description": desc})
     return out
@@ -269,7 +312,12 @@ def sync_row_to_index(
     sha = row["content_sha"]
     key = row["catalog_key"]
     existing = index.get(key)
-    if existing and existing.get("content_sha") == sha:
+    if (
+        existing
+        and existing.get("content_sha") == sha
+        and (existing.get("source") or "") == (row.get("source") or "")
+        and (existing.get("name") or "") == (row.get("name") or "")
+    ):
         return
     index.upsert(
         key,
@@ -289,24 +337,60 @@ def reconcile_catalog_to_index(
     catalog_rows: Sequence[dict],
     *,
     embed: EmbedFn,
+    force_upsert: bool = False,
+    should_apply: Optional[Callable[[str, Optional[dict]], bool]] = None,
 ) -> dict:
-    """对账：投影表 → Milvus。返回 {upserted, deleted, skipped}。"""
+    """对账：投影表 → Milvus。``should_apply`` 用于并发 generation fence。"""
     wanted = {
         r["catalog_key"]: r for r in indexable_catalog_rows(catalog_rows)
     }
     existing_keys = index.list_keys()
-    upserted = deleted = skipped = 0
+    upserted = deleted = skipped = deferred = 0
     for key, row in wanted.items():
         cur = index.get(key)
-        if cur and cur.get("content_sha") == row["content_sha"]:
+        if (
+            not force_upsert
+            and cur
+            and cur.get("content_sha") == row["content_sha"]
+            and (cur.get("source") or "") == (row.get("source") or "")
+            and (cur.get("name") or "") == (row.get("name") or "")
+        ):
             skipped += 1
             continue
-        sync_row_to_index(index, row, embed=embed)
+        # content 未变、仅 source/name 元数据变化时复用旧向量，避免一次无意义的
+        # embedding；模型切换的 force_upsert 仍强制重算。
+        if (
+            not force_upsert
+            and cur
+            and cur.get("content_sha") == row["content_sha"]
+            and cur.get("vector") is not None
+        ):
+            vector = cur["vector"]
+        else:
+            vector = embed(row["description"])
+        if should_apply is not None and not should_apply(key, row):
+            deferred += 1
+            continue
+        index.upsert(
+            key,
+            vector,
+            content_sha=row["content_sha"],
+            source=row.get("source") or "",
+            name=row.get("name") or "",
+        )
         upserted += 1
     for key in existing_keys - set(wanted):
+        if should_apply is not None and not should_apply(key, None):
+            deferred += 1
+            continue
         index.delete(key)
         deleted += 1
-    return {"upserted": upserted, "deleted": deleted, "skipped": skipped}
+    return {
+        "upserted": upserted,
+        "deleted": deleted,
+        "skipped": skipped,
+        "deferred": deferred,
+    }
 
 
 def default_vector_db_path(xskill_home: Path | None = None) -> Path:

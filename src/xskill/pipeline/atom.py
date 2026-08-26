@@ -2,10 +2,13 @@
 ==========================================================
 
 每个 ``AtomTask`` 是一段 multi-chat-turn（1-10 轮），由 ``TaskAgent`` 从
-轨迹按"用户意图切换"切出来。落盘到 ``<root>/<traj_id>/tasks/atom_*.json``，
-不入 SQLite——保持简单文件方案，``watcher`` 用 ``last_offset`` 决定增量起点。
+轨迹按"用户意图切换"切出来。内容落盘到
+``<root>/<traj_id>/tasks/atom_*.json``，``watcher`` 用 ``last_offset`` 决定
+增量起点；隐藏 SQLite 保存可重建的 Atom→路径定位和向量检索投影，JSON 始终
+是业务事实源。
 
-向量索引（基于 atom 的 ``summary or intent`` 嵌入）持久化在 ``<root>/index.pkl``。
+向量索引（基于 atom 的 ``summary or intent`` 嵌入）持久化在隐藏 SQLite；
+``<root>/index.pkl`` 仅保留兼容旧发现路径的小型标记。
 ``HybridSearch`` (在 ``xskill.utils.search``) 把本模块的 ``vector_search`` 跟
 BM25 关键字检索做 union+dedup。
 
@@ -20,6 +23,8 @@ import json
 import logging
 import pickle
 import re
+import sqlite3
+import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -27,7 +32,19 @@ from typing import Iterator
 
 import numpy as np
 
+from xskill._sqlite_connect import connect_with_lock
+from xskill.pipeline.atom_vector_index import VECTOR_DB_FILE, AtomVectorProjection
+
 logger = logging.getLogger("xskill.ux_score")
+
+_LOCATION_LOCKS_GUARD = threading.Lock()
+_LOCATION_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _location_lock_for(root: Path) -> threading.RLock:
+    key = str(root.resolve(strict=False))
+    with _LOCATION_LOCKS_GUARD:
+        return _LOCATION_LOCKS.setdefault(key, threading.RLock())
 
 
 @dataclass
@@ -74,22 +91,45 @@ class AtomTask:
 
 
 class AtomTaskStore:
-    """文件系统存储：``<root>/<traj_id>/tasks/atom_*.json`` + ``<root>/index.pkl``。
+    """JSON 事实源 + Atom 定位/向量 SQLite 投影 + 小型 ``index.pkl`` 标记。
 
     设计取舍：
-    - **不用 SQLite**: traj 数量级 < 数千；文件读写直接、调试方便、跨平台兼容。
+    - **JSON 是事实源**: 文件读写直接、调试方便；SQLite 仅作可重建投影。
     - **每 traj 一个子目录**: 让 watcher 按 traj 粒度做增量处理，``list_by_traj``
       不需要全表扫。
-    - **向量索引增量重建**: TaskAgent 每给一条 traj 拆出新 atom 后由 watcher
-      触发一次 ``rebuild_vector_index``；按 ``atom_id`` 复用旧 index.pkl 中同
-      模型的向量，只对新原子调 embedding（换模型则整体重算，护栏见方法内），
-      避免攒了上万原子的 client 新增几条就全量重 embed。
+    - **向量索引增量维护**: ``save_many`` 只登记变化 Atom，watcher 只 embed / 写
+      这些行；模型变化和低频一致性核对才从 JSON 原子重建。
     """
 
     INDEX_FILE = "index.pkl"
+    VECTOR_INDEX_FILE = VECTOR_DB_FILE
+    LOCATION_INDEX_FILE = ".atom_locations.sqlite3"
+    _LOCATION_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS atom_locations (
+        atom_id       TEXT NOT NULL,
+        traj_id       TEXT NOT NULL,
+        relative_path TEXT NOT NULL,
+        mtime_ns      INTEGER NOT NULL,
+        size_bytes    INTEGER NOT NULL,
+        PRIMARY KEY (atom_id, relative_path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_atom_locations_traj
+        ON atom_locations(traj_id);
+    CREATE TABLE IF NOT EXISTS atom_location_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    """
 
     def __init__(self, root: Path):
         self.root = Path(root)
+        self._location_lock = _location_lock_for(self.root)
+        self._location_schema_ready = False
+        self._location_index_complete: bool | None = None
+        self._vector_projection = AtomVectorProjection(
+            self.root,
+            self._location_lock,
+        )
 
     # ── paths ─────────────────────────────────────────────────────
 
@@ -102,43 +142,391 @@ class AtomTaskStore:
     def _index_path(self) -> Path:
         return self.root / self.INDEX_FILE
 
+    def _location_index_path(self) -> Path:
+        return self.root / self.LOCATION_INDEX_FILE
+
+    def _location_connection(self, path: Path | None = None):
+        index_path = path or self._location_index_path()
+        connection = connect_with_lock(
+            sqlite3.connect,
+            str(index_path),
+            timeout=5.0,
+        )
+        connection.row_factory = sqlite3.Row
+        if path is None and self._location_schema_ready:
+            return connection
+        try:
+            connection.executescript(self._LOCATION_SCHEMA)
+        except Exception:
+            connection.close()
+            raise
+        if path is None:
+            self._location_schema_ready = True
+        return connection
+
+    def _location_values(self, path: Path, traj_id: str) -> tuple:
+        stat_result = path.stat()
+        relative_path = path.relative_to(self.root).as_posix()
+        return (
+            path.stem,
+            traj_id,
+            relative_path,
+            int(stat_result.st_mtime_ns),
+            int(stat_result.st_size),
+        )
+
+    def _has_complete_location_index(self) -> bool:
+        """返回投影是否来自一次完整事实源扫描；每个 store 实例只查库一次。"""
+        if self._location_index_complete is not None:
+            return self._location_index_complete
+        if not self._location_index_path().is_file():
+            self._location_index_complete = False
+            return False
+        connection = self._location_connection()
+        try:
+            row = connection.execute(
+                "SELECT value FROM atom_location_meta WHERE key='complete'",
+            ).fetchone()
+        finally:
+            connection.close()
+        self._location_index_complete = bool(row and row["value"] == "1")
+        return self._location_index_complete
+
+    def ensure_location_index(self) -> None:
+        """旧 store 首次使用时从 JSON 一次性建立完整、可增量维护的投影。"""
+        with self._location_lock:
+            try:
+                if self._has_complete_location_index():
+                    return
+            except (OSError, sqlite3.DatabaseError):
+                pass
+            self.rebuild_location_index()
+
+    @staticmethod
+    def _upsert_location_row(connection, values: tuple) -> None:
+        connection.execute(
+            """
+            INSERT INTO atom_locations(
+                atom_id, traj_id, relative_path, mtime_ns, size_bytes
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(atom_id, relative_path) DO UPDATE SET
+                traj_id=excluded.traj_id,
+                mtime_ns=excluded.mtime_ns,
+                size_bytes=excluded.size_bytes
+            """,
+            values,
+        )
+
+    def _upsert_atom_location(self, path: Path, traj_id: str) -> None:
+        self._upsert_atom_locations([(path, traj_id)])
+
+    def _upsert_atom_locations(self, locations: list[tuple[Path, str]]) -> None:
+        """用单个事务更新一批 Atom 定位，避免拆分结果逐条提交。"""
+        if not locations:
+            return
+        connection = self._location_connection()
+        try:
+            for path, traj_id in locations:
+                self._upsert_location_row(
+                    connection,
+                    self._location_values(path, traj_id),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _scan_atom_paths(self, atom_id: str) -> list[tuple[Path, str]]:
+        hits: list[tuple[Path, str]] = []
+        for traj_dir in self.root.iterdir():
+            if not traj_dir.is_dir():
+                continue
+            candidate = traj_dir / "tasks" / f"{atom_id}.json"
+            if candidate.is_file():
+                hits.append((candidate, traj_dir.name))
+        return hits
+
+    def _replace_atom_locations(
+        self,
+        atom_id: str,
+        hits: list[tuple[Path, str]],
+    ) -> None:
+        connection = self._location_connection()
+        try:
+            connection.execute(
+                "DELETE FROM atom_locations WHERE atom_id=?",
+                (atom_id,),
+            )
+            for path, traj_id in hits:
+                self._upsert_location_row(
+                    connection,
+                    self._location_values(path, traj_id),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _path_from_location_row(self, atom_id: str, row) -> Path | None:
+        relative = str(row["relative_path"] or "")
+        relative_path = Path(relative)
+        if (
+            not relative
+            or relative_path.is_absolute()
+            or ".." in relative_path.parts
+            or relative_path.name != f"{atom_id}.json"
+            or len(relative_path.parts) != 3
+            or relative_path.parts[1] != "tasks"
+        ):
+            return None
+        return self.root / relative_path
+
+    def rebuild_location_index(self) -> int:
+        """从 Atom JSON 事实源原子重建定位投影，返回记录数。"""
+        with self._location_lock:
+            return self._rebuild_location_index()
+
+    def _rebuild_location_index(self) -> int:
+        if not self.root.is_dir():
+            return 0
+        temporary_path = self.root / (
+            f".{self.LOCATION_INDEX_FILE}.{uuid.uuid4().hex}.tmp"
+        )
+        connection = self._location_connection(temporary_path)
+        count = 0
+        try:
+            for traj_dir in sorted(self.root.iterdir()):
+                if not traj_dir.is_dir():
+                    continue
+                tasks_dir = traj_dir / "tasks"
+                if not tasks_dir.is_dir():
+                    continue
+                for atom_path in sorted(tasks_dir.glob("*.json")):
+                    try:
+                        values = self._location_values(atom_path, traj_dir.name)
+                    except (FileNotFoundError, OSError):
+                        continue
+                    self._upsert_location_row(connection, values)
+                    count += 1
+            connection.execute(
+                """
+                INSERT INTO atom_location_meta(key, value) VALUES ('complete', '1')
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """
+            )
+            connection.commit()
+        except Exception:
+            connection.close()
+            if temporary_path.is_file():
+                temporary_path.unlink()
+            raise
+        connection.close()
+        temporary_path.replace(self._location_index_path())
+        self._location_schema_ready = True
+        self._location_index_complete = True
+        return count
+
+    def remove_locations_for_trajs(self, traj_ids) -> None:
+        """Atom 文件删除/reset 后同步清理对应轨迹的定位行与向量行。"""
+        ids = sorted({str(traj_id) for traj_id in traj_ids if traj_id})
+        if not ids:
+            return
+        self._vector_projection.remove_trajs(ids)
+        if not self._location_index_path().is_file():
+            return
+        try:
+            connection = self._location_connection()
+            try:
+                connection.executemany(
+                    "DELETE FROM atom_locations WHERE traj_id=?",
+                    [(traj_id,) for traj_id in ids],
+                )
+                connection.commit()
+            finally:
+                connection.close()
+        except (OSError, sqlite3.DatabaseError):
+            # 投影损坏不影响事实删除；直接从剩余 JSON 重建。
+            try:
+                self.rebuild_location_index()
+            except (OSError, sqlite3.DatabaseError):
+                logger.warning(
+                    "atom location projection reset failed: %s",
+                    self._location_index_path(),
+                    exc_info=True,
+                )
+
     # ── IO ────────────────────────────────────────────────────────
 
     def save(self, atom: AtomTask) -> Path:
-        atom_path = self._path(atom)
-        atom_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = atom_path.with_name(f".{atom_path.name}.{uuid.uuid4().hex}.tmp")
-        temporary_path.write_text(atom.to_json(), encoding="utf-8")
-        temporary_path.replace(atom_path)
-        return atom_path
+        return self.save_many([atom])[0]
+
+    def save_many(self, atoms: list[AtomTask]) -> list[Path]:
+        """保存一批 Atom；JSON 逐个原子替换，定位投影只提交一次。"""
+        with self._location_lock:
+            return self._save_many(atoms)
+
+    def _save_many(self, atoms: list[AtomTask]) -> list[Path]:
+        if not atoms:
+            return []
+        try:
+            projection_complete = self._has_complete_location_index()
+        except (OSError, sqlite3.DatabaseError):
+            projection_complete = False
+        saved: list[tuple[Path, str]] = []
+        for atom in atoms:
+            atom_path = self._path(atom)
+            atom_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = atom_path.with_name(
+                f".{atom_path.name}.{uuid.uuid4().hex}.tmp"
+            )
+            temporary_path.write_text(atom.to_json(), encoding="utf-8")
+            temporary_path.replace(atom_path)
+            saved.append((atom_path, atom.traj_id))
+        try:
+            if projection_complete:
+                self._upsert_atom_locations(saved)
+            else:
+                # Upgrade/legacy store: one full scan prevents every old Atom
+                # from paying its own trajectory-directory fallback later.
+                self.rebuild_location_index()
+        except (OSError, sqlite3.DatabaseError):
+            logger.warning(
+                "atom location projection batch update failed: %s",
+                [str(path) for path, _traj_id in saved],
+                exc_info=True,
+            )
+        try:
+            self._vector_projection.record_atoms(atoms)
+        except (OSError, sqlite3.DatabaseError):
+            # JSON 是事实源；向量投影失败不回滚事实写，但必须立刻标 dirty
+            # 否则 complete 索引会干等 24h 才把新 atom 补进检索。
+            self._vector_projection.mark_rebuild_needed()
+            logger.warning(
+                "atom vector projection batch update failed: %s",
+                [atom.atom_id for atom in atoms],
+                exc_info=True,
+            )
+        return [path for path, _traj_id in saved]
 
     def load(self, atom_id: str) -> AtomTask:
-        """跨 traj_id 子目录查找。命中第一条即返回；找不到抛 FileNotFoundError。
-
-        ``watcher`` 的常态调用是 ``list_by_traj``（O(子目录文件数)），``load``
-        给 agent 工具 ``atom_task_read(atom_id)`` 用，调用频率低，遍历所有
-        traj 子目录可以接受。
-        """
-        if not self.root.is_dir():
-            raise FileNotFoundError(f"atom store root missing: {self.root}")
-        for d in self.root.iterdir():
-            if not d.is_dir():
-                continue
-            cand = d / "tasks" / f"{atom_id}.json"
-            if cand.is_file():
-                return AtomTask.from_json(cand.read_text(encoding="utf-8"))
+        """通过定位投影跨 traj_id 读取；找不到抛 ``FileNotFoundError``。"""
+        path = self.path_for_atom(atom_id)
+        if path is not None:
+            return AtomTask.from_json(path.read_text(encoding="utf-8"))
         raise FileNotFoundError(f"atom not found: {atom_id}")
 
     def path_for_atom(self, atom_id: str) -> Path | None:
-        """返回 atom JSON 路径；找不到返回 None。"""
-        if not self.root.is_dir():
+        """通过持久定位投影返回 Atom JSON；失效或 miss 时回退事实源自愈。"""
+        if (
+            not atom_id
+            or atom_id in (".", "..")
+            or "/" in atom_id
+            or "\\" in atom_id
+            or not self.root.is_dir()
+        ):
             return None
-        for d in self.root.iterdir():
-            if not d.is_dir():
+        try:
+            self.ensure_location_index()
+        except (OSError, sqlite3.DatabaseError):
+            logger.warning(
+                "atom location projection initialization failed: %s",
+                self._location_index_path(),
+                exc_info=True,
+            )
+        projected = self.projected_path_for_atom(atom_id)
+        if projected is not None:
+            return projected
+
+        # Legacy/external writes may not have emitted a projection event.  A miss
+        # pays one fact-source scan, then subsequent lookups are indexed.
+        hits = self._scan_atom_paths(atom_id)
+        try:
+            self._replace_atom_locations(atom_id, hits)
+        except (OSError, sqlite3.DatabaseError):
+            try:
+                self.rebuild_location_index()
+            except (OSError, sqlite3.DatabaseError):
+                logger.warning(
+                    "atom location projection repair failed: %s",
+                    self._location_index_path(),
+                    exc_info=True,
+                )
+        available_hits = [hit for hit in hits if hit[0].is_file()]
+        if not available_hits:
+            return None
+        return max(
+            available_hits,
+            key=lambda hit: (hit[0].stat().st_mtime_ns, str(hit[0])),
+        )[0]
+
+    def projected_path_for_atom(self, atom_id: str) -> Path | None:
+        """只查定位投影，不在 miss 时遍历轨迹目录（Multi-store 热路径用）。"""
+        if (
+            not atom_id
+            or atom_id in (".", "..")
+            or "/" in atom_id
+            or "\\" in atom_id
+            or not self.root.is_dir()
+            or not self._location_index_path().is_file()
+        ):
+            return None
+        try:
+            connection = self._location_connection()
+            try:
+                rows = connection.execute(
+                    """
+                    SELECT traj_id, relative_path, mtime_ns, size_bytes
+                    FROM atom_locations
+                    WHERE atom_id=?
+                    ORDER BY mtime_ns DESC, relative_path ASC
+                    """,
+                    (atom_id,),
+                ).fetchall()
+            finally:
+                connection.close()
+        except sqlite3.DatabaseError:
+            logger.warning(
+                "atom location projection damaged; rebuilding: %s",
+                self._location_index_path(),
+            )
+            try:
+                self.rebuild_location_index()
+            except (OSError, sqlite3.DatabaseError):
+                logger.warning(
+                    "atom location projection rebuild failed: %s",
+                    self._location_index_path(),
+                    exc_info=True,
+                )
+                return None
+            return self.projected_path_for_atom(atom_id)
+        available: list[tuple[Path, int]] = []
+        for row in rows:
+            candidate = self._path_from_location_row(atom_id, row)
+            if candidate is None or not candidate.is_file():
                 continue
-            cand = d / "tasks" / f"{atom_id}.json"
-            if cand.is_file():
-                return cand
+            try:
+                stat_result = candidate.stat()
+                available.append((candidate, int(stat_result.st_mtime_ns)))
+                if (
+                    int(row["mtime_ns"]) != int(stat_result.st_mtime_ns)
+                    or int(row["size_bytes"]) != int(stat_result.st_size)
+                ):
+                    self._upsert_atom_location(candidate, str(row["traj_id"]))
+            except (OSError, sqlite3.DatabaseError):
+                pass
+        if available:
+            return max(available, key=lambda item: (item[1], str(item[0])))[0]
+        if rows:
+            # A projected path was moved/deleted externally.  Clean misses stay
+            # O(1); only stale rows pay a fact-source scan and repair.
+            hits = self._scan_atom_paths(atom_id)
+            try:
+                self._replace_atom_locations(atom_id, hits)
+            except (OSError, sqlite3.DatabaseError):
+                return None
+            if hits:
+                return max(
+                    hits,
+                    key=lambda hit: (hit[0].stat().st_mtime_ns, str(hit[0])),
+                )[0]
         return None
 
     def list_by_traj(self, traj_id: str) -> list[AtomTask]:
@@ -193,73 +581,37 @@ class AtomTaskStore:
 
     # ── vector index ──────────────────────────────────────────────
 
-    def _load_vector_cache(self, model: str) -> dict:
-        """增量 embedding 复用源：``{atom_id: 归一化向量(D,)}``。
+    def rebuild_vector_index(self, embed_client, *, force_full: bool = False) -> dict:
+        """消费增量向量行；模型变化、显式请求或低频到期时原子全量重建。"""
+        return self._vector_projection.rebuild(
+            embed_client,
+            force_full=force_full,
+        )
 
-        仅当已落盘 index.pkl 的 ``model`` 字段与当前 ``model`` 一致才返回缓存
-        （换 embedding 模型 → 旧向量与当前模型不同源作废，返回空 dict 强制整体
-        重算，护栏在此不混用不同模型的向量）。无索引文件 / 结构缺字段 → 空 dict。
-        """
-        p = self._index_path()
-        if not p.is_file():
-            return {}
-        with open(p, "rb") as f:
-            data = pickle.load(f)
-        if (data.get("model") or "") != (model or ""):
-            return {}
-        atom_ids = data.get("atom_ids") or []
-        embeddings = data.get("embeddings")
-        if embeddings is None:
-            return {}
-        return {
-            aid: embeddings[i]
-            for i, aid in enumerate(atom_ids)
-            if i < len(embeddings) and aid
-        }
-
-    def rebuild_vector_index(self, embed_client) -> None:
-        """增量重建索引：复用旧 index.pkl 中同模型的向量，只对新原子调 embedding。
-
-        - 旧索引 ``model`` 与当前 ``embed_client.model`` 一致时，按 ``atom_id``
-          复用其向量（atom 内容随 id 不可变，复用安全）；换模型则整体重算。
-        - 只对**没在缓存里的** atom_id 调 ``encode_batch``，其余复用缓存向量。
-        - 新索引只含当前 ``all_atoms()`` 的原子——被删除/reset 的原子自然不残留。
-        - 复用向量本就归一化落盘；新算向量照旧 L2 归一。最终 embeddings 行顺序
-          与 atom_ids、与 ``all_atoms()`` 顺序严格对齐。
-
-        无 atom 时直接返回（不写空索引文件——``vector_search`` 自己处理无索引情况）。
-        """
-        atoms = list(self.all_atoms())
-        if not atoms:
-            return
-        model = getattr(embed_client, "model", "")
-        cache = self._load_vector_cache(model)
-        missing = [a for a in atoms if a.atom_id not in cache]
-        if missing:
-            texts = [a.summary or a.intent for a in missing]
-            fresh = np.asarray(embed_client.encode_batch(texts))
-            norms = np.linalg.norm(fresh, axis=1, keepdims=True)
-            norms[norms == 0] = 1
-            fresh = fresh / norms
-            cache = dict(cache)
-            for a, v in zip(missing, fresh):
-                cache[a.atom_id] = v
-        vecs = np.asarray([cache[a.atom_id] for a in atoms])
-        self.root.mkdir(parents=True, exist_ok=True)
-        with open(self._index_path(), "wb") as f:
-            pickle.dump({
-                "atom_ids": [a.atom_id for a in atoms],
-                "embeddings": vecs,
-                "model": model,
-                "dim": int(vecs.shape[1]),
-            }, f)
+    def vector_index_reconcile_due(self) -> bool:
+        """空闲 watcher 是否需执行启动迁移或低频事实源一致性核对。"""
+        return self._vector_projection.reconcile_due()
 
     def vector_search(self, query: str, embed_client, top_k: int = 5) -> list[dict]:
+        if top_k <= 0:
+            return []
+        projected = self._vector_projection.search(
+            query,
+            embed_client,
+            top_k=top_k,
+        )
+        if projected is not None:
+            return projected
+        # 升级期间、首次 watcher 对账前兼容旧 index.pkl。
         p = self._index_path()
         if not p.is_file():
             return []
         with open(p, "rb") as f:
             data = pickle.load(f)
+        if data.get("format") or (
+            data.get("model") or ""
+        ) != (getattr(embed_client, "model", "") or ""):
+            return []
         q = embed_client.encode(query)
         qn = np.linalg.norm(q)
         if qn > 0:
@@ -299,6 +651,15 @@ class MultiAtomTaskStore:
         if not stores:
             raise ValueError("MultiAtomTaskStore 需要至少一个底层 store")
         self.stores = list(stores)
+        for store in self.stores:
+            try:
+                store.ensure_location_index()
+            except (OSError, sqlite3.DatabaseError):
+                logger.warning(
+                    "atom location projection initialization failed: %s",
+                    store._location_index_path(),
+                    exc_info=True,
+                )
 
     @property
     def roots(self) -> list[Path]:
@@ -332,7 +693,15 @@ class MultiAtomTaskStore:
         return store, path
 
     def _atom_hits(self, atom_id: str) -> list[tuple[int, "AtomTaskStore", Path]]:
-        hits: list[tuple[int, "AtomTaskStore", Path]] = []
+        hits = []
+        for idx, store in enumerate(self.stores):
+            path = store.projected_path_for_atom(atom_id)
+            if path is not None:
+                hits.append((idx, store, path))
+        if hits:
+            return hits
+        # Legacy or external writes without a projection event: only a complete
+        # projected miss pays the old fact-source scan and repairs each store.
         for idx, s in enumerate(self.stores):
             path = s.path_for_atom(atom_id)
             if path is not None:

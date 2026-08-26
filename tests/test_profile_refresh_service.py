@@ -112,6 +112,35 @@ def test_failure_clears_state_and_later_request_retries():
     assert service.stop(timeout=_IDLE_TIMEOUT)
 
 
+def test_completion_callback_only_reports_successful_commits():
+    outcomes = []
+
+    class Engine:
+        def __init__(self):
+            self.calls = 0
+
+        def update_user_interest(self, _interest, *, should_commit=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary failure")
+            return _Result(changed=False)
+
+    service = ProfileRefreshService(
+        Engine(),
+        workers=1,
+        queue_size=1,
+        on_processed=lambda client_id, succeeded: outcomes.append(
+            (client_id, succeeded),
+        ),
+    )
+    assert service.request("u1")
+    assert service.wait_idle(timeout=_IDLE_TIMEOUT)
+    assert service.request("u1")
+    assert service.wait_idle(timeout=_IDLE_TIMEOUT)
+    assert outcomes == [("u1", False), ("u1", True)]
+    assert service.stop(timeout=_IDLE_TIMEOUT)
+
+
 @pytest.mark.flaky(reruns=2, reruns_delay=1)
 def test_worker_concurrency_is_fixed_and_threads_are_daemon():
     all_workers_busy = threading.Event()

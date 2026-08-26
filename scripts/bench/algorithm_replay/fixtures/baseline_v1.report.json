@@ -1,0 +1,193 @@
+{
+  "cases": [
+    {
+      "case_id": "en-follow-up-single-intent",
+      "expected_language": "en",
+      "metrics": {
+        "boundary": {
+          "exact_match": 1.0,
+          "f1": 1.0,
+          "false_negative": 0,
+          "false_positive": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "true_positive": 0
+        },
+        "coverage": 1.0,
+        "duplicate_rate": 0.0,
+        "language_consistency": 1.0,
+        "multi_skill_relation_retention": 1.0,
+        "overlap_rate": 0.0,
+        "routing_micro": {
+          "f1": 1.0,
+          "false_negative": 0,
+          "false_positive": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "true_positive": 1
+        },
+        "routing_recall_at_k": 1.0,
+        "segmentation": {
+          "pk": 0.0,
+          "window_diff": 0.0
+        }
+      }
+    },
+    {
+      "case_id": "zh-two-intents",
+      "expected_language": "zh",
+      "metrics": {
+        "boundary": {
+          "exact_match": 1.0,
+          "f1": 1.0,
+          "false_negative": 0,
+          "false_positive": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "true_positive": 1
+        },
+        "coverage": 1.0,
+        "duplicate_rate": 0.0,
+        "language_consistency": 1.0,
+        "multi_skill_relation_retention": 1.0,
+        "overlap_rate": 0.0,
+        "routing_micro": {
+          "f1": 1.0,
+          "false_negative": 0,
+          "false_positive": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "true_positive": 2
+        },
+        "routing_recall_at_k": 1.0,
+        "segmentation": {
+          "pk": 0.0,
+          "window_diff": 0.0
+        }
+      }
+    },
+    {
+      "case_id": "en-near-duplicate-observation",
+      "expected_language": "en",
+      "metrics": {
+        "boundary": {
+          "exact_match": 0.0,
+          "f1": 0.0,
+          "false_negative": 0,
+          "false_positive": 1,
+          "precision": 0.0,
+          "recall": 0.0,
+          "true_positive": 0
+        },
+        "coverage": 1.0,
+        "duplicate_rate": 0.5,
+        "language_consistency": 1.0,
+        "multi_skill_relation_retention": 1.0,
+        "overlap_rate": 0.25,
+        "routing_micro": {
+          "f1": 0.666667,
+          "false_negative": 0,
+          "false_positive": 1,
+          "precision": 0.5,
+          "recall": 1.0,
+          "true_positive": 1
+        },
+        "routing_recall_at_k": 1.0,
+        "segmentation": {
+          "pk": 0.666667,
+          "window_diff": 0.666667
+        }
+      }
+    },
+    {
+      "case_id": "zh-multi-skill-routing",
+      "expected_language": "zh",
+      "metrics": {
+        "boundary": {
+          "exact_match": 1.0,
+          "f1": 1.0,
+          "false_negative": 0,
+          "false_positive": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "true_positive": 0
+        },
+        "coverage": 1.0,
+        "duplicate_rate": 0.0,
+        "language_consistency": 1.0,
+        "multi_skill_relation_retention": 1.0,
+        "overlap_rate": 0.0,
+        "routing_micro": {
+          "f1": 1.0,
+          "false_negative": 0,
+          "false_positive": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "true_positive": 2
+        },
+        "routing_recall_at_k": 1.0,
+        "segmentation": {
+          "pk": 0.0,
+          "window_diff": 0.0
+        }
+      }
+    }
+  ],
+  "metric_config": {
+    "atom_alignment_min_iou": 0.5,
+    "routing_recall_k": 3
+  },
+  "metrics": {
+    "boundary": {
+      "exact_match": 0.75,
+      "f1": 0.666667,
+      "false_negative": 0,
+      "false_positive": 1,
+      "precision": 0.5,
+      "recall": 1.0,
+      "true_positive": 1
+    },
+    "coverage": 1.0,
+    "duplicate_rate": 0.166667,
+    "language_consistency": 1.0,
+    "multi_skill_relation_retention": 1.0,
+    "overlap_rate": 0.06,
+    "routing_macro": {
+      "f1": 0.916667,
+      "precision": 0.875,
+      "recall": 1.0
+    },
+    "routing_micro": {
+      "f1": 0.923077,
+      "false_negative": 0,
+      "false_positive": 1,
+      "precision": 0.857143,
+      "recall": 1.0,
+      "true_positive": 6
+    },
+    "routing_recall_at_k": 1.0,
+    "segmentation": {
+      "pk": 0.166667,
+      "window_diff": 0.166667
+    }
+  },
+  "report_sha256": "6cbfa924c9f37ea1e191edcd87c145cd0fe4814b52c40082059e54f29fa61cd2",
+  "run_manifest": {
+    "cost_usd": 0.0,
+    "generated_at": "2026-08-22T00:00:00Z",
+    "generation_config": {
+      "max_output_tokens": 2048,
+      "temperature": 0.0,
+      "top_p": 1.0
+    },
+    "harness": "offline-replay",
+    "input_tokens": 0,
+    "model": "recorded-fixture",
+    "output_tokens": 0,
+    "prompt_fingerprint": "sha256:7066be5248c28498173ab2d0057896e8e1fde3732c185e3e6b3d17f6e5a172d5",
+    "repository_revision": "d7ab781068aa366e9b19bf25c30e7d6acb7fafa2",
+    "seed": 0
+  },
+  "schema_version": 1,
+  "suite_id": "atom-routing-baseline-v1"
+}

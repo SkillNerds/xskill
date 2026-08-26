@@ -317,7 +317,7 @@ class TestJsonlIngesterSpecDispatch:
             sessions_path=lambda h: h / "fake",
             sessions_glob="*.db",
             session_id_from_path=lambda p: p.stem,
-            cwd_from_content=lambda c: "",
+            cwd_from_content=lambda _c: "",
             adapter_format="raw",
             traj_id_prefix="traj_x_",
             skills_install_path=lambda h: h / "fake_skills",
@@ -393,8 +393,8 @@ class TestInstallToCodexFallback:
         skill_path = _build_codex_skill(tmp_path / "src")
         fake_home = tmp_path / "home"
 
-        monkeypatch.setattr(install_fallback, "_try_symlink", lambda s, d: False)
-        monkeypatch.setattr(install_fallback, "_try_junction", lambda s, d: False)
+        monkeypatch.setattr(install_fallback, "_try_symlink", lambda _s, _d: False)
+        monkeypatch.setattr(install_fallback, "_try_junction", lambda _s, _d: False)
 
         with caplog.at_level(logging.WARNING, logger="xskill.ecosystems"):
             dest = install_to_codex(skill_path, target_root=fake_home)
@@ -527,9 +527,11 @@ class TestCodexRollout0148:
         assert "<cwd>" not in md
 
     def test_session_meta_still_parsed(self):
-        md, _meta = self._adapt()
+        md, meta = self._adapt()
         assert "**cli_version**: 0.148.0" in md
         assert "**originator**: codex_exec" in md
+        assert meta["source_model"] == "mock-model"
+        assert meta["execution_usage_events"][0]["usage"]["total_tokens"] == 2
 
     def test_old_format_fixture_unchanged(self):
         """两种格式并存：旧 fixture（event_msg::user_message）行为不变。"""

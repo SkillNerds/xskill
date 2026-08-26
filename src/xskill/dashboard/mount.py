@@ -19,7 +19,8 @@ def _team_registry_provider():
 
 
 def mount_dashboard(app, cfg: dict, *, db_path: Optional[Path] = None,
-                    serve_builtin: bool = True) -> None:
+                    serve_builtin: bool = True,
+                    server_mode: bool = False) -> None:
     """``serve_builtin=False`` = 独立只读实例（D4）：只挂聚合 GET 端点；
     登录、写操作及内容级敏感路由均物理不挂载。"""
     dc = dashboard_config(cfg)
@@ -29,7 +30,8 @@ def mount_dashboard(app, cfg: dict, *, db_path: Optional[Path] = None,
         db_path=db_path,
         default_harness=dc["default_harness"],
         default_model=dc["default_model"],
-        expose_sensitive=serve_builtin))
+        expose_sensitive=serve_builtin,
+        server_mode=server_mode))
     if serve_builtin:
         # P2-2.2 登录与角色:仅 serve 内置形态挂载(D4)。
         from xskill.dashboard.auth import (

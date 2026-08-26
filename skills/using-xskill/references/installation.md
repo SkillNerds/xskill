@@ -25,6 +25,28 @@ embedding:
   dim:      0
 ```
 
+The `llm` block is the shared default. If you already have a config, you can
+leave it as-is.
+
+Want a different model or endpoint for split, cluster, or edit? Add an optional
+`llm_agents` block. You can skip it entirely. Any stage or field you leave out
+falls back to `llm_skill` (if you have one), then to `llm`. `xskill generate`
+still uses `llm` and `llm_skill` only. After changing these, just restart
+`xskill serve`.
+
+```yaml
+# optional — leave this out and all three stages keep using `llm` above
+llm_agents:
+  split:
+    model: qwen-plus
+  cluster:
+    model: deepseek-v4-flash
+  edit:
+    base_url: http://localhost:8000/v1
+    model: local-skill-editor
+    api_key: local
+```
+
 Run `xskill serve` again — it auto-detects every supported agent on the machine and
 starts watching. To backfill an archive of old trajectories:
 

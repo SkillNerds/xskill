@@ -6,14 +6,16 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
+from pydantic import BaseModel, Field, StrictStr
 
-from xskill.dashboard.metrics import DashboardMetrics, skills_catalog_page
 from xskill.dashboard.auth import _identity_from_request, require_admin
+from xskill.dashboard.metrics import DashboardMetrics, skills_catalog_page
 from xskill.pipeline.registry import (
     harness_share,
     list_watch_dirs,
@@ -21,9 +23,22 @@ from xskill.pipeline.registry import (
     trigger_eval_for_skill,
     usage_summary,
 )
+from xskill.tasks.store import OVERRIDE_OPERATIONS
 
 _STATIC = Path(__file__).with_name("static")
 _STANDALONE_SKILL_SOURCES = frozenset(("native", "skillhub"))
+_TASK_GRAPH_OVERRIDE_PATTERN = "^(?:" + "|".join(
+    re.escape(operation) for operation in sorted(OVERRIDE_OPERATIONS)
+) + ")$"
+
+
+class TaskGraphOverrideRequest(BaseModel):
+    task_scope_id: StrictStr = Field(min_length=1, max_length=200)
+    operation: StrictStr = Field(pattern=_TASK_GRAPH_OVERRIDE_PATTERN)
+    target_id: StrictStr = Field(min_length=1, max_length=200)
+    payload: dict = Field(default_factory=dict)
+    evidence_refs: list[StrictStr] = Field(default_factory=list, max_length=100)
+    event_id: Optional[StrictStr] = Field(default=None, max_length=200)
 
 
 def _skill_dir_for(db_path: Optional[Path]) -> Path:
@@ -40,7 +55,8 @@ def _skill_dir_for(db_path: Optional[Path]) -> Path:
 def build_dashboard_router(db_path: Optional[Path] = None, *,
                            default_harness: Optional[str] = None,
                            default_model: Optional[str] = None,
-                           expose_sensitive: bool = True) -> APIRouter:
+                           expose_sensitive: bool = True,
+                           server_mode: bool = False) -> APIRouter:
     """``expose_sensitive=False`` = 公网只读实例内容白名单（§1.3）：轨迹原文、
     原子详情、用户连接状态、skill 文件/版本/评测 case 等内容级端点和所有写
     端点**物理不注册**（404），只保留聚合数字类 GET 端点。这是给独立只读部署
@@ -130,6 +146,143 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
         """团队用户(client)列表 + 总数（纯 registry 分析式）。"""
         u = metrics.users()
         return {"total": len(u), "users": u}
+
+    def _task_graph_identity() -> tuple[str, Path]:
+        from xskill.config import get_registry_db_path
+        from xskill.tasks.scopes import ScopeResolver
+
+        registry_path = Path(db_path) if db_path else get_registry_db_path()
+        state_root = registry_path.parent
+        tenant_id = ScopeResolver(
+            state_root, db_path=registry_path,
+        ).existing_tenant_id
+        return tenant_id or "", registry_path
+
+    @sensitive_router.get("/api/v1/dashboard/task-graph/overview")
+    def task_graph_overview_ep(_ident=Depends(require_admin)) -> dict:
+        from xskill.tasks.projection import task_graph_overview
+
+        tenant_id, registry_path = _task_graph_identity()
+        return task_graph_overview(tenant_id, db_path=registry_path)
+
+    @sensitive_router.get("/api/v1/dashboard/task-graph/scopes")
+    def task_graph_scopes_ep(
+        limit: int = 100,
+        offset: int = 0,
+        _ident=Depends(require_admin),
+    ) -> dict:
+        from xskill.tasks.projection import list_task_scopes
+
+        tenant_id, registry_path = _task_graph_identity()
+        return {
+            "scopes": list_task_scopes(
+                tenant_id,
+                limit=max(1, min(limit, 500)),
+                offset=max(0, offset),
+                db_path=registry_path,
+            )
+        }
+
+    @sensitive_router.get("/api/v1/dashboard/task-graph/tasks")
+    def task_graph_tasks_ep(
+        task_scope_id: Optional[str] = None,
+        include_tombstones: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+        _ident=Depends(require_admin),
+    ) -> dict:
+        from xskill.tasks.projection import list_logical_tasks
+
+        tenant_id, registry_path = _task_graph_identity()
+        return {
+            "tasks": list_logical_tasks(
+                tenant_id,
+                task_scope_id=task_scope_id,
+                include_tombstones=include_tombstones,
+                limit=max(1, min(limit, 500)),
+                offset=max(0, offset),
+                db_path=registry_path,
+            )
+        }
+
+    @sensitive_router.get("/api/v1/dashboard/task-graph/by-session")
+    def task_graph_by_session_ep(
+        source_scope_id: str,
+        traj_id: str,
+        _ident=Depends(require_admin),
+    ) -> dict:
+        from xskill.tasks.projection import tasks_for_session
+
+        tenant_id, registry_path = _task_graph_identity()
+        return tasks_for_session(
+            tenant_id, source_scope_id, traj_id, db_path=registry_path,
+        )
+
+    @sensitive_router.get("/api/v1/dashboard/task-graph/by-atom")
+    def task_graph_by_atom_ep(
+        source_scope_id: str,
+        traj_id: str,
+        atom_id: str,
+        _ident=Depends(require_admin),
+    ) -> dict:
+        from xskill.tasks.projection import tasks_for_atom
+
+        tenant_id, registry_path = _task_graph_identity()
+        return tasks_for_atom(
+            tenant_id, source_scope_id, traj_id, atom_id,
+            db_path=registry_path,
+        )
+
+    @sensitive_router.get("/api/v1/dashboard/task-graph/task/{task_id}")
+    def task_graph_task_ep(
+        task_id: str,
+        task_scope_id: str,
+        _ident=Depends(require_admin),
+    ) -> dict:
+        from xskill.tasks.projection import get_logical_task
+
+        tenant_id, registry_path = _task_graph_identity()
+        result = get_logical_task(
+            tenant_id, task_scope_id, task_id, db_path=registry_path,
+        )
+        if result is None:
+            raise HTTPException(status_code=404, detail="Logical Task not found")
+        return result
+
+    @sensitive_router.post("/api/v1/dashboard/task-graph/override")
+    def task_graph_override_ep(
+        body: TaskGraphOverrideRequest,
+        ident=Depends(require_admin),
+    ) -> dict:
+        from xskill.config import get_config
+        from xskill.tasks.service import TaskGraphService
+
+        _tenant_id, registry_path = _task_graph_identity()
+        runtime_config = get_config()
+        service = TaskGraphService(
+            state_root=registry_path.parent,
+            db_path=registry_path,
+            server_mode=server_mode,
+            config=runtime_config,
+        )
+        actor = str(ident.get("user") or ident.get("role") or "admin")
+        try:
+            event = service.append_override(
+                task_scope_id=body.task_scope_id,
+                operation=body.operation,
+                target_id=body.target_id,
+                payload=body.payload,
+                actor=actor,
+                evidence_refs=body.evidence_refs,
+                event_id=body.event_id,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"override": event.to_dict()}
 
     @router.get("/api/v1/dashboard/tags")
     def tags() -> dict:

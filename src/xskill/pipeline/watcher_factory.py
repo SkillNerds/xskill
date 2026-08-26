@@ -115,6 +115,7 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
         OPENCODE_SPEC,
         detect_known_ecosystems,
         ensure_claude_code_install,
+        ensure_zstandard_for_dsh,
         install_all_to_claude_code,
         install_all_to_codex, install_all_to_cursor,
         install_all_to_deepseek_harness,
@@ -279,6 +280,7 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
                           registry_db_path=registry_db_path).run_once()
 
         elif eco == "deepseek_harness":
+            ensure_zstandard_for_dsh(home_root)
             try:
                 installed = install_all_to_deepseek_harness(
                     skill_dir, target_root=home_root,
@@ -293,8 +295,6 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
                     skill="<startup_all>", agent="deepseek_harness",
                     reason=str(exc)[:200],
                 )
-            # 仅明文 session.jsonl；默认的 session.jsonl.zstd 不在 glob 内，
-            # 本期不解码（见 deepseek_harness.py 模块 docstring）。
             JsonlIngester(DSH_SPEC, target_traj_dir=bridge, home_root=home_root,
                           poll_interval=poll_interval,
                           registry_db_path=registry_db_path).run_once()

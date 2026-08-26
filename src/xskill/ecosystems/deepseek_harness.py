@@ -16,9 +16,10 @@ session.jsonl``）桥接回 xskill 的标准 ``traj_*.md`` 格式。
 - session 存储：``@deepseek-ai/dsh-session-persistence-jsonl``。**默认**
   写 ``session.jsonl.zstd``——多个独立 Zstandard 帧顺序拼接（首帧只含
   header 行，之后每次落盘一帧），不能按行读；``compression: 'none'`` 时
-  为明文 ``session.jsonl``。两种都桥接：``.zstd`` 用 ``zstandard``（主依赖）
-  流式跨帧解码为同样的逐行文本，再走同一个 adapter。若环境缺 ``zstandard``
-  （安装不完整），只警告一次并跳过压缩文件（明文仍正常）。逻辑行：首行
+  为明文 ``session.jsonl``。两种都桥接：``.zstd`` 用 ``zstandard``
+  （extra ``xskill[dsh]``，不进主依赖，见 #334）流式跨帧解码为同样的
+  逐行文本，再走同一个 adapter。探测到 ``~/.dsh`` 且缺库时现场补装一次；
+  仍缺失则只警告一次并跳过压缩文件（明文仍正常）。逻辑行：首行
   ``{"type": "session", ...}`` SessionHeader
   （带 ``cwd``），随后每行一个 ``{type, seq, time, data}`` SessionEvent。
   ``assistant/chunk`` 与打包行（``text-chunks`` / ``reasoning-chunks`` /
@@ -35,6 +36,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -44,6 +48,7 @@ from xskill.ecosystems._shared import (
     _install_all_with,
     _install_skill_into,
 )
+from xskill.utils.proc import windowless_subprocess_kwargs
 
 logger = logging.getLogger("xskill.ecosystems")
 
@@ -163,6 +168,118 @@ def _read_cwd_from_dsh_jsonl(content: str) -> str:
 # ─────────────────────────────────────────────────────────────────
 
 _ZSTD_MISSING_WARNED = False
+_ZSTD_REQUIREMENT = "zstandard>=0.21"
+_PROVISION_FILENAME = "dsh-zstandard-provision.json"
+_PIP_TIMEOUT_S = 90
+
+
+def zstandard_available() -> bool:
+    try:
+        import zstandard  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _provision_state_path(home_root: Path) -> Path:
+    return Path(home_root) / ".xskill" / _PROVISION_FILENAME
+
+
+def _home_root_from_dsh_session(path: Path) -> Path | None:
+    """``<home>/.dsh/sessions/.../session.jsonl.zstd`` → ``<home>``。"""
+    for parent in path.parents:
+        if parent.name == ".dsh":
+            return parent.parent
+    return None
+
+
+def _read_provision_state(path: Path) -> dict | None:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_provision_state(path: Path, *, status: str, detail: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "package": _ZSTD_REQUIREMENT,
+        "status": status,
+        "detail": detail,
+    }
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _install_zstandard_with_pip() -> tuple[bool, str]:
+    """现场装 zstandard。不传 ``-i`` / ``--proxy``：尊重 pip.ini，
+    也不把 Windows 系统代理强塞进去（#334 升级失败的根因）。"""
+    cmd = [
+        sys.executable, "-m", "pip", "install",
+        _ZSTD_REQUIREMENT,
+        "--timeout", "15",
+        "--retries", "1",
+        "--disable-pip-version-check",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=_PIP_TIMEOUT_S,
+            encoding="utf-8",
+            errors="replace",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            **windowless_subprocess_kwargs(),
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"pip 超过 {_PIP_TIMEOUT_S}s 未退出"
+    except Exception as exc:
+        return False, f"执行 pip 异常: {exc}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "pip 返回非零退出码").strip()
+        return False, (detail.splitlines()[-1] if detail else "pip 返回非零退出码")
+    return True, ""
+
+
+def ensure_zstandard_for_dsh(home_root: Path | str | None = None) -> bool:
+    """探测到 ``~/.dsh`` 且缺 ``zstandard`` 时，无窗现场补装一次。
+
+    已能 import、没有 dsh 目录、或 ``~/.xskill/dsh-zstandard-provision.json``
+    里已有一次尝试记录，都不再起 pip。采集 / detect 循环不得反复弹窗。
+    """
+    if zstandard_available():
+        return True
+    root = Path(home_root) if home_root else Path.home()
+    if not (root / ".dsh").is_dir():
+        return False
+
+    state_path = _provision_state_path(root)
+    if _read_provision_state(state_path) is not None:
+        return zstandard_available()
+
+    logger.info(
+        "探测到 %s，现场安装 %s（不走系统代理、无窗）",
+        root / ".dsh", _ZSTD_REQUIREMENT,
+    )
+    ok, detail = _install_zstandard_with_pip()
+    if ok and zstandard_available():
+        _write_provision_state(state_path, status="ok", detail="")
+        logger.info("已安装 %s，可以解码 dsh 默认 zstd 会话", _ZSTD_REQUIREMENT)
+        return True
+    reason = detail or "装完仍无法 import zstandard"
+    _write_provision_state(state_path, status="failed", detail=reason)
+    logger.warning(
+        "现场安装 %s 失败（%s）。压缩会话暂不桥接；可手工 "
+        "pip install zstandard 或 pip install 'xskill[dsh]'。"
+        "明文会话不受影响。",
+        _ZSTD_REQUIREMENT, reason,
+    )
+    return False
 
 
 def _read_dsh_session(path: Path) -> Optional[str]:
@@ -171,12 +288,16 @@ def _read_dsh_session(path: Path) -> Optional[str]:
 
     dsh 的压缩产物是**独立帧的顺序拼接**（首帧 header、之后每批一帧），
     ``ZstdDecompressor.stream_reader(read_across_frames=True)`` 正好对应
-    这一布局。``zstandard`` 是主依赖；若环境仍缺失（安装不完整）返回 None：
-    只警告一次（避免每 5 秒刷屏），ingester 跳过该文件；明文文件不受影响。
+    这一布局。``zstandard`` 在 extra ``xskill[dsh]``；缺库时先对
+    ``~/.dsh`` 做一次现场补装，仍缺失则返回 None：只警告一次（避免每
+    5 秒刷屏），ingester 跳过该文件；明文文件不受影响。
     """
     global _ZSTD_MISSING_WARNED
     if path.suffix != ".zstd":
         return path.read_text(encoding="utf-8", errors="ignore")
+    if not zstandard_available():
+        home = _home_root_from_dsh_session(path)
+        ensure_zstandard_for_dsh(home)
     try:
         import zstandard
     except ImportError:
@@ -184,8 +305,8 @@ def _read_dsh_session(path: Path) -> Optional[str]:
             _ZSTD_MISSING_WARNED = True
             logger.warning(
                 "DeepSeek Harness 会话默认为 zstd 压缩（%s），解码需要依赖 "
-                "zstandard（xskill 主依赖之一，安装不完整时缺失）："
-                "pip install zstandard。安装前压缩会话不会被桥接；明文会话"
+                "zstandard（extra xskill[dsh]）：pip install zstandard 或 "
+                "pip install 'xskill[dsh]'。安装前压缩会话不会被桥接；明文会话"
                 "不受影响。",
                 path,
             )
@@ -264,6 +385,10 @@ def _adapt_deepseek_harness_session_jsonl(
     session_id = ""
     cwd = ""
     agent_preset = ""
+    execution_usage_events: list[dict] = []
+    source_model = ""
+    source_provider = ""
+    assistant_message_ordinal = 0
     t = 0
 
     for raw_line in content.splitlines():
@@ -313,7 +438,34 @@ def _adapt_deepseek_harness_session_jsonl(
             role = "assistant"
             message = data.get("message")
             if isinstance(message, dict):
+                assistant_message_ordinal += 1
                 body = _text_from_message_content(message.get("content"))
+                source = message.get("source")
+                response = (
+                    (source.get("replayState") or {}).get("response")
+                    if isinstance(source, dict) else None
+                )
+                response = response if isinstance(response, dict) else {}
+                source_model = str(
+                    response.get("model") or source_model
+                )
+                source_provider = str(
+                    response.get("provider") or source_provider
+                )
+                usage = data.get("usage") or message.get("usage")
+                if isinstance(usage, dict):
+                    execution_usage_events.append({
+                        "source_event_id": str(
+                            response.get("responseId") or message.get("id")
+                            or f"assistant-message-{assistant_message_ordinal}"
+                        ),
+                        "usage": usage,
+                        "model": {
+                            "provider": source_provider or "unavailable",
+                            "model_id": source_model or "unavailable",
+                        },
+                        "observed_at": record.get("time"),
+                    })
         elif rtype == "tool/call":
             role = "assistant"
             name = str(data.get("name") or "tool")
@@ -353,6 +505,12 @@ def _adapt_deepseek_harness_session_jsonl(
         meta.setdefault("cwd", cwd)
     if agent_preset:
         meta.setdefault("agent_preset", agent_preset)
+    if source_model:
+        meta.setdefault("model", source_model)
+    if source_provider:
+        meta.setdefault("provider", source_provider)
+    if execution_usage_events:
+        meta["execution_usage_events"] = execution_usage_events
     meta["timeline"] = timeline
     meta["tool_names"] = tool_names
     meta["total_turns"] = len(timeline)
@@ -377,10 +535,12 @@ def ingest_deepseek_harness_sessions(
     trajectory directory.
 
     Scans ``<home_root>/.dsh/sessions/*/*/session.jsonl`` and
-    ``session.jsonl.zstd``（后者用主依赖 ``zstandard`` 解码；环境缺失时警告
-    一次并跳过压缩文件）and submits any session whose encoded-id directory is not
-    in ``seen_sessions`` as a new trajectory under ``target_traj_dir``.
+    ``session.jsonl.zstd``（后者用 ``zstandard`` 解码；缺库时现场补装一次，
+    仍缺失则警告并跳过压缩文件）and submits any session whose encoded-id
+    directory is not in ``seen_sessions`` as a new trajectory under
+    ``target_traj_dir``.
     """
+    ensure_zstandard_for_dsh(home_root)
     return JsonlIngester(DSH_SPEC).scan_and_bridge(
         target_traj_dir=Path(target_traj_dir),
         home_root=Path(home_root) if home_root else None,

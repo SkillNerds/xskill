@@ -643,7 +643,7 @@ class PipelinePoolPatch(BaseModel):
 # llm/embedding/agent_worker/watcher 涉及进程级资源，改动需重启 serve。
 HOT_RELOAD_SECTIONS = ("dashboard", "canary", "recommend", "skillhub")
 RESTART_SECTIONS = (
-    "llm", "llm_skill", "embedding", "watcher", "agent_worker", "team",
+    "llm", "llm_skill", "llm_agents", "embedding", "watcher", "agent_worker", "team",
 )
 # team 段整体是重启域(join_token/路径/registry 接线),但这几个子键是纯调优数字,
 # 由 api.live_manifest_tuning() 每请求现取 → 改它们不需要重启。只有改到 team
@@ -1398,6 +1398,7 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
         """暂停或恢复指定 client 的后续轨迹处理；显式目标状态保证幂等。"""
         ctx = _require_team_ctx()
         try:
+            was_paused = ctx.client_registry.is_ingest_paused(client_id)
             row = ctx.client_registry.set_ingest_paused(
                 client_id,
                 req.paused,
@@ -1420,6 +1421,19 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
                 status_code=503,
                 detail="暂停状态已保存，但 watch_dir 同步失败；可安全重试",
             ) from exc
+
+        if was_paused != bool(row.get("ingest_paused")):
+            try:
+                from xskill.recommend.profile_dirty import mark_profile_dirty
+                mark_profile_dirty(
+                    watch_state["dir_name"],
+                    reason="ingest_privacy_changed",
+                    db_path=db_path,
+                )
+            except Exception:  # pylint: disable=broad-exception-caught
+                logger.debug(
+                    "画像脏标记失败: client_id=%s", client_id, exc_info=True,
+                )
 
         logger.info(
             "admin %s set client %s ingest_paused=%s",

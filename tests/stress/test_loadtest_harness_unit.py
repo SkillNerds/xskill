@@ -151,12 +151,45 @@ def _watcher_round(
             "scores": 0,
             "errors": errors,
             "retries": 0,
-            "last_poll": ended_at - 0.1,
+            "scans": 1,
+            "last_scan": ended_at - 0.1,
             "running": False,
             "paused": False,
-            "in_flight": 0,
         },
     }
+
+
+def _tool_names(response: dict) -> list[str]:
+    return [
+        call["function"]["name"]
+        for call in response["choices"][0]["message"].get("tool_calls", [])
+    ]
+
+
+def test_mock_skill_edit_follows_current_three_request_protocol() -> None:
+    initial = HARNESS._tool_call_response({"messages": [{
+        "role": "user",
+        "content": "目标 skill 目录: /tmp/skills/example-skill\n"
+                   "目标 SKILL.md 路径: /tmp/skills/example-skill/SKILL.md",
+    }]}, 1)
+    assert _tool_names(initial) == ["write_file"]
+
+    after_write = HARNESS._tool_call_response({"messages": [{
+        "role": "tool", "content": "wrote: /tmp/skills/example-skill/SKILL.md",
+    }]}, 2)
+    assert _tool_names(after_write) == ["commit_baby"]
+    arguments = json.loads(
+        after_write["choices"][0]["message"]["tool_calls"][0]
+        ["function"]["arguments"]
+    )
+    assert set(arguments) == {"skill_name", "message"}
+
+    after_checkpoint = HARNESS._tool_call_response({"messages": [{
+        "role": "tool", "content": "Created baby checkpoint abc1234.",
+    }]}, 3)
+    message = after_checkpoint["choices"][0]["message"]
+    assert message["content"] == "Mock SkillEdit complete."
+    assert "tool_calls" not in message
 
 
 def test_gated_wave_releases_embedding_before_gather(monkeypatch, tmp_path) -> None:
@@ -184,7 +217,6 @@ def test_gated_wave_releases_embedding_before_gather(monkeypatch, tmp_path) -> N
             join_token="token",
             state=state,
             server_pid=-1,
-            profile_workers=1,
             gated_embedding=True,
             wave=wave,
             checkpoint=checkpoint,
@@ -201,7 +233,7 @@ def test_gated_wave_releases_embedding_before_gather(monkeypatch, tmp_path) -> N
     assert persisted["waves"]["blocked_sync"]["sync"]["statuses"] == {"200": 1}
 
 
-def test_gated_wave_accepts_profile_workers_already_saturated(monkeypatch) -> None:
+def test_gated_wave_accepts_embedding_already_active(monkeypatch) -> None:
     release = threading.Event()
     state = _AlreadySaturatedState(release)
     client = _BlockedSyncClient(release)
@@ -219,7 +251,6 @@ def test_gated_wave_accepts_profile_workers_already_saturated(monkeypatch) -> No
         join_token="token",
         state=state,
         server_pid=-1,
-        profile_workers=1,
         gated_embedding=True,
         wave={},
         checkpoint=checkpoint_records.clear,
@@ -242,7 +273,8 @@ def test_profile_wait_requires_new_nested_idle_round(monkeypatch) -> None:
         {
             "ok": True, "error": None, "ended_at": 11.0,
             "stats": {
-                "queued": 0, "running": 0, "failed": 0, "embed_items": 0,
+                "profile_rc": 0, "vector_upserted": 1,
+                "vector_deleted": 0, "recommends": 1,
             },
         },
     ])
@@ -253,7 +285,8 @@ def test_profile_wait_requires_new_nested_idle_round(monkeypatch) -> None:
 
     assert client.calls == 2
     assert metrics == {
-        "queued": 0, "running": 0, "failed": 0, "embed_items": 0,
+        "profile_rc": 0, "vector_upserted": 1,
+        "vector_deleted": 0, "recommends": 1,
     }
 
 
@@ -338,9 +371,12 @@ def test_successful_profile_poll_clears_previous_poll_error(monkeypatch) -> None
         (
             {
                 "ok": True, "error": None, "ended_at": 11.0,
-                "stats": {"queued": 0, "running": 0, "failed": 0},
+                "stats": {
+                    "profile_rc": 0, "vector_upserted": 0,
+                    "vector_deleted": 0,
+                },
             },
-            "embed_items",
+            "recommends",
         ),
         (
             {
@@ -442,9 +478,9 @@ def test_watcher_nonzero_errors_fail_the_gate() -> None:
     [
         ("polls", None),
         ("skills_edited", True),
-        ("in_flight", -1),
+        ("scans", -1),
         ("running", 0),
-        ("last_poll", "late"),
+        ("last_scan", "late"),
     ],
 )
 def test_successful_watcher_status_requires_complete_strict_stats(

@@ -289,3 +289,90 @@ def test_heavy_compute_recommend_from_centers(registry_db, index):
     )
     assert names
     assert load_recommend_slots("bob", db_path=registry_db) == names
+
+
+class _ScriptedSearchIndex:
+    def __init__(self, results):
+        self.results = results
+        self.search_calls = []
+
+    def search(self, vector, *, top_k=10):
+        key = tuple(vector)
+        self.search_calls.append((key, top_k))
+        return self.results[key][:top_k]
+
+    def get(self, catalog_key):
+        return {"name": catalog_key.split(":", 1)[-1], "source": "native"}
+
+
+def test_heavy_compute_recommend_interleaves_all_profile_centers(registry_db):
+    from xskill.recommend.heavy_worker import compute_recommend_for_user
+
+    first = (1.0, 0.0)
+    second = (0.0, 1.0)
+    index = _ScriptedSearchIndex({
+        first: [("native:first-a", 1.0), ("native:first-b", 0.9)],
+        second: [("native:second-a", 1.0), ("native:second-b", 0.9)],
+    })
+
+    names = compute_recommend_for_user(
+        "multi",
+        db_path=registry_db,
+        vector_index=index,
+        profile_centers=[list(first), list(second)],
+        top_k=4,
+    )
+
+    assert names == ["first-a", "second-a", "first-b", "second-b"]
+    assert index.search_calls == [(first, 4), (second, 4)]
+    with pooled_connection(registry_db) as conn:
+        fingerprint = conn.execute(
+            "SELECT fingerprint FROM client_recommend_slots WHERE user_key=?",
+            ("multi",),
+        ).fetchone()["fingerprint"]
+    assert fingerprint == "centers=2;fusion=round_robin_v1;sources=0,1,0,1"
+
+
+def test_heavy_compute_recommend_deduplicates_across_centers(registry_db):
+    from xskill.recommend.heavy_worker import compute_recommend_for_user
+
+    first = (1.0, 0.0)
+    second = (0.0, 1.0)
+    index = _ScriptedSearchIndex({
+        first: [("native:shared", 1.0), ("native:first", 0.9)],
+        second: [("native:shared", 1.0), ("native:second", 0.9)],
+    })
+
+    names = compute_recommend_for_user(
+        "deduplicated",
+        db_path=registry_db,
+        vector_index=index,
+        profile_centers=[list(first), list(second)],
+        top_k=3,
+    )
+
+    assert names == ["shared", "second", "first"]
+    assert len(names) == len(set(names))
+
+
+def test_heavy_compute_recommend_center_order_keeps_each_center_represented(
+    registry_db,
+):
+    from xskill.recommend.heavy_worker import compute_recommend_for_user
+
+    first = (1.0, 0.0)
+    second = (0.0, 1.0)
+    index = _ScriptedSearchIndex({
+        first: [("native:first-a", 1.0), ("native:first-b", 0.9)],
+        second: [("native:second-a", 1.0), ("native:second-b", 0.9)],
+    })
+
+    names = compute_recommend_for_user(
+        "reordered",
+        db_path=registry_db,
+        vector_index=index,
+        profile_centers=[list(second), list(first)],
+        top_k=4,
+    )
+
+    assert names == ["second-a", "first-a", "second-b", "first-b"]

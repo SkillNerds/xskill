@@ -32,6 +32,7 @@ logger = logging.getLogger("xskill.usage")
 # 当前流水线步骤(atom_split / skill_route / skill_edit / ux_score …)。
 # 收口点记账时用它归因;pipeline 用 `with use_step("atom_split"):` 包住即可。
 _STEP = threading.local()
+_ATTRIBUTION = threading.local()
 
 
 def current_step() -> str:
@@ -47,6 +48,23 @@ def use_step(name: str):
     finally:
         _STEP.name = prev
 
+
+@contextlib.contextmanager
+def use_processing_scope(**scope):
+    """Attach scoped provenance to xskill-processing usage in this worker."""
+    previous = getattr(_ATTRIBUTION, "value", None)
+    _ATTRIBUTION.value = {
+        key: value for key, value in scope.items()
+        if key in {
+            "tenant_id", "task_scope_id", "source_scope_id", "traj_id",
+            "atom_id", "generation_id", "allocation_mode",
+        } and value not in (None, "")
+    }
+    try:
+        yield
+    finally:
+        _ATTRIBUTION.value = previous
+
 # 出厂兜底单价(USD / 1M token)。config.pricing.default 可覆盖。
 _FALLBACK_DEFAULT = {"input_per_1m": 1.0, "output_per_1m": 3.0, "embed_per_1m": 0.05}
 
@@ -54,11 +72,13 @@ _FALLBACK_DEFAULT = {"input_per_1m": 1.0, "output_per_1m": 3.0, "embed_per_1m": 
 @dataclass(frozen=True)
 class Usage:
     """一次调用的 token 拆分。embedding 调用只有 prompt(=total)。"""
-    prompt: int = 0
-    completion: int = 0
-    total: int = 0
-    cache_hit: int = 0      # DeepSeek prompt_cache_hit_tokens
-    cache_miss: int = 0     # DeepSeek prompt_cache_miss_tokens
+    prompt: Optional[int] = 0
+    completion: Optional[int] = 0
+    total: Optional[int] = 0
+    cache_hit: Optional[int] = 0      # DeepSeek prompt_cache_hit_tokens
+    cache_miss: Optional[int] = 0     # DeepSeek prompt_cache_miss_tokens
+    measurement_quality: str = "measured"
+    unavailable_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -72,7 +92,7 @@ class ModelPrice:
 
 
 def extract_usage(resp: Any) -> Usage:
-    """从 LLM/embedding 响应提取 token,缺失补 0。
+    """从 LLM/embedding 响应提取 token，缺失时显式标记 unavailable。
 
     支持的响应形态:
     - 原始 dict(embedding HTTP JSON): ``resp["usage"]``
@@ -87,30 +107,104 @@ def extract_usage(resp: Any) -> Usage:
         if obj is None:
             return None
         v = obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
-        return int(v) if isinstance(v, (int, float)) else None
+        return (
+            v
+            if not isinstance(v, bool) and isinstance(v, int) and v >= 0
+            else None
+        )
 
     agno_metrics = getattr(resp, "response_usage", None)
     if agno_metrics is not None:
-        prompt = g(agno_metrics, "input_tokens") or 0
-        completion = g(agno_metrics, "output_tokens") or 0
-        total = g(agno_metrics, "total_tokens") or (prompt + completion)
+        raw_prompt = g(agno_metrics, "input_tokens")
+        raw_completion = g(agno_metrics, "output_tokens")
+        raw_total = g(agno_metrics, "total_tokens")
+        if all(value is None for value in (raw_prompt, raw_completion, raw_total)):
+            return Usage(
+                prompt=None,
+                completion=None,
+                total=None,
+                cache_hit=None,
+                cache_miss=None,
+                measurement_quality="unavailable",
+                unavailable_reason="response_did_not_report_usage",
+            )
+        prompt = raw_prompt
+        completion = raw_completion
+        total = (
+            prompt + completion
+            if raw_total in (None, 0)
+            and prompt is not None
+            and completion is not None
+            and prompt + completion > 0
+            else raw_total
+        )
         # cost_usd 按 hit+miss=prompt 分档计费,miss 须补未命中余量,
         # 否则配了 cache 价时 prompt 非命中段会漏计。
         hit = g(agno_metrics, "cache_read_tokens") or 0
-        miss = max(0, prompt - hit)
+        miss = max(0, prompt - hit) if prompt is not None else None
+        missing_fields = [
+            name for name, value in (
+                ("prompt_tokens", prompt),
+                ("completion_tokens", completion),
+                ("total_tokens", total),
+            ) if value is None
+        ]
         return Usage(prompt=prompt, completion=completion, total=total,
-                     cache_hit=hit, cache_miss=miss)
+                     cache_hit=hit, cache_miss=miss,
+                     unavailable_reason=(
+                         "response_did_not_report:" + ",".join(missing_fields)
+                         if missing_fields else ""
+                     ))
 
     usage = resp.get("usage") if isinstance(resp, dict) else getattr(resp, "usage", None)
     if usage is None:
-        return Usage()
-    prompt = g(usage, "prompt_tokens") or 0
-    completion = g(usage, "completion_tokens") or 0
-    total = g(usage, "total_tokens") or (prompt + completion)
+        return Usage(
+            prompt=None,
+            completion=None,
+            total=None,
+            cache_hit=None,
+            cache_miss=None,
+            measurement_quality="unavailable",
+            unavailable_reason="response_did_not_report_usage",
+        )
+    raw_prompt = g(usage, "prompt_tokens")
+    raw_completion = g(usage, "completion_tokens")
+    raw_total = g(usage, "total_tokens")
+    if all(value is None for value in (raw_prompt, raw_completion, raw_total)):
+        return Usage(
+            prompt=None,
+            completion=None,
+            total=None,
+            cache_hit=None,
+            cache_miss=None,
+            measurement_quality="unavailable",
+            unavailable_reason="response_did_not_report_usage",
+        )
+    prompt = raw_prompt
+    completion = raw_completion
+    total = (
+        prompt + completion
+        if raw_total in (None, 0)
+        and prompt is not None
+        and completion is not None
+        and prompt + completion > 0
+        else raw_total
+    )
     hit = g(usage, "prompt_cache_hit_tokens") or 0
     miss = g(usage, "prompt_cache_miss_tokens") or 0
+    missing_fields = [
+        name for name, value in (
+            ("prompt_tokens", prompt),
+            ("completion_tokens", completion),
+            ("total_tokens", total),
+        ) if value is None
+    ]
     return Usage(prompt=prompt, completion=completion, total=total,
-                 cache_hit=hit, cache_miss=miss)
+                 cache_hit=hit, cache_miss=miss,
+                 unavailable_reason=(
+                     "response_did_not_report:" + ",".join(missing_fields)
+                     if missing_fields else ""
+                 ))
 
 
 class PriceTable:
@@ -145,17 +239,26 @@ def _opt_float(v: Any) -> Optional[float]:
     return float(v) if isinstance(v, (int, float)) else None
 
 
-def cost_usd(usage: Usage, price: ModelPrice, *, is_embed: bool = False) -> float:
+def cost_usd(
+    usage: Usage, price: ModelPrice, *, is_embed: bool = False,
+) -> Optional[float]:
     """token × 单价 → USD。embedding 走 embed 价;否则 prompt(含 cache 分档)+ completion。"""
     M = 1_000_000
     if is_embed:
+        if usage.total is None:
+            return None
         per = price.embed_per_1m if price.embed_per_1m is not None else price.input_per_1m
         return usage.total / M * per
+    if usage.prompt is None or usage.completion is None:
+        return None
     # prompt 段:有 cache 拆分且配了 cache 价 → 分档计;否则整段 input 价
     if (usage.cache_hit or usage.cache_miss) and price.cache_hit_per_1m is not None:
         hit_p = price.cache_hit_per_1m
         miss_p = price.cache_miss_per_1m if price.cache_miss_per_1m is not None else price.input_per_1m
-        prompt_cost = (usage.cache_hit * hit_p + usage.cache_miss * miss_p) / M
+        prompt_cost = (
+            (usage.cache_hit or 0) * hit_p
+            + (usage.cache_miss or 0) * miss_p
+        ) / M
     else:
         prompt_cost = usage.prompt / M * price.input_per_1m
     return prompt_cost + usage.completion / M * price.output_per_1m
@@ -195,25 +298,28 @@ class UsageLedger:
 
     def _record(self, step: str, model: str, usage: Usage, *, is_embed: bool) -> None:
         try:
-            price, source = self._prices.resolve(model)
+            price, pricing_kind = self._prices.resolve(model)
             usd = cost_usd(usage, price, is_embed=is_embed)
+            total_tokens = usage.total or 0
+            accounted_cost = usd or 0.0
             with self._lock:
-                if source != "config":
+                if pricing_kind != "config":
                     self._estimated = True
                 for d, key in ((self._by_step, step), (self._by_model, model)):
                     b = d.setdefault(key, _Bucket())
-                    b.calls += 1; b.tokens += usage.total; b.cost += usd
+                    b.calls += 1; b.tokens += total_tokens; b.cost += accounted_cost
                 self._total.calls += 1
-                self._total.tokens += usage.total
-                self._total.cost += usd
-            logger.debug("[LLM] model=%s step=%s tokens=%d cost=$%.5f src=%s",
-                         model, step, usage.total, usd, source)
+                self._total.tokens += total_tokens
+                self._total.cost += accounted_cost
             _persist(
                 step,
                 model,
                 usage,
                 usd,
-                source,
+                pricing_kind,
+                measurement_quality=usage.measurement_quality,
+                unavailable_reason=usage.unavailable_reason,
+                attribution=getattr(_ATTRIBUTION, "value", None),
                 db_path=self.db_path,
             )
         except Exception:  # pylint: disable=broad-exception-caught
@@ -276,20 +382,40 @@ def _persist(
     step: str,
     model: str,
     usage: Usage,
-    usd: float,
+    usd: Optional[float],
     source: str,
     *,
+    measurement_quality: str = "measured",
+    unavailable_reason: str = "",
+    attribution: Optional[dict] = None,
     db_path: Path | None = None,
-) -> None:
+) -> Optional[str]:
     """best-effort 落 registry llm_usage 表(函数内 import 防环;失败仅 warn)。"""
     try:
         from xskill.pipeline.registry import record_usage
-        record_usage(step=step, model=model, prompt=usage.prompt,
-                     completion=usage.completion, total=usage.total,
-                     cost_usd=usd, price_source=source,
-                     db_path=db_path)
+        scoped = attribution or {}
+        return record_usage(
+            step=step,
+            model=model,
+            prompt=usage.prompt,
+            completion=usage.completion,
+            total=usage.total,
+            cost_usd=usd,
+            price_source=source,
+            measurement_quality=measurement_quality,
+            allocation_mode=str(scoped.get("allocation_mode") or "unattributed"),
+            unavailable_reason=unavailable_reason or None,
+            tenant_id=scoped.get("tenant_id"),
+            task_scope_id=scoped.get("task_scope_id"),
+            source_scope_id=scoped.get("source_scope_id"),
+            traj_id=scoped.get("traj_id"),
+            atom_id=scoped.get("atom_id"),
+            generation_id=scoped.get("generation_id"),
+            db_path=db_path,
+        )
     except Exception:  # pylint: disable=broad-exception-caught
         logger.debug("usage persist skipped", exc_info=True)
+        return None
 
 
 def _fmt_tokens(n: int) -> str:

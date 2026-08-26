@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 HARNESS = REPO_ROOT / "scripts" / "loadtest_300_control_plane.py"
 WATCHER_COUNT_FIELDS = (
     "polls", "new_trajs", "atoms_extracted", "indexed", "atoms_clustered",
-    "skills_edited", "scores", "errors", "retries", "in_flight",
+    "skills_edited", "scores", "errors", "retries", "scans",
 )
 
 
@@ -144,36 +144,32 @@ def test_control_plane_300(tmp_path: Path) -> None:
     assert type(result["diagnostics"]["traceback_count"]) is int, artifact
     assert result["diagnostics"]["traceback_count"] == 0, artifact
     llm = result["mock"]["llm"]
-    assert llm["started"] == 2 * skills, artifact
-    assert llm["completed"] == 2 * skills, artifact
+    assert llm["started"] == 3 * skills, artifact
+    assert llm["completed"] == 3 * skills, artifact
     assert llm["initial_requests"] == skills, artifact
-    assert llm["followup_requests"] == skills, artifact
+    assert llm["followup_requests"] == 2 * skills, artifact
     assert llm["max_active"] <= concurrency, artifact
 
     embedding = result["mock"]["embedding"]
-    assert embedding["requests_by_phase"].get("cold", 0) == clients, artifact
+    assert embedding["requests_by_phase"].get("cold", 0) == skills + clients, artifact
     assert embedding["requests_by_phase"].get("cache_hit", 0) == 0, artifact
     assert embedding["requests_by_phase"].get("one_new_atom", 0) == clients, artifact
-    assert embedding["items_by_phase"].get("cold", 0) == clients, artifact
+    assert embedding["items_by_phase"].get("cold", 0) == skills + clients, artifact
     assert embedding["items_by_phase"].get("cache_hit", 0) == 0, artifact
     assert embedding["items_by_phase"].get("one_new_atom", 0) == clients, artifact
-    assert embedding["request_count"] == 2 * clients, artifact
-    assert embedding["input_item_count"] == 2 * clients, artifact
-    assert embedding["unique_inputs"] == 2 * clients, artifact
+    assert embedding["request_count"] == skills + 2 * clients, artifact
+    assert embedding["input_item_count"] == skills + 2 * clients, artifact
+    assert embedding["unique_inputs"] == skills + 2 * clients, artifact
     assert embedding["duplicate_input_calls"] == 0, artifact
     assert embedding["max_active"] <= profile_workers, artifact
 
     profile_metrics = result["profile_metrics"]["final_idle"]
-    assert profile_metrics["queued"] == 0, artifact
-    assert profile_metrics["running"] == 0, artifact
+    assert profile_metrics["profile_rc"] == 0, artifact
     profile_rounds = [
         result["profile_metrics"][key]
         for key in ("after_cold", "after_cache_hit", "after_one_new_atom")
     ]
-    assert sum(metrics["failed"] for metrics in profile_rounds) == 0, artifact
-    assert profile_rounds[0]["embed_items"] in (0, clients), artifact
-    assert profile_rounds[1]["embed_items"] == 0, artifact
-    assert profile_rounds[2]["embed_items"] == clients, artifact
+    assert all(metrics["profile_rc"] == 0 for metrics in profile_rounds), artifact
     assert result["profile_convergence"]["rows"] == clients, artifact
     assert result["profile_convergence"]["revision_rows"] == clients, artifact
     assert result["profile_convergence"]["revision_matches"] == clients, artifact
@@ -206,5 +202,7 @@ def test_control_plane_300(tmp_path: Path) -> None:
     assert final_watcher["stats"]["errors"] == 0, artifact
     assert type(final_watcher["stats"]["running"]) is bool, artifact
     assert type(final_watcher["stats"]["paused"]) is bool, artifact
+    assert type(final_watcher["stats"]["last_scan"]) in (int, float), artifact
+    assert final_watcher["stats"]["last_scan"] >= 0, artifact
     assert result["server"]["shutdown"]["clean"] is True, artifact
     assert result["server"]["shutdown"]["forced_kill"] is False, artifact

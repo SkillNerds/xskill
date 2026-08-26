@@ -130,7 +130,11 @@ def _sync_pending_for_skill(
         if prev == PENDING_MISSING:
             stats["skipped"] += 1
             return
-        delete_atom_candidate_pending_for_skill(skill, db_path=db_path)
+        delete_atom_candidate_pending_for_skill(
+            skill,
+            db_path=db_path,
+            dirty_root_key=_atom_pending_root_key(skill_path.parent),
+        )
         _pending_mtime_set(skill, PENDING_MISSING, db_path=db_path)
         stats["synced"] += 1
         return
@@ -156,7 +160,10 @@ def _sync_pending_for_skill(
         )
         return
     sync_atom_candidate_pending_for_skill(
-        skill, candidates, db_path=db_path,
+        skill,
+        candidates,
+        db_path=db_path,
+        dirty_root_key=_atom_pending_root_key(skill_path.parent),
     )
     _pending_mtime_set(skill, str(mtime), db_path=db_path)
     stats["synced"] += 1

@@ -30,13 +30,71 @@ def test_extract_usage_sdk_object_total_derived():
 
 
 def test_extract_usage_missing_usage():
-    assert extract_usage({"choices": []}) == Usage()
-    assert extract_usage(None) == Usage()
+    expected = Usage(
+        prompt=None,
+        completion=None,
+        total=None,
+        cache_hit=None,
+        cache_miss=None,
+        measurement_quality="unavailable",
+        unavailable_reason="response_did_not_report_usage",
+    )
+    assert extract_usage({"choices": []}) == expected
+    assert extract_usage(None) == expected
+
+
+def test_partial_usage_keeps_missing_fields_unavailable(tmp_path):
+    from xskill.pipeline.registry import pooled_connection
+
+    db_path = tmp_path / "registry.db"
+    response = {
+        "usage": {"completion_tokens": 5, "total_tokens": 5},
+    }
+    usage = extract_usage(response)
+    assert usage.prompt is None
+    assert usage.completion == 5
+    assert usage.total == 5
+    assert usage.unavailable_reason == "response_did_not_report:prompt_tokens"
+    assert cost_usd(
+        usage, ModelPrice(input_per_1m=1.0, output_per_1m=2.0),
+    ) is None
+
+    ledger = UsageLedger(_table(), db_path=db_path)
+    ledger.record_llm("atom_split", "deepseek-v4-flash", response)
+    with pooled_connection(db_path) as connection:
+        row = connection.execute(
+            "SELECT prompt,completion,total,cost_usd,unavailable_reason"
+            " FROM llm_usage",
+        ).fetchone()
+    assert row["prompt"] is None
+    assert row["completion"] == 5
+    assert row["total"] == 5
+    assert row["cost_usd"] is None
+    assert row["unavailable_reason"] == (
+        "response_did_not_report:prompt_tokens"
+    )
+
+
+def test_record_usage_rejects_numeric_event_id(tmp_path):
+    from xskill.pipeline.registry import record_usage
+
+    with pytest.raises(ValueError, match="usage_event_id"):
+        record_usage(
+            step="atom_split",
+            model="model-test",
+            prompt=1,
+            completion=1,
+            total=2,
+            cost_usd=0.0,
+            price_source="test",
+            usage_event_id=8,
+            db_path=tmp_path / "registry.db",
+        )
 
 
 def _agno_response(**metrics_kwargs):
     """构造真实 agno ModelResponse —— agent LLM 记账点的实际传入形态。"""
-    from agno.models.metrics import MessageMetrics
+    from agno.metrics import MessageMetrics
     from agno.models.response import ModelResponse
 
     resp = ModelResponse()
@@ -125,7 +183,7 @@ def test_cost_embedding_uses_embed_price():
 
 # ── UsageLedger ──────────────────────────────────────────────────
 def test_ledger_accumulates_and_flags_estimated(monkeypatch):
-    monkeypatch.setattr(U, "_persist", lambda *a, **k: None)  # 不碰真实 registry
+    monkeypatch.setattr(U, "_persist", lambda *_a, **_k: None)  # 不碰真实 registry
     led = UsageLedger(_table())
     led.record_llm("atom_split", "deepseek-v4-flash",
                    {"usage": {"prompt_tokens": 1000, "completion_tokens": 200,
@@ -142,7 +200,7 @@ def test_ledger_accumulates_and_flags_estimated(monkeypatch):
 
 
 def test_ledger_record_never_raises(monkeypatch):
-    monkeypatch.setattr(U, "_persist", lambda *a, **k: None)
+    monkeypatch.setattr(U, "_persist", lambda *_a, **_k: None)
     led = UsageLedger(_table())
     led.record_llm("x", "m", object())      # 垃圾 resp,不应抛
     led.record_llm("x", "m", None)

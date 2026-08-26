@@ -1,0 +1,252 @@
+{
+  "schema_version": 1,
+  "suite_id": "atom-routing-baseline-v1",
+  "metric_config": {
+    "routing_recall_k": 3,
+    "atom_alignment_min_iou": 0.5
+  },
+  "run_manifest": {
+    "repository_revision": "d7ab781068aa366e9b19bf25c30e7d6acb7fafa2",
+    "model": "recorded-fixture",
+    "harness": "offline-replay",
+    "prompt_fingerprint": "sha256:7066be5248c28498173ab2d0057896e8e1fde3732c185e3e6b3d17f6e5a172d5",
+    "seed": 0,
+    "generation_config": {
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "max_output_tokens": 2048
+    },
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0.0,
+    "generated_at": "2026-08-22T00:00:00Z"
+  },
+  "skill_catalog": [
+    "python-file-grouping",
+    "python-file-utility-scripts",
+    "sqlite-migration",
+    "sqlite-validation",
+    "spreadsheet-formatting",
+    "spreadsheet-validation"
+  ],
+  "cases": [
+    {
+      "case_id": "en-follow-up-single-intent",
+      "expected_language": "en",
+      "line_count": 12,
+      "source_lines": [
+        "user: Group the Python files by purpose.",
+        "assistant: I will inspect the package layout.",
+        "assistant: tool read src/xskill/task_agent.py",
+        "tool: task_agent.py defines the ingestion worker.",
+        "user: Keep command-line files separate.",
+        "assistant: I will preserve a CLI category.",
+        "assistant: tool read src/xskill/cli.py",
+        "tool: cli.py contains the command entry points.",
+        "user: Put tests beside their matching purpose.",
+        "assistant: I will map tests to the same groups.",
+        "user: Summarize the final grouping.",
+        "assistant: The package, CLI, and tests are grouped by purpose."
+      ],
+      "scorable_ranges": [[1, 13]],
+      "gold_atoms": [
+        {
+          "id": "gold-en-1",
+          "start_line": 1,
+          "end_line": 13,
+          "intent": "Group Python files by purpose",
+          "summary": "The user refined one file-grouping task across several turns.",
+          "skills": ["python-file-grouping"],
+          "candidates": ["python-file-grouping"]
+        }
+      ],
+      "predicted_atoms": [
+        {
+          "id": "pred-en-1",
+          "start_line": 1,
+          "end_line": 13,
+          "intent": "Group Python files by purpose",
+          "summary": "The follow-up messages refine the same grouping goal.",
+          "skills": ["python-file-grouping"],
+          "candidates": [
+            "python-file-grouping",
+            "python-file-utility-scripts"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "zh-two-intents",
+      "expected_language": "zh",
+      "line_count": 16,
+      "source_lines": [
+        "user: 请给 SQLite 表增加 skill 字段。",
+        "assistant: 我先检查现有表结构。",
+        "assistant: tool read registry.py",
+        "tool: 当前表使用 atom_id 单列主键。",
+        "user: 历史数据不能丢失。",
+        "assistant: 我会增加无损迁移。",
+        "assistant: tool inspect sqlite schema",
+        "tool: 旧表中有三条待处理记录。",
+        "user: 迁移完成后再检查约束。",
+        "assistant: 我会验证联合主键。",
+        "assistant: tool query pragma table_info",
+        "tool: 主键列为 atom_id 和 skill。",
+        "user: 也检查对应索引。",
+        "assistant: 我会查看查询计划。",
+        "tool: 查询命中了目标索引。",
+        "assistant: 迁移、约束和索引均已验证。"
+      ],
+      "scorable_ranges": [[1, 17]],
+      "gold_atoms": [
+        {
+          "id": "gold-zh-1",
+          "start_line": 1,
+          "end_line": 9,
+          "intent": "迁移 SQLite 表结构",
+          "summary": "先增加字段并完成旧数据迁移。",
+          "skills": ["sqlite-migration"],
+          "candidates": ["sqlite-migration"]
+        },
+        {
+          "id": "gold-zh-2",
+          "start_line": 9,
+          "end_line": 17,
+          "intent": "验证迁移后的约束",
+          "summary": "随后检查索引、主键和历史数据。",
+          "skills": ["sqlite-validation"],
+          "candidates": ["sqlite-validation"]
+        }
+      ],
+      "predicted_atoms": [
+        {
+          "id": "pred-zh-1",
+          "start_line": 1,
+          "end_line": 9,
+          "intent": "迁移 SQLite 表结构",
+          "summary": "增加字段并无损迁移旧数据。",
+          "skills": ["sqlite-migration"],
+          "candidates": ["sqlite-migration", "sqlite-validation"]
+        },
+        {
+          "id": "pred-zh-2",
+          "start_line": 9,
+          "end_line": 17,
+          "intent": "验证迁移后的约束",
+          "summary": "检查联合主键和索引是否正确。",
+          "skills": ["sqlite-validation"],
+          "candidates": ["sqlite-validation", "sqlite-migration"]
+        }
+      ]
+    },
+    {
+      "case_id": "en-near-duplicate-observation",
+      "expected_language": "en",
+      "line_count": 12,
+      "source_lines": [
+        "user: Create a reusable Python file utility.",
+        "assistant: I will extract the shared file operations.",
+        "assistant: tool read src/xskill/io.py",
+        "tool: The module repeats path validation.",
+        "user: The helper should validate paths too.",
+        "assistant: I will include path validation in that utility.",
+        "assistant: tool search repeated path checks",
+        "tool: Three callers use the same validation steps.",
+        "user: Keep this as one reusable helper.",
+        "assistant: I will not create a second utility.",
+        "assistant: tool run focused tests",
+        "assistant: The single utility and its callers pass the tests."
+      ],
+      "scorable_ranges": [[1, 13]],
+      "gold_atoms": [
+        {
+          "id": "gold-dup-1",
+          "start_line": 1,
+          "end_line": 13,
+          "intent": "Create a reusable Python file utility",
+          "summary": "All turns serve one utility-script goal.",
+          "skills": ["python-file-utility-scripts"],
+          "candidates": ["python-file-utility-scripts"]
+        }
+      ],
+      "predicted_atoms": [
+        {
+          "id": "pred-dup-1",
+          "start_line": 1,
+          "end_line": 8,
+          "intent": "Create a Python file utility",
+          "summary": "Write the requested reusable file helper.",
+          "skills": ["python-file-utility-scripts"],
+          "candidates": [
+            "python-file-utility-scripts",
+            "python-file-grouping"
+          ]
+        },
+        {
+          "id": "pred-dup-2",
+          "start_line": 5,
+          "end_line": 13,
+          "intent": "Build a reusable Python file helper",
+          "summary": "The later turns continue the same file-helper task.",
+          "skills": ["python-file-grouping"],
+          "candidates": [
+            "python-file-grouping",
+            "python-file-utility-scripts"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "zh-multi-skill-routing",
+      "expected_language": "zh",
+      "line_count": 10,
+      "source_lines": [
+        "user: 修复这份电子表格的格式。",
+        "assistant: 我会检查样式和单元格类型。",
+        "assistant: tool inspect workbook",
+        "tool: 标题样式不一致，公式列存在空值。",
+        "user: 保存后还要验证内容没有损坏。",
+        "assistant: 我会同时执行写后校验。",
+        "assistant: tool format workbook",
+        "tool: 已写入修复后的工作簿。",
+        "assistant: tool reopen and validate workbook",
+        "assistant: 样式、公式和值均通过校验。"
+      ],
+      "scorable_ranges": [[1, 11]],
+      "gold_atoms": [
+        {
+          "id": "gold-multi-1",
+          "start_line": 1,
+          "end_line": 11,
+          "intent": "格式化并验证电子表格",
+          "summary": "同一任务既要求样式修复，也要求写后校验。",
+          "skills": [
+            "spreadsheet-formatting",
+            "spreadsheet-validation"
+          ],
+          "candidates": [
+            "spreadsheet-formatting",
+            "spreadsheet-validation"
+          ]
+        }
+      ],
+      "predicted_atoms": [
+        {
+          "id": "pred-multi-1",
+          "start_line": 1,
+          "end_line": 11,
+          "intent": "格式化并验证电子表格",
+          "summary": "完成格式调整，并核对输出值与结构。",
+          "skills": [
+            "spreadsheet-formatting",
+            "spreadsheet-validation"
+          ],
+          "candidates": [
+            "spreadsheet-validation",
+            "spreadsheet-formatting"
+          ]
+        }
+      ]
+    }
+  ]
+}

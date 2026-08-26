@@ -1308,6 +1308,6 @@ def create_app(home_root: Path | str | None = None,
 
     # 看板:仅当 config.dashboard.enabled 时挂载(默认不挂)
     from xskill.dashboard.mount import mount_dashboard
-    mount_dashboard(app, _config)
+    mount_dashboard(app, _config, server_mode=team_server)
 
     return app

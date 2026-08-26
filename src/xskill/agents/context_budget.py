@@ -1478,7 +1478,7 @@ class ContextManager:
                 )
                 resp = original_invoke(messages, **kwargs)
             usage = extract_usage(resp)
-            if usage.prompt > 0 and est_raw > 0:
+            if usage.prompt is not None and usage.prompt > 0 and est_raw > 0:
                 ratio = usage.prompt / est_raw
                 ratio = max(0.3, min(3.0, ratio))
                 self._calibration = 0.5 * self._calibration + 0.5 * ratio

@@ -319,6 +319,11 @@ def _adapt_openclaw_trajectory_jsonl(content: str, metadata: dict) -> tuple[str,
     model_id = ""
     message_provider = ""
     final_status = ""
+    session_status = ""
+    run_id = ""
+    harness_name = ""
+    harness_version = ""
+    execution_usage_events: list[dict] = []
     last_snapshot: list = []
     eligible_skills: list[str] = []
 
@@ -345,8 +350,24 @@ def _adapt_openclaw_trajectory_jsonl(content: str, metadata: dict) -> tuple[str,
             provider = provider or event.get("provider", "") or ""
             model_id = model_id or event.get("modelId", "") or ""
             message_provider = message_provider or data.get("messageProvider", "") or ""
+            run_id = run_id or event.get("runId", "") or ""
 
         elif ev_type == "trace.metadata":
+            harness_meta = data.get("harness")
+            if isinstance(harness_meta, dict):
+                harness_name = harness_name or str(
+                    harness_meta.get("type") or harness_meta.get("name") or ""
+                )
+                harness_version = harness_version or str(
+                    harness_meta.get("version") or ""
+                )
+            model_meta = data.get("model")
+            if isinstance(model_meta, dict):
+                provider = provider or str(model_meta.get("provider") or "")
+                model_id = model_id or str(
+                    model_meta.get("name") or model_meta.get("modelId") or ""
+                )
+            run_id = run_id or str(event.get("runId") or "")
             skills_meta = data.get("skills")
             if isinstance(skills_meta, list):
                 for s in skills_meta:
@@ -367,6 +388,33 @@ def _adapt_openclaw_trajectory_jsonl(content: str, metadata: dict) -> tuple[str,
             fs = data.get("finalStatus")
             if fs:
                 final_status = str(fs)
+            usage = data.get("usage")
+            if isinstance(usage, dict):
+                event_identity = str(
+                    event.get("runId") or run_id or event.get("traceId")
+                    or "openclaw"
+                )
+                artifact_identity = str(
+                    data.get("capturedAt") or event.get("ts")
+                    or event.get("sourceSeq") or event.get("seq") or len(
+                        execution_usage_events
+                    )
+                )
+                source_event_id = (
+                    f"{event_identity}:trace-artifacts:{artifact_identity}"
+                )
+                execution_usage_events.append({
+                    "source_event_id": source_event_id,
+                    "usage": usage,
+                    "model": {
+                        "provider": event.get("provider") or provider,
+                        "model_id": event.get("modelId") or model_id,
+                    },
+                    "observed_at": event.get("ts") or data.get("capturedAt"),
+                })
+        elif ev_type == "session.ended":
+            session_status = str(data.get("status") or session_status)
+            run_id = run_id or event.get("runId", "") or ""
 
     # 从 messagesSnapshot 构 timeline
     timeline: list[dict] = []
@@ -539,6 +587,16 @@ def _adapt_openclaw_trajectory_jsonl(content: str, metadata: dict) -> tuple[str,
         meta.setdefault("message_provider", message_provider)
     if final_status:
         meta.setdefault("final_status", final_status)
+    if session_status:
+        meta.setdefault("session_status", session_status)
+    if run_id:
+        meta.setdefault("run_id", run_id)
+    if harness_name:
+        meta.setdefault("source_harness", harness_name)
+    if harness_version:
+        meta.setdefault("harness_version", harness_version)
+    if execution_usage_events:
+        meta["execution_usage_events"] = execution_usage_events
     if eligible_skills:
         meta.setdefault("eligible_skills", eligible_skills)
     meta["timeline"] = timeline

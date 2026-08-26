@@ -89,3 +89,48 @@ class TestBuildChatModelRouting:
         }, log)
         assert m.id == "deepseek-reasoner"
         assert "deepseek.com" in m.base_url
+
+    def test_generation_defaults_match_public_config(self, log):
+        m = _build_chat_model({
+            "base_url": "http://localhost:8000/v1",
+            "model": "local-model",
+            "api_key": "sk-no",
+        }, log)
+        assert m.max_tokens == 10000
+        assert m.temperature == 0.0
+
+    def test_generation_parameters_and_extra_body_propagate(self, log):
+        extra_body = {
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        m = _build_chat_model({
+            "base_url": "http://localhost:8000/v1",
+            "model": "local-model",
+            "api_key": "sk-no",
+            "max_tokens": "2048",
+            "temperature": "0.25",
+            "extra_body": extra_body,
+        }, log)
+        assert m.max_tokens == 2048
+        assert m.temperature == 0.25
+        assert m.extra_body == extra_body
+        assert m.extra_body is not extra_body
+
+    @pytest.mark.parametrize("value", (0, -1))
+    def test_non_positive_max_tokens_is_rejected(self, log, value):
+        with pytest.raises(ValueError, match="max_tokens"):
+            _build_chat_model({
+                "base_url": "http://localhost:8000/v1",
+                "model": "local-model",
+                "api_key": "sk-no",
+                "max_tokens": value,
+            }, log)
+
+    def test_non_mapping_extra_body_is_rejected(self, log):
+        with pytest.raises(ValueError, match="extra_body"):
+            _build_chat_model({
+                "base_url": "http://localhost:8000/v1",
+                "model": "local-model",
+                "api_key": "sk-no",
+                "extra_body": ["enable_thinking"],
+            }, log)

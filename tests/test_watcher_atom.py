@@ -8,6 +8,8 @@ import time
 from unittest.mock import Mock
 import weakref
 
+import pytest
+
 from xskill.pipeline.atom import AtomTaskStore
 from xskill.pipeline.registry import (
     register_dir, discover_trajectories, update_traj_status,
@@ -251,6 +253,7 @@ def _seed_indexed_with_atoms(wd, store, db, n_trajs, atoms_per_traj):
 class TestPollAtomSnapshot:
     """每条轨迹共享 Atom 视图；下一条前释放，下一轮重读 durable JSON。"""
 
+    @pytest.mark.performance_contract
     def test_indexed_traj_is_loaded_once_per_poll(self, tmp_path, monkeypatch):
         db = tmp_path / "test.db"
         wd = tmp_path / "wd"

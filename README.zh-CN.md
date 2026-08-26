@@ -67,6 +67,23 @@ embedding:
   dim:      0
 ```
 
+上面这一段 `llm` 就是大家共用的默认模型。已经在用的配置不用改，继续这样写完全没问题。
+
+如果你想给流水线里的拆分、聚类、编辑各自换一个模型或地址，可以再加一段可选的 `llm_agents`。不写也没关系。某个阶段或某个字段没写的话，会先看看有没有 `llm_skill`，再回到 `llm`。`xskill generate` 还是用 `llm` 和 `llm_skill`，不会去读 `llm_agents`。改完这几段之后重启一下 `xskill serve` 就好。
+
+```yaml
+# 可选。不写这段的话，三个阶段都继续用上面的 llm
+llm_agents:
+  split:
+    model: qwen-plus
+  cluster:
+    model: deepseek-v4-flash
+  edit:
+    base_url: http://localhost:8000/v1
+    model: local-skill-editor
+    api_key: local
+```
+
 再跑一次 `xskill serve`，它会自动扫机器上装好的所有 agent（Claude Code、Codex、OpenCode、OpenClaw、Cursor、Trae）开始监听。如果还有一份历史轨迹归档想一起吃进来：
 
 ```bash

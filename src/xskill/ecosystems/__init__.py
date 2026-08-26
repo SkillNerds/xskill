@@ -83,6 +83,7 @@ from xskill.ecosystems.cursor import (
 )
 from xskill.ecosystems.deepseek_harness import (
     DSH_SPEC,
+    ensure_zstandard_for_dsh,
     install_to_deepseek_harness,
     install_all_to_deepseek_harness,
     ingest_deepseek_harness_sessions,
@@ -166,6 +167,7 @@ __all__ = [
     "JsonlIngester", "SqliteIngester", "CCSessionIngester",
     "detect_known_ecosystems",
     "ensure_claude_code_install",
+    "ensure_zstandard_for_dsh",
     "install_to_claude_code", "install_to_codex", "install_to_nga3",
     "install_to_cursor",
     "install_to_deepseek_harness",

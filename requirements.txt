@@ -2,7 +2,7 @@ pyyaml>=6.0
 numpy>=1.24
 openai>=1.0                 # LLM + Embedding API 客户端 (兼容各种 provider)
 agno
-zstandard>=0.21             # DeepSeek Harness 默认 zstd 会话文件的解码
+# zstandard>=0.21          # extra xskill[dsh]；探测到 ~/.dsh 时现场补装
 
 # Optional:
 # anthropic>=0.25           # 仅当直接用 anthropic SDK 时需要
