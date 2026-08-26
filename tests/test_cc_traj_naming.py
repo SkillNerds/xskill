@@ -3,7 +3,7 @@
 之前所有桥进来的 traj 都叫 ``traj_0001.md`` / ``traj_0002.md`` 这种纯
 数字编号，事后翻文件不知道是哪个项目哪个 session 来的。改成
 
-  traj_cc_<projectname>_<sid8>.md
+  traj_cc_<projectname>_<sid16>.md
 
 其中：
   - 保留 ``traj_`` 前缀让 watcher.discover_trajectories 的 glob
@@ -12,7 +12,10 @@
     扩展 ``traj_codex_...``
   - ``projectname`` 取 CC JSONL ``cwd`` 字段的 basename，不安全字符替换
     为下划线；空时 fallback 到 ``unknown``
-  - ``sid8`` 是 session UUID 前 8 字符
+  - ``sid16`` 是 session UUID 的前 16 个可进文件名字符（2026-08 起从 8
+    放宽到 16，见 issue #234：前缀型会话 id 在 8 位下只剩 4 位有效字符，
+    团队合并多人轨迹时会重名；旧 8 位命名的存量文件仍被识别，见
+    ``lookup_bridged_markdown``）
 """
 from __future__ import annotations
 
@@ -55,7 +58,14 @@ class TestCCTrajId:
             {"type": "user", "cwd": "/home/user/dataharness", "sessionId": "..."}
         ])
         traj_id = _cc_traj_id(jsonl, "f2eb54d4-0a5c-4f2f-97ec-bacf397fbde4")
-        assert traj_id == "traj_cc_dataharness_f2eb54d4"
+        assert traj_id == "traj_cc_dataharness_f2eb54d4-0a5c-4f"
+
+    def test_prefixed_session_id_keeps_16_effective_chars(self, tmp_path):
+        """issue #234 的核心场景：``ses_`` 前缀 id 在 8 位下只剩 4 位有效
+        字符，多人语料极易撞名；16 位后保留 12 位有效字符。"""
+        jsonl = _write_jsonl(tmp_path, [{"type": "user", "cwd": "/x/y"}])
+        traj_id = _cc_traj_id(jsonl, "ses_abc123def456ghi789")
+        assert traj_id == "traj_cc_y_ses_abc123def456"
 
     def test_keeps_traj_prefix_so_watcher_glob_matches(self, tmp_path):
         jsonl = _write_jsonl(tmp_path, [{"type": "user", "cwd": "/x"}])

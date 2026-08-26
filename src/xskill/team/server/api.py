@@ -692,6 +692,14 @@ async def team_upload(
         client_id, ensure_directory=True,
     )
     sessions_dir = watch_state["sessions_dir"]
+    # 落盘文件名带成员标识前缀（issue #234）：不同成员在各自机器上生成的
+    # traj_id 只含「项目名 + 会话 id 截断」，同名项目 + 短会话前缀会撞名；
+    # 服务器把多人轨迹合并训练，必须由服务器保证全局唯一。注意只改**存储
+    # 文件名**，响应里 accepted 仍回显客户端原始 traj_id——客户端以它对账
+    # 本地状态，改了会导致重复上传。
+    from xskill.team.server.client_registry import member_traj_tag
+    _row = _ctx.client_registry.get(client_id) or {}
+    member_tag = member_traj_tag(_row.get("user_name") or None, client_id)
 
     accepted: list[str] = []
     rejected: list[UploadRejection] = []
@@ -705,6 +713,32 @@ async def team_upload(
         if t.sha256 and actual != t.sha256:
             rejected.append(UploadRejection(traj_id=t.traj_id, reason="sha256 mismatch"))
             continue
+        # 已带本成员前缀的 id（历史上服务器改名后客户端回传等场景）不再叠加，
+        # 避免 traj_alice_xxx_alice_xxx_ 式的双重前缀。
+        rest = t.traj_id[len("traj_"):]
+        if rest.startswith(member_tag + "_"):
+            stored_id = t.traj_id
+        else:
+            stored_id = f"traj_{member_tag}_{rest}"
+        # sha256 完整性校验已过（上面），落盘前再做一遍内容清洗：客户端桥接常把
+        # 终端 ANSI 码 / 控制字符灌进 .md，会让 splitlines 行号错位、污染模型输入。
+        clean = sanitize_trajectory_text(t.content)
+        md_path = sessions_dir / f"{stored_id}.md"
+        # 内容未变的重复上传直接确认、不重写：重写会刷新 mtime，让 watcher
+        # 把旧轨迹当新文件重新入库；客户端断线重传是常态，不能因此翻倍语料。
+        # 同理，成员前缀上线前落盘的旧名文件若内容一致也视为已存储（新旧
+        # 命名共存，改名交给 ``xskill tools migrate-traj-name`` 手动迁移）。
+        existing = None
+        for cand in (md_path, sessions_dir / f"{t.traj_id}.md"):
+            try:
+                if cand.is_file() and cand.read_text(encoding="utf-8") == clean:
+                    existing = cand
+                    break
+            except OSError:
+                continue
+        if existing is not None:
+            accepted.append(t.traj_id)
+            continue
         # model / harness 非空时先落 .json sidecar，再落 .md：watcher 只 glob
         # traj_*.md，必须保证它发现新 .md 时同名 sidecar 已就位，否则 discover 会
         # INSERT source_model/source_harness=NULL 且永不回读（已存在的行只更 mtime）。
@@ -714,12 +748,9 @@ async def team_upload(
         if t.harness:
             sidecar["harness"] = t.harness
         if sidecar:
-            (sessions_dir / f"{t.traj_id}.json").write_text(
+            (sessions_dir / f"{stored_id}.json").write_text(
                 json.dumps(sidecar, ensure_ascii=False), encoding="utf-8")
-        # sha256 完整性校验已过（上面），落盘前再做一遍内容清洗：客户端桥接常把
-        # 终端 ANSI 码 / 控制字符灌进 .md，会让 splitlines 行号错位、污染模型输入。
-        clean = sanitize_trajectory_text(t.content)
-        (sessions_dir / f"{t.traj_id}.md").write_text(clean, encoding="utf-8")
+        md_path.write_text(clean, encoding="utf-8")
         accepted.append(t.traj_id)
     logger.info("team upload from %s: %d accepted, %d rejected",
                 client_id, len(accepted), len(rejected))

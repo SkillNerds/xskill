@@ -89,9 +89,11 @@ def test_upload_sends_pending_trajectory(server_app, tmp_path):
     os.utime(md, (old, old))
     n = tc.collect_and_upload()
     assert n == 1
-    # server 端落盘检查
+    # server 端落盘检查：文件名带成员标识前缀（issue #234，匿名客户端可读
+    # 部分退化为 u + client_id 前 8 位），防多成员同名项目短会话前缀撞名
     expected = (tmp_path / "team_traj" / "clients" / tc.state.client_id
-                / "sessions" / "traj_cc_x_001.md")
+                / "sessions"
+                / f"traj_u_{tc.state.client_id[:8]}_cc_x_001.md")
     assert expected.is_file()
     # 再跑一次不重传（游标生效）
     assert tc.collect_and_upload() == 0

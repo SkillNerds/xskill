@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from xskill.ecosystems._shared import (
+    short_sid,
     EcosystemSpec,
     JsonlIngester,
     _install_all_with,
@@ -466,7 +467,7 @@ def _cc_traj_id_from_content(content: str, session_id: str) -> str:
     """从已读取快照生成 CC trajectory ID，不再次读取大 JSONL。"""
     cwd = _read_cwd_from_cc_jsonl_content(content)
     project = _sanitize_for_filename(Path(cwd).name if cwd else "", maxlen=32) or "unknown"
-    sid_short = _sanitize_for_filename(session_id, maxlen=8) or "nosid"
+    sid_short = short_sid(session_id)
     return f"traj_cc_{project}_{sid_short}"
 
 
@@ -1431,10 +1432,7 @@ class CCSessionIngester:
                 if isinstance(session_id, str):
                     if session_id in self._recoverable_receipt_sessions:
                         submitted_record["receipt_recovery"] = True
-                    session_prefix = (
-                        _sanitize_for_filename(session_id, maxlen=8)
-                        or "nosid"
-                    )
+                    session_prefix = short_sid(session_id)
                     self._bridged_markdown_index[
                         session_prefix
                     ] = trajectory_path
