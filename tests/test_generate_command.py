@@ -98,6 +98,22 @@ def test_generate_prompt_teaches_edit_not_full_rewrite():
     assert "不要整文件 write_file" in SYSTEM_PROMPT
     assert "刚 write_file 过的脚本" in SYSTEM_PROMPT
     assert "write_file 只用于" in SYSTEM_PROMPT
+    assert "预览" in SYSTEM_PROMPT
+    assert "不算读懂" in SYSTEM_PROMPT
+    assert "read-plan" in SYSTEM_PROMPT
+    assert "精读⇄更新wiki" in SYSTEM_PROMPT
+    assert "必要信息" in SYSTEM_PROMPT
+    assert "已入 skill" in SYSTEM_PROMPT
+    assert "list_sessions" in SYSTEM_PROMPT
+    assert "用 list_files 摸清结构" not in SYSTEM_PROMPT
+
+
+def _seed_traj_reads(root: Path, n: int) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        path = root / f"traj_seed_{i:02d}.md"
+        path.write_text(f"body {i}\n", encoding="utf-8")
+        agent_tools._mark_file_read(path)
 
 
 def test_generate_agent_registers_edit_tool(tmp_path: Path):
@@ -131,6 +147,12 @@ def test_generate_agent_registers_edit_tool(tmp_path: Path):
         agent.run(instruction="改一下发票 skill", user_id="alice", job_id="j1")
     assert "edit" in captured["tools"]
     assert "write_file" in captured["tools"]
+    assert "list_sessions" in captured["tools"]
+    assert "session_card" in captured["tools"]
+    assert "session_cards" in captured["tools"]
+    assert "wiki_status" in captured["tools"]
+    assert "wiki_read" in captured["tools"]
+    assert "wiki_write" in captured["tools"]
 
 
 def test_generate_new_folder_then_edit_relative_skill_md(tmp_path: Path):
@@ -202,6 +224,7 @@ def test_generate_read_roots_include_traj_not_parent_secrets(tmp_path: Path):
 def test_commit_generate_main_tool_prefixes_user(tmp_path: Path):
     skill_dir, ctx = _bind_skill_ctx(tmp_path)
     with agent_tools.use_agent_tool_context(ctx):
+        _seed_traj_reads(tmp_path / "trajs", 10)
         result = _call_tool(
             agent_tools.commit_generate_main,
             skill_name="fresh-skill",
@@ -211,6 +234,91 @@ def test_commit_generate_main_tool_prefixes_user(tmp_path: Path):
     repo = skill_dir / "fresh-skill"
     assert current_branch(str(repo)) == "main"
     assert agent_tools.generate_committed_skills() == ["fresh-skill"]
+
+
+def test_commit_generate_main_requires_ten_traj_reads(tmp_path: Path):
+    skill_dir, ctx = _bind_skill_ctx(tmp_path)
+    with agent_tools.use_agent_tool_context(ctx):
+        _seed_traj_reads(tmp_path / "trajs", 9)
+        denied = _call_tool(
+            agent_tools.commit_generate_main,
+            skill_name="fresh-skill",
+            message="too few",
+        )
+        assert denied.startswith("error:")
+        assert "9" in denied
+        _seed_traj_reads(tmp_path / "trajs", 10)
+        ok = _call_tool(
+            agent_tools.commit_generate_main,
+            skill_name="fresh-skill",
+            message="enough",
+        )
+    assert ok.startswith("committed to main: fresh-skill")
+
+
+def test_session_card_does_not_count_as_traj_read(tmp_path: Path):
+    from xskill.agents import session_catalog
+
+    sessions = tmp_path / "team_trajectories" / "clients" / "alice" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "traj_card_only.md").write_text(
+        "## Initial Query\n\npreview only\n\n"
+        "## Assistant\n[tool_use: Read path=/tmp/a.py]\n",
+        encoding="utf-8",
+    )
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    ctx = agent_tools.create_agent_tool_context(
+        skill_dir=skill_dir,
+        atom_skill_dir=skill_dir,
+        default_traj_root=tmp_path / "team_trajectories",
+        extra_read_roots=(tmp_path / "team_trajectories",),
+        generate_user_id="alice",
+    )
+    agent_tools.reset_generate_session()
+    with agent_tools.use_agent_tool_context(ctx):
+        card = _call_tool(session_catalog.session_card, traj_id="traj_card_only")
+        assert "preview only" in card
+        assert agent_tools.generate_read_traj_ids() == []
+        denied = _call_tool(
+            agent_tools.commit_generate_main,
+            skill_name="fresh-skill",
+            message="card only",
+        )
+    assert denied.startswith("error:")
+    assert "(none)" in denied
+
+
+def test_generate_blocks_list_and_grep_on_session_dir(tmp_path: Path):
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    sessions = tmp_path / "team_trajectories" / "clients" / "alice" / "sessions"
+    sessions.mkdir(parents=True)
+    traj = sessions / "traj_1.md"
+    traj.write_text("invoice workflow\n", encoding="utf-8")
+    ctx = agent_tools.create_agent_tool_context(
+        skill_dir=skill_dir,
+        extra_read_roots=(skill_dir, tmp_path / "team_trajectories"),
+        generate_user_id="alice",
+    )
+    with agent_tools.use_agent_tool_context(ctx):
+        listing = _call_tool(
+            agent_tools.list_files, str(tmp_path / "team_trajectories"),
+        )
+        grep_dir = _call_tool(
+            agent_tools.grep_files,
+            pattern="invoice",
+            path=str(tmp_path / "team_trajectories"),
+        )
+        grep_file = _call_tool(
+            agent_tools.grep_files,
+            pattern="invoice",
+            path=str(traj),
+        )
+    assert listing.startswith("error:")
+    assert "list_sessions" in listing
+    assert grep_dir.startswith("error:")
+    assert "invoice workflow" in grep_file
 
 
 def test_pin_generated_skills(tmp_path: Path):

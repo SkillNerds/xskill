@@ -1,8 +1,8 @@
 """GenerateAgent —— 用户点名、直接写主干的 skill 生成代理。
 
 和 SkillEditAgent 同类（Agno + 同一套工具上下文），但由
-``xskill generate`` 启动，不靠候选缓冲攒分。读轨迹靠 list/grep/read；
-写完用 ``commit_generate_main`` 落到 main。
+``xskill generate`` 启动，不靠候选缓冲攒分。读轨迹先预览卡再精读，
+进度写进磁盘 wiki；写完用 ``commit_generate_main`` 落到 main。
 """
 from __future__ import annotations
 
@@ -39,8 +39,28 @@ scripts/ 下放可执行脚本、在 references/ 下放长参考材料。价值�
 
 {read_roots_block}
 
-用 list_files 摸清结构，用 grep_files 按关键词搜索，用 read_file 按行精读。
-看某个已有 skill 的现状用 skill_read。
+# 怎么读轨迹（省上下文，先预览再精读）
+
+会话很多，禁止 list_files 或 grep_files 去扫 team_trajectories、sessions。
+那会把几百个文件名和命中行倒进上下文，上一轮就是这样烧掉一百多万 token，
+却只精读了几条。
+
+session_card / session_cards 只是预览，很省上下文：
+- 有用户 query 和行号 L
+- 有截断的 toolcall 参数（command、path 等收短）
+- 没有 tool result，没有完整回传，没有原始 json
+看过卡片只知道「大概在干什么、该从哪一行精读」，不算读懂这条轨迹。
+不要把只看过卡片的 traj_id 写进 survey，也不要写进 SKILL.md 的依据。
+
+步骤（箭头串起来）：
+
+扫面→预览卡→写计划→精读⇄更新wiki→写skill（卡片只预览；commit 至少 10 条）
+
+精读和更新 wiki 可以小循环几轮：读一批 → 改 read-plan 状态 → 把要点写入 survey → 把做法或坑写入 knowledge → 页顶更新「必要信息是否读完」。必要信息未读完就继续按计划精读，不要急着 new_skill_folder。
+
+list_sessions 翻页；session_cards 一次最多 10 条。立刻写 read-plan（默认至少计划 20 条，commit 至少精读 10 条）。按卡片 path 和 L 做 read_file。压缩后先读 plan、survey、knowledge，只补未读，不准重扫目录。依据只引用精读过的 traj_id。
+
+知识一旦写进 SKILL.md，同一手 wiki_write knowledge，把「已入 skill」改成是，并注明章节。commit 前再 wiki_read 核对：必要信息已读完，且入 skill 的知识都有标注。
 
 # 怎么改文件
 
@@ -80,14 +100,14 @@ edit 前必须先读过该文件，否则工具会报错。
 
 # 可用工具
 
-- list_files(path)：目录条目过多时完整列表写入 spill 文件，用 read_file 按行翻页。
+- list_sessions(offset=0, limit=60, query="")：会话目录，一行一条，不是正文
+- session_card(traj_id) / session_cards(traj_ids)：预览卡，一次最多 10 条，不算精读
+- wiki_status / wiki_read / wiki_write / wiki_search / wiki_log
+- list_files(path)：只列 skill 目录或 spill。会话目录用 list_sessions
 - grep_files(pattern, path="", glob="", max_results=100)
-- read_file(path, offset=1, limit=200)
+- read_file(path, offset=1, limit=200)：精读。会话请带卡片上的 path 和 L
 - skill_read(skill_name)
-- write_file(path, content) — 仅新文件或 stub 整篇重写
-- edit(path, old_string, new_string) — 改已读过的已有文件（含本趟刚生成的）
-- new_skill_folder(skill_name, description)
-- commit_generate_main(skill_name, message)
+- write_file / edit / new_skill_folder / commit_generate_main
 """
 
 
@@ -146,7 +166,17 @@ class GenerateAgent:
             name_hint=_name_hint(preferred_names),
             read_roots_block=_read_roots_block(list(self.extra_read_roots)),
         )
+        from xskill.agents import llm_wiki, session_catalog
+
         tools = [
+            session_catalog.list_sessions,
+            session_catalog.session_card,
+            session_catalog.session_cards,
+            llm_wiki.wiki_status,
+            llm_wiki.wiki_read,
+            llm_wiki.wiki_write,
+            llm_wiki.wiki_search,
+            llm_wiki.wiki_log,
             agent_tools.list_files,
             agent_tools.grep_files,
             agent_tools.read_file,

@@ -71,10 +71,14 @@ CJK_TOKENS_PER_CHAR_BY_FAMILY = {
 _TRIMMABLE_TOOLS = (
     "look", "readfile", "read_file", "atom_task_read", "read_traj", "skill_read",
     "grep_files", "list_files", "edit",
+    "list_sessions", "session_card", "session_cards",
+    "wiki_read", "wiki_status", "wiki_search",
 )
 _SPILLABLE_TOOLS = (
     "readfile", "read_file", "atom_task_read", "read_traj", "skill_read",
     "grep_files", "edit",
+    "list_sessions", "session_card", "session_cards",
+    "wiki_read", "wiki_search",
 )
 _TRIM_MARK = "[…look 旧结果已剪裁,需要可重新 look…]"
 _COMPACT_MARK = "[compacted_agent_memory]"
@@ -948,7 +952,23 @@ def _compact_history_in_place(
             new_messages.append(msg)
             kept_new_ids.add(id(msg))
     messages[:] = new_messages
+    _maybe_apply_generate_compact_hint(messages)
     return True
+
+
+def _maybe_apply_generate_compact_hint(messages: list) -> None:
+    """Generate 压缩成功后另塞一条短 hint，不写进 SYSTEM_PROMPT。"""
+    try:
+        from xskill.agents.agent_tools import current_agent_tool_context
+
+        ctx = current_agent_tool_context()
+        if not getattr(ctx, "wiki_root", None) and not getattr(ctx, "generate_user_id", None):
+            return
+        from xskill.agents.llm_wiki import apply_after_compact_hint
+
+        apply_after_compact_hint(messages)
+    except Exception:  # noqa: BLE001 — hint must not abort compact
+        logger.debug("generate compact hint skipped", exc_info=True)
 
 
 def _response_text(resp: Any, assistant_message: Any | None = None) -> str:

@@ -94,6 +94,7 @@ class AgentToolContext:
     registry_db_path: Path | None = None
     extra_read_roots: tuple[Path, ...] = ()
     generate_user_id: str | None = None
+    wiki_root: Path | None = None
     blocked_read_roots: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
@@ -110,6 +111,8 @@ class AgentToolContext:
             )
         extra = tuple(Path(p) for p in (self.extra_read_roots or ()))
         object.__setattr__(self, "extra_read_roots", extra)
+        if self.wiki_root is not None:
+            object.__setattr__(self, "wiki_root", Path(self.wiki_root))
         blocked = tuple(Path(p) for p in (self.blocked_read_roots or ()))
         object.__setattr__(self, "blocked_read_roots", blocked)
 
@@ -141,6 +144,7 @@ def create_agent_tool_context(
     registry_db_path=None,
     extra_read_roots=(),
     generate_user_id=None,
+    wiki_root=None,
     blocked_read_roots=(),
 ) -> AgentToolContext:
     """Create an immutable context without changing the current task."""
@@ -180,6 +184,7 @@ def create_agent_tool_context(
         generate_user_id=(
             str(generate_user_id) if generate_user_id else None
         ),
+        wiki_root=Path(wiki_root) if wiki_root is not None else None,
         blocked_read_roots=tuple(
             Path(p) for p in (blocked_read_roots or ())
         ),
@@ -322,6 +327,7 @@ class AgentToolConfig:
             "registry_db_path": current.registry_db_path,
             "extra_read_roots": current.extra_read_roots,
             "generate_user_id": current.generate_user_id,
+            "wiki_root": current.wiki_root,
             "blocked_read_roots": current.blocked_read_roots,
         }
 
@@ -343,6 +349,7 @@ class AgentToolConfig:
             registry_db_path=snapshot.get("registry_db_path"),
             extra_read_roots=snapshot.get("extra_read_roots") or (),
             generate_user_id=snapshot.get("generate_user_id"),
+            wiki_root=snapshot.get("wiki_root"),
             blocked_read_roots=snapshot.get("blocked_read_roots") or (),
         ))
         if not snapshot.get("configured", True):
@@ -611,6 +618,75 @@ def _mark_file_read(path: Path) -> None:
         _read_file_ledger().add(str(path.resolve()))
     except OSError:
         logger.debug("mark_file_read failed for %s", path, exc_info=True)
+
+
+_TRAJ_STEM = re.compile(r"^traj_[A-Za-z0-9_-]+$")
+_MIN_GENERATE_TRAJ_READS = 10
+_SESSION_DIR_MARKERS = frozenset({"team_trajectories", "sessions"})
+
+
+def _is_generate_mode() -> bool:
+    ctx = current_agent_tool_context()
+    return bool(ctx.generate_user_id or ctx.wiki_root)
+
+
+def generate_read_traj_ids() -> list[str]:
+    """本趟 read_file 真正打开过的不同 traj_* stem。看过卡片的不算。"""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for raw in sorted(_read_file_ledger()):
+        name = Path(raw).name
+        if not (name.endswith(".md") or name.endswith(".json")):
+            continue
+        stem = Path(name).stem
+        if not _TRAJ_STEM.match(stem) or stem in seen:
+            continue
+        seen.add(stem)
+        ids.append(stem)
+    return ids
+
+
+def _generate_commit_read_gate() -> str | None:
+    if not _is_generate_mode():
+        return None
+    ids = generate_read_traj_ids()
+    if len(ids) >= _MIN_GENERATE_TRAJ_READS:
+        return None
+    shown = ", ".join(ids) if ids else "(none)"
+    return (
+        f"error: commit_generate_main 需要本趟 read_file 精读至少 "
+        f"{_MIN_GENERATE_TRAJ_READS} 条不同轨迹，当前 {len(ids)} 条: {shown}。"
+        "只看过 session_card 的 id 不算。继续按 read-plan 精读后再 commit。"
+    )
+
+
+def _is_generate_session_dir_scan(path: Path) -> bool:
+    """Generate 禁止对会话目录做 list_files 或整目录 grep。单文件可以。"""
+    if not _is_generate_mode():
+        return False
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    if resolved.is_file():
+        return False
+    if any(part in _SESSION_DIR_MARKERS for part in resolved.parts):
+        return True
+    ctx = current_agent_tool_context()
+    root = ctx.default_traj_root
+    if root is None:
+        return False
+    try:
+        traj = Path(root).resolve()
+    except OSError:
+        traj = Path(root)
+    if resolved == traj:
+        return True
+    try:
+        resolved.relative_to(traj)
+    except ValueError:
+        return False
+    return True
 
 
 def _file_was_read(path: Path) -> bool:
@@ -1171,6 +1247,9 @@ def commit_generate_main(skill_name: str, message: str) -> str:
     """
     from xskill.skill.git import commit_generate_to_main_branch
 
+    gated = _generate_commit_read_gate()
+    if gated is not None:
+        return gated
     skill_dir = agent_tool_config.atom_skill_dir or agent_tool_config.skill_dir
     if skill_dir is None:
         return "error: skill directory is not configured"
@@ -1951,6 +2030,11 @@ def list_files(path: str) -> str:
         return f"error: list_files restricted to {allowed_block} (tried: {path})"
     if _is_blocked_read_path(target_directory):
         return _onhold_block_message(target_directory)
+    if _is_generate_session_dir_scan(target_directory):
+        return (
+            "error: Generate 看会话请用 list_sessions / session_cards，"
+            "不要 list_files 扫轨迹目录。"
+        )
     if not target_directory.is_dir():
         return f"error: not a directory: {path}"
     entries = sorted(target_directory.iterdir())
@@ -1985,6 +2069,11 @@ def grep_files(pattern: str, path: str = "", glob: str = "",
         return f"error: grep_files restricted to {allowed_block} (tried: {path})"
     if _is_blocked_read_path(search_root):
         return _onhold_block_message(search_root)
+    if _is_generate_session_dir_scan(search_root):
+        return (
+            "error: Generate 不要对会话目录做全文 grep。"
+            "对单条轨迹文件可以 grep；扫面用 list_sessions。"
+        )
     if not search_root.exists():
         return f"error: path not found ({path})"
 

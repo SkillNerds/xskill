@@ -22,6 +22,21 @@ def _job_dir(logs_dir: Path, user_id: str) -> Path:
     return path
 
 
+def prepare_generate_wiki(logs_dir: Path, user_id: str, job_id: str) -> Path:
+    """按 job 建 wiki。已有页不覆盖，同一 job_id 重跑可恢复。"""
+    from xskill.agents.llm_wiki import seed_generate_wiki
+
+    root = (
+        Path(logs_dir)
+        / "agents"
+        / "generate_agents"
+        / user_id
+        / "wiki"
+        / job_id
+    )
+    return seed_generate_wiki(root)
+
+
 def jobs_root(logs_dir: Path) -> Path:
     """web 进程与 agent-worker 共用的入队目录（与 logs 同级）。"""
     return Path(logs_dir).expanduser().resolve().parent / "generate_jobs"
@@ -504,6 +519,9 @@ def _run_generate_job_body(
     )
     extra_roots = exclude_blocked_read_roots(extra_roots, blocked_roots)
     logs_dir = Path(logs_dir) if logs_dir is not None else get_logs_dir()
+    wiki_root = prepare_generate_wiki(logs_dir, job["user_id"], job["job_id"])
+    extra_roots = list(extra_roots)
+    extra_roots.append(wiki_root)
     spill_root = (
         logs_dir / "agents" / "generate_agents" / job["user_id"] / "spill" / job["job_id"]
     )
@@ -519,6 +537,7 @@ def _run_generate_job_body(
         spill_root=spill_root,
         extra_read_roots=tuple(extra_roots),
         generate_user_id=job["user_id"],
+        wiki_root=wiki_root,
         registry_db_path=resolved_db,
         blocked_read_roots=blocked_roots,
     )
