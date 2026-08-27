@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from xskill.agents import agent_tools
 from xskill.agents.llm_wiki import (
     AFTER_COMPACT_EMPTY_HINT,
@@ -41,6 +43,59 @@ def test_wiki_roundtrip_and_search(tmp_path: Path):
     assert "pages/survey.md" in hits
     assert logged.startswith("ok appended")
     assert "看完一批会话" in (root / "log.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.performance_contract
+def test_wiki_log_appends_without_rewriting_history(tmp_path: Path, monkeypatch):
+    root = seed_generate_wiki(tmp_path / "wiki")
+    log = root / "log.md"
+    log.write_text("existing history", encoding="utf-8")
+    ctx = agent_tools.create_agent_tool_context(
+        skill_dir=tmp_path / "skill",
+        wiki_root=root,
+    )
+    (tmp_path / "skill").mkdir()
+    original_read_text = Path.read_text
+    original_write_text = Path.write_text
+
+    def reject_full_read(path, *args, **kwargs):
+        if path == log:
+            raise AssertionError("wiki_log must not read the complete history")
+        return original_read_text(path, *args, **kwargs)
+
+    def reject_rewrite(path, *args, **kwargs):
+        if path == log:
+            raise AssertionError("wiki_log must append instead of rewriting history")
+        return original_write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", reject_full_read)
+    monkeypatch.setattr(Path, "write_text", reject_rewrite)
+    with agent_tools.use_agent_tool_context(ctx):
+        result = wiki_log.entrypoint(entry="continue from here")
+
+    content = original_read_text(log, encoding="utf-8")
+    assert result.startswith("ok appended")
+    assert content.startswith("existing history\n## [")
+    assert content.endswith("] continue from here\n")
+
+
+def test_wiki_log_recreates_missing_log(tmp_path: Path):
+    root = seed_generate_wiki(tmp_path / "wiki")
+    log = root / "log.md"
+    log.unlink()
+    ctx = agent_tools.create_agent_tool_context(
+        skill_dir=tmp_path / "skill",
+        wiki_root=root,
+    )
+    (tmp_path / "skill").mkdir()
+
+    with agent_tools.use_agent_tool_context(ctx):
+        result = wiki_log.entrypoint(entry="start again")
+
+    assert result.startswith("ok appended")
+    content = log.read_text(encoding="utf-8")
+    assert content.startswith("# log\n\n## [")
+    assert content.endswith("] start again\n")
 
 
 def test_wiki_edit_append_and_replace(tmp_path: Path):
