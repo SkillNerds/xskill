@@ -11,6 +11,7 @@ import argparse
 import bisect
 import hashlib
 import json
+import math
 import re
 from collections import Counter
 from collections.abc import Iterable
@@ -19,8 +20,8 @@ from typing import Any
 
 from scripts.bench.evaluate import pk, prf, score_case, window_diff
 
-LATEST_SCHEMA_VERSION = 2
-SUPPORTED_SCHEMA_VERSIONS = {1, LATEST_SCHEMA_VERSION}
+LATEST_SCHEMA_VERSION = 3
+SUPPORTED_SCHEMA_VERSIONS = {1, 2, LATEST_SCHEMA_VERSION}
 SUPPORTED_LANGUAGES = {"en", "zh"}
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CODE_SPAN_RE = re.compile(r"`[^`]*`")
@@ -77,6 +78,7 @@ def _validate_atoms(
     skill_catalog: set[str],
     context: str,
     require_non_overlapping: bool,
+    require_weight_scores: bool = False,
 ) -> None:
     if not isinstance(atoms, list):
         raise ReplayValidationError(f"{context}: expected a list")
@@ -114,6 +116,43 @@ def _validate_atoms(
             if len(set(labels)) != len(labels):
                 raise ReplayValidationError(
                     f"{atom_context}.{field}: duplicate labels are not allowed"
+                )
+        if require_weight_scores:
+            weight_scores = _require(atom, "weight_scores", list, atom_context)
+            if not weight_scores:
+                raise ReplayValidationError(
+                    f"{atom_context}.weight_scores must not be empty"
+                )
+            weighted_skills: list[str] = []
+            for weight_index, item in enumerate(weight_scores):
+                weight_context = f"{atom_context}.weight_scores[{weight_index}]"
+                if not isinstance(item, dict):
+                    raise ReplayValidationError(
+                        f"{weight_context}: expected an object"
+                    )
+                skill = _require(item, "skill", str, weight_context)
+                if not skill or skill not in skill_catalog:
+                    raise ReplayValidationError(
+                        f"{weight_context}.skill: unknown skill label {skill!r}"
+                    )
+                weightscore = _require(item, "weightscore", int, weight_context)
+                if not 1 <= weightscore <= 10:
+                    raise ReplayValidationError(
+                        f"{weight_context}.weightscore must satisfy 1 <= value <= 10"
+                    )
+                weighted_skills.append(skill)
+            if len(set(weighted_skills)) != len(weighted_skills):
+                raise ReplayValidationError(
+                    f"{atom_context}.weight_scores contains duplicate skills"
+                )
+            if set(weighted_skills) != set(skills):
+                raise ReplayValidationError(
+                    f"{atom_context}.weight_scores must match the final skills set; "
+                    f"skills={sorted(skills)}, weighted={sorted(weighted_skills)}"
+                )
+            if not set(skills).issubset(candidates):
+                raise ReplayValidationError(
+                    f"{atom_context}.skills must be present in ordered candidates"
                 )
     if require_non_overlapping:
         ordered = sorted(ranges)
@@ -205,6 +244,99 @@ def _validate_boundary_candidates(
         )
 
 
+def _validate_manifest(
+    manifest: Any, *, context: str, require_stage_fields: bool = False
+) -> None:
+    if not isinstance(manifest, dict):
+        raise ReplayValidationError(f"{context}: expected an object")
+    for key in (
+        "repository_revision",
+        "model",
+        "harness",
+        "prompt_fingerprint",
+        "generated_at",
+    ):
+        value = _require(manifest, key, str, context)
+        if not value:
+            raise ReplayValidationError(f"{context}.{key} must not be empty")
+    if not _SHA256_RE.fullmatch(manifest["prompt_fingerprint"]):
+        raise ReplayValidationError(
+            f"{context}.prompt_fingerprint must be sha256:<64 lowercase hex>"
+        )
+    for key in ("seed", "input_tokens", "output_tokens"):
+        value = _require(manifest, key, int, context)
+        if value < 0:
+            raise ReplayValidationError(f"{context}.{key} must be >= 0")
+    cost = manifest.get("cost_usd")
+    if (
+        isinstance(cost, bool)
+        or not isinstance(cost, (int, float))
+        or not math.isfinite(float(cost))
+        or cost < 0
+    ):
+        raise ReplayValidationError(f"{context}.cost_usd must be a number >= 0")
+    generation_config = _require(manifest, "generation_config", dict, context)
+    temperature = generation_config.get("temperature")
+    if (
+        isinstance(temperature, bool)
+        or not isinstance(temperature, (int, float))
+        or not math.isfinite(float(temperature))
+        or temperature < 0
+    ):
+        raise ReplayValidationError(
+            f"{context}.generation_config.temperature must be a number >= 0"
+        )
+    top_p = generation_config.get("top_p")
+    if (
+        isinstance(top_p, bool)
+        or not isinstance(top_p, (int, float))
+        or not math.isfinite(float(top_p))
+        or not 0 < top_p <= 1
+    ):
+        raise ReplayValidationError(
+            f"{context}.generation_config.top_p must satisfy 0 < top_p <= 1"
+        )
+    max_output_tokens = generation_config.get("max_output_tokens")
+    if (
+        isinstance(max_output_tokens, bool)
+        or not isinstance(max_output_tokens, int)
+        or max_output_tokens <= 0
+    ):
+        raise ReplayValidationError(
+            f"{context}.generation_config.max_output_tokens must be an int > 0"
+        )
+    if not require_stage_fields:
+        return
+    algorithm_version = _require(manifest, "algorithm_version", str, context)
+    if not algorithm_version:
+        raise ReplayValidationError(
+            f"{context}.algorithm_version must not be empty"
+        )
+    calls = _require(manifest, "calls", int, context)
+    if calls <= 0:
+        raise ReplayValidationError(f"{context}.calls must be > 0")
+    cache_read_tokens = _require(manifest, "cache_read_tokens", int, context)
+    if cache_read_tokens < 0:
+        raise ReplayValidationError(f"{context}.cache_read_tokens must be >= 0")
+    if cache_read_tokens > manifest["input_tokens"]:
+        raise ReplayValidationError(
+            f"{context}.cache_read_tokens must not exceed input_tokens"
+        )
+    price_source = _require(manifest, "price_source", str, context)
+    if not price_source:
+        raise ReplayValidationError(f"{context}.price_source must not be empty")
+    generation_seconds = manifest.get("generation_seconds")
+    if (
+        isinstance(generation_seconds, bool)
+        or not isinstance(generation_seconds, (int, float))
+        or not math.isfinite(float(generation_seconds))
+        or generation_seconds < 0
+    ):
+        raise ReplayValidationError(
+            f"{context}.generation_seconds must be a number >= 0"
+        )
+
+
 def validate_suite(suite: Any) -> None:
     """Fail loudly on malformed or unsupported replay data."""
     if not isinstance(suite, dict):
@@ -252,56 +384,35 @@ def validate_suite(suite: Any) -> None:
                 "suite.metric_config.boundary_score_thresholds must be strictly increasing"
             )
 
-    manifest = _require(suite, "run_manifest", dict, "suite")
-    for key in (
-        "repository_revision",
-        "model",
-        "harness",
-        "prompt_fingerprint",
-        "generated_at",
-    ):
-        _require(manifest, key, str, "suite.run_manifest")
-    if not _SHA256_RE.fullmatch(manifest["prompt_fingerprint"]):
-        raise ReplayValidationError(
-            "suite.run_manifest.prompt_fingerprint must be sha256:<64 lowercase hex>"
+    if version < 3:
+        _validate_manifest(
+            _require(suite, "run_manifest", dict, "suite"),
+            context="suite.run_manifest",
         )
-    for key in ("seed", "input_tokens", "output_tokens"):
-        value = _require(manifest, key, int, "suite.run_manifest")
-        if value < 0:
-            raise ReplayValidationError(f"suite.run_manifest.{key} must be >= 0")
-    cost = manifest.get("cost_usd")
-    if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost < 0:
-        raise ReplayValidationError("suite.run_manifest.cost_usd must be a number >= 0")
-    generation_config = _require(
-        manifest, "generation_config", dict, "suite.run_manifest"
-    )
-    temperature = generation_config.get("temperature")
-    if (
-        isinstance(temperature, bool)
-        or not isinstance(temperature, (int, float))
-        or temperature < 0
-    ):
-        raise ReplayValidationError(
-            "suite.run_manifest.generation_config.temperature must be a number >= 0"
-        )
-    top_p = generation_config.get("top_p")
-    if (
-        isinstance(top_p, bool)
-        or not isinstance(top_p, (int, float))
-        or not 0 < top_p <= 1
-    ):
-        raise ReplayValidationError(
-            "suite.run_manifest.generation_config.top_p must satisfy 0 < top_p <= 1"
-        )
-    max_output_tokens = generation_config.get("max_output_tokens")
-    if (
-        isinstance(max_output_tokens, bool)
-        or not isinstance(max_output_tokens, int)
-        or max_output_tokens <= 0
-    ):
-        raise ReplayValidationError(
-            "suite.run_manifest.generation_config.max_output_tokens must be an int > 0"
-        )
+    else:
+        if "run_manifest" in suite:
+            raise ReplayValidationError(
+                "suite.run_manifest is not allowed in schema v3; use stage_manifests"
+            )
+        stage_manifests = _require(suite, "stage_manifests", dict, "suite")
+        if set(stage_manifests) != {"split", "route"}:
+            raise ReplayValidationError(
+                "suite.stage_manifests must contain exactly split and route"
+            )
+        for stage in ("split", "route"):
+            _validate_manifest(
+                stage_manifests[stage],
+                context=f"suite.stage_manifests.{stage}",
+                require_stage_fields=True,
+            )
+        revisions = {
+            stage_manifests[stage]["repository_revision"]
+            for stage in ("split", "route")
+        }
+        if len(revisions) != 1:
+            raise ReplayValidationError(
+                "suite.stage_manifests must use one repository_revision"
+            )
 
     catalog_raw = _require(suite, "skill_catalog", list, "suite")
     if any(not isinstance(label, str) or not label for label in catalog_raw):
@@ -367,6 +478,7 @@ def validate_suite(suite: Any) -> None:
             skill_catalog=skill_catalog,
             context=f"{context}.predicted_atoms",
             require_non_overlapping=False,
+            require_weight_scores=version >= 3,
         )
         if version >= 2:
             boundary_candidates = _require(
@@ -385,6 +497,13 @@ def validate_suite(suite: Any) -> None:
         raise ReplayValidationError(
             "suite.boundary_candidates must contain exactly one algorithm_version"
         )
+    if version >= 3:
+        boundary_version = next(iter(boundary_algorithm_versions))
+        split_version = suite["stage_manifests"]["split"]["algorithm_version"]
+        if boundary_version != split_version:
+            raise ReplayValidationError(
+                "suite boundary algorithm_version must match the split manifest"
+            )
 
 
 def _range_set(ranges: Iterable[tuple[int, int]]) -> set[int]:
@@ -795,19 +914,29 @@ def evaluate_suite(suite: dict[str, Any]) -> dict[str, Any]:
     report = {
         "schema_version": suite["schema_version"],
         "suite_id": suite["suite_id"],
-        "run_manifest": suite["run_manifest"],
-        "metric_config": suite["metric_config"],
-        "metrics": {
-            **_public_metrics(
-                _merge_counts(
-                    case_counts, include_boundary_scores=include_boundary_scores
-                ),
-                boundary_score_thresholds,
-            ),
-            "routing_macro": _macro_prf(case_counts),
-        },
-        "cases": cases,
     }
+    if suite["schema_version"] >= 3:
+        report["stage_manifests"] = suite["stage_manifests"]
+        report["route_algorithm_version"] = suite["stage_manifests"]["route"][
+            "algorithm_version"
+        ]
+    else:
+        report["run_manifest"] = suite["run_manifest"]
+    report.update(
+        {
+            "metric_config": suite["metric_config"],
+            "metrics": {
+                **_public_metrics(
+                    _merge_counts(
+                        case_counts, include_boundary_scores=include_boundary_scores
+                    ),
+                    boundary_score_thresholds,
+                ),
+                "routing_macro": _macro_prf(case_counts),
+            },
+            "cases": cases,
+        }
+    )
     if include_boundary_scores:
         report["boundary_algorithm_version"] = next(
             iter(
@@ -828,9 +957,14 @@ def render_text(report: dict[str, Any]) -> str:
     metrics = report["metrics"]
     boundary = metrics["boundary"]
     routing = metrics["routing_micro"]
+    revision = (
+        report["stage_manifests"]["split"]["repository_revision"]
+        if "stage_manifests" in report
+        else report["run_manifest"]["repository_revision"]
+    )
     lines = [
         f"suite: {report['suite_id']}",
-        f"revision: {report['run_manifest']['repository_revision']}",
+        f"revision: {revision}",
         (
             "boundary: "
             f"P={boundary['precision']:.3f} "

@@ -1,0 +1,543 @@
+{
+  "schema_version": 3,
+  "source_schema_version": 1,
+  "suite_id": "real-model-atom-replay-v1",
+  "metric_config": {
+    "routing_recall_k": 3,
+    "atom_alignment_min_iou": 0.5,
+    "boundary_score_thresholds": [
+      0.0,
+      0.5,
+      0.8
+    ]
+  },
+  "stage_manifests": {
+    "split": {
+      "algorithm_version": "offline-boundary-ranker-v1",
+      "repository_revision": "b1e08786becab32b2c1289f20e59b42a6c243789",
+      "model": "qwen3.8-27b-ud-iq3-xxs",
+      "harness": "llama.cpp-openai-compatible",
+      "prompt_fingerprint": "sha256:b081eb02a42815c619fbd1ade5001bcc818e63138428ce26a2828983af758557",
+      "generated_at": "2026-08-29T09:53:26.799239Z",
+      "seed": 0,
+      "calls": 6,
+      "input_tokens": 2138,
+      "output_tokens": 908,
+      "cache_read_tokens": 0,
+      "cost_usd": 0.0,
+      "price_source": "config",
+      "generation_seconds": 48.733034,
+      "generation_config": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_output_tokens": 4096
+      }
+    },
+    "route": {
+      "algorithm_version": "offline-skill-router-v1",
+      "repository_revision": "b1e08786becab32b2c1289f20e59b42a6c243789",
+      "model": "qwen3.8-27b-ud-iq3-xxs",
+      "harness": "llama.cpp-openai-compatible",
+      "prompt_fingerprint": "sha256:4df79e48924c07aab68d6e2aba463a707894670fbba75e41dc83da7adc546bf6",
+      "generated_at": "2026-08-29T09:53:26.799239Z",
+      "seed": 0,
+      "calls": 1,
+      "input_tokens": 1249,
+      "output_tokens": 400,
+      "cache_read_tokens": 0,
+      "cost_usd": 0.0,
+      "price_source": "config",
+      "generation_seconds": 10.937016,
+      "generation_config": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_output_tokens": 4096
+      }
+    }
+  },
+  "skill_catalog": [
+    "api-validation",
+    "documentation-maintenance",
+    "flaky-test-debugging",
+    "python-file-grouping",
+    "python-testing",
+    "regression-testing",
+    "spreadsheet-export",
+    "sqlite-migration",
+    "sqlite-validation"
+  ],
+  "cases": [
+    {
+      "case_id": "zh-new-goal",
+      "scenario": "new_goal",
+      "expected_language": "zh",
+      "line_count": 8,
+      "source_lines": [
+        "user: 请迁移 SQLite 表结构。",
+        "assistant: 我会先检查旧表。",
+        "tool: 旧表使用单列主键。",
+        "assistant: 字段和历史数据已经迁移。",
+        "user: 现在验证迁移后的约束和索引。",
+        "assistant: 我会执行结构检查。",
+        "tool: 联合主键和索引符合预期。",
+        "assistant: 验证完成。"
+      ],
+      "scorable_ranges": [
+        [
+          1,
+          9
+        ]
+      ],
+      "candidate_lines": [
+        5
+      ],
+      "gold_atoms": [
+        {
+          "id": "gold-zh-new-goal-migrate",
+          "start_line": 1,
+          "end_line": 5,
+          "intent": "迁移 SQLite 表结构",
+          "summary": "检查旧表并完成无损迁移。",
+          "skills": [
+            "sqlite-migration"
+          ],
+          "candidates": [
+            "sqlite-migration",
+            "sqlite-validation"
+          ]
+        },
+        {
+          "id": "gold-zh-new-goal-validate",
+          "start_line": 5,
+          "end_line": 9,
+          "intent": "验证 SQLite 迁移结果",
+          "summary": "检查迁移后的联合主键和索引。",
+          "skills": [
+            "sqlite-validation"
+          ],
+          "candidates": [
+            "sqlite-validation",
+            "sqlite-migration"
+          ]
+        }
+      ],
+      "predicted_atoms": [
+        {
+          "id": "pred-zh-new-goal-0001",
+          "start_line": 1,
+          "end_line": 5,
+          "intent": "迁移 SQLite 表结构",
+          "summary": "执行 SQLite 表结构迁移并处理字段与历史数据。",
+          "skills": [
+            "sqlite-migration"
+          ],
+          "candidates": [
+            "sqlite-migration",
+            "sqlite-validation"
+          ],
+          "weight_scores": [
+            {
+              "skill": "sqlite-migration",
+              "weightscore": 10
+            }
+          ]
+        },
+        {
+          "id": "pred-zh-new-goal-0002",
+          "start_line": 5,
+          "end_line": 9,
+          "intent": "验证迁移后的约束和索引",
+          "summary": "检查迁移后数据库的约束与索引是否符合预期。",
+          "skills": [
+            "sqlite-validation"
+          ],
+          "candidates": [
+            "sqlite-validation",
+            "sqlite-migration"
+          ],
+          "weight_scores": [
+            {
+              "skill": "sqlite-validation",
+              "weightscore": 10
+            }
+          ]
+        }
+      ],
+      "boundary_candidates": [
+        {
+          "line": 5,
+          "boundary_score": 0.95,
+          "algorithm_version": "offline-boundary-ranker-v1",
+          "selected": true,
+          "predicted_atom_id": "pred-zh-new-goal-0002"
+        }
+      ]
+    },
+    {
+      "case_id": "en-continuation",
+      "scenario": "continuation",
+      "expected_language": "en",
+      "line_count": 8,
+      "source_lines": [
+        "user: Group the Python files by purpose.",
+        "assistant: I will inspect the modules.",
+        "tool: The package contains API and CLI modules.",
+        "assistant: I will keep those categories separate.",
+        "user: Put tests beside the matching category.",
+        "assistant: I will include tests in the same grouping.",
+        "tool: All files now have a category.",
+        "assistant: The grouping task is complete."
+      ],
+      "scorable_ranges": [
+        [
+          1,
+          9
+        ]
+      ],
+      "candidate_lines": [
+        5
+      ],
+      "gold_atoms": [
+        {
+          "id": "gold-en-continuation",
+          "start_line": 1,
+          "end_line": 9,
+          "intent": "Group Python files by purpose",
+          "summary": "Group modules and their matching tests in one task.",
+          "skills": [
+            "python-file-grouping"
+          ],
+          "candidates": [
+            "python-file-grouping",
+            "python-testing"
+          ]
+        }
+      ],
+      "predicted_atoms": [
+        {
+          "id": "pred-en-continuation-0001",
+          "start_line": 1,
+          "end_line": 9,
+          "intent": "Group Python files by purpose and include tests in the matching category",
+          "summary": "The user requested grouping Python files by purpose and placing tests beside their matching categories. The assistant inspected the modules, identified API and CLI categories, and completed the grouping with tests included.",
+          "skills": [
+            "python-file-grouping"
+          ],
+          "candidates": [
+            "python-file-grouping",
+            "python-testing"
+          ],
+          "weight_scores": [
+            {
+              "skill": "python-file-grouping",
+              "weightscore": 10
+            }
+          ]
+        }
+      ],
+      "boundary_candidates": [
+        {
+          "line": 5,
+          "boundary_score": 0.1,
+          "algorithm_version": "offline-boundary-ranker-v1",
+          "selected": false,
+          "predicted_atom_id": null
+        }
+      ]
+    },
+    {
+      "case_id": "zh-correction",
+      "scenario": "user_correction",
+      "expected_language": "zh",
+      "line_count": 8,
+      "source_lines": [
+        "user: 把汇总结果导出为 CSV。",
+        "assistant: 我会生成 CSV 文件。",
+        "tool: 已准备表头和数据行。",
+        "assistant: 正在写入输出文件。",
+        "user: 更正一下，不要 CSV，请导出成 XLSX。",
+        "assistant: 我会保留同一份数据并改用 XLSX。",
+        "tool: 工作簿和格式已经生成。",
+        "assistant: XLSX 文件已完成。"
+      ],
+      "scorable_ranges": [
+        [
+          1,
+          9
+        ]
+      ],
+      "candidate_lines": [
+        5
+      ],
+      "gold_atoms": [
+        {
+          "id": "gold-zh-correction",
+          "start_line": 1,
+          "end_line": 9,
+          "intent": "导出汇总结果",
+          "summary": "用户将输出格式从 CSV 更正为 XLSX，最终生成工作簿。",
+          "skills": [
+            "spreadsheet-export"
+          ],
+          "candidates": [
+            "spreadsheet-export",
+            "python-file-grouping"
+          ]
+        }
+      ],
+      "predicted_atoms": [
+        {
+          "id": "pred-zh-correction-0001",
+          "start_line": 1,
+          "end_line": 9,
+          "intent": "导出汇总结果为 XLSX 文件",
+          "summary": "用户最初要求导出 CSV，随后更正为导出 XLSX，助手最终完成了 XLSX 文件的生成。",
+          "skills": [
+            "spreadsheet-export"
+          ],
+          "candidates": [
+            "spreadsheet-export"
+          ],
+          "weight_scores": [
+            {
+              "skill": "spreadsheet-export",
+              "weightscore": 10
+            }
+          ]
+        }
+      ],
+      "boundary_candidates": [
+        {
+          "line": 5,
+          "boundary_score": 0.1,
+          "algorithm_version": "offline-boundary-ranker-v1",
+          "selected": false,
+          "predicted_atom_id": null
+        }
+      ]
+    },
+    {
+      "case_id": "en-retry",
+      "scenario": "failed_retry",
+      "expected_language": "en",
+      "line_count": 8,
+      "source_lines": [
+        "user: Fix the intermittent concurrency test.",
+        "assistant: I will reproduce the timing failure.",
+        "tool: The first run timed out while waiting for the worker.",
+        "assistant: I found a missing synchronization signal.",
+        "user: Retry after adding the synchronization.",
+        "assistant: I will rerun the same test with the fix.",
+        "tool: The test passed repeatedly.",
+        "assistant: The concurrency failure is fixed."
+      ],
+      "scorable_ranges": [
+        [
+          1,
+          9
+        ]
+      ],
+      "candidate_lines": [
+        5
+      ],
+      "gold_atoms": [
+        {
+          "id": "gold-en-retry",
+          "start_line": 1,
+          "end_line": 9,
+          "intent": "Fix an intermittent concurrency test",
+          "summary": "Reproduce the timeout, add synchronization, and retry the same test.",
+          "skills": [
+            "flaky-test-debugging"
+          ],
+          "candidates": [
+            "flaky-test-debugging",
+            "regression-testing"
+          ]
+        }
+      ],
+      "predicted_atoms": [
+        {
+          "id": "pred-en-retry-0001",
+          "start_line": 1,
+          "end_line": 9,
+          "intent": "Fix intermittent concurrency test",
+          "summary": "The user requested a fix for an intermittent concurrency test. The assistant reproduced the timing failure, identified a missing synchronization signal, and after the user requested a retry with the fix, the test passed repeatedly, confirming the concurrency failure was resolved.",
+          "skills": [
+            "flaky-test-debugging"
+          ],
+          "candidates": [
+            "flaky-test-debugging",
+            "python-testing"
+          ],
+          "weight_scores": [
+            {
+              "skill": "flaky-test-debugging",
+              "weightscore": 10
+            }
+          ]
+        }
+      ],
+      "boundary_candidates": [
+        {
+          "line": 5,
+          "boundary_score": 0.1,
+          "algorithm_version": "offline-boundary-ranker-v1",
+          "selected": false,
+          "predicted_atom_id": null
+        }
+      ]
+    },
+    {
+      "case_id": "zh-near-duplicate",
+      "scenario": "near_duplicate_request",
+      "expected_language": "zh",
+      "line_count": 8,
+      "source_lines": [
+        "user: 更新 README 里的安装说明。",
+        "assistant: 我会核对当前安装命令。",
+        "tool: 文档仍引用旧版本命令。",
+        "assistant: 我正在替换旧示例。",
+        "user: 对，就是把新的安装命令补到 README。",
+        "assistant: 我会继续完成同一处文档更新。",
+        "tool: 新命令和验证步骤已经写入。",
+        "assistant: README 已更新。"
+      ],
+      "scorable_ranges": [
+        [
+          1,
+          9
+        ]
+      ],
+      "candidate_lines": [
+        5
+      ],
+      "gold_atoms": [
+        {
+          "id": "gold-zh-near-duplicate",
+          "start_line": 1,
+          "end_line": 9,
+          "intent": "更新 README 安装说明",
+          "summary": "将旧安装示例替换为新的安装命令和验证步骤。",
+          "skills": [
+            "documentation-maintenance"
+          ],
+          "candidates": [
+            "documentation-maintenance",
+            "python-file-grouping"
+          ]
+        }
+      ],
+      "predicted_atoms": [
+        {
+          "id": "pred-zh-near-duplicate-0001",
+          "start_line": 1,
+          "end_line": 9,
+          "intent": "更新 README 安装说明",
+          "summary": "用户要求更新 README 中的安装说明，助手核对并替换旧命令，最终完成文档更新。",
+          "skills": [
+            "documentation-maintenance"
+          ],
+          "candidates": [
+            "documentation-maintenance"
+          ],
+          "weight_scores": [
+            {
+              "skill": "documentation-maintenance",
+              "weightscore": 10
+            }
+          ]
+        }
+      ],
+      "boundary_candidates": [
+        {
+          "line": 5,
+          "boundary_score": 0.1,
+          "algorithm_version": "offline-boundary-ranker-v1",
+          "selected": false,
+          "predicted_atom_id": null
+        }
+      ]
+    },
+    {
+      "case_id": "en-multi-skill",
+      "scenario": "multi_skill",
+      "expected_language": "en",
+      "line_count": 8,
+      "source_lines": [
+        "user: Reject empty API payloads and add regression coverage.",
+        "assistant: I will inspect the request validator and tests.",
+        "tool: Empty and whitespace payloads currently pass validation.",
+        "assistant: I will reject both forms at the write boundary.",
+        "user: Include tests for empty strings and whitespace-only strings.",
+        "assistant: I will cover both invalid inputs in the same change.",
+        "tool: The validator and regression tests now pass.",
+        "assistant: Validation and coverage are complete."
+      ],
+      "scorable_ranges": [
+        [
+          1,
+          9
+        ]
+      ],
+      "candidate_lines": [
+        5
+      ],
+      "gold_atoms": [
+        {
+          "id": "gold-en-multi-skill",
+          "start_line": 1,
+          "end_line": 9,
+          "intent": "Reject empty API payloads with regression coverage",
+          "summary": "Add input validation and tests for empty and whitespace-only payloads.",
+          "skills": [
+            "api-validation",
+            "regression-testing"
+          ],
+          "candidates": [
+            "api-validation",
+            "regression-testing",
+            "flaky-test-debugging"
+          ]
+        }
+      ],
+      "predicted_atoms": [
+        {
+          "id": "pred-en-multi-skill-0001",
+          "start_line": 1,
+          "end_line": 9,
+          "intent": "Reject empty API payloads and add regression coverage",
+          "summary": "Update the request validator to reject empty and whitespace-only payloads and add corresponding regression tests.",
+          "skills": [
+            "api-validation",
+            "regression-testing"
+          ],
+          "candidates": [
+            "api-validation",
+            "regression-testing",
+            "python-testing"
+          ],
+          "weight_scores": [
+            {
+              "skill": "api-validation",
+              "weightscore": 10
+            },
+            {
+              "skill": "regression-testing",
+              "weightscore": 9
+            }
+          ]
+        }
+      ],
+      "boundary_candidates": [
+        {
+          "line": 5,
+          "boundary_score": 0.1,
+          "algorithm_version": "offline-boundary-ranker-v1",
+          "selected": false,
+          "predicted_atom_id": null
+        }
+      ]
+    }
+  ]
+}
