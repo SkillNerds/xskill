@@ -8,6 +8,7 @@ import pytest
 
 from scripts.bench.algorithm_replay.evaluate import ReplayValidationError
 from scripts.bench.algorithm_replay.formation_data import (
+    _user_header_lines,
     build_formation_payload,
     formation_case_id_map,
     load_raw_suite,
@@ -17,6 +18,7 @@ from scripts.bench.algorithm_replay.formation_data import (
     validate_raw_suite,
     validate_truth_suite,
 )
+from xskill.agents.task_agent import _is_user_header as task_agent_is_user_header
 
 
 FIXTURES = Path("scripts/bench/algorithm_replay/fixtures")
@@ -100,6 +102,58 @@ def test_raw_content_hash_is_stable():
     )
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("## User", True),
+        ("## User metadata", True),
+        ("## Initial Query", True),
+        ("## Initial Query metadata", True),
+        ("## user", False),
+        ("  ## User", False),
+        ("## User-guide", False),
+        ("## Initial query", False),
+    ],
+)
+def test_structural_user_header_grammar_matches_task_agent(line, expected):
+    assert bool(_user_header_lines(f"{line}\ncontent")) is expected
+    assert task_agent_is_user_header(line.rstrip()) is expected
+
+
+def test_machine_noise_turn_remains_a_scorer_hard_negative():
+    raw_content = (
+        "## Initial Query\ngoal\n## Assistant\ndone\n"
+        f"## User\n{'a' * 40}\n## Assistant\nignored"
+    )
+
+    assert _user_header_lines(raw_content) == [1, 5]
+
+
+@pytest.mark.parametrize("invalid_version", [True, 1.0, "1"])
+def test_raw_schema_version_requires_a_strict_integer(raw_suite, invalid_version):
+    raw_suite["raw_schema_version"] = invalid_version
+
+    with pytest.raises(ReplayValidationError, match="expected an integer"):
+        validate_raw_suite(raw_suite)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["truth_schema_version", "annotation_schema_version"],
+)
+@pytest.mark.parametrize("invalid_version", [True, 1.0, "1"])
+def test_truth_schema_versions_require_strict_integers(
+    raw_suite,
+    truth_suite,
+    field,
+    invalid_version,
+):
+    truth_suite[field] = invalid_version
+
+    with pytest.raises(ReplayValidationError, match="expected an integer"):
+        validate_truth_suite(truth_suite, raw_suite)
+
+
 def test_truth_must_label_every_internal_user_boundary(raw_suite, truth_suite):
     truth_suite["cases"][0]["boundaries"] = []
 
@@ -128,6 +182,32 @@ def test_uncertain_boundary_must_be_marked_ambiguous(raw_suite, truth_suite):
 
     with pytest.raises(ReplayValidationError, match="requires ambiguous=true"):
         validate_truth_suite(truth_suite, raw_suite)
+
+
+def test_noise_boundary_must_be_kept(raw_suite, truth_suite):
+    boundary = truth_suite["cases"][0]["boundaries"][0]
+    boundary["type"] = "noise"
+    boundary["decision"] = "split"
+
+    with pytest.raises(ReplayValidationError, match="noise must use decision='keep'"):
+        validate_truth_suite(truth_suite, raw_suite)
+
+
+def test_canonical_machine_noise_can_be_a_kept_hard_negative(
+    raw_suite,
+    truth_suite,
+):
+    raw_case = raw_suite["cases"][1]
+    raw_lines = raw_case["raw_content"].splitlines()
+    raw_lines[8] = "a" * 40
+    raw_case["raw_content"] = "\n".join(raw_lines)
+
+    truth_case = truth_suite["cases"][1]
+    truth_case["raw_sha256"] = raw_content_sha256(raw_case["raw_content"])
+    truth_case["boundaries"][0]["type"] = "noise"
+    truth_case["gold_atoms"][0]["evidence"]["goal"] = [3]
+
+    validate_truth_suite(truth_suite, raw_suite)
 
 
 def test_evidence_reference_must_stay_inside_its_atom(raw_suite, truth_suite):

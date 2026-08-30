@@ -45,7 +45,11 @@ python -m scripts.bench.algorithm_replay.formation_data validate \
   scripts/bench/algorithm_replay/fixtures/formation_truth_v1.json
 ```
 
-truth suite 必须标注每个内部用户回合是 `split` 还是 `keep`，并记录 `new_goal`、`continue`、`clarify`、`correct`、`retry`、`abandon_or_return` 或 `uncertain` 边界类型。
+truth suite 必须标注每个内部用户回合是 `split` 还是 `keep`，并记录 `new_goal`、`continue`、`clarify`、`correct`、`retry`、`noise`、`abandon_or_return` 或 `uncertain` 边界类型。
+
+v1 只把大小写和左侧缩进均符合生产 `TaskAgent` 语法的 `## User` 与 `## Initial Query` 行视为结构化用户回合，正文中的小写标题和缩进代码不会成为候选边界。
+
+结构合法但被生产 F0 过滤的机器噪声回合仍保存在 scorer truth 中，并使用 `keep/noise` 作为硬负例，避免把当前算法过滤结果写成 Gold 事实。
 
 Gold Atom 必须从第一行连续无重叠地覆盖到 EOF，内部起点必须与 `split` 决策完全一致，所有证据行都必须落在所属 Atom 的原始范围内。
 

@@ -70,6 +70,7 @@ _BOUNDARY_TYPES = {
     "clarify",
     "correct",
     "retry",
+    "noise",
     "abandon_or_return",
     "uncertain",
 }
@@ -88,10 +89,6 @@ _COMPOSITION_SCENARIOS = {
     "similar_goal_hard_negative",
     "missing_terminal",
 }
-_USER_HEADER_RE = re.compile(
-    r"^##\s+(?:User|Initial\s+Query)\b",
-    re.IGNORECASE,
-)
 _SECTION_HEADER_RE = re.compile(r"^##\s+\S+")
 
 
@@ -157,21 +154,41 @@ def _raw_lines(raw_content: str) -> list[str]:
     return raw_content.splitlines()
 
 
+def _is_structural_user_header(line: str) -> bool:
+    """Match the canonical user-turn grammar without applying F0 filtering.
+
+    This intentionally mirrors ``TaskAgent._is_user_header`` for case and
+    indentation.  Canonical machine-noise turns remain scorer-side hard
+    negatives even when TaskAgent omits them from its prompt query map.
+    """
+    body = line.rstrip("\r\n").rstrip()
+    return (
+        body == "## User"
+        or body.startswith("## User ")
+        or body == "## Initial Query"
+        or body.startswith("## Initial Query ")
+    )
+
+
 def _user_header_lines(raw_content: str) -> list[int]:
     return [
         line_number
         for line_number, line in enumerate(_raw_lines(raw_content), start=1)
-        if _USER_HEADER_RE.match(line.strip())
+        if _is_structural_user_header(line)
     ]
 
 
 def validate_raw_suite(source: Any) -> None:
     """Validate data that may be exposed to the Formation algorithm."""
     root = _expect_exact_keys(source, _RAW_ROOT_KEYS, "raw")
-    if root["raw_schema_version"] != RAW_SCHEMA_VERSION:
+    raw_schema_version = _expect_strict_int(
+        root["raw_schema_version"],
+        "raw.raw_schema_version",
+    )
+    if raw_schema_version != RAW_SCHEMA_VERSION:
         raise _error(
             "raw.raw_schema_version",
-            f"supported={RAW_SCHEMA_VERSION}, got={root['raw_schema_version']!r}",
+            f"supported={RAW_SCHEMA_VERSION}, got={raw_schema_version!r}",
         )
     _expect_non_empty_string(root["suite_id"], "raw.suite_id")
     manifest = _expect_exact_keys(
@@ -267,7 +284,7 @@ def _validate_boundary_annotations(
                 "new_goal must use decision='split'",
             )
         if (
-            boundary_type in {"continue", "clarify", "correct", "retry"}
+            boundary_type in {"continue", "clarify", "correct", "retry", "noise"}
             and decision != "keep"
         ):
             raise _error(
@@ -444,16 +461,24 @@ def validate_truth_suite(truth: Any, raw_source: Any) -> None:
     """Validate scorer-only annotations against an already validated raw suite."""
     validate_raw_suite(raw_source)
     root = _expect_exact_keys(truth, _TRUTH_ROOT_KEYS, "truth")
-    if root["truth_schema_version"] != TRUTH_SCHEMA_VERSION:
+    truth_schema_version = _expect_strict_int(
+        root["truth_schema_version"],
+        "truth.truth_schema_version",
+    )
+    if truth_schema_version != TRUTH_SCHEMA_VERSION:
         raise _error(
             "truth.truth_schema_version",
-            f"supported={TRUTH_SCHEMA_VERSION}, got={root['truth_schema_version']!r}",
+            f"supported={TRUTH_SCHEMA_VERSION}, got={truth_schema_version!r}",
         )
-    if root["annotation_schema_version"] != ANNOTATION_SCHEMA_VERSION:
+    annotation_schema_version = _expect_strict_int(
+        root["annotation_schema_version"],
+        "truth.annotation_schema_version",
+    )
+    if annotation_schema_version != ANNOTATION_SCHEMA_VERSION:
         raise _error(
             "truth.annotation_schema_version",
             "supported="
-            f"{ANNOTATION_SCHEMA_VERSION}, got={root['annotation_schema_version']!r}",
+            f"{ANNOTATION_SCHEMA_VERSION}, got={annotation_schema_version!r}",
         )
     if root["suite_id"] != raw_source["suite_id"]:
         raise _error("truth.suite_id", "does not match raw.suite_id")
