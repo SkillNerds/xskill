@@ -109,6 +109,13 @@ def test_serves_index_html(tmp_path):
     assert r.status_code == 200 and "text/html" in r.headers["content-type"]
 
 
+def test_serves_local_i18n_script(tmp_path):
+    r = _client(tmp_path).get("/i18n.js")
+    assert r.status_code == 200
+    assert "application/javascript" in r.headers["content-type"]
+    assert "xskill.dashboard.language" in r.text
+
+
 def test_skill_dir_for_respects_config_yaml(tmp_path):
     """独立只读实例按 registry 所在 home 读 skill_dir，不写死同级 skill/。"""
     from xskill.dashboard.router import _skill_dir_for

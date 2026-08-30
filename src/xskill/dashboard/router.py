@@ -90,6 +90,11 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
         return Response((_STATIC / "app.js").read_text(encoding="utf-8"),
                         media_type="application/javascript")
 
+    @router.get("/i18n.js")
+    def i18njs() -> Response:
+        return Response((_STATIC / "i18n.js").read_text(encoding="utf-8"),
+                        media_type="application/javascript")
+
     @router.get("/api/v1/dashboard/overview")
     def overview() -> dict:
         return {**metrics.overview(), "price_health": _price_health()}

@@ -18,6 +18,101 @@ def test_index_references_appjs_and_sections():
         assert f'id="{pg}"' in html
 
 
+def test_language_switch_loads_local_i18n_before_app():
+    """语言开关常驻侧栏，翻译层先于动态渲染脚本启动。"""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+
+    assert 'data-language="en"' in html
+    assert 'data-language="zh"' in html
+    assert "English" in html and "中文" in html
+    assert html.index('src="i18n.js"') < html.index('src="app.js"')
+
+
+def test_i18n_translates_static_and_dynamic_dashboard_copy():
+    """纯翻译函数覆盖静态标签和带运行时数字的文案。"""
+    script = f"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync({json.dumps(str(STATIC / "i18n.js"))}, 'utf8');
+const context = vm.createContext({{ window: {{}} }});
+vm.runInContext(source, context);
+const i18n = context.window.XSkillI18n;
+process.stdout.write(JSON.stringify([
+  i18n.translateText('总览', 'en'),
+  i18n.translateText('42 份使用打分', 'en'),
+  i18n.translateText('席位 3 · 已跑 8s', 'en'),
+  i18n.translateText('总览', 'zh'),
+]));
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert json.loads(result.stdout) == [
+        "Overview",
+        "42 usage ratings",
+        "Slot 3 · running for 8s",
+        "总览",
+    ]
+
+
+def test_i18n_persists_language_and_observes_dynamic_content():
+    js = (STATIC / "i18n.js").read_text(encoding="utf-8")
+
+    assert "xskill.dashboard.language" in js
+    assert "localStorage.setItem(STORAGE_KEY, next)" in js
+    assert "new global.MutationObserver" in js
+
+
+def test_i18n_round_trip_restores_source_copy():
+    """English → 中文 必须恢复源文案，不能把英文误记为新的源文案。"""
+    script = f"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync({json.dumps(str(STATIC / "i18n.js"))}, 'utf8');
+const text = {{ nodeType: 3, nodeValue: '总览', parentElement: {{ tagName: 'DIV' }} }};
+const body = {{
+  nodeType: 1,
+  tagName: 'BODY',
+  childNodes: [text],
+  hasAttribute() {{ return false; }},
+}};
+const document = {{
+  body,
+  documentElement: {{}},
+  title: 'xskill 控制台',
+  querySelectorAll() {{ return []; }},
+  addEventListener() {{}},
+  dispatchEvent() {{}},
+}};
+const window = {{
+  document,
+  localStorage: {{ getItem() {{ return null; }}, setItem() {{}} }},
+  MutationObserver: class {{ observe() {{}} }},
+  CustomEvent: class {{}},
+}};
+const context = vm.createContext({{ window }});
+vm.runInContext(source, context);
+window.XSkillI18n.setLanguage('en');
+const english = text.nodeValue;
+window.XSkillI18n.setLanguage('zh');
+process.stdout.write(JSON.stringify([english, text.nodeValue]));
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert json.loads(result.stdout) == ["Overview", "总览"]
+
+
 def test_index_is_fully_vendored():
     """零外联：内网 headless 环境不允许任何会发起网络请求的外部引用。
 
