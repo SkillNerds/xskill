@@ -16,6 +16,7 @@ scripts/bench/
 ├── baseline_window.md        基线报告(合成/真实两套并排)
 ├── baseline_window.json      基线机器可读结果(run_baseline.py 产出)
 ├── algorithm_replay/         拆分 + 路由的版本化离线质量回放（普通 CI）
+├── skill_library_replay/     Skill 正文 × 激活描述 × 库规模的配对 2×2 回放
 ├── synthetic/
 │   ├── gen_cases_v2.py       合成集生成器(纯数据,无 LLM/无网络)
 │   ├── ground_truth.json     合成集真值 {case: {scenario,total_lines,boundaries,...}}

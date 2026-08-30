@@ -1,0 +1,623 @@
+{
+  "cases": 2,
+  "isolated": {
+    "body_effect": {
+      "confidence_interval": [
+        0.0,
+        1.0
+      ],
+      "losses": 0,
+      "mean": 0.5,
+      "n": 2,
+      "ties": 1,
+      "wins": 1
+    },
+    "negative_body_effect": {
+      "confidence_interval": null,
+      "losses": 0,
+      "mean": 0.0,
+      "n": 1,
+      "ties": 1,
+      "wins": 0
+    },
+    "new_body": {
+      "activated_skill_count_mean": 1.0,
+      "catalog_tokens_mean": 0.0,
+      "cost_usd_mean": 0.00205,
+      "input_tokens_mean": 1000.0,
+      "latency_ms_mean": 960.0,
+      "loaded_skill_tokens_mean": 100.0,
+      "output_tokens_mean": 110.0,
+      "score_mean": 0.75
+    },
+    "old_body": {
+      "activated_skill_count_mean": 1.0,
+      "catalog_tokens_mean": 0.0,
+      "cost_usd_mean": 0.002,
+      "input_tokens_mean": 980.0,
+      "latency_ms_mean": 1000.0,
+      "loaded_skill_tokens_mean": 80.0,
+      "output_tokens_mean": 120.0,
+      "score_mean": 0.25
+    },
+    "positive_body_effect": {
+      "confidence_interval": null,
+      "losses": 0,
+      "mean": 1.0,
+      "n": 1,
+      "ties": 0,
+      "wins": 1
+    }
+  },
+  "library_curve": [
+    {
+      "activation_effects": {
+        "negative_false_positive_rate_delta": {
+          "confidence_interval": null,
+          "losses": 1,
+          "mean": -1.0,
+          "n": 1,
+          "ties": 0,
+          "wins": 0
+        },
+        "positive_recall_delta": {
+          "confidence_interval": null,
+          "losses": 0,
+          "mean": 1.0,
+          "n": 1,
+          "ties": 0,
+          "wins": 1
+        },
+        "target_activation_delta": {
+          "confidence_interval": [
+            -1.0,
+            1.0
+          ],
+          "losses": 1,
+          "mean": 0.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 1
+        }
+      },
+      "cells": {
+        "new_body__new_description": {
+          "activated_skill_count_mean": 0.5,
+          "activated_skill_counts": {
+            "spreadsheet-formula-repair": 1
+          },
+          "catalog_tokens_mean": 24.0,
+          "cost_usd_mean": 0.0019,
+          "error_types": {},
+          "input_tokens_mean": 954.0,
+          "latency_ms_mean": 875.0,
+          "loaded_skill_tokens_mean": 50.0,
+          "negative_false_positive_rate": 0.0,
+          "output_tokens_mean": 100.0,
+          "positive_recall": 1.0,
+          "score_mean": 1.0,
+          "target_activation_rate": 0.5
+        },
+        "new_body__old_description": {
+          "activated_skill_count_mean": 0.5,
+          "activated_skill_counts": {
+            "spreadsheet-formula-repair": 1
+          },
+          "catalog_tokens_mean": 20.0,
+          "cost_usd_mean": 0.0021,
+          "error_types": {
+            "harmful_activation": 1,
+            "missed_activation": 1
+          },
+          "input_tokens_mean": 950.0,
+          "latency_ms_mean": 1040.0,
+          "loaded_skill_tokens_mean": 50.0,
+          "negative_false_positive_rate": 1.0,
+          "output_tokens_mean": 120.0,
+          "positive_recall": 0.0,
+          "score_mean": 0.0,
+          "target_activation_rate": 0.5
+        },
+        "old_body__new_description": {
+          "activated_skill_count_mean": 0.5,
+          "activated_skill_counts": {
+            "spreadsheet-formula-repair": 1
+          },
+          "catalog_tokens_mean": 24.0,
+          "cost_usd_mean": 0.00195,
+          "error_types": {
+            "incorrect_result": 1
+          },
+          "input_tokens_mean": 944.0,
+          "latency_ms_mean": 935.0,
+          "loaded_skill_tokens_mean": 40.0,
+          "negative_false_positive_rate": 0.0,
+          "output_tokens_mean": 110.0,
+          "positive_recall": 1.0,
+          "score_mean": 0.5,
+          "target_activation_rate": 0.5
+        },
+        "old_body__old_description": {
+          "activated_skill_count_mean": 0.5,
+          "activated_skill_counts": {
+            "spreadsheet-formula-repair": 1
+          },
+          "catalog_tokens_mean": 20.0,
+          "cost_usd_mean": 0.00205,
+          "error_types": {
+            "harmful_activation": 1,
+            "missed_activation": 1
+          },
+          "input_tokens_mean": 940.0,
+          "latency_ms_mean": 1025.0,
+          "loaded_skill_tokens_mean": 40.0,
+          "negative_false_positive_rate": 1.0,
+          "output_tokens_mean": 120.0,
+          "positive_recall": 0.0,
+          "score_mean": 0.0,
+          "target_activation_rate": 0.5
+        }
+      },
+      "distractor_catalog_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "distractor_count": 0,
+      "distractor_skills": [],
+      "factorial_effects": {
+        "body_at_new_description": {
+          "confidence_interval": [
+            0.0,
+            1.0
+          ],
+          "losses": 0,
+          "mean": 0.5,
+          "n": 2,
+          "ties": 1,
+          "wins": 1
+        },
+        "body_at_old_description": {
+          "confidence_interval": [
+            0.0,
+            0.0
+          ],
+          "losses": 0,
+          "mean": 0.0,
+          "n": 2,
+          "ties": 2,
+          "wins": 0
+        },
+        "description_at_new_body": {
+          "confidence_interval": [
+            1.0,
+            1.0
+          ],
+          "losses": 0,
+          "mean": 1.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 2
+        },
+        "description_at_old_body": {
+          "confidence_interval": [
+            0.0,
+            1.0
+          ],
+          "losses": 0,
+          "mean": 0.5,
+          "n": 2,
+          "ties": 1,
+          "wins": 1
+        },
+        "interaction": {
+          "confidence_interval": [
+            0.0,
+            1.0
+          ],
+          "losses": 0,
+          "mean": 0.5,
+          "n": 2,
+          "ties": 1,
+          "wins": 1
+        },
+        "joint_deployed_effect": {
+          "confidence_interval": [
+            1.0,
+            1.0
+          ],
+          "losses": 0,
+          "mean": 1.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 2
+        }
+      },
+      "interference": {
+        "confidence_interval": [
+          -1.0,
+          0.0
+        ],
+        "losses": 1,
+        "mean": -0.5,
+        "n": 2,
+        "ties": 1,
+        "wins": 0
+      },
+      "resource_effects": {
+        "activated_skill_count": {
+          "confidence_interval": [
+            -1.0,
+            1.0
+          ],
+          "losses": 1,
+          "mean": 0.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 1
+        },
+        "catalog_tokens": {
+          "confidence_interval": [
+            4.0,
+            4.0
+          ],
+          "losses": 0,
+          "mean": 4.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 2
+        },
+        "cost_usd": {
+          "confidence_interval": [
+            -0.0003,
+            0.0
+          ],
+          "losses": 1,
+          "mean": -0.00015,
+          "n": 2,
+          "ties": 1,
+          "wins": 0
+        },
+        "input_tokens": {
+          "confidence_interval": [
+            -76.0,
+            104.0
+          ],
+          "losses": 1,
+          "mean": 14.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 1
+        },
+        "latency_ms": {
+          "confidence_interval": [
+            -200.0,
+            -100.0
+          ],
+          "losses": 2,
+          "mean": -150.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 0
+        },
+        "loaded_skill_tokens": {
+          "confidence_interval": [
+            -80.0,
+            100.0
+          ],
+          "losses": 1,
+          "mean": 10.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 1
+        },
+        "output_tokens": {
+          "confidence_interval": [
+            -20.0,
+            -20.0
+          ],
+          "losses": 2,
+          "mean": -20.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 0
+        }
+      }
+    },
+    {
+      "activation_effects": {
+        "negative_false_positive_rate_delta": {
+          "confidence_interval": null,
+          "losses": 1,
+          "mean": -1.0,
+          "n": 1,
+          "ties": 0,
+          "wins": 0
+        },
+        "positive_recall_delta": {
+          "confidence_interval": null,
+          "losses": 0,
+          "mean": 1.0,
+          "n": 1,
+          "ties": 0,
+          "wins": 1
+        },
+        "target_activation_delta": {
+          "confidence_interval": [
+            -1.0,
+            1.0
+          ],
+          "losses": 1,
+          "mean": 0.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 1
+        }
+      },
+      "cells": {
+        "new_body__new_description": {
+          "activated_skill_count_mean": 1.0,
+          "activated_skill_counts": {
+            "spreadsheet-formatting": 1,
+            "spreadsheet-formula-repair": 1
+          },
+          "catalog_tokens_mean": 64.0,
+          "cost_usd_mean": 0.00205,
+          "error_types": {},
+          "input_tokens_mean": 1039.0,
+          "latency_ms_mean": 910.0,
+          "loaded_skill_tokens_mean": 85.0,
+          "negative_false_positive_rate": 0.0,
+          "output_tokens_mean": 100.0,
+          "positive_recall": 1.0,
+          "score_mean": 1.0,
+          "target_activation_rate": 0.5
+        },
+        "new_body__old_description": {
+          "activated_skill_count_mean": 1.0,
+          "activated_skill_counts": {
+            "spreadsheet-formatting": 1,
+            "spreadsheet-formula-repair": 1
+          },
+          "catalog_tokens_mean": 60.0,
+          "cost_usd_mean": 0.00225,
+          "error_types": {
+            "harmful_activation": 1,
+            "wrong_skill_activation": 1
+          },
+          "input_tokens_mean": 1025.0,
+          "latency_ms_mean": 1090.0,
+          "loaded_skill_tokens_mean": 85.0,
+          "negative_false_positive_rate": 1.0,
+          "output_tokens_mean": 120.0,
+          "positive_recall": 0.0,
+          "score_mean": 0.0,
+          "target_activation_rate": 0.5
+        },
+        "old_body__new_description": {
+          "activated_skill_count_mean": 1.0,
+          "activated_skill_counts": {
+            "spreadsheet-formatting": 1,
+            "spreadsheet-formula-repair": 1
+          },
+          "catalog_tokens_mean": 64.0,
+          "cost_usd_mean": 0.0021,
+          "error_types": {
+            "incorrect_result": 1
+          },
+          "input_tokens_mean": 1029.0,
+          "latency_ms_mean": 975.0,
+          "loaded_skill_tokens_mean": 75.0,
+          "negative_false_positive_rate": 0.0,
+          "output_tokens_mean": 110.0,
+          "positive_recall": 1.0,
+          "score_mean": 0.5,
+          "target_activation_rate": 0.5
+        },
+        "old_body__old_description": {
+          "activated_skill_count_mean": 1.0,
+          "activated_skill_counts": {
+            "spreadsheet-formatting": 1,
+            "spreadsheet-formula-repair": 1
+          },
+          "catalog_tokens_mean": 60.0,
+          "cost_usd_mean": 0.0022,
+          "error_types": {
+            "harmful_activation": 1,
+            "wrong_skill_activation": 1
+          },
+          "input_tokens_mean": 1015.0,
+          "latency_ms_mean": 1080.0,
+          "loaded_skill_tokens_mean": 75.0,
+          "negative_false_positive_rate": 1.0,
+          "output_tokens_mean": 120.0,
+          "positive_recall": 0.0,
+          "score_mean": 0.0,
+          "target_activation_rate": 0.5
+        }
+      },
+      "distractor_catalog_fingerprint": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "distractor_count": 2,
+      "distractor_skills": [
+        "spreadsheet-formatting",
+        "spreadsheet-charting"
+      ],
+      "factorial_effects": {
+        "body_at_new_description": {
+          "confidence_interval": [
+            0.0,
+            1.0
+          ],
+          "losses": 0,
+          "mean": 0.5,
+          "n": 2,
+          "ties": 1,
+          "wins": 1
+        },
+        "body_at_old_description": {
+          "confidence_interval": [
+            0.0,
+            0.0
+          ],
+          "losses": 0,
+          "mean": 0.0,
+          "n": 2,
+          "ties": 2,
+          "wins": 0
+        },
+        "description_at_new_body": {
+          "confidence_interval": [
+            1.0,
+            1.0
+          ],
+          "losses": 0,
+          "mean": 1.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 2
+        },
+        "description_at_old_body": {
+          "confidence_interval": [
+            0.0,
+            1.0
+          ],
+          "losses": 0,
+          "mean": 0.5,
+          "n": 2,
+          "ties": 1,
+          "wins": 1
+        },
+        "interaction": {
+          "confidence_interval": [
+            0.0,
+            1.0
+          ],
+          "losses": 0,
+          "mean": 0.5,
+          "n": 2,
+          "ties": 1,
+          "wins": 1
+        },
+        "joint_deployed_effect": {
+          "confidence_interval": [
+            1.0,
+            1.0
+          ],
+          "losses": 0,
+          "mean": 1.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 2
+        }
+      },
+      "interference": {
+        "confidence_interval": [
+          -1.0,
+          0.0
+        ],
+        "losses": 1,
+        "mean": -0.5,
+        "n": 2,
+        "ties": 1,
+        "wins": 0
+      },
+      "resource_effects": {
+        "activated_skill_count": {
+          "confidence_interval": [
+            0.0,
+            0.0
+          ],
+          "losses": 0,
+          "mean": 0.0,
+          "n": 2,
+          "ties": 2,
+          "wins": 0
+        },
+        "catalog_tokens": {
+          "confidence_interval": [
+            4.0,
+            4.0
+          ],
+          "losses": 0,
+          "mean": 4.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 2
+        },
+        "cost_usd": {
+          "confidence_interval": [
+            -0.0002,
+            -0.0001
+          ],
+          "losses": 2,
+          "mean": -0.00015,
+          "n": 2,
+          "ties": 0,
+          "wins": 0
+        },
+        "input_tokens": {
+          "confidence_interval": [
+            14.0,
+            34.0
+          ],
+          "losses": 0,
+          "mean": 24.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 2
+        },
+        "latency_ms": {
+          "confidence_interval": [
+            -180.0,
+            -160.0
+          ],
+          "losses": 2,
+          "mean": -170.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 0
+        },
+        "loaded_skill_tokens": {
+          "confidence_interval": [
+            -10.0,
+            30.0
+          ],
+          "losses": 1,
+          "mean": 10.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 1
+        },
+        "output_tokens": {
+          "confidence_interval": [
+            -20.0,
+            -20.0
+          ],
+          "losses": 2,
+          "mean": -20.0,
+          "n": 2,
+          "ties": 0,
+          "wins": 0
+        }
+      }
+    }
+  ],
+  "negative_cases": 1,
+  "positive_cases": 1,
+  "run_manifest": {
+    "evaluation_protocol_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "generated_at": "2026-08-30T00:00:00Z",
+    "generation_config": {
+      "max_output_tokens": 4096,
+      "temperature": 0.0,
+      "top_p": 1.0
+    },
+    "harness": "recorded-fixture",
+    "model": "recorded-fixture",
+    "new_body_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "new_description_fingerprint": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "old_body_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "old_description_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "repository_revision": "synthetic-recorded-fixture",
+    "task_set_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "schema_version": 1,
+  "suite_id": "synthetic-library-aware-v1",
+  "target_skill": "spreadsheet-formula-repair"
+}

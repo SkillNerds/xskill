@@ -1,0 +1,344 @@
+{
+  "schema_version": 1,
+  "suite_id": "synthetic-library-aware-v1",
+  "target_skill": "spreadsheet-formula-repair",
+  "metric_config": {
+    "bootstrap_samples": 1000,
+    "bootstrap_seed": 42,
+    "confidence_level": 0.95
+  },
+  "run_manifest": {
+    "repository_revision": "synthetic-recorded-fixture",
+    "model": "recorded-fixture",
+    "harness": "recorded-fixture",
+    "generated_at": "2026-08-30T00:00:00Z",
+    "task_set_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evaluation_protocol_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "old_body_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "new_body_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "old_description_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "new_description_fingerprint": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "generation_config": {
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "max_output_tokens": 4096
+    }
+  },
+  "library_ladder": [
+    {
+      "distractor_count": 0,
+      "distractor_catalog_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "distractor_skills": []
+    },
+    {
+      "distractor_count": 2,
+      "distractor_catalog_fingerprint": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "distractor_skills": [
+        "spreadsheet-formatting",
+        "spreadsheet-charting"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "positive-formula-repair",
+      "task_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "seed": 7,
+      "should_activate": true,
+      "isolated": {
+        "old_body": {
+          "run_id": "positive-isolated-old-body",
+          "score": 0.0,
+          "target_activated": true,
+          "activated_skills": ["spreadsheet-formula-repair"],
+          "catalog_tokens": 0,
+          "loaded_skill_tokens": 80,
+          "input_tokens": 980,
+          "output_tokens": 120,
+          "cost_usd": 0.002,
+          "latency_ms": 1000,
+          "error_type": "incorrect_result"
+        },
+        "new_body": {
+          "run_id": "positive-isolated-new-body",
+          "score": 1.0,
+          "target_activated": true,
+          "activated_skills": ["spreadsheet-formula-repair"],
+          "catalog_tokens": 0,
+          "loaded_skill_tokens": 100,
+          "input_tokens": 1000,
+          "output_tokens": 100,
+          "cost_usd": 0.002,
+          "latency_ms": 900,
+          "error_type": null
+        }
+      },
+      "libraries": [
+        {
+          "distractor_count": 0,
+          "deployed": {
+            "old_body__old_description": {
+              "run_id": "positive-d0-old-old",
+              "score": 0.0,
+              "target_activated": false,
+              "activated_skills": [],
+              "catalog_tokens": 20,
+              "loaded_skill_tokens": 0,
+              "input_tokens": 900,
+              "output_tokens": 120,
+              "cost_usd": 0.002,
+              "latency_ms": 1000,
+              "error_type": "missed_activation"
+            },
+            "old_body__new_description": {
+              "run_id": "positive-d0-old-new",
+              "score": 0.0,
+              "target_activated": true,
+              "activated_skills": ["spreadsheet-formula-repair"],
+              "catalog_tokens": 24,
+              "loaded_skill_tokens": 80,
+              "input_tokens": 984,
+              "output_tokens": 120,
+              "cost_usd": 0.0021,
+              "latency_ms": 1020,
+              "error_type": "incorrect_result"
+            },
+            "new_body__old_description": {
+              "run_id": "positive-d0-new-old",
+              "score": 0.0,
+              "target_activated": false,
+              "activated_skills": [],
+              "catalog_tokens": 20,
+              "loaded_skill_tokens": 0,
+              "input_tokens": 900,
+              "output_tokens": 120,
+              "cost_usd": 0.002,
+              "latency_ms": 1000,
+              "error_type": "missed_activation"
+            },
+            "new_body__new_description": {
+              "run_id": "positive-d0-new-new",
+              "score": 1.0,
+              "target_activated": true,
+              "activated_skills": ["spreadsheet-formula-repair"],
+              "catalog_tokens": 24,
+              "loaded_skill_tokens": 100,
+              "input_tokens": 1004,
+              "output_tokens": 100,
+              "cost_usd": 0.002,
+              "latency_ms": 900,
+              "error_type": null
+            }
+          }
+        },
+        {
+          "distractor_count": 2,
+          "deployed": {
+            "old_body__old_description": {
+              "run_id": "positive-d2-old-old",
+              "score": 0.0,
+              "target_activated": false,
+              "activated_skills": ["spreadsheet-formatting"],
+              "catalog_tokens": 60,
+              "loaded_skill_tokens": 70,
+              "input_tokens": 1010,
+              "output_tokens": 120,
+              "cost_usd": 0.0022,
+              "latency_ms": 1080,
+              "error_type": "wrong_skill_activation"
+            },
+            "old_body__new_description": {
+              "run_id": "positive-d2-old-new",
+              "score": 0.0,
+              "target_activated": true,
+              "activated_skills": ["spreadsheet-formula-repair"],
+              "catalog_tokens": 64,
+              "loaded_skill_tokens": 80,
+              "input_tokens": 1024,
+              "output_tokens": 120,
+              "cost_usd": 0.0022,
+              "latency_ms": 1050,
+              "error_type": "incorrect_result"
+            },
+            "new_body__old_description": {
+              "run_id": "positive-d2-new-old",
+              "score": 0.0,
+              "target_activated": false,
+              "activated_skills": ["spreadsheet-formatting"],
+              "catalog_tokens": 60,
+              "loaded_skill_tokens": 70,
+              "input_tokens": 1010,
+              "output_tokens": 120,
+              "cost_usd": 0.0022,
+              "latency_ms": 1080,
+              "error_type": "wrong_skill_activation"
+            },
+            "new_body__new_description": {
+              "run_id": "positive-d2-new-new",
+              "score": 1.0,
+              "target_activated": true,
+              "activated_skills": ["spreadsheet-formula-repair"],
+              "catalog_tokens": 64,
+              "loaded_skill_tokens": 100,
+              "input_tokens": 1044,
+              "output_tokens": 100,
+              "cost_usd": 0.0021,
+              "latency_ms": 920,
+              "error_type": null
+            }
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "negative-formatting-request",
+      "task_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "seed": 7,
+      "should_activate": false,
+      "isolated": {
+        "old_body": {
+          "run_id": "negative-isolated-old-body",
+          "score": 0.5,
+          "target_activated": true,
+          "activated_skills": ["spreadsheet-formula-repair"],
+          "catalog_tokens": 0,
+          "loaded_skill_tokens": 80,
+          "input_tokens": 980,
+          "output_tokens": 120,
+          "cost_usd": 0.002,
+          "latency_ms": 1000,
+          "error_type": "partial_result"
+        },
+        "new_body": {
+          "run_id": "negative-isolated-new-body",
+          "score": 0.5,
+          "target_activated": true,
+          "activated_skills": ["spreadsheet-formula-repair"],
+          "catalog_tokens": 0,
+          "loaded_skill_tokens": 100,
+          "input_tokens": 1000,
+          "output_tokens": 120,
+          "cost_usd": 0.0021,
+          "latency_ms": 1020,
+          "error_type": "partial_result"
+        }
+      },
+      "libraries": [
+        {
+          "distractor_count": 0,
+          "deployed": {
+            "old_body__old_description": {
+              "run_id": "negative-d0-old-old",
+              "score": 0.0,
+              "target_activated": true,
+              "activated_skills": ["spreadsheet-formula-repair"],
+              "catalog_tokens": 20,
+              "loaded_skill_tokens": 80,
+              "input_tokens": 980,
+              "output_tokens": 120,
+              "cost_usd": 0.0021,
+              "latency_ms": 1050,
+              "error_type": "harmful_activation"
+            },
+            "old_body__new_description": {
+              "run_id": "negative-d0-old-new",
+              "score": 1.0,
+              "target_activated": false,
+              "activated_skills": [],
+              "catalog_tokens": 24,
+              "loaded_skill_tokens": 0,
+              "input_tokens": 904,
+              "output_tokens": 100,
+              "cost_usd": 0.0018,
+              "latency_ms": 850,
+              "error_type": null
+            },
+            "new_body__old_description": {
+              "run_id": "negative-d0-new-old",
+              "score": 0.0,
+              "target_activated": true,
+              "activated_skills": ["spreadsheet-formula-repair"],
+              "catalog_tokens": 20,
+              "loaded_skill_tokens": 100,
+              "input_tokens": 1000,
+              "output_tokens": 120,
+              "cost_usd": 0.0022,
+              "latency_ms": 1080,
+              "error_type": "harmful_activation"
+            },
+            "new_body__new_description": {
+              "run_id": "negative-d0-new-new",
+              "score": 1.0,
+              "target_activated": false,
+              "activated_skills": [],
+              "catalog_tokens": 24,
+              "loaded_skill_tokens": 0,
+              "input_tokens": 904,
+              "output_tokens": 100,
+              "cost_usd": 0.0018,
+              "latency_ms": 850,
+              "error_type": null
+            }
+          }
+        },
+        {
+          "distractor_count": 2,
+          "deployed": {
+            "old_body__old_description": {
+              "run_id": "negative-d2-old-old",
+              "score": 0.0,
+              "target_activated": true,
+              "activated_skills": ["spreadsheet-formula-repair"],
+              "catalog_tokens": 60,
+              "loaded_skill_tokens": 80,
+              "input_tokens": 1020,
+              "output_tokens": 120,
+              "cost_usd": 0.0022,
+              "latency_ms": 1080,
+              "error_type": "harmful_activation"
+            },
+            "old_body__new_description": {
+              "run_id": "negative-d2-old-new",
+              "score": 1.0,
+              "target_activated": false,
+              "activated_skills": ["spreadsheet-formatting"],
+              "catalog_tokens": 64,
+              "loaded_skill_tokens": 70,
+              "input_tokens": 1034,
+              "output_tokens": 100,
+              "cost_usd": 0.002,
+              "latency_ms": 900,
+              "error_type": null
+            },
+            "new_body__old_description": {
+              "run_id": "negative-d2-new-old",
+              "score": 0.0,
+              "target_activated": true,
+              "activated_skills": ["spreadsheet-formula-repair"],
+              "catalog_tokens": 60,
+              "loaded_skill_tokens": 100,
+              "input_tokens": 1040,
+              "output_tokens": 120,
+              "cost_usd": 0.0023,
+              "latency_ms": 1100,
+              "error_type": "harmful_activation"
+            },
+            "new_body__new_description": {
+              "run_id": "negative-d2-new-new",
+              "score": 1.0,
+              "target_activated": false,
+              "activated_skills": ["spreadsheet-formatting"],
+              "catalog_tokens": 64,
+              "loaded_skill_tokens": 70,
+              "input_tokens": 1034,
+              "output_tokens": 100,
+              "cost_usd": 0.002,
+              "latency_ms": 900,
+              "error_type": null
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
