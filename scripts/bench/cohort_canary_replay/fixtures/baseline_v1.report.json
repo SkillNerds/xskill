@@ -18,11 +18,25 @@
     "updates": 2
   },
   "method": {
+    "bootstrap_samples": 1000,
+    "bootstrap_seed": 42,
+    "cohort_family_size": 4,
     "cohort_key": "scenario×model×runtime",
     "confidence_level": 0.95,
     "decision_metric": "score",
     "familywise_method": "bonferroni",
-    "practical_margin": 0.05
+    "global_family_size": 2,
+    "held_out_evaluation_role": "evaluation",
+    "practical_margin": 0.05,
+    "selection_role": "decision"
+  },
+  "run_manifest": {
+    "candidate_stream_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "cohort_definition_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "evaluation_protocol_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "generated_at": "2026-08-30T00:00:00Z",
+    "repository_revision": "synthetic-recorded-fixture",
+    "task_set_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   },
   "schema_version": 1,
   "suite_id": "synthetic-cohort-canary-v1",
@@ -234,6 +248,8 @@
         "retained_version_count": 1,
         "selection": "new"
       },
+      "new_skill_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "old_skill_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "scoped": {
         "harmful_promoted_cohorts": [],
         "harmful_traffic_weight": 0.0,
@@ -463,6 +479,8 @@
         "retained_version_count": 1,
         "selection": "new"
       },
+      "new_skill_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "old_skill_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       "scoped": {
         "harmful_promoted_cohorts": [],
         "harmful_traffic_weight": 0.0,

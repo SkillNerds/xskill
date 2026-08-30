@@ -179,7 +179,11 @@ def validate_suite(suite: Any) -> None:
         raise CohortReplayValidationError(
             "suite.metric_config.bootstrap_samples: must be >= 100"
         )
-    _require(metric, "bootstrap_seed", int, "suite.metric_config")
+    bootstrap_seed = _require(metric, "bootstrap_seed", int, "suite.metric_config")
+    if bootstrap_seed < 0:
+        raise CohortReplayValidationError(
+            "suite.metric_config.bootstrap_seed: must be >= 0"
+        )
     confidence = _require_number(
         metric,
         "confidence_level",
@@ -652,11 +656,6 @@ def evaluate_suite(suite: dict[str, Any]) -> dict[str, Any]:
         for cohort_id in cohort_ids
     }
     decision_metric = metric["decision_metric"]
-    decision_value = (
-        (lambda outcome: float(outcome["score"]))
-        if decision_metric == "score"
-        else (lambda outcome: 1.0 if outcome["passed"] else 0.0)
-    )
     score_value = lambda outcome: float(outcome["score"])
     pass_value = lambda outcome: 1.0 if outcome["passed"] else 0.0
     non_evaluable_types = set(metric["non_evaluable_error_types"])
@@ -680,54 +679,46 @@ def evaluate_suite(suite: dict[str, Any]) -> dict[str, Any]:
         for cohort_id in cohort_ids:
             decision_observations = by_cohort_role[(cohort_id, "decision")]
             evaluation_observations = by_cohort_role[(cohort_id, "evaluation")]
-            decision_effect, decision_task_deltas = _effect(
-                decision_observations,
-                value=decision_value,
-                metric_config=metric,
-                label=(
-                    f"{update['update_id']}:{cohort_id}:decision:{decision_metric}"
-                ),
-                family_size=family_size,
-            )
-            decision_task_deltas_by_cohort[cohort_id] = decision_task_deltas
-            decision_score_effect, _ = _effect(
+            decision_score_effect, decision_score_deltas = _effect(
                 decision_observations,
                 value=score_value,
                 metric_config=metric,
                 label=f"{update['update_id']}:{cohort_id}:decision:score",
                 family_size=family_size,
             )
-            decision_pass_effect, _ = _effect(
+            decision_pass_effect, decision_pass_deltas = _effect(
                 decision_observations,
                 value=pass_value,
                 metric_config=metric,
                 label=f"{update['update_id']}:{cohort_id}:decision:pass_rate",
                 family_size=family_size,
             )
-            evaluation_effect, evaluation_task_deltas = _effect(
-                evaluation_observations,
-                value=decision_value,
-                metric_config=metric,
-                label=(
-                    f"{update['update_id']}:{cohort_id}:evaluation:{decision_metric}"
-                ),
-                family_size=family_size,
-            )
-            evaluation_task_deltas_by_cohort[cohort_id] = evaluation_task_deltas
-            evaluation_score_effect, _ = _effect(
+            evaluation_score_effect, evaluation_score_deltas = _effect(
                 evaluation_observations,
                 value=score_value,
                 metric_config=metric,
                 label=f"{update['update_id']}:{cohort_id}:evaluation:score",
                 family_size=family_size,
             )
-            evaluation_pass_effect, _ = _effect(
+            evaluation_pass_effect, evaluation_pass_deltas = _effect(
                 evaluation_observations,
                 value=pass_value,
                 metric_config=metric,
                 label=f"{update['update_id']}:{cohort_id}:evaluation:pass_rate",
                 family_size=family_size,
             )
+            if decision_metric == "score":
+                decision_effect = decision_score_effect
+                decision_task_deltas = decision_score_deltas
+                evaluation_effect = evaluation_score_effect
+                evaluation_task_deltas = evaluation_score_deltas
+            else:
+                decision_effect = decision_pass_effect
+                decision_task_deltas = decision_pass_deltas
+                evaluation_effect = evaluation_pass_effect
+                evaluation_task_deltas = evaluation_pass_deltas
+            decision_task_deltas_by_cohort[cohort_id] = decision_task_deltas
+            evaluation_task_deltas_by_cohort[cohort_id] = evaluation_task_deltas
 
             decision_errors = _error_counts(
                 decision_observations, non_evaluable_types
@@ -878,6 +869,8 @@ def evaluate_suite(suite: dict[str, Any]) -> dict[str, Any]:
             {
                 "update_id": update["update_id"],
                 "epoch": update["epoch"],
+                "old_skill_fingerprint": update["old_skill_fingerprint"],
+                "new_skill_fingerprint": update["new_skill_fingerprint"],
                 "activation_control": update["activation_control"],
                 "cohorts": cohort_reports,
                 "supported_positive_cohorts": positive,
@@ -929,12 +922,19 @@ def evaluate_suite(suite: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "suite_id": suite["suite_id"],
+        "run_manifest": suite["run_manifest"],
         "method": {
             "cohort_key": "scenario×model×runtime",
             "decision_metric": decision_metric,
+            "selection_role": "decision",
+            "held_out_evaluation_role": "evaluation",
+            "bootstrap_samples": metric["bootstrap_samples"],
+            "bootstrap_seed": metric["bootstrap_seed"],
             "confidence_level": metric["confidence_level"],
             "familywise_method": metric["familywise_method"],
             "practical_margin": metric["practical_margin"],
+            "cohort_family_size": family_size,
+            "global_family_size": len(suite["updates"]),
         },
         "updates": update_reports,
         "aggregate": {

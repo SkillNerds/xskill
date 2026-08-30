@@ -63,6 +63,22 @@ def test_baseline_detects_supported_reversal_and_avoids_scoped_harm():
     assert first["scoped"]["oracle_value_gap_over_global"] == 0.05
 
 
+def test_report_preserves_protocol_and_candidate_bindings():
+    suite = load_suite(BASELINE_PATH)
+    report = evaluate_suite(suite)
+    first = report["updates"][0]
+
+    assert report["run_manifest"] == suite["run_manifest"]
+    assert first["old_skill_fingerprint"] == suite["updates"][0][
+        "old_skill_fingerprint"
+    ]
+    assert first["new_skill_fingerprint"] == suite["updates"][0][
+        "new_skill_fingerprint"
+    ]
+    assert report["method"]["selection_role"] == "decision"
+    assert report["method"]["held_out_evaluation_role"] == "evaluation"
+
+
 def test_aggregate_keeps_policy_gain_harm_and_resource_cost_separate():
     aggregate = evaluate_suite(load_suite(BASELINE_PATH))["aggregate"]
 
