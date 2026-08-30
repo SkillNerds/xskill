@@ -13,7 +13,12 @@ from typing import Any
 from xskill.pipeline.atom import AtomTask
 from xskill.tasks.evidence import ScopedAtomEvidence, ScopedTrajectoryEvidence
 from xskill.tasks.linker import BoundedTaskLinker
-from xskill.tasks.models import ATTEMPT_RELATION_TYPES, AtomRef, SessionRef
+from xskill.tasks.models import (
+    ATTEMPT_RELATION_TYPES,
+    AtomRef,
+    SessionRef,
+    TaskAttempt,
+)
 from xskill.tasks.scopes import ScopeIdentity
 
 SCHEMA_VERSION = 1
@@ -51,7 +56,9 @@ def validate_suite(suite: Any) -> None:
         raise LinkerReplayValidationError(
             f"suite.schema_version: supported={SCHEMA_VERSION}, got={version}"
         )
-    _require(suite, "suite_id", str, "suite")
+    suite_id = _require(suite, "suite_id", str, "suite")
+    if not suite_id.strip():
+        raise LinkerReplayValidationError("suite.suite_id: expected a non-empty string")
     manifest = _require(suite, "run_manifest", dict, "suite")
     for key in ("repository_revision", "generated_at", "fixture_kind"):
         if not _require(manifest, key, str, "suite.run_manifest"):
@@ -85,6 +92,7 @@ def validate_suite(suite: Any) -> None:
         if not sessions:
             raise LinkerReplayValidationError(f"{context}.sessions must not be empty")
         atom_ids: set[str] = set()
+        atom_ranges: dict[str, tuple[int, int]] = {}
         session_ids: set[tuple[str, str]] = set()
         for session_index, session in enumerate(sessions):
             session_context = f"{context}.sessions[{session_index}]"
@@ -109,6 +117,7 @@ def validate_suite(suite: Any) -> None:
                 raise LinkerReplayValidationError(
                     f"{session_context}.atoms must not be empty"
                 )
+            offset = 1
             for atom_index, atom in enumerate(atoms):
                 atom_context = f"{session_context}.atoms[{atom_index}]"
                 if not isinstance(atom, dict):
@@ -126,9 +135,13 @@ def validate_suite(suite: Any) -> None:
                         raise LinkerReplayValidationError(
                             f"{atom_context}.{key}: expected a non-empty string"
                         )
-                skills = atom.get("skills") or []
+                raw_segment = atom["raw_segment"]
+                span = max(1, len(raw_segment.splitlines()))
+                atom_ranges[atom_id] = (offset, offset + span)
+                offset += span
+                skills = atom.get("skills", [])
                 if not isinstance(skills, list) or not all(
-                    isinstance(skill, str) and skill for skill in skills
+                    isinstance(skill, str) and skill.strip() for skill in skills
                 ):
                     raise LinkerReplayValidationError(
                         f"{atom_context}.skills: expected non-empty strings"
@@ -174,6 +187,57 @@ def validate_suite(suite: Any) -> None:
             if decision not in ATTEMPT_DECISIONS:
                 raise LinkerReplayValidationError(
                     f"{relation_context}.decision: unsupported value {decision!r}"
+                )
+            endpoint_signatures = []
+            for endpoint in ("from_evidence", "to_evidence"):
+                evidence_specs = _require(relation, endpoint, list, relation_context)
+                if not evidence_specs:
+                    raise LinkerReplayValidationError(
+                        f"{relation_context}.{endpoint}: must not be empty"
+                    )
+                signature = []
+                for evidence_index, evidence in enumerate(evidence_specs):
+                    evidence_context = (
+                        f"{relation_context}.{endpoint}[{evidence_index}]"
+                    )
+                    if not isinstance(evidence, dict):
+                        raise LinkerReplayValidationError(
+                            f"{evidence_context}: expected an object"
+                        )
+                    atom_id = _require(evidence, "atom_id", str, evidence_context)
+                    start = _require(evidence, "start", int, evidence_context)
+                    end = _require(evidence, "end", int, evidence_context)
+                    if atom_id not in atom_ranges:
+                        raise LinkerReplayValidationError(
+                            f"{evidence_context}.atom_id: unknown Atom {atom_id!r}"
+                        )
+                    atom_start, atom_end = atom_ranges[atom_id]
+                    if not atom_start <= start < end <= atom_end:
+                        raise LinkerReplayValidationError(
+                            f"{evidence_context}: range must stay within "
+                            f"[{atom_start}, {atom_end})"
+                        )
+                    signature.append((atom_id, start, end))
+                if len(set(signature)) != len(signature):
+                    raise LinkerReplayValidationError(
+                        f"{relation_context}.{endpoint}: duplicate evidence range"
+                    )
+                endpoint_signatures.append(tuple(sorted(signature)))
+            if endpoint_signatures[0] == endpoint_signatures[1]:
+                raise LinkerReplayValidationError(
+                    f"{relation_context}: Attempt relation endpoints must differ"
+                )
+            endpoint_gold_tasks = [
+                {gold_by_atom[atom_id] for atom_id, _start, _end in signature}
+                for signature in endpoint_signatures
+            ]
+            if (
+                len(endpoint_gold_tasks[0]) != 1
+                or endpoint_gold_tasks[0] != endpoint_gold_tasks[1]
+            ):
+                raise LinkerReplayValidationError(
+                    f"{relation_context}: Attempt relation endpoints must belong "
+                    "to the same gold Task"
                 )
 
 
@@ -385,42 +449,23 @@ def _proposal_counts(
     confirmed_clusters: dict[str, set[str]] = defaultdict(set)
     for atom_id, task_id in confirmed.items():
         confirmed_clusters[task_id].add(atom_id)
+    cluster_gold_tasks: dict[str, set[str]] = defaultdict(set)
+    for atom_id, task_id in confirmed.items():
+        cluster_gold_tasks[task_id].add(gold[atom_id])
     proposals_by_atom: dict[str, list[str]] = defaultdict(list)
     useful_proposals = []
-    useful_proposers: dict[tuple[str, str], set[str]] = defaultdict(set)
     for atom_id, candidate_task_id in proposed:
         proposals_by_atom[atom_id].append(candidate_task_id)
         candidate_atoms = confirmed_clusters.get(candidate_task_id, set())
+        source_task_id = confirmed[atom_id]
+        expected_gold = {gold[atom_id]}
         if (
             candidate_atoms
             and atom_id not in candidate_atoms
-            and all(
-                gold[other_atom_id] == gold[atom_id]
-                for other_atom_id in candidate_atoms
-            )
+            and cluster_gold_tasks[source_task_id] == expected_gold
+            and cluster_gold_tasks[candidate_task_id] == expected_gold
         ):
             useful_proposals.append((atom_id, candidate_task_id))
-            useful_proposers[(confirmed[atom_id], candidate_task_id)].add(atom_id)
-    gold_sizes = Counter(gold.values())
-    contingency = Counter((gold[atom_id], confirmed[atom_id]) for atom_id in gold)
-    gold_pair_count = sum(count * (count - 1) // 2 for count in gold_sizes.values())
-    confirmed_gold_pair_count = sum(
-        count * (count - 1) // 2 for count in contingency.values()
-    )
-    false_split_pair_count = gold_pair_count - confirmed_gold_pair_count
-    recoverable_pair_count = 0
-    task_pairs = {
-        tuple(sorted((source_task_id, candidate_task_id)))
-        for source_task_id, candidate_task_id in useful_proposers
-    }
-    for left_task_id, right_task_id in task_pairs:
-        left_proposers = useful_proposers.get((left_task_id, right_task_id), set())
-        right_proposers = useful_proposers.get((right_task_id, left_task_id), set())
-        recoverable_pair_count += (
-            len(left_proposers) * len(confirmed_clusters[right_task_id])
-            + len(right_proposers) * len(confirmed_clusters[left_task_id])
-            - len(left_proposers) * len(right_proposers)
-        )
 
     parent = {task_id: task_id for task_id in set(confirmed.values())}
 
@@ -439,6 +484,14 @@ def _proposal_counts(
     for atom_id, candidate_task_id in set(useful_proposals):
         union(confirmed[atom_id], candidate_task_id)
     oracle_review = {atom_id: find(task_id) for atom_id, task_id in confirmed.items()}
+    confirmed_counts = _partition_counts(gold, confirmed)
+    oracle_counts = _partition_counts(gold, oracle_review)
+    false_split_pair_count = (
+        confirmed_counts["gold_pairs"] - confirmed_counts["true_positive_pairs"]
+    )
+    recoverable_pair_count = (
+        oracle_counts["true_positive_pairs"] - confirmed_counts["true_positive_pairs"]
+    )
     return (
         {
             "proposed": len(proposed),
@@ -485,6 +538,58 @@ def _relation_counts(expected: Counter, predicted: Counter) -> dict:
         "false_positive": predicted_total - true_positive,
         "false_negative": expected_total - true_positive,
     }
+
+
+def _attempt_support(attempt: TaskAttempt) -> tuple[tuple[str, int, int], ...]:
+    return tuple(
+        sorted(
+            (
+                evidence.atom_ref.atom_id,
+                evidence.start,
+                evidence.end,
+            )
+            for evidence in attempt.evidence_ranges
+            if evidence.atom_ref is not None and not evidence.stale
+        )
+    )
+
+
+def _fixture_relation_key(relation: dict[str, Any]) -> tuple:
+    def endpoint(name: str) -> tuple[tuple[str, int, int], ...]:
+        return tuple(
+            sorted(
+                (item["atom_id"], item["start"], item["end"]) for item in relation[name]
+            )
+        )
+
+    return (
+        endpoint("from_evidence"),
+        endpoint("to_evidence"),
+        relation["relation_type"],
+        relation["decision"],
+    )
+
+
+def _public_relation_keys(relations: Counter) -> list[dict[str, Any]]:
+    result = []
+    for from_evidence, to_evidence, relation_type, decision in sorted(
+        relations.elements()
+    ):
+        result.append(
+            {
+                "from_evidence": [
+                    {"atom_id": atom_id, "start": start, "end": end}
+                    for atom_id, start, end in from_evidence
+                ],
+                "to_evidence": [
+                    {"atom_id": atom_id, "start": start, "end": end}
+                    for atom_id, start, end in to_evidence
+                ],
+                "relation_type": relation_type,
+                "decision": decision,
+            }
+        )
+    return result
 
 
 def _public_relation(counts: dict) -> dict:
@@ -548,11 +653,19 @@ def _evaluate_case(
         for name, predicted in baselines.items()
     }
     expected_relations = Counter(
-        (relation["relation_type"], relation["decision"])
+        _fixture_relation_key(relation)
         for relation in case["expected_attempt_relations"]
     )
+    attempt_support_by_id = {
+        attempt.attempt_id: _attempt_support(attempt) for attempt in generation.attempts
+    }
     predicted_relations = Counter(
-        (relation.relation_type, relation.decision)
+        (
+            attempt_support_by_id[relation.from_attempt_id],
+            attempt_support_by_id[relation.to_attempt_id],
+            relation.relation_type,
+            relation.decision,
+        )
         for relation in generation.attempt_relations
     )
     relation_counts = _relation_counts(expected_relations, predicted_relations)
@@ -573,14 +686,8 @@ def _evaluate_case(
             "absolute_error": abs(attempt_count - expected_attempt_count),
         },
         "attempt_relations": _public_relation(relation_counts),
-        "expected_attempt_relation_types": sorted(
-            f"{relation_type}:{decision}"
-            for relation_type, decision in expected_relations.elements()
-        ),
-        "predicted_attempt_relation_types": sorted(
-            f"{relation_type}:{decision}"
-            for relation_type, decision in predicted_relations.elements()
-        ),
+        "expected_attempt_relations": _public_relation_keys(expected_relations),
+        "predicted_attempt_relations": _public_relation_keys(predicted_relations),
     }
     raw_counts = {
         "grouping": grouping_counts,

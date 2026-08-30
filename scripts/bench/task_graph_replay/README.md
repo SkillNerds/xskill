@@ -16,15 +16,17 @@ python -m scripts.bench.task_graph_replay.evaluate scripts/bench/task_graph_repl
 python -m scripts.bench.task_graph_replay.evaluate_linker scripts/bench/task_graph_replay/fixtures/linker_structure_v1.json
 ```
 
-这份结构评测直接调用当前 `BoundedTaskLinker`，同时计算 Session-as-Task、Atom-as-Task、Task Graph 自动结果和 oracle review upper bound 的 Task grouping 指标，并报告 proposed membership 的 precision、漏拆分对可恢复率、每 Atom 候选数、Attempt 数量和 Attempt relation F1。
+这份结构评测直接调用当前 `BoundedTaskLinker`，同时计算 Session-as-Task、Atom-as-Task、Task Graph 自动结果和 oracle review upper bound 的 Task grouping 指标，并报告 proposed membership 的 precision、漏拆分对可恢复率、每 Atom 候选数、Attempt 数量和包含 evidence 端点的 Attempt relation F1。
 
 同一个结构 case 内的全部 Session 共享一个 TaskScope，`source_scope_id` 和 `traj_id` 仍保持独立，因此跨 Session case 检查的是 linker 在合法 TaskScope 内的关联能力，不会绕过租户、actor 或 workspace 隔离边界。
 
-一个 proposed membership 只有在目标 confirmed Task 的全部现存 Atom 都属于该 Atom 的 gold Task 时才计为 useful，避免把指向已误合并 Task 的危险候选算作正确候选。
+一个 proposed membership 只有在源和目标 confirmed Task 都是同一个 gold Task 的纯净片段时才计为 useful，避免把来自或指向已误合并 Task 的危险候选算作正确候选。
 
-`oracle review upper bound` 只合并 gold 判定正确的 proposed membership，用于衡量当前候选集在理想审核下能恢复多少错误，它使用 gold 信息，不是自动算法分数，也不能作为线上效果宣称。
+`oracle review upper bound` 只合并由 gold 判定为同一任务的纯净 Task 片段，用于衡量当前候选集在理想审核下能恢复多少错误，它使用 gold 信息，不是自动算法分数，也不能作为线上效果宣称。
 
-Task grouping 通过 contingency table 线性累计，proposal 可恢复对按有界候选连接的 Task 对聚合，不物化全部 Atom pair。
+Task grouping 通过 contingency table 线性累计，confirmed Task 的 gold 纯度只预计算一次，proposal 判断保持 O(Atom + proposal)，可恢复对直接取 oracle review 前后正确 pair 的差值，不物化全部 Atom pair。
+
+结构 fixture 的 Attempt relation 使用 `from_evidence` 和 `to_evidence` 记录 Atom id 与半开行区间，指标联合比较两个 evidence 端点、relation type 和 decision，并拒绝跨 gold Task 的关系。
 
 `linker_structure_v1.json` 是覆盖 A→B→A、跨 Session 显式/隐式延续、相似负例、新目标、重试、纠正和多 Skill Atom 的小规模合成结构 pilot；它用于锁定指标、风险和生产 linker 行为，不替代后续 50–100 个经人工复核的代表性离线样本。
 

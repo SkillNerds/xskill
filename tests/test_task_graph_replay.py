@@ -311,7 +311,7 @@ def test_linker_structure_keeps_a_b_a_and_cross_session_uncertainty_visible():
     a_b_a = cases["same-session-a-b-a"]
     assert a_b_a["predicted_task_count"] == 2
     assert a_b_a["grouping"]["task_graph"]["pairwise"]["f1"] == 1.0
-    assert a_b_a["predicted_attempt_relation_types"] == ["continuation_of:proposed"]
+    assert a_b_a["predicted_attempt_relations"] == a_b_a["expected_attempt_relations"]
 
     phase_shift = cases["cross-session-phase-shift"]
     assert (
@@ -353,6 +353,113 @@ def test_linker_proposal_does_not_treat_a_mixed_target_as_useful():
         "atom-a2": "task-mixed",
         "atom-b": "task-mixed",
     }
+
+
+def test_linker_proposal_does_not_merge_a_mixed_source_cluster():
+    gold = {"atom-a": "gold-a", "atom-b": "gold-b", "atom-c": "gold-a"}
+    confirmed = {
+        "atom-a": "task-mixed",
+        "atom-b": "task-mixed",
+        "atom-c": "task-a",
+    }
+
+    counts, reviewed = evaluate_linker._proposal_counts(
+        gold,
+        confirmed,
+        [("atom-a", "task-a")],
+    )
+
+    assert counts["useful"] == 0
+    assert counts["recoverable_false_split_pairs"] == 0
+    assert reviewed == confirmed
+
+
+def test_linker_proposal_recovery_includes_transitive_fragment_pairs():
+    gold = {atom_id: "gold" for atom_id in ("atom-a", "atom-b", "atom-c", "atom-d")}
+    confirmed = {
+        "atom-a": "task-target",
+        "atom-b": "task-target",
+        "atom-c": "task-c",
+        "atom-d": "task-d",
+    }
+
+    counts, reviewed = evaluate_linker._proposal_counts(
+        gold,
+        confirmed,
+        [("atom-c", "task-target"), ("atom-d", "task-target")],
+    )
+
+    assert counts["false_split_pairs"] == 5
+    assert counts["recoverable_false_split_pairs"] == 5
+    assert len(set(reviewed.values())) == 1
+
+
+def test_linker_proposal_purity_checks_are_linear_in_gold_reads():
+    class CountingGold(dict):
+        reads = 0
+
+        def __getitem__(self, key):
+            type(self).reads += 1
+            return super().__getitem__(key)
+
+    atom_count = 2_000
+    target_count = atom_count // 2
+    gold = CountingGold({f"atom-{index}": "gold" for index in range(atom_count)})
+    confirmed = {
+        **{f"atom-{index}": "task-target" for index in range(target_count)},
+        **{
+            f"atom-{index}": f"task-{index}"
+            for index in range(target_count, atom_count)
+        },
+    }
+    proposed = [
+        (f"atom-{index}", "task-target") for index in range(target_count, atom_count)
+    ]
+
+    evaluate_linker._proposal_counts(gold, confirmed, proposed)
+
+    assert CountingGold.reads <= 4 * atom_count
+
+
+def test_linker_attempt_relation_metric_includes_evidence_endpoints():
+    suite = evaluate_linker.load_suite(LINKER_FIXTURE_PATH)
+    relation = suite["cases"][1]["expected_attempt_relations"][0]
+    relation["from_evidence"], relation["to_evidence"] = (
+        relation["to_evidence"],
+        relation["from_evidence"],
+    )
+
+    case = evaluate_linker.evaluate_suite(suite)["cases"][1]
+
+    assert case["attempt_relations"]["true_positive"] == 0
+    assert case["attempt_relations"]["false_positive"] == 1
+    assert case["attempt_relations"]["false_negative"] == 1
+
+
+def test_linker_structure_fixture_rejects_attempt_evidence_outside_atom():
+    suite = evaluate_linker.load_suite(LINKER_FIXTURE_PATH)
+    relation = suite["cases"][1]["expected_attempt_relations"][0]
+    relation["from_evidence"][0]["start"] = 0
+
+    with pytest.raises(
+        evaluate_linker.LinkerReplayValidationError,
+        match="range must stay within",
+    ):
+        evaluate_linker.validate_suite(suite)
+
+
+def test_linker_structure_fixture_rejects_cross_task_attempt_relation():
+    suite = evaluate_linker.load_suite(LINKER_FIXTURE_PATH)
+    relation = suite["cases"][1]["expected_attempt_relations"][0]
+    relation["from_evidence"] = [
+        {"atom_id": "atom-release-notes", "start": 6, "end": 11}
+    ]
+
+    with pytest.raises(
+        evaluate_linker.LinkerReplayValidationError,
+        match="same gold Task",
+    ):
+        evaluate_linker.validate_suite(suite)
 
 
 def test_linker_structure_fixture_rejects_incomplete_gold():

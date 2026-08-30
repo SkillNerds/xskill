@@ -81,7 +81,16 @@
       ],
       "expected_attempt_count": 3,
       "expected_attempt_relations": [
-        {"relation_type": "continuation_of", "decision": "proposed"}
+        {
+          "from_evidence": [
+            {"atom_id": "atom-auth-continue", "start": 11, "end": 16}
+          ],
+          "to_evidence": [
+            {"atom_id": "atom-auth-start", "start": 1, "end": 6}
+          ],
+          "relation_type": "continuation_of",
+          "decision": "proposed"
+        }
       ]
     },
     {
@@ -157,7 +166,16 @@
       ],
       "expected_attempt_count": 2,
       "expected_attempt_relations": [
-        {"relation_type": "continuation_of", "decision": "proposed"}
+        {
+          "from_evidence": [
+            {"atom_id": "atom-cache-continue", "start": 1, "end": 6}
+          ],
+          "to_evidence": [
+            {"atom_id": "atom-cache-analysis", "start": 1, "end": 6}
+          ],
+          "relation_type": "continuation_of",
+          "decision": "proposed"
+        }
       ]
     },
     {
@@ -264,7 +282,16 @@
       ],
       "expected_attempt_count": 2,
       "expected_attempt_relations": [
-        {"relation_type": "retry_of", "decision": "confirmed"}
+        {
+          "from_evidence": [
+            {"atom_id": "atom-concurrency-retry", "start": 6, "end": 11}
+          ],
+          "to_evidence": [
+            {"atom_id": "atom-concurrency-failed", "start": 1, "end": 6}
+          ],
+          "relation_type": "retry_of",
+          "decision": "confirmed"
+        }
       ]
     },
     {
@@ -289,7 +316,16 @@
       ],
       "expected_attempt_count": 2,
       "expected_attempt_relations": [
-        {"relation_type": "retry_of", "decision": "confirmed"}
+        {
+          "from_evidence": [
+            {"atom_id": "atom-intra-retry", "start": 7, "end": 12}
+          ],
+          "to_evidence": [
+            {"atom_id": "atom-intra-retry", "start": 1, "end": 7}
+          ],
+          "relation_type": "retry_of",
+          "decision": "confirmed"
+        }
       ]
     },
     {
@@ -314,7 +350,16 @@
       ],
       "expected_attempt_count": 2,
       "expected_attempt_relations": [
-        {"relation_type": "correction_of", "decision": "confirmed"}
+        {
+          "from_evidence": [
+            {"atom_id": "atom-export-correction", "start": 7, "end": 12}
+          ],
+          "to_evidence": [
+            {"atom_id": "atom-export-correction", "start": 1, "end": 7}
+          ],
+          "relation_type": "correction_of",
+          "decision": "confirmed"
+        }
       ]
     },
     {

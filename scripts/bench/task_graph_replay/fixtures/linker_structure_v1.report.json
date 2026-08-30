@@ -16,7 +16,7 @@
         "predicted": 2
       },
       "case_id": "same-session-new-goal",
-      "expected_attempt_relation_types": [],
+      "expected_attempt_relations": [],
       "gold_task_count": 2,
       "grouping": {
         "atom_as_task": {
@@ -80,7 +80,7 @@
           }
         }
       },
-      "predicted_attempt_relation_types": [],
+      "predicted_attempt_relations": [],
       "predicted_task_count": 2,
       "proposals": {
         "atoms_with_proposals": 0,
@@ -110,8 +110,25 @@
         "predicted": 3
       },
       "case_id": "same-session-a-b-a",
-      "expected_attempt_relation_types": [
-        "continuation_of:proposed"
+      "expected_attempt_relations": [
+        {
+          "decision": "proposed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-auth-continue",
+              "end": 16,
+              "start": 11
+            }
+          ],
+          "relation_type": "continuation_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-auth-start",
+              "end": 6,
+              "start": 1
+            }
+          ]
+        }
       ],
       "gold_task_count": 2,
       "grouping": {
@@ -176,8 +193,25 @@
           }
         }
       },
-      "predicted_attempt_relation_types": [
-        "continuation_of:proposed"
+      "predicted_attempt_relations": [
+        {
+          "decision": "proposed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-auth-continue",
+              "end": 16,
+              "start": 11
+            }
+          ],
+          "relation_type": "continuation_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-auth-start",
+              "end": 6,
+              "start": 1
+            }
+          ]
+        }
       ],
       "predicted_task_count": 2,
       "proposals": {
@@ -208,7 +242,7 @@
         "predicted": 2
       },
       "case_id": "cross-session-phase-shift",
-      "expected_attempt_relation_types": [],
+      "expected_attempt_relations": [],
       "gold_task_count": 1,
       "grouping": {
         "atom_as_task": {
@@ -272,7 +306,7 @@
           }
         }
       },
-      "predicted_attempt_relation_types": [],
+      "predicted_attempt_relations": [],
       "predicted_task_count": 2,
       "proposals": {
         "atoms_with_proposals": 1,
@@ -302,8 +336,25 @@
         "predicted": 2
       },
       "case_id": "cross-session-high-overlap",
-      "expected_attempt_relation_types": [
-        "continuation_of:proposed"
+      "expected_attempt_relations": [
+        {
+          "decision": "proposed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-cache-continue",
+              "end": 6,
+              "start": 1
+            }
+          ],
+          "relation_type": "continuation_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-cache-analysis",
+              "end": 6,
+              "start": 1
+            }
+          ]
+        }
       ],
       "gold_task_count": 1,
       "grouping": {
@@ -368,8 +419,25 @@
           }
         }
       },
-      "predicted_attempt_relation_types": [
-        "continuation_of:proposed"
+      "predicted_attempt_relations": [
+        {
+          "decision": "proposed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-cache-continue",
+              "end": 6,
+              "start": 1
+            }
+          ],
+          "relation_type": "continuation_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-cache-analysis",
+              "end": 6,
+              "start": 1
+            }
+          ]
+        }
       ],
       "predicted_task_count": 1,
       "proposals": {
@@ -400,7 +468,7 @@
         "predicted": 2
       },
       "case_id": "cross-session-implicit-continuation",
-      "expected_attempt_relation_types": [],
+      "expected_attempt_relations": [],
       "gold_task_count": 1,
       "grouping": {
         "atom_as_task": {
@@ -464,7 +532,7 @@
           }
         }
       },
-      "predicted_attempt_relation_types": [],
+      "predicted_attempt_relations": [],
       "predicted_task_count": 2,
       "proposals": {
         "atoms_with_proposals": 1,
@@ -494,7 +562,7 @@
         "predicted": 2
       },
       "case_id": "cross-session-similar-negative",
-      "expected_attempt_relation_types": [],
+      "expected_attempt_relations": [],
       "gold_task_count": 2,
       "grouping": {
         "atom_as_task": {
@@ -558,7 +626,7 @@
           }
         }
       },
-      "predicted_attempt_relation_types": [],
+      "predicted_attempt_relations": [],
       "predicted_task_count": 2,
       "proposals": {
         "atoms_with_proposals": 1,
@@ -588,8 +656,25 @@
         "predicted": 2
       },
       "case_id": "same-session-explicit-retry",
-      "expected_attempt_relation_types": [
-        "retry_of:confirmed"
+      "expected_attempt_relations": [
+        {
+          "decision": "confirmed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-concurrency-retry",
+              "end": 11,
+              "start": 6
+            }
+          ],
+          "relation_type": "retry_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-concurrency-failed",
+              "end": 6,
+              "start": 1
+            }
+          ]
+        }
       ],
       "gold_task_count": 1,
       "grouping": {
@@ -654,8 +739,25 @@
           }
         }
       },
-      "predicted_attempt_relation_types": [
-        "retry_of:confirmed"
+      "predicted_attempt_relations": [
+        {
+          "decision": "confirmed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-concurrency-retry",
+              "end": 11,
+              "start": 6
+            }
+          ],
+          "relation_type": "retry_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-concurrency-failed",
+              "end": 6,
+              "start": 1
+            }
+          ]
+        }
       ],
       "predicted_task_count": 1,
       "proposals": {
@@ -686,8 +788,25 @@
         "predicted": 2
       },
       "case_id": "intra-atom-retry",
-      "expected_attempt_relation_types": [
-        "retry_of:confirmed"
+      "expected_attempt_relations": [
+        {
+          "decision": "confirmed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-intra-retry",
+              "end": 12,
+              "start": 7
+            }
+          ],
+          "relation_type": "retry_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-intra-retry",
+              "end": 7,
+              "start": 1
+            }
+          ]
+        }
       ],
       "gold_task_count": 1,
       "grouping": {
@@ -752,8 +871,25 @@
           }
         }
       },
-      "predicted_attempt_relation_types": [
-        "retry_of:confirmed"
+      "predicted_attempt_relations": [
+        {
+          "decision": "confirmed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-intra-retry",
+              "end": 12,
+              "start": 7
+            }
+          ],
+          "relation_type": "retry_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-intra-retry",
+              "end": 7,
+              "start": 1
+            }
+          ]
+        }
       ],
       "predicted_task_count": 1,
       "proposals": {
@@ -784,8 +920,25 @@
         "predicted": 2
       },
       "case_id": "intra-atom-correction",
-      "expected_attempt_relation_types": [
-        "correction_of:confirmed"
+      "expected_attempt_relations": [
+        {
+          "decision": "confirmed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-export-correction",
+              "end": 12,
+              "start": 7
+            }
+          ],
+          "relation_type": "correction_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-export-correction",
+              "end": 7,
+              "start": 1
+            }
+          ]
+        }
       ],
       "gold_task_count": 1,
       "grouping": {
@@ -850,8 +1003,25 @@
           }
         }
       },
-      "predicted_attempt_relation_types": [
-        "correction_of:confirmed"
+      "predicted_attempt_relations": [
+        {
+          "decision": "confirmed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-export-correction",
+              "end": 12,
+              "start": 7
+            }
+          ],
+          "relation_type": "correction_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-export-correction",
+              "end": 7,
+              "start": 1
+            }
+          ]
+        }
       ],
       "predicted_task_count": 1,
       "proposals": {
@@ -882,7 +1052,7 @@
         "predicted": 2
       },
       "case_id": "same-session-similar-new-goals",
-      "expected_attempt_relation_types": [],
+      "expected_attempt_relations": [],
       "gold_task_count": 2,
       "grouping": {
         "atom_as_task": {
@@ -946,7 +1116,7 @@
           }
         }
       },
-      "predicted_attempt_relation_types": [],
+      "predicted_attempt_relations": [],
       "predicted_task_count": 2,
       "proposals": {
         "atoms_with_proposals": 1,
@@ -976,7 +1146,7 @@
         "predicted": 1
       },
       "case_id": "single-atom-multi-skill",
-      "expected_attempt_relation_types": [],
+      "expected_attempt_relations": [],
       "gold_task_count": 1,
       "grouping": {
         "atom_as_task": {
@@ -1040,7 +1210,7 @@
           }
         }
       },
-      "predicted_attempt_relation_types": [],
+      "predicted_attempt_relations": [],
       "predicted_task_count": 1,
       "proposals": {
         "atoms_with_proposals": 0,
@@ -1151,7 +1321,7 @@
       "useful": 2
     }
   },
-  "report_sha256": "d645d1bfb4d2f2a00cf85e5001609b420d9c630e6d47ed5833f897627daed2e0",
+  "report_sha256": "785d188b22c1614706401b4afe4b57308693275d93d0d514a74ea7117020213e",
   "run_manifest": {
     "fixture_kind": "synthetic-structural-pilot",
     "generated_at": "2026-08-30T00:00:00Z",
