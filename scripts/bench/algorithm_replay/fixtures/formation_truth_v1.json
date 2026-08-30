@@ -1,0 +1,106 @@
+{
+  "truth_schema_version": 1,
+  "annotation_schema_version": 1,
+  "suite_id": "raw-only-formation-contract-v1",
+  "cases": [
+    {
+      "case_id": "formation-001",
+      "raw_sha256": "sha256:1b3032cc399aefb23e377d3a4e84e1dc70b54b6f2f947d5fac3af6df88a45fa4",
+      "provenance": {
+        "source_ids": ["fixture-migration", "fixture-validation"],
+        "composition_scenario": "a_to_b"
+      },
+      "boundaries": [
+        {
+          "line": 10,
+          "decision": "split",
+          "type": "new_goal",
+          "ambiguous": false
+        }
+      ],
+      "gold_atoms": [
+        {
+          "id": "gold-formation-001-01",
+          "start_line": 1,
+          "end_line": 10,
+          "outcome_state": "completed",
+          "evidence": {
+            "goal": [3],
+            "action": [5],
+            "tool_feedback": [7],
+            "artifact_change": [],
+            "verification": [],
+            "outcome": [9],
+            "user_acceptance": [],
+            "user_rejection": []
+          },
+          "evidence_completeness": "partial",
+          "learning_eligibility": "uncertain",
+          "eligibility_reasons": [
+            "迁移动作可归因，但独立验证属于后续目标"
+          ]
+        },
+        {
+          "id": "gold-formation-001-02",
+          "start_line": 10,
+          "end_line": 18,
+          "outcome_state": "completed",
+          "evidence": {
+            "goal": [11],
+            "action": [13],
+            "tool_feedback": [15],
+            "artifact_change": [],
+            "verification": [15, 17],
+            "outcome": [17],
+            "user_acceptance": [],
+            "user_rejection": []
+          },
+          "evidence_completeness": "complete",
+          "learning_eligibility": "eligible",
+          "eligibility_reasons": [
+            "目标、检查动作和验证结果均可定位"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "formation-002",
+      "raw_sha256": "sha256:7eaee300dfe299d0259e3f4f91c8f42e61f9dddc271c9d461bffaa8e7851894b",
+      "provenance": {
+        "source_ids": ["fixture-spreadsheet-export"],
+        "composition_scenario": "clarification"
+      },
+      "boundaries": [
+        {
+          "line": 8,
+          "decision": "keep",
+          "type": "clarify",
+          "ambiguous": false
+        }
+      ],
+      "gold_atoms": [
+        {
+          "id": "gold-formation-002-01",
+          "start_line": 1,
+          "end_line": 16,
+          "outcome_state": "completed",
+          "evidence": {
+            "goal": [3, 9],
+            "action": [5, 11],
+            "tool_feedback": [7, 13],
+            "artifact_change": [],
+            "verification": [13],
+            "outcome": [15],
+            "user_acceptance": [],
+            "user_rejection": []
+          },
+          "evidence_completeness": "complete",
+          "learning_eligibility": "eligible",
+          "eligibility_reasons": [
+            "补充要求属于同一导出目标，且结果已验证"
+          ]
+        }
+      ]
+    }
+  ]
+}

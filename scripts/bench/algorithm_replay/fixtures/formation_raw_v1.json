@@ -1,0 +1,20 @@
+{
+  "raw_schema_version": 1,
+  "suite_id": "raw-only-formation-contract-v1",
+  "dataset_manifest": {
+    "dataset_id": "xskill-formation-contract-fixture",
+    "source_uri": "https://github.com/SkillNerds/xskill",
+    "revision": "v1",
+    "license": "MIT"
+  },
+  "cases": [
+    {
+      "case_id": "formation-001",
+      "raw_content": "<!-- xskill:harness=fixture -->\n## Initial Query\n请迁移 SQLite 表结构。\n## Assistant\n我会先检查现有表结构。\n## Tool\n旧表使用 atom_id 单列主键。\n## Assistant\n迁移已完成，历史记录全部保留。\n## User\n现在验证迁移后的约束和索引。\n## Assistant\n我会执行结构与查询计划检查。\n## Tool\n联合主键和目标索引均符合预期。\n## Assistant\n迁移结果验证完成。"
+    },
+    {
+      "case_id": "formation-002",
+      "raw_content": "<!-- xskill:harness=fixture -->\n## Initial Query\n请修复电子表格导出。\n## Assistant\n我会检查导出路径和列映射。\n## Tool\n现有实现遗漏了最后一列。\n## User\n导出的列顺序也要保持不变。\n## Assistant\n我会在同一修复中保留原有顺序。\n## Tool\n导出测试和列顺序检查均已通过。\n## Assistant\n导出问题已经修复并验证。"
+    }
+  ]
+}
