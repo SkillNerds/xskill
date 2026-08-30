@@ -1,0 +1,746 @@
+{
+  "schema_version": 1,
+  "suite_id": "formation-effect-contract-v1",
+  "metric_config": {
+    "pass_threshold": 1,
+    "bootstrap_samples": 1000,
+    "bootstrap_seed": 42,
+    "confidence_level": 0.95
+  },
+  "decision_policy": {
+    "primary_mode": "natural_output",
+    "minimum_primary_pass_rate_delta": 0.05,
+    "minimum_primary_ci_lower": 0,
+    "maximum_false_trigger_rate_delta": 0,
+    "maximum_known_pass_rate_drop": 0,
+    "minimum_improved_task_families": 2,
+    "require_matched_budget_positive": true
+  },
+  "run_manifest": {
+    "repository_revision": "synthetic-revision",
+    "recorded_at": "2026-08-30T00:00:00Z",
+    "training_set_fingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "held_out_task_set_fingerprint": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "evaluation_protocol_fingerprint": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "runtime_config_fingerprint": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+    "scorer_fingerprint": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+    "formation_config_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "skill_generation_config_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "activation_config_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "modes": [
+    {
+      "mode_id": "natural_output",
+      "budget_policy": "natural_output",
+      "arms": {
+        "session": {
+          "evidence_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "skill_library_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "skill_count": 2,
+          "serialized_skill_tokens": 240
+        },
+        "atom": {
+          "evidence_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "skill_library_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "skill_count": 3,
+          "serialized_skill_tokens": 300
+        },
+        "task_grounded": {
+          "evidence_fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "skill_library_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "skill_count": 2,
+          "serialized_skill_tokens": 180
+        },
+        "gold_task": {
+          "evidence_fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "skill_library_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "skill_count": 2,
+          "serialized_skill_tokens": 170
+        }
+      }
+    },
+    {
+      "mode_id": "matched_budget",
+      "budget_policy": "matched_serialized_skill_tokens",
+      "budget_value": 200,
+      "arms": {
+        "session": {
+          "evidence_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "skill_library_fingerprint": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "skill_count": 2,
+          "serialized_skill_tokens": 200
+        },
+        "atom": {
+          "evidence_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "skill_library_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "skill_count": 2,
+          "serialized_skill_tokens": 200
+        },
+        "task_grounded": {
+          "evidence_fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "skill_library_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "skill_count": 2,
+          "serialized_skill_tokens": 200
+        },
+        "gold_task": {
+          "evidence_fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "skill_library_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "skill_count": 2,
+          "serialized_skill_tokens": 200
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "data-novel",
+      "task_fingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "task_family": "data",
+      "seed": 1,
+      "cohort": "novel",
+      "expects_skill": true,
+      "control": {
+        "run_id": "data-novel-no-skill",
+        "score": 0,
+        "relevant_skill_activated": false,
+        "activated_skills": [],
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "error_type": "task_failure"
+      },
+      "observations": {
+        "natural_output": {
+          "session": {
+            "run_id": "data-novel-natural_output-session",
+            "score": 0,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "session-skill"
+            ],
+            "input_tokens": 130,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "atom": {
+            "run_id": "data-novel-natural_output-atom",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "atom-skill"
+            ],
+            "input_tokens": 135,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "task_grounded": {
+            "run_id": "data-novel-natural_output-task_grounded",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "task-grounded-skill"
+            ],
+            "input_tokens": 125,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "gold_task": {
+            "run_id": "data-novel-natural_output-gold_task",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "gold-task-skill"
+            ],
+            "input_tokens": 123,
+            "output_tokens": 10,
+            "error_type": null
+          }
+        },
+        "matched_budget": {
+          "session": {
+            "run_id": "data-novel-matched_budget-session",
+            "score": 0,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "session-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "atom": {
+            "run_id": "data-novel-matched_budget-atom",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "atom-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "task_grounded": {
+            "run_id": "data-novel-matched_budget-task_grounded",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "task-grounded-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "gold_task": {
+            "run_id": "data-novel-matched_budget-gold_task",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "gold-task-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          }
+        }
+      }
+    },
+    {
+      "case_id": "data-known",
+      "task_fingerprint": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "task_family": "data",
+      "seed": 1,
+      "cohort": "known",
+      "expects_skill": true,
+      "control": {
+        "run_id": "data-known-no-skill",
+        "score": 1,
+        "relevant_skill_activated": false,
+        "activated_skills": [],
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "error_type": null
+      },
+      "observations": {
+        "natural_output": {
+          "session": {
+            "run_id": "data-known-natural_output-session",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "session-skill"
+            ],
+            "input_tokens": 130,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "atom": {
+            "run_id": "data-known-natural_output-atom",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "atom-skill"
+            ],
+            "input_tokens": 135,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "task_grounded": {
+            "run_id": "data-known-natural_output-task_grounded",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "task-grounded-skill"
+            ],
+            "input_tokens": 125,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "gold_task": {
+            "run_id": "data-known-natural_output-gold_task",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "gold-task-skill"
+            ],
+            "input_tokens": 123,
+            "output_tokens": 10,
+            "error_type": null
+          }
+        },
+        "matched_budget": {
+          "session": {
+            "run_id": "data-known-matched_budget-session",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "session-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "atom": {
+            "run_id": "data-known-matched_budget-atom",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "atom-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "task_grounded": {
+            "run_id": "data-known-matched_budget-task_grounded",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "task-grounded-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "gold_task": {
+            "run_id": "data-known-matched_budget-gold_task",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "gold-task-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          }
+        }
+      }
+    },
+    {
+      "case_id": "data-negative",
+      "task_fingerprint": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "task_family": "data",
+      "seed": 1,
+      "cohort": "negative",
+      "expects_skill": false,
+      "control": {
+        "run_id": "data-negative-no-skill",
+        "score": 1,
+        "relevant_skill_activated": false,
+        "activated_skills": [],
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "error_type": null
+      },
+      "observations": {
+        "natural_output": {
+          "session": {
+            "run_id": "data-negative-natural_output-session",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "session-skill"
+            ],
+            "input_tokens": 130,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "atom": {
+            "run_id": "data-negative-natural_output-atom",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "atom-skill"
+            ],
+            "input_tokens": 135,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "task_grounded": {
+            "run_id": "data-negative-natural_output-task_grounded",
+            "score": 1,
+            "relevant_skill_activated": false,
+            "activated_skills": [],
+            "input_tokens": 125,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "gold_task": {
+            "run_id": "data-negative-natural_output-gold_task",
+            "score": 1,
+            "relevant_skill_activated": false,
+            "activated_skills": [],
+            "input_tokens": 123,
+            "output_tokens": 10,
+            "error_type": null
+          }
+        },
+        "matched_budget": {
+          "session": {
+            "run_id": "data-negative-matched_budget-session",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "session-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "atom": {
+            "run_id": "data-negative-matched_budget-atom",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "atom-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "task_grounded": {
+            "run_id": "data-negative-matched_budget-task_grounded",
+            "score": 1,
+            "relevant_skill_activated": false,
+            "activated_skills": [],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "gold_task": {
+            "run_id": "data-negative-matched_budget-gold_task",
+            "score": 1,
+            "relevant_skill_activated": false,
+            "activated_skills": [],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          }
+        }
+      }
+    },
+    {
+      "case_id": "code-novel",
+      "task_fingerprint": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "task_family": "code",
+      "seed": 1,
+      "cohort": "novel",
+      "expects_skill": true,
+      "control": {
+        "run_id": "code-novel-no-skill",
+        "score": 0,
+        "relevant_skill_activated": false,
+        "activated_skills": [],
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "error_type": "task_failure"
+      },
+      "observations": {
+        "natural_output": {
+          "session": {
+            "run_id": "code-novel-natural_output-session",
+            "score": 0,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "session-skill"
+            ],
+            "input_tokens": 130,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "atom": {
+            "run_id": "code-novel-natural_output-atom",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "atom-skill"
+            ],
+            "input_tokens": 135,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "task_grounded": {
+            "run_id": "code-novel-natural_output-task_grounded",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "task-grounded-skill"
+            ],
+            "input_tokens": 125,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "gold_task": {
+            "run_id": "code-novel-natural_output-gold_task",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "gold-task-skill"
+            ],
+            "input_tokens": 123,
+            "output_tokens": 10,
+            "error_type": null
+          }
+        },
+        "matched_budget": {
+          "session": {
+            "run_id": "code-novel-matched_budget-session",
+            "score": 0,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "session-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "atom": {
+            "run_id": "code-novel-matched_budget-atom",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "atom-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "task_grounded": {
+            "run_id": "code-novel-matched_budget-task_grounded",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "task-grounded-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "gold_task": {
+            "run_id": "code-novel-matched_budget-gold_task",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "gold-task-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          }
+        }
+      }
+    },
+    {
+      "case_id": "code-known",
+      "task_fingerprint": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "task_family": "code",
+      "seed": 1,
+      "cohort": "known",
+      "expects_skill": true,
+      "control": {
+        "run_id": "code-known-no-skill",
+        "score": 1,
+        "relevant_skill_activated": false,
+        "activated_skills": [],
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "error_type": null
+      },
+      "observations": {
+        "natural_output": {
+          "session": {
+            "run_id": "code-known-natural_output-session",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "session-skill"
+            ],
+            "input_tokens": 130,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "atom": {
+            "run_id": "code-known-natural_output-atom",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "atom-skill"
+            ],
+            "input_tokens": 135,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "task_grounded": {
+            "run_id": "code-known-natural_output-task_grounded",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "task-grounded-skill"
+            ],
+            "input_tokens": 125,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "gold_task": {
+            "run_id": "code-known-natural_output-gold_task",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "gold-task-skill"
+            ],
+            "input_tokens": 123,
+            "output_tokens": 10,
+            "error_type": null
+          }
+        },
+        "matched_budget": {
+          "session": {
+            "run_id": "code-known-matched_budget-session",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "session-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "atom": {
+            "run_id": "code-known-matched_budget-atom",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "atom-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "task_grounded": {
+            "run_id": "code-known-matched_budget-task_grounded",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "task-grounded-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "gold_task": {
+            "run_id": "code-known-matched_budget-gold_task",
+            "score": 1,
+            "relevant_skill_activated": true,
+            "activated_skills": [
+              "gold-task-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          }
+        }
+      }
+    },
+    {
+      "case_id": "code-negative",
+      "task_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "task_family": "code",
+      "seed": 1,
+      "cohort": "negative",
+      "expects_skill": false,
+      "control": {
+        "run_id": "code-negative-no-skill",
+        "score": 1,
+        "relevant_skill_activated": false,
+        "activated_skills": [],
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "error_type": null
+      },
+      "observations": {
+        "natural_output": {
+          "session": {
+            "run_id": "code-negative-natural_output-session",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "session-skill"
+            ],
+            "input_tokens": 130,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "atom": {
+            "run_id": "code-negative-natural_output-atom",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "atom-skill"
+            ],
+            "input_tokens": 135,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "task_grounded": {
+            "run_id": "code-negative-natural_output-task_grounded",
+            "score": 1,
+            "relevant_skill_activated": false,
+            "activated_skills": [],
+            "input_tokens": 125,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "gold_task": {
+            "run_id": "code-negative-natural_output-gold_task",
+            "score": 1,
+            "relevant_skill_activated": false,
+            "activated_skills": [],
+            "input_tokens": 123,
+            "output_tokens": 10,
+            "error_type": null
+          }
+        },
+        "matched_budget": {
+          "session": {
+            "run_id": "code-negative-matched_budget-session",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "session-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "atom": {
+            "run_id": "code-negative-matched_budget-atom",
+            "score": 0,
+            "relevant_skill_activated": false,
+            "activated_skills": [
+              "atom-skill"
+            ],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": "task_failure"
+          },
+          "task_grounded": {
+            "run_id": "code-negative-matched_budget-task_grounded",
+            "score": 1,
+            "relevant_skill_activated": false,
+            "activated_skills": [],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          },
+          "gold_task": {
+            "run_id": "code-negative-matched_budget-gold_task",
+            "score": 1,
+            "relevant_skill_activated": false,
+            "activated_skills": [],
+            "input_tokens": 128,
+            "output_tokens": 10,
+            "error_type": null
+          }
+        }
+      }
+    }
+  ]
+}
