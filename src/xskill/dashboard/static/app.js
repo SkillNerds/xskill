@@ -24,6 +24,9 @@ const tok = n => { n = Number(n) || 0; return n >= 1e6 ? (n / 1e6).toFixed(2) + 
 // 任何要塞进 innerHTML 的值一律转义（model 名可能是 `<synthetic>`）
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const tr = value => window.XSkillI18n
+  ? window.XSkillI18n.translateText(value, window.XSkillI18n.language)
+  : value;
 // ux 是 1–10 分；null/0 = 还没有评分，显示 —
 const ux = v => (v == null || Number(v) === 0) ? '—' : v;
 // 分母为 0 → —（无数据 ≠ 0%）
@@ -2800,10 +2803,10 @@ document.addEventListener('click', async e => {
     const nextPaused = !paused;
     let reason = '';
     if (nextPaused) {
-      const entered = prompt('暂停后仍会接收并保存轨迹，恢复后自动补处理。可填写暂停原因：', '');
+      const entered = prompt(tr('暂停后仍会接收并保存轨迹，恢复后自动补处理。可填写暂停原因：'), '');
       if (entered === null) return;
       reason = entered.trim();
-    } else if (!confirm('恢复该用户的轨迹处理？暂停期间积压的轨迹将在下一轮自动处理。')) {
+    } else if (!confirm(tr('恢复该用户的轨迹处理？暂停期间积压的轨迹将在下一轮自动处理。'))) {
       return;
     }
     try {
@@ -2888,7 +2891,7 @@ document.addEventListener('click', async e => {
     const name = lf.dataset.skill, act = lf.dataset.act;
     try {
       if (act === 'delete') {
-        const typed = prompt(`删除不可逆：skill 目录与 git 历史将被移除。\n请输入 skill 名确认: ${name}`);
+        const typed = prompt(tr(`删除不可逆：skill 目录与 git 历史将被移除。\n请输入 skill 名确认: ${name}`));
         if (typed === null) return;
         await jpost('/api/v1/dashboard/admin/skill/' + encodeURIComponent(name), { confirm_name: typed }, 'DELETE');
       } else {

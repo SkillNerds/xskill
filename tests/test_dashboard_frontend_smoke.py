@@ -25,7 +25,8 @@ def test_language_switch_loads_local_i18n_before_app():
     assert 'data-language="en"' in html
     assert 'data-language="zh"' in html
     assert "English" in html and "中文" in html
-    assert html.index('src="i18n.js"') < html.index('src="app.js"')
+    assert html.index('src="i18n.js') < html.index('src="app.js')
+    assert 'src="i18n.js?v=' in html
 
 
 def test_i18n_translates_static_and_dynamic_dashboard_copy():
@@ -58,6 +59,57 @@ process.stdout.write(JSON.stringify([
         "Slot 3 · running for 8s",
         "总览",
     ]
+
+
+def test_i18n_covers_detail_and_operational_ui_copy():
+    """English mode must cover UI created after routing or API responses."""
+    samples = [
+        "总触发",
+        "· 贡献原子",
+        "点黄点 / main HEAD 看推送给谁；其它节点看 diff",
+        "main HEAD · 点击看推送给谁",
+        "来源模型",
+        "点击跳原子详情",
+        "触发 / UX / 去重原子 / 首用",
+        "版本（点击看 diff）",
+        "点左侧文件或版本、或进化路径节点查看",
+        "描述质量信号——真跑代理在语义相关技能清单里抢触发；区别于上方\"总触发\"的线上真实使用",
+        "无 case（该 skill 还没跑过触发优化）",
+        "按链表序 pre/post_atom_id · 点击节点查看详情",
+        "traj — atom — skill · 贡献边标 weightscore · 点节点跳转",
+        "demo-skill（weightscore 9 · 已采纳）",
+        "行 6575 – 7550",
+        "原文切片（按 offset 行号定位 · 只读）",
+        "（截取 8000/59767 字符）",
+        "席位 3 · 已跑 8s",
+        "这一栏同时拆几条轨迹。占满后新轨迹先等。下一轮扫描生效，不用重启。",
+        "安装个数为 0：服务器仍可能推送，但本机不装 harness",
+        "alice 的当前推送 4 槽 · pinned=1 blocked=2",
+        "暂停后仍会接收并保存轨迹，恢复后自动补处理。可填写暂停原因：",
+        "删除不可逆：skill 目录与 git 历史将被移除。\n请输入 skill 名确认: demo",
+        "相似度 0.8 · 共同标签:android/testing",
+    ]
+    script = f"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync({json.dumps(str(STATIC / "i18n.js"))}, 'utf8');
+const context = vm.createContext({{ window: {{}} }});
+vm.runInContext(source, context);
+const translated = {json.dumps(samples, ensure_ascii=False)}
+  .map(value => context.window.XSkillI18n.translateText(value, 'en'));
+process.stdout.write(JSON.stringify(translated));
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    translated = json.loads(result.stdout)
+    assert len(translated) == len(samples)
+    assert all(not re.search(r"[\u3400-\u9fff]", value) for value in translated)
 
 
 def test_i18n_persists_language_and_observes_dynamic_content():
