@@ -12,6 +12,12 @@ python -m scripts.bench.skill_library_replay.evaluate scripts/bench/skill_librar
 
 使用 `--format json` 可以输出机器可读报告。
 
+使用独立的预注册策略可以生成不修改生产状态的准入建议：
+
+```bash
+python -m scripts.bench.skill_library_replay.evaluate scripts/bench/skill_library_replay/fixtures/baseline_v1.json --policy scripts/bench/skill_library_replay/fixtures/admission_policy_v1.json
+```
+
 测试会将报告与入仓的 `baseline_v1.report.json` 快照比较，因此 schema 或指标口径变化会成为可 review 的显式 diff。
 
 ## 为什么需要 2×2
@@ -43,6 +49,8 @@ python -m scripts.bench.skill_library_replay.evaluate scripts/bench/skill_librar
 
 每个 case 用 `task_fingerprint` 和 `seed` 固定配对单位，并且必须覆盖完整的 library ladder 和四个部署单元。
 
+同一 Task 的 `should_activate` 必须跨 seed 保持一致，所有 Task 必须使用相同 seed 集，避免某个 Task 因重复运行更多次而获得更大权重。
+
 每条 observation 记录唯一 `run_id`、`score`、目标 Skill 是否激活、按调用顺序排列的 `activated_skills`、Token、费用、延迟和可选错误类型。
 
 隔离运行只能强制激活目标 Skill，部署运行只能激活目标 Skill 与该级 library ladder 中列出的干扰 Skill。
@@ -69,11 +77,25 @@ python -m scripts.bench.skill_library_replay.evaluate scripts/bench/skill_librar
 
 资源指标报告激活 Skill 数、catalog Token、已加载正文 Token、输入输出 Token、费用和延迟的 `new/new - old/old` 配对变化。
 
-所有至少包含两个配对样本的效应使用固定随机种子的配对 percentile bootstrap 置信区间，并同时报告 wins、ties 和 losses。
+所有至少包含两个 Task 的效应先在每个 Task 内平均 seed，再使用固定随机种子的 Task-clustered percentile bootstrap 置信区间，并按 Task 报告 wins、ties 和 losses。
 
-单样本子集的 `confidence_interval` 为 `null`，避免把没有统计信息的点估计伪装成零宽区间。
+只包含一个 Task 的子集将 `confidence_interval` 设为 `null`，避免把多个 seed 或没有跨 Task 信息的点估计伪装成有效区间。
 
 评测器限制 `cases × bootstrap_samples` 不超过 5,000,000，且预先索引每个 case 的 library level，因此除 bootstrap 外的聚合复杂度为 `O(cases × library_levels)`。
+
+## 预注册准入策略
+
+准入策略使用独立 JSON 文件并绑定 suite、目标 Skill、任务集、评分协议、old/new 正文与描述指纹、主 library level 和该级目录指纹，策略的 `registered_at` 必须早于录制结果的 `generated_at`。
+
+策略在运行前固定一个 candidate cell，不能在同一 held-out 结果上从三个候选 cell 中挑最高分再把该分数当成无偏效果；如果诊断显示另一个 cell 更好，应把它作为新候选并使用新的确认集重新评估。
+
+当前策略同时约束最小 Task 数、主 score 增益的置信区间下界、候选正例 recall 的相对下降、负例 false-positive-rate 的相对上升、loaded Skill Token、费用、延迟和不可评测错误。
+
+绝对激活安全门按 Task 计算保守事件：正例 Task 的全部 seed 都触发才算成功，负例 Task 的任一 seed 误触发就算失败，并使用 Wilson 区间避免全成功或全失败的小样本产生退化置信区间。
+
+样本不足、子集置信区间不可计算或出现预声明的基础设施错误时结果为 `inconclusive`，证据完整但任一效果或伤害门禁失败时为 `reject`，全部门禁通过时才为 `admit`。
+
+策略文件中的时间和指纹只能让修改形成显式 diff，正式预注册仍需要在录制结果产生前单独提交或归档策略文件。
 
 ## 因果边界
 
@@ -86,6 +108,8 @@ Agno trigger probe 的结果可以用于预筛选，但不能冒充 Claude Code�
 当前 PR 只建立评测和数据契约，不修改 description optimizer、canary 晋升规则或生产流量路由。
 
 在代表性真实录制结果经过维护者 review 前，不应把任何效应阈值设为阻塞晋升条件。
+
+本后续策略输出也只用于 shadow decision，不能直接替代生产 Canary 或 Q3 的 cohort-scoped 发布决策。
 
 ## 隐私约束
 

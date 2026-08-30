@@ -13,10 +13,13 @@ import math
 import random
 from collections import Counter
 from collections.abc import Iterable
+from datetime import datetime
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any
 
 SCHEMA_VERSION = 1
+ADMISSION_POLICY_SCHEMA_VERSION = 1
 BODY_VERSIONS = ("old_body", "new_body")
 CELL_KEYS = (
     "old_body__old_description",
@@ -34,6 +37,8 @@ RESOURCE_FIELDS = (
     "latency_ms",
 )
 _SHA256_RE = "sha256:"
+_BASELINE_CELL = "old_body__old_description"
+_CANDIDATE_CELLS = tuple(cell for cell in CELL_KEYS if cell != _BASELINE_CELL)
 
 
 class LibraryReplayValidationError(ValueError):
@@ -86,6 +91,24 @@ def _validate_fingerprint(value: Any, context: str) -> None:
         raise LibraryReplayValidationError(
             f"{context}: expected sha256:<64 lowercase hex>"
         )
+
+
+def _parse_aware_datetime(value: Any, context: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise LibraryReplayValidationError(
+            f"{context}: expected a non-empty ISO-8601 timestamp"
+        )
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise LibraryReplayValidationError(
+            f"{context}: expected an ISO-8601 timestamp"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise LibraryReplayValidationError(
+            f"{context}: timestamp must include a UTC offset"
+        )
+    return parsed
 
 
 def _validate_observation(
@@ -281,6 +304,8 @@ def validate_suite(suite: Any) -> None:
         raise LibraryReplayValidationError("suite.cases must not be empty")
     case_ids: set[str] = set()
     task_seed_pairs: set[tuple[str, int]] = set()
+    task_seeds: dict[str, set[int]] = {}
+    task_activation_labels: dict[str, bool] = {}
     run_ids: set[str] = set()
     activation_labels: set[bool] = set()
     for case_index, case in enumerate(cases):
@@ -306,6 +331,14 @@ def validate_suite(suite: Any) -> None:
         task_seed_pairs.add(pair)
         should_activate = _require(case, "should_activate", bool, context)
         activation_labels.add(should_activate)
+        task_seeds.setdefault(task_fingerprint, set()).add(seed)
+        previous_label = task_activation_labels.setdefault(
+            task_fingerprint, should_activate
+        )
+        if previous_label != should_activate:
+            raise LibraryReplayValidationError(
+                f"{context}.should_activate: must be stable across seeds for one task"
+            )
 
         isolated_runs = _require(case, "isolated", dict, context)
         if set(isolated_runs) != set(BODY_VERSIONS):
@@ -360,6 +393,11 @@ def validate_suite(suite: Any) -> None:
         raise LibraryReplayValidationError(
             "suite.cases must include both positive and negative activation cases"
         )
+    expected_seed_set = next(iter(task_seeds.values()))
+    if any(seeds != expected_seed_set for seeds in task_seeds.values()):
+        raise LibraryReplayValidationError(
+            "suite.cases: every task_fingerprint must use the same seed set"
+        )
     if len(cases) * bootstrap_samples > 5_000_000:
         raise LibraryReplayValidationError(
             "suite: cases * bootstrap_samples exceeds the 5000000 work bound"
@@ -377,6 +415,163 @@ def load_suite(path: Path | str) -> dict[str, Any]:
         ) from error
     validate_suite(suite)
     return suite
+
+
+def validate_admission_policy(policy: Any, suite: dict[str, Any]) -> None:
+    """Validate a pre-registered admission policy against one replay suite."""
+    validate_suite(suite)
+    if not isinstance(policy, dict):
+        raise LibraryReplayValidationError("policy: expected an object")
+    expected_keys = {
+        "schema_version",
+        "policy_id",
+        "suite_id",
+        "target_skill",
+        "registered_at",
+        "task_set_fingerprint",
+        "evaluation_protocol_fingerprint",
+        "old_body_fingerprint",
+        "new_body_fingerprint",
+        "old_description_fingerprint",
+        "new_description_fingerprint",
+        "primary_distractor_count",
+        "primary_distractor_catalog_fingerprint",
+        "candidate_cell",
+        "minimum_paired_tasks",
+        "minimum_positive_tasks",
+        "minimum_negative_tasks",
+        "minimum_score_gain",
+        "minimum_candidate_positive_task_activation_rate",
+        "maximum_positive_recall_drop",
+        "maximum_candidate_negative_task_activation_rate",
+        "maximum_negative_false_positive_rate_increase",
+        "resource_increase_limits",
+        "non_evaluable_error_types",
+    }
+    if set(policy) != expected_keys:
+        missing = sorted(expected_keys - set(policy))
+        unknown = sorted(set(policy) - expected_keys)
+        raise LibraryReplayValidationError(
+            f"policy: keys do not match schema; missing={missing}, unknown={unknown}"
+        )
+    version = _require(policy, "schema_version", int, "policy")
+    if version != ADMISSION_POLICY_SCHEMA_VERSION:
+        raise LibraryReplayValidationError(
+            "policy.schema_version: "
+            f"supported={ADMISSION_POLICY_SCHEMA_VERSION}, got={version}"
+        )
+    _require_non_empty_string(policy, "policy_id", "policy")
+    for key in ("suite_id", "target_skill"):
+        value = _require_non_empty_string(policy, key, "policy")
+        if value != suite[key]:
+            raise LibraryReplayValidationError(
+                f"policy.{key}: does not match suite.{key}"
+            )
+    manifest = suite["run_manifest"]
+    for key in (
+        "task_set_fingerprint",
+        "evaluation_protocol_fingerprint",
+        "old_body_fingerprint",
+        "new_body_fingerprint",
+        "old_description_fingerprint",
+        "new_description_fingerprint",
+    ):
+        value = policy.get(key)
+        _validate_fingerprint(value, f"policy.{key}")
+        if value != manifest[key]:
+            raise LibraryReplayValidationError(
+                f"policy.{key}: does not match suite.run_manifest.{key}"
+            )
+    registered_at = _parse_aware_datetime(
+        policy.get("registered_at"), "policy.registered_at"
+    )
+    generated_at = _parse_aware_datetime(
+        manifest["generated_at"], "suite.run_manifest.generated_at"
+    )
+    if registered_at >= generated_at:
+        raise LibraryReplayValidationError(
+            "policy.registered_at: must be earlier than suite.run_manifest.generated_at"
+        )
+
+    primary_count = _require(policy, "primary_distractor_count", int, "policy")
+    primary_level = next(
+        (
+            level
+            for level in suite["library_ladder"]
+            if level["distractor_count"] == primary_count
+        ),
+        None,
+    )
+    if primary_level is None:
+        raise LibraryReplayValidationError(
+            "policy.primary_distractor_count: not present in suite.library_ladder"
+        )
+    catalog_fingerprint = policy.get("primary_distractor_catalog_fingerprint")
+    _validate_fingerprint(
+        catalog_fingerprint, "policy.primary_distractor_catalog_fingerprint"
+    )
+    if catalog_fingerprint != primary_level["distractor_catalog_fingerprint"]:
+        raise LibraryReplayValidationError(
+            "policy.primary_distractor_catalog_fingerprint: "
+            "does not match the selected library level"
+        )
+
+    candidate_cell = _require_non_empty_string(policy, "candidate_cell", "policy")
+    if candidate_cell not in _CANDIDATE_CELLS:
+        raise LibraryReplayValidationError(
+            f"policy.candidate_cell: expected one of {list(_CANDIDATE_CELLS)}"
+        )
+    for key in (
+        "minimum_paired_tasks",
+        "minimum_positive_tasks",
+        "minimum_negative_tasks",
+    ):
+        value = _require(policy, key, int, "policy")
+        if value < 2:
+            raise LibraryReplayValidationError(f"policy.{key}: must be >= 2")
+    for key in (
+        "minimum_score_gain",
+        "minimum_candidate_positive_task_activation_rate",
+        "maximum_positive_recall_drop",
+        "maximum_candidate_negative_task_activation_rate",
+        "maximum_negative_false_positive_rate_increase",
+    ):
+        value = _require_number(policy, key, "policy")
+        if value > 1:
+            raise LibraryReplayValidationError(f"policy.{key}: must be within [0, 1]")
+
+    resource_limits = _require(policy, "resource_increase_limits", dict, "policy")
+    required_resource_limits = {"loaded_skill_tokens", "cost_usd", "latency_ms"}
+    if set(resource_limits) != required_resource_limits:
+        raise LibraryReplayValidationError(
+            "policy.resource_increase_limits: expected exactly "
+            f"{sorted(required_resource_limits)}"
+        )
+    for field in sorted(required_resource_limits):
+        _require_number(resource_limits, field, "policy.resource_increase_limits")
+
+    error_types = _require(policy, "non_evaluable_error_types", list, "policy")
+    if (
+        not error_types
+        or any(not isinstance(value, str) or not value for value in error_types)
+        or len(error_types) != len(set(error_types))
+    ):
+        raise LibraryReplayValidationError(
+            "policy.non_evaluable_error_types: expected unique non-empty strings"
+        )
+
+
+def load_admission_policy(path: Path | str, suite: dict[str, Any]) -> dict[str, Any]:
+    """Load and validate a pre-registered admission policy."""
+    policy_path = Path(path)
+    try:
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise LibraryReplayValidationError(
+            f"invalid JSON in {policy_path}: {error}"
+        ) from error
+    validate_admission_policy(policy, suite)
+    return policy
 
 
 def _round(value: float) -> float:
@@ -406,18 +601,30 @@ def _stable_seed(base_seed: int, label: str) -> int:
 
 
 def _paired_effect(
-    deltas: list[float], metric_config: dict[str, Any], label: str
+    deltas: list[float],
+    metric_config: dict[str, Any],
+    label: str,
+    *,
+    task_fingerprints: list[str],
 ) -> dict[str, Any]:
-    point = _mean(deltas)
+    if len(task_fingerprints) != len(deltas):
+        raise ValueError("task_fingerprints and deltas must have the same length")
+    by_task: dict[str, list[float]] = {}
+    for task_fingerprint, delta in zip(task_fingerprints, deltas):
+        by_task.setdefault(task_fingerprint, []).append(delta)
+    task_deltas = [
+        _mean(by_task[task_fingerprint]) for task_fingerprint in sorted(by_task)
+    ]
+    point = _mean(task_deltas)
     confidence_interval: list[float] | None
-    if len(deltas) == 1:
+    if len(task_deltas) == 1:
         confidence_interval = None
     else:
         rng = random.Random(_stable_seed(metric_config["bootstrap_seed"], label))
         sample_count = metric_config["bootstrap_samples"]
-        size = len(deltas)
+        size = len(task_deltas)
         bootstrap_means = [
-            sum(deltas[rng.randrange(size)] for _ in range(size)) / size
+            sum(task_deltas[rng.randrange(size)] for _ in range(size)) / size
             for _ in range(sample_count)
         ]
         bootstrap_means.sort()
@@ -427,11 +634,52 @@ def _paired_effect(
         confidence_interval = [_round(low), _round(high)]
     return {
         "n": len(deltas),
+        "tasks": len(task_deltas),
         "mean": _round(point),
         "confidence_interval": confidence_interval,
-        "wins": sum(delta > 0 for delta in deltas),
-        "ties": sum(delta == 0 for delta in deltas),
-        "losses": sum(delta < 0 for delta in deltas),
+        "wins": sum(delta > 0 for delta in task_deltas),
+        "ties": sum(delta == 0 for delta in task_deltas),
+        "losses": sum(delta < 0 for delta in task_deltas),
+    }
+
+
+def _task_binary_rate(
+    cases: list[dict[str, Any]],
+    metric_config: dict[str, Any],
+    value,
+    *,
+    require_all_seeds: bool,
+) -> dict[str, Any]:
+    """Estimate a conservative Task-level binary rate with a Wilson interval."""
+    by_task: dict[str, list[bool]] = {}
+    for case in cases:
+        by_task.setdefault(case["task_fingerprint"], []).append(bool(value(case)))
+    task_outcomes = [
+        all(by_task[task]) if require_all_seeds else any(by_task[task])
+        for task in sorted(by_task)
+    ]
+    task_count = len(task_outcomes)
+    rate = _mean(float(outcome) for outcome in task_outcomes)
+    confidence_level = metric_config["confidence_level"]
+    z_score = NormalDist().inv_cdf(0.5 + confidence_level / 2)
+    z_squared = z_score * z_score
+    denominator = 1 + z_squared / task_count
+    center = (rate + z_squared / (2 * task_count)) / denominator
+    margin = (
+        z_score
+        * math.sqrt(
+            rate * (1 - rate) / task_count + z_squared / (4 * task_count * task_count)
+        )
+        / denominator
+    )
+    successes = sum(task_outcomes)
+    return {
+        "n": len(cases),
+        "tasks": task_count,
+        "mean": _round(rate),
+        "confidence_interval": [_round(center - margin), _round(center + margin)],
+        "successes": successes,
+        "failures": task_count - successes,
     }
 
 
@@ -500,6 +748,7 @@ def _effect(
         [float(left(case)) - float(right(case)) for case in cases],
         metric_config,
         label,
+        task_fingerprints=[case["task_fingerprint"] for case in cases],
     )
 
 
@@ -611,6 +860,7 @@ def evaluate_suite(suite: dict[str, Any]) -> dict[str, Any]:
             interaction_deltas,
             metric_config,
             f"{distractor_count}:interaction",
+            task_fingerprints=[case["task_fingerprint"] for case in cases],
         )
         interference_deltas = [
             case["isolated"]["new_body"]["score"]
@@ -676,6 +926,7 @@ def evaluate_suite(suite: dict[str, Any]) -> dict[str, Any]:
                     interference_deltas,
                     metric_config,
                     f"{distractor_count}:interference",
+                    task_fingerprints=[case["task_fingerprint"] for case in cases],
                 ),
                 "activation_effects": activation_effects,
                 "resource_effects": resource_effects,
@@ -701,6 +952,228 @@ def evaluate_suite(suite: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def evaluate_admission(suite: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
+    """Apply a pre-registered, fixed-cohort admission policy to one candidate."""
+    validate_admission_policy(policy, suite)
+    cases = suite["cases"]
+    metric_config = suite["metric_config"]
+    primary_count = policy["primary_distractor_count"]
+    candidate_cell = policy["candidate_cell"]
+
+    levels_by_case = {
+        case["case_id"]: {
+            level["distractor_count"]: level for level in case["libraries"]
+        }
+        for case in cases
+    }
+
+    def deployed(item: dict[str, Any], cell: str) -> dict[str, Any]:
+        return levels_by_case[item["case_id"]][primary_count]["deployed"][cell]
+
+    score_effect = _effect(
+        cases,
+        metric_config,
+        f"admission:{policy['policy_id']}:score",
+        lambda case: deployed(case, candidate_cell)["score"],
+        lambda case: deployed(case, _BASELINE_CELL)["score"],
+    )
+    positive_cases = [case for case in cases if case["should_activate"]]
+    negative_cases = [case for case in cases if not case["should_activate"]]
+    positive_recall_effect = _effect(
+        positive_cases,
+        metric_config,
+        f"admission:{policy['policy_id']}:positive_recall",
+        lambda case: deployed(case, candidate_cell)["target_activated"],
+        lambda case: deployed(case, _BASELINE_CELL)["target_activated"],
+    )
+    negative_fpr_effect = _effect(
+        negative_cases,
+        metric_config,
+        f"admission:{policy['policy_id']}:negative_fpr",
+        lambda case: deployed(case, candidate_cell)["target_activated"],
+        lambda case: deployed(case, _BASELINE_CELL)["target_activated"],
+    )
+    candidate_positive_task_activation_rate = _task_binary_rate(
+        positive_cases,
+        metric_config,
+        lambda case: deployed(case, candidate_cell)["target_activated"],
+        require_all_seeds=True,
+    )
+    candidate_negative_task_activation_rate = _task_binary_rate(
+        negative_cases,
+        metric_config,
+        lambda case: deployed(case, candidate_cell)["target_activated"],
+        require_all_seeds=False,
+    )
+    resource_effects = {
+        field: _effect(
+            cases,
+            metric_config,
+            f"admission:{policy['policy_id']}:{field}",
+            lambda case, key=field: _observation_value(
+                deployed(case, candidate_cell), key
+            ),
+            lambda case, key=field: _observation_value(
+                deployed(case, _BASELINE_CELL), key
+            ),
+        )
+        for field in policy["resource_increase_limits"]
+    }
+
+    gates: list[dict[str, Any]] = []
+
+    def add_minimum_count_gate(name: str, observed: int, threshold: int) -> None:
+        gates.append(
+            {
+                "name": name,
+                "status": "pass" if observed >= threshold else "inconclusive",
+                "observed": observed,
+                "comparison": ">=",
+                "threshold": threshold,
+            }
+        )
+
+    add_minimum_count_gate(
+        "minimum_paired_tasks",
+        len({case["task_fingerprint"] for case in cases}),
+        policy["minimum_paired_tasks"],
+    )
+    add_minimum_count_gate(
+        "minimum_positive_tasks",
+        len({case["task_fingerprint"] for case in positive_cases}),
+        policy["minimum_positive_tasks"],
+    )
+    add_minimum_count_gate(
+        "minimum_negative_tasks",
+        len({case["task_fingerprint"] for case in negative_cases}),
+        policy["minimum_negative_tasks"],
+    )
+
+    non_evaluable = set(policy["non_evaluable_error_types"])
+    error_counts = Counter(
+        observation["error_type"]
+        for case in cases
+        for observation in (
+            deployed(case, _BASELINE_CELL),
+            deployed(case, candidate_cell),
+        )
+        if observation.get("error_type") in non_evaluable
+    )
+    gates.append(
+        {
+            "name": "non_evaluable_errors",
+            "status": "pass" if not error_counts else "inconclusive",
+            "observed": dict(sorted(error_counts.items())),
+            "comparison": "==",
+            "threshold": {},
+        }
+    )
+
+    def add_lower_bound_gate(
+        name: str, effect: dict[str, Any], threshold: float
+    ) -> None:
+        interval = effect["confidence_interval"]
+        if interval is None:
+            status = "inconclusive"
+            observed = None
+        else:
+            observed = interval[0]
+            status = "pass" if observed >= threshold else "fail"
+        gates.append(
+            {
+                "name": name,
+                "status": status,
+                "observed": observed,
+                "comparison": ">=",
+                "threshold": _round(threshold),
+            }
+        )
+
+    def add_upper_bound_gate(
+        name: str, effect: dict[str, Any], threshold: float
+    ) -> None:
+        interval = effect["confidence_interval"]
+        if interval is None:
+            status = "inconclusive"
+            observed = None
+        else:
+            observed = interval[1]
+            status = "pass" if observed <= threshold else "fail"
+        gates.append(
+            {
+                "name": name,
+                "status": status,
+                "observed": observed,
+                "comparison": "<=",
+                "threshold": _round(threshold),
+            }
+        )
+
+    add_lower_bound_gate(
+        "minimum_score_gain",
+        score_effect,
+        policy["minimum_score_gain"],
+    )
+    add_lower_bound_gate(
+        "maximum_positive_recall_drop",
+        positive_recall_effect,
+        -policy["maximum_positive_recall_drop"],
+    )
+    add_lower_bound_gate(
+        "minimum_candidate_positive_task_activation_rate",
+        candidate_positive_task_activation_rate,
+        policy["minimum_candidate_positive_task_activation_rate"],
+    )
+    add_upper_bound_gate(
+        "maximum_negative_false_positive_rate_increase",
+        negative_fpr_effect,
+        policy["maximum_negative_false_positive_rate_increase"],
+    )
+    add_upper_bound_gate(
+        "maximum_candidate_negative_task_activation_rate",
+        candidate_negative_task_activation_rate,
+        policy["maximum_candidate_negative_task_activation_rate"],
+    )
+    for field, limit in sorted(policy["resource_increase_limits"].items()):
+        add_upper_bound_gate(
+            f"maximum_{field}_increase",
+            resource_effects[field],
+            limit,
+        )
+
+    statuses = {gate["status"] for gate in gates}
+    if "inconclusive" in statuses:
+        status = "inconclusive"
+    elif "fail" in statuses:
+        status = "reject"
+    else:
+        status = "admit"
+    return {
+        "schema_version": ADMISSION_POLICY_SCHEMA_VERSION,
+        "policy_id": policy["policy_id"],
+        "suite_id": suite["suite_id"],
+        "target_skill": suite["target_skill"],
+        "candidate_cell": candidate_cell,
+        "baseline_cell": _BASELINE_CELL,
+        "primary_distractor_count": primary_count,
+        "status": status,
+        "reasons": [gate["name"] for gate in gates if gate["status"] != "pass"],
+        "gates": gates,
+        "effects": {
+            "score": score_effect,
+            "positive_recall": positive_recall_effect,
+            "negative_false_positive_rate": negative_fpr_effect,
+            "candidate_positive_task_activation_rate": (
+                candidate_positive_task_activation_rate
+            ),
+            "candidate_negative_task_activation_rate": (
+                candidate_negative_task_activation_rate
+            ),
+            "resources": resource_effects,
+        },
+    }
+
+
 def render_text(report: dict[str, Any]) -> str:
     """Render a compact human-readable summary."""
     isolated = report["isolated"]["body_effect"]
@@ -713,7 +1186,8 @@ def render_text(report: dict[str, Any]) -> str:
         ),
         (
             "isolated_body_effect: "
-            f"{isolated['mean']} CI={isolated['confidence_interval']} n={isolated['n']}"
+            f"{isolated['mean']} CI={isolated['confidence_interval']} "
+            f"n={isolated['n']} tasks={isolated['tasks']}"
         ),
     ]
     for level in report["library_curve"]:
@@ -752,6 +1226,17 @@ def render_text(report: dict[str, Any]) -> str:
                 ),
             ]
         )
+    admission = report.get("admission")
+    if admission is not None:
+        lines.extend(
+            [
+                "admission:",
+                f"  policy_id: {admission['policy_id']}",
+                f"  candidate_cell: {admission['candidate_cell']}",
+                f"  status: {admission['status']}",
+                f"  reasons: {','.join(admission['reasons']) or 'none'}",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -760,9 +1245,18 @@ def main(argv: list[str] | None = None) -> int:
         description="Evaluate a recorded library-aware Skill 2x2 replay."
     )
     parser.add_argument("suite", type=Path)
+    parser.add_argument(
+        "--policy",
+        type=Path,
+        help="pre-registered admission policy to evaluate with the suite",
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(argv)
-    report = evaluate_suite(load_suite(args.suite))
+    suite = load_suite(args.suite)
+    report = evaluate_suite(suite)
+    if args.policy is not None:
+        policy = load_admission_policy(args.policy, suite)
+        report["admission"] = evaluate_admission(suite, policy)
     if args.format == "json":
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     else:

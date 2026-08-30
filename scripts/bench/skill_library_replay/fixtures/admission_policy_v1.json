@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "policy_id": "synthetic-library-admission-policy-v1",
+  "suite_id": "synthetic-library-aware-v1",
+  "target_skill": "spreadsheet-formula-repair",
+  "registered_at": "2026-08-29T00:00:00Z",
+  "task_set_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "evaluation_protocol_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "old_body_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "new_body_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "old_description_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "new_description_fingerprint": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "primary_distractor_count": 2,
+  "primary_distractor_catalog_fingerprint": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+  "candidate_cell": "new_body__new_description",
+  "minimum_paired_tasks": 50,
+  "minimum_positive_tasks": 25,
+  "minimum_negative_tasks": 25,
+  "minimum_score_gain": 0.05,
+  "minimum_candidate_positive_task_activation_rate": 0.85,
+  "maximum_positive_recall_drop": 0.0,
+  "maximum_candidate_negative_task_activation_rate": 0.15,
+  "maximum_negative_false_positive_rate_increase": 0.05,
+  "resource_increase_limits": {
+    "loaded_skill_tokens": 64,
+    "cost_usd": 0.001,
+    "latency_ms": 1000
+  },
+  "non_evaluable_error_types": [
+    "infrastructure_failure"
+  ]
+}
