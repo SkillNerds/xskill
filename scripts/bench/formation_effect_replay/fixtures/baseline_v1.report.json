@@ -1,0 +1,763 @@
+{
+  "decision": {
+    "checks": {
+      "confidence_interval_lower_bound": true,
+      "enough_improved_task_families": true,
+      "false_trigger_not_worse": true,
+      "known_tasks_not_regressed": true,
+      "matched_budget_same_direction": true,
+      "minimum_pass_rate_delta": true
+    },
+    "passed": true,
+    "primary_contrast": "task_grounded_minus_atom",
+    "primary_mode": "natural_output"
+  },
+  "decision_policy": {
+    "maximum_false_trigger_rate_delta": 0,
+    "maximum_known_pass_rate_drop": 0,
+    "minimum_improved_task_families": 2,
+    "minimum_primary_ci_lower": 0,
+    "minimum_primary_pass_rate_delta": 0.05,
+    "primary_mode": "natural_output",
+    "require_matched_budget_positive": true
+  },
+  "metric_config": {
+    "bootstrap_samples": 1000,
+    "bootstrap_seed": 42,
+    "confidence_level": 0.95,
+    "pass_threshold": 1
+  },
+  "modes": [
+    {
+      "artifacts": {
+        "atom": {
+          "evidence_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "serialized_skill_tokens": 300,
+          "skill_count": 3,
+          "skill_library_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "gold_task": {
+          "evidence_fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "serialized_skill_tokens": 170,
+          "skill_count": 2,
+          "skill_library_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "no_skill": {
+          "serialized_skill_tokens": 0,
+          "skill_count": 0
+        },
+        "session": {
+          "evidence_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "serialized_skill_tokens": 240,
+          "skill_count": 2,
+          "skill_library_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "task_grounded": {
+          "evidence_fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "serialized_skill_tokens": 180,
+          "skill_count": 2,
+          "skill_library_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      },
+      "budget_policy": "natural_output",
+      "contrasts": {
+        "gold_task_minus_task_grounded": {
+          "mcnemar_pass": {
+            "control_only_pass": 0,
+            "discordant_tasks": 0,
+            "exact_two_sided_p": 1.0,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
+            "treated_only_pass": 0
+          },
+          "pass_rate_delta": {
+            "confidence_interval": [
+              0.0,
+              0.0
+            ],
+            "losses": 0,
+            "mean": 0.0,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 6,
+            "wins": 0
+          },
+          "score_delta": {
+            "confidence_interval": [
+              0.0,
+              0.0
+            ],
+            "losses": 0,
+            "mean": 0.0,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 6,
+            "wins": 0
+          }
+        },
+        "task_grounded_minus_atom": {
+          "false_trigger_rate_delta": {
+            "confidence_interval": [
+              -1.0,
+              -1.0
+            ],
+            "losses": 2,
+            "mean": -1.0,
+            "n_pairs": 2,
+            "n_tasks": 2,
+            "ties": 0,
+            "wins": 0
+          },
+          "known_pass_rate_delta": {
+            "confidence_interval": [
+              0.0,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 0.5,
+            "n_pairs": 2,
+            "n_tasks": 2,
+            "ties": 1,
+            "wins": 1
+          },
+          "mcnemar_pass": {
+            "control_only_pass": 0,
+            "discordant_tasks": 5,
+            "exact_two_sided_p": 0.0625,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
+            "treated_only_pass": 5
+          },
+          "novel_pass_rate_delta": {
+            "confidence_interval": [
+              1.0,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 1.0,
+            "n_pairs": 2,
+            "n_tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "pass_rate_delta": {
+            "confidence_interval": [
+              0.5,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 0.833333,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 1,
+            "wins": 5
+          },
+          "positive_recall_delta": {
+            "confidence_interval": [
+              0.25,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 0.75,
+            "n_pairs": 4,
+            "n_tasks": 4,
+            "ties": 1,
+            "wins": 3
+          },
+          "resource_deltas": {
+            "input_tokens": {
+              "confidence_interval": [
+                -10.0,
+                -10.0
+              ],
+              "losses": 6,
+              "mean": -10.0,
+              "n_pairs": 6,
+              "n_tasks": 6,
+              "ties": 0,
+              "wins": 0
+            },
+            "output_tokens": {
+              "confidence_interval": [
+                0.0,
+                0.0
+              ],
+              "losses": 0,
+              "mean": 0.0,
+              "n_pairs": 6,
+              "n_tasks": 6,
+              "ties": 6,
+              "wins": 0
+            }
+          },
+          "score_delta": {
+            "confidence_interval": [
+              0.5,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 0.833333,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 1,
+            "wins": 5
+          },
+          "score_delta_by_task_family": {
+            "code": {
+              "confidence_interval": [
+                0.0,
+                1.0
+              ],
+              "losses": 0,
+              "mean": 0.666667,
+              "n_pairs": 3,
+              "n_tasks": 3,
+              "ties": 1,
+              "wins": 2
+            },
+            "data": {
+              "confidence_interval": [
+                1.0,
+                1.0
+              ],
+              "losses": 0,
+              "mean": 1.0,
+              "n_pairs": 3,
+              "n_tasks": 3,
+              "ties": 0,
+              "wins": 3
+            }
+          }
+        },
+        "task_grounded_minus_no_skill": {
+          "mcnemar_pass": {
+            "control_only_pass": 0,
+            "discordant_tasks": 2,
+            "exact_two_sided_p": 0.5,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
+            "treated_only_pass": 2
+          },
+          "pass_rate_delta": {
+            "confidence_interval": [
+              0.0,
+              0.666667
+            ],
+            "losses": 0,
+            "mean": 0.333333,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 4,
+            "wins": 2
+          },
+          "score_delta": {
+            "confidence_interval": [
+              0.0,
+              0.666667
+            ],
+            "losses": 0,
+            "mean": 0.333333,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 4,
+            "wins": 2
+          }
+        },
+        "task_grounded_minus_session": {
+          "mcnemar_pass": {
+            "control_only_pass": 0,
+            "discordant_tasks": 4,
+            "exact_two_sided_p": 0.125,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
+            "treated_only_pass": 4
+          },
+          "pass_rate_delta": {
+            "confidence_interval": [
+              0.333333,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 0.666667,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 2,
+            "wins": 4
+          },
+          "score_delta": {
+            "confidence_interval": [
+              0.333333,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 0.666667,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 2,
+            "wins": 4
+          }
+        }
+      },
+      "methods": {
+        "atom": {
+          "errors": {
+            "task_failure": 5
+          },
+          "known_pass_rate": 0.5,
+          "mean_score": 0.166667,
+          "n": 6,
+          "negative_false_trigger_rate": 1.0,
+          "novel_pass_rate": 0.0,
+          "pass_rate": 0.166667,
+          "positive_recall": 0.25,
+          "resources": {
+            "input_tokens": 135.0,
+            "output_tokens": 10.0
+          }
+        },
+        "gold_task": {
+          "errors": {},
+          "known_pass_rate": 1.0,
+          "mean_score": 1.0,
+          "n": 6,
+          "negative_false_trigger_rate": 0.0,
+          "novel_pass_rate": 1.0,
+          "pass_rate": 1.0,
+          "positive_recall": 1.0,
+          "resources": {
+            "input_tokens": 123.0,
+            "output_tokens": 10.0
+          }
+        },
+        "no_skill": {
+          "errors": {
+            "task_failure": 2
+          },
+          "known_pass_rate": 1.0,
+          "mean_score": 0.666667,
+          "n": 6,
+          "negative_false_trigger_rate": 0.0,
+          "novel_pass_rate": 0.0,
+          "pass_rate": 0.666667,
+          "positive_recall": 0.0,
+          "resources": {
+            "input_tokens": 100.0,
+            "output_tokens": 10.0
+          }
+        },
+        "session": {
+          "errors": {
+            "task_failure": 4
+          },
+          "known_pass_rate": 1.0,
+          "mean_score": 0.333333,
+          "n": 6,
+          "negative_false_trigger_rate": 1.0,
+          "novel_pass_rate": 0.0,
+          "pass_rate": 0.333333,
+          "positive_recall": 1.0,
+          "resources": {
+            "input_tokens": 130.0,
+            "output_tokens": 10.0
+          }
+        },
+        "task_grounded": {
+          "errors": {},
+          "known_pass_rate": 1.0,
+          "mean_score": 1.0,
+          "n": 6,
+          "negative_false_trigger_rate": 0.0,
+          "novel_pass_rate": 1.0,
+          "pass_rate": 1.0,
+          "positive_recall": 1.0,
+          "resources": {
+            "input_tokens": 125.0,
+            "output_tokens": 10.0
+          }
+        }
+      },
+      "mode_id": "natural_output",
+      "utility_density_per_1000_skill_tokens": {
+        "atom": -1.666667,
+        "gold_task": 1.960784,
+        "no_skill": null,
+        "session": -1.388889,
+        "task_grounded": 1.851852
+      }
+    },
+    {
+      "artifacts": {
+        "atom": {
+          "evidence_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "serialized_skill_tokens": 200,
+          "skill_count": 2,
+          "skill_library_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "gold_task": {
+          "evidence_fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "serialized_skill_tokens": 200,
+          "skill_count": 2,
+          "skill_library_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        },
+        "no_skill": {
+          "serialized_skill_tokens": 0,
+          "skill_count": 0
+        },
+        "session": {
+          "evidence_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "serialized_skill_tokens": 200,
+          "skill_count": 2,
+          "skill_library_fingerprint": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        },
+        "task_grounded": {
+          "evidence_fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "serialized_skill_tokens": 200,
+          "skill_count": 2,
+          "skill_library_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      "budget_policy": "matched_serialized_skill_tokens",
+      "budget_value": 200,
+      "contrasts": {
+        "gold_task_minus_task_grounded": {
+          "mcnemar_pass": {
+            "control_only_pass": 0,
+            "discordant_tasks": 0,
+            "exact_two_sided_p": 1.0,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
+            "treated_only_pass": 0
+          },
+          "pass_rate_delta": {
+            "confidence_interval": [
+              0.0,
+              0.0
+            ],
+            "losses": 0,
+            "mean": 0.0,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 6,
+            "wins": 0
+          },
+          "score_delta": {
+            "confidence_interval": [
+              0.0,
+              0.0
+            ],
+            "losses": 0,
+            "mean": 0.0,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 6,
+            "wins": 0
+          }
+        },
+        "task_grounded_minus_atom": {
+          "false_trigger_rate_delta": {
+            "confidence_interval": [
+              -1.0,
+              -1.0
+            ],
+            "losses": 2,
+            "mean": -1.0,
+            "n_pairs": 2,
+            "n_tasks": 2,
+            "ties": 0,
+            "wins": 0
+          },
+          "known_pass_rate_delta": {
+            "confidence_interval": [
+              0.0,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 0.5,
+            "n_pairs": 2,
+            "n_tasks": 2,
+            "ties": 1,
+            "wins": 1
+          },
+          "mcnemar_pass": {
+            "control_only_pass": 0,
+            "discordant_tasks": 5,
+            "exact_two_sided_p": 0.0625,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
+            "treated_only_pass": 5
+          },
+          "novel_pass_rate_delta": {
+            "confidence_interval": [
+              1.0,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 1.0,
+            "n_pairs": 2,
+            "n_tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "pass_rate_delta": {
+            "confidence_interval": [
+              0.5,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 0.833333,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 1,
+            "wins": 5
+          },
+          "positive_recall_delta": {
+            "confidence_interval": [
+              0.25,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 0.75,
+            "n_pairs": 4,
+            "n_tasks": 4,
+            "ties": 1,
+            "wins": 3
+          },
+          "resource_deltas": {
+            "input_tokens": {
+              "confidence_interval": [
+                0.0,
+                0.0
+              ],
+              "losses": 0,
+              "mean": 0.0,
+              "n_pairs": 6,
+              "n_tasks": 6,
+              "ties": 6,
+              "wins": 0
+            },
+            "output_tokens": {
+              "confidence_interval": [
+                0.0,
+                0.0
+              ],
+              "losses": 0,
+              "mean": 0.0,
+              "n_pairs": 6,
+              "n_tasks": 6,
+              "ties": 6,
+              "wins": 0
+            }
+          },
+          "score_delta": {
+            "confidence_interval": [
+              0.5,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 0.833333,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 1,
+            "wins": 5
+          },
+          "score_delta_by_task_family": {
+            "code": {
+              "confidence_interval": [
+                0.0,
+                1.0
+              ],
+              "losses": 0,
+              "mean": 0.666667,
+              "n_pairs": 3,
+              "n_tasks": 3,
+              "ties": 1,
+              "wins": 2
+            },
+            "data": {
+              "confidence_interval": [
+                1.0,
+                1.0
+              ],
+              "losses": 0,
+              "mean": 1.0,
+              "n_pairs": 3,
+              "n_tasks": 3,
+              "ties": 0,
+              "wins": 3
+            }
+          }
+        },
+        "task_grounded_minus_no_skill": {
+          "mcnemar_pass": {
+            "control_only_pass": 0,
+            "discordant_tasks": 2,
+            "exact_two_sided_p": 0.5,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
+            "treated_only_pass": 2
+          },
+          "pass_rate_delta": {
+            "confidence_interval": [
+              0.0,
+              0.666667
+            ],
+            "losses": 0,
+            "mean": 0.333333,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 4,
+            "wins": 2
+          },
+          "score_delta": {
+            "confidence_interval": [
+              0.0,
+              0.666667
+            ],
+            "losses": 0,
+            "mean": 0.333333,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 4,
+            "wins": 2
+          }
+        },
+        "task_grounded_minus_session": {
+          "mcnemar_pass": {
+            "control_only_pass": 0,
+            "discordant_tasks": 4,
+            "exact_two_sided_p": 0.125,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
+            "treated_only_pass": 4
+          },
+          "pass_rate_delta": {
+            "confidence_interval": [
+              0.333333,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 0.666667,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 2,
+            "wins": 4
+          },
+          "score_delta": {
+            "confidence_interval": [
+              0.333333,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 0.666667,
+            "n_pairs": 6,
+            "n_tasks": 6,
+            "ties": 2,
+            "wins": 4
+          }
+        }
+      },
+      "methods": {
+        "atom": {
+          "errors": {
+            "task_failure": 5
+          },
+          "known_pass_rate": 0.5,
+          "mean_score": 0.166667,
+          "n": 6,
+          "negative_false_trigger_rate": 1.0,
+          "novel_pass_rate": 0.0,
+          "pass_rate": 0.166667,
+          "positive_recall": 0.25,
+          "resources": {
+            "input_tokens": 128.0,
+            "output_tokens": 10.0
+          }
+        },
+        "gold_task": {
+          "errors": {},
+          "known_pass_rate": 1.0,
+          "mean_score": 1.0,
+          "n": 6,
+          "negative_false_trigger_rate": 0.0,
+          "novel_pass_rate": 1.0,
+          "pass_rate": 1.0,
+          "positive_recall": 1.0,
+          "resources": {
+            "input_tokens": 128.0,
+            "output_tokens": 10.0
+          }
+        },
+        "no_skill": {
+          "errors": {
+            "task_failure": 2
+          },
+          "known_pass_rate": 1.0,
+          "mean_score": 0.666667,
+          "n": 6,
+          "negative_false_trigger_rate": 0.0,
+          "novel_pass_rate": 0.0,
+          "pass_rate": 0.666667,
+          "positive_recall": 0.0,
+          "resources": {
+            "input_tokens": 100.0,
+            "output_tokens": 10.0
+          }
+        },
+        "session": {
+          "errors": {
+            "task_failure": 4
+          },
+          "known_pass_rate": 1.0,
+          "mean_score": 0.333333,
+          "n": 6,
+          "negative_false_trigger_rate": 1.0,
+          "novel_pass_rate": 0.0,
+          "pass_rate": 0.333333,
+          "positive_recall": 1.0,
+          "resources": {
+            "input_tokens": 128.0,
+            "output_tokens": 10.0
+          }
+        },
+        "task_grounded": {
+          "errors": {},
+          "known_pass_rate": 1.0,
+          "mean_score": 1.0,
+          "n": 6,
+          "negative_false_trigger_rate": 0.0,
+          "novel_pass_rate": 1.0,
+          "pass_rate": 1.0,
+          "positive_recall": 1.0,
+          "resources": {
+            "input_tokens": 128.0,
+            "output_tokens": 10.0
+          }
+        }
+      },
+      "mode_id": "matched_budget",
+      "utility_density_per_1000_skill_tokens": {
+        "atom": -2.5,
+        "gold_task": 1.666667,
+        "no_skill": null,
+        "session": -1.666667,
+        "task_grounded": 1.666667
+      }
+    }
+  ],
+  "n_cases": 6,
+  "n_tasks": 6,
+  "run_manifest": {
+    "activation_config_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "evaluation_protocol_fingerprint": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "formation_config_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "held_out_task_set_fingerprint": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "recorded_at": "2026-08-30T00:00:00Z",
+    "repository_revision": "synthetic-revision",
+    "runtime_config_fingerprint": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+    "scorer_fingerprint": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+    "skill_generation_config_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "training_set_fingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "schema_version": 1,
+  "suite_id": "formation-effect-contract-v1"
+}
