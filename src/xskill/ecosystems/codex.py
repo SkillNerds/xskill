@@ -14,6 +14,7 @@ ecosystems/codex.py -- Codex CLI 生态适配
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -30,6 +31,8 @@ from xskill.ecosystems._shared import (
 )
 
 logger = logging.getLogger("xskill.ecosystems")
+
+_CODEX_TOOL_INPUT_LIMIT = 2000
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -312,16 +315,37 @@ def _codex_tool_input(payload: dict):
         else payload.get("arguments")
     )
     if isinstance(raw, str) and payload.get("type") == "function_call":
+        if len(raw) > _CODEX_TOOL_INPUT_LIMIT:
+            return _bounded_codex_tool_input(raw)
         try:
             decoded = json.loads(raw)
         except json.JSONDecodeError:
             decoded = raw
         raw = decoded
     if isinstance(raw, str):
-        return raw[:2000]
+        return _bounded_codex_tool_input(raw)
     if isinstance(raw, (dict, list)):
-        return raw
-    return "" if raw is None else str(raw)[:2000]
+        encoded = json.dumps(
+            raw,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if len(encoded) <= _CODEX_TOOL_INPUT_LIMIT:
+            return raw
+        return _bounded_codex_tool_input(encoded)
+    return "" if raw is None else _bounded_codex_tool_input(str(raw))
+
+
+def _bounded_codex_tool_input(value: str) -> str:
+    if len(value) <= _CODEX_TOOL_INPUT_LIMIT:
+        return value
+    hasher = hashlib.sha256()
+    for offset in range(0, len(value), 4096):
+        hasher.update(value[offset : offset + 4096].encode("utf-8"))
+    digest = hasher.hexdigest()
+    suffix = f"...[truncated original_chars={len(value)} sha256={digest}]"
+    return value[: _CODEX_TOOL_INPUT_LIMIT - len(suffix)] + suffix
 
 
 def _codex_tool_output_text(output) -> str:

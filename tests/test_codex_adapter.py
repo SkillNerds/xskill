@@ -681,6 +681,31 @@ class TestCodexStructuredEvidence:
         assert "## Tool Output: exec (error)" in md
         assert "## Tool Output: shell\n" in md
 
+    def test_large_structured_tool_input_is_bounded_with_provenance(self):
+        oversized = {"cmd": "x" * 10_000}
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "call_id": "call-large",
+                "name": "shell",
+                "arguments": json.dumps(oversized),
+            },
+        }
+
+        md, meta = adapt_trajectory(
+            self._content() + "\n" + json.dumps(event),
+            "codex_rollout_jsonl",
+        )
+
+        tool_input = meta["tool_calls"][-1]["input"]
+        assert isinstance(tool_input, str)
+        assert len(tool_input) == 2000
+        assert "truncated original_chars=" in tool_input
+        assert "sha256=" in tool_input
+        assert "x" * 3000 not in json.dumps(meta)
+        assert len(md) < 10_000
+
 
 # ──────────────────────────────────────────────────────────────────
 # codex-cli ≥0.148 rollout format (user input moved into response_item)
