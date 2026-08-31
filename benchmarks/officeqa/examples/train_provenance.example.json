@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "run_id": "demo-train-20260831",
+  "algo": "xskill",
+  "split_manifest": "benchmarks/officeqa/manifests/officeqa_skillopt_id_split.json",
+  "split_manifest_sha256": "replace-after-generating-real-run",
+  "train_uids_sha256": "replace-with-sha-of-actual-train-uid-list",
+  "merge_val_into_train": true,
+  "selection_split": null,
+  "hyperparameters": {
+    "note": "按具体算法填写；此处仅为占位"
+  },
+  "optimizer_backend": "openai_chat",
+  "target_harness": "claude_code_native_skills",
+  "code": {
+    "xskill_commit": "replace-with-real-commit"
+  },
+  "skill_sha256": "replace-with-frozen-skill-sha256",
+  "notes": "train_uids_sha256 记录本趟实际参与训练的 UID 名单（排序后）的哈希值，用于确认训练使用的确切题目范围。如果 merge_val_into_train 为 true，该哈希对应 train 与 val 合并后的题目列表。例如：xskill 常将验证集合并入训练集，最终成绩使用冻结技能在测试集（test）上另行评测；SkillOpt 的 optimizer_backend=openai_chat 表示仅用于修改技能说明文本，target_harness=claude_code_native_skills 表示训练做题与评测在相同环境中运行。"
+}

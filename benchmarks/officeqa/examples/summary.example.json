@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "run_id": "demo-eval-20260831",
+  "model": "deepseek-v4-flash",
+  "n_total": 172,
+  "n_pass": 120,
+  "accuracy": 0.6977,
+  "by_difficulty": {
+    "easy": { "n_total": 79, "n_pass": 64, "accuracy": 0.8101 },
+    "hard": { "n_total": 93, "n_pass": 56, "accuracy": 0.6022 }
+  },
+  "status_counts": {
+    "pass": 120,
+    "fail": 40,
+    "invalid": 2,
+    "timeout": 6,
+    "infra_error": 0,
+    "skipped": 4
+  },
+  "usage_totals": {
+    "input_tokens": 1000000,
+    "output_tokens": 200000,
+    "cost_usd": 12.34,
+    "usage_missing_n": 4
+  },
+  "refs": {
+    "run_config_sha256": "replace",
+    "results_sha256": "replace",
+    "skill_sha256": "replace",
+    "split_manifest_sha256": "replace",
+    "full_manifest_sha256": "replace"
+  },
+  "started_at": "2026-08-31T00:00:00+00:00",
+  "finished_at": "2026-08-31T06:00:00+00:00",
+  "resumed": false
+}

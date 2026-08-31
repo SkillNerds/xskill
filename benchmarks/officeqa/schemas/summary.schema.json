@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SkillNerds/xskill/benchmarks/officeqa/schemas/summary.schema.json",
+  "title": "OfficeQA 评测汇总",
+  "description": "从 results.jsonl 汇总得出的统计指标。论文表格应引用此文件及对应的 SHA-256 哈希值。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "n_total",
+    "n_pass",
+    "accuracy",
+    "status_counts"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string" },
+    "model": {
+      "type": "string",
+      "description": "本次实验的做题模型名称，与 run_config.model 保持一致；多模型对比时据此区分"
+    },
+    "n_total": { "type": "integer", "description": "评测总题数" },
+    "n_pass": { "type": "integer", "description": "通过（答对）的题数" },
+    "accuracy": { "type": "number", "description": "整体准确率（n_pass / n_total）" },
+    "by_difficulty": {
+      "type": "object",
+      "description": "按难度（easy 和 hard）分别统计的题数与准确率"
+    },
+    "status_counts": {
+      "type": "object",
+      "description": "各类状态（pass、fail、timeout 等）的题目数量统计"
+    },
+    "usage_totals": {
+      "type": "object",
+      "description": "全量评测消耗的 token 与费用汇总",
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"] },
+        "output_tokens": { "type": ["integer", "null"] },
+        "cost_usd": { "type": ["number", "null"] },
+        "usage_missing_n": {
+          "type": "integer",
+          "description": "未采集到用量信息的题目数量"
+        }
+      }
+    },
+    "refs": {
+      "type": "object",
+      "description": "生成汇总时关联的配置文件、逐题结果、技能文件及划分名单的 SHA-256 哈希值",
+      "properties": {
+        "run_config_sha256": { "type": "string" },
+        "results_sha256": { "type": "string" },
+        "skill_sha256": { "type": "string" },
+        "split_manifest_sha256": { "type": "string" },
+        "full_manifest_sha256": { "type": "string" }
+      }
+    },
+    "started_at": { "type": "string" },
+    "finished_at": { "type": "string" },
+    "resumed": {
+      "type": "boolean",
+      "description": "本次实验是否从中断处恢复续跑"
+    }
+  },
+  "additionalProperties": true
+}

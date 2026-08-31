@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SkillNerds/xskill/benchmarks/officeqa/schemas/result_record.schema.json",
+  "title": "OfficeQA 单题评测结果",
+  "description": "results.jsonl 中记录的单题结果明细。请勿将受保护的题目正文或私有数据提交至 Git 仓库。",
+  "type": "object",
+  "required": ["schema_version", "run_id", "uid", "status"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string" },
+    "uid": { "type": "string", "description": "题号，例如 UID0002" },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail", "invalid", "timeout", "infra_error", "skipped"],
+      "description": "pass 表示答对；fail 表示答错；timeout 表示超时；invalid 表示输出无法解析；infra_error 表示基础设施异常；skipped 表示跳过。计算准确率时只有 pass 计为正确，其他均计为未通过。"
+    },
+    "difficulty": { "type": "string", "enum": ["easy", "hard"] },
+    "is_correct": {
+      "type": ["boolean", "null"],
+      "description": "是否判定为正确；无法判分时可为 null"
+    },
+    "pred_answer": {
+      "type": ["string", "null"],
+      "description": "模型输出的预测答案；对外分享前根据数据许可决定是否脱敏"
+    },
+    "latency_ms": { "type": ["number", "null"], "description": "单题耗时（毫秒）" },
+    "usage": {
+      "type": "object",
+      "description": "单题的 token 消耗与费用统计",
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["litellm", "runner_reported", "missing"],
+          "description": "litellm 表示从 LiteLLM 日志补充；runner_reported 表示评测程序自行记录；missing 表示未采集到"
+        },
+        "input_tokens": { "type": ["integer", "null"] },
+        "output_tokens": { "type": ["integer", "null"] },
+        "cache_read_tokens": { "type": ["integer", "null"] },
+        "total_tokens": { "type": ["integer", "null"] },
+        "cost_usd": { "type": ["number", "null"] },
+        "request_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "关联的请求 ID 列表，便于在网关中对账"
+        }
+      }
+    },
+    "skill_sha256": { "type": "string" },
+    "scorer_commit": { "type": "string" },
+    "attempts": { "type": "integer", "description": "本题的尝试次数" }
+  },
+  "additionalProperties": true
+}

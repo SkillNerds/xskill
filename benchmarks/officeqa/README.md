@@ -8,7 +8,18 @@ Databricks 当前把 OfficeQA 定义为三个基准：OfficeQA Pro 有 133 道 h
 
 xskill README 中的 60.47% 是历史下游子集结果。仓库没有保留该次运行的 UID、抽样代码、配置或原始输出，无法证明它等于任何上游 split，也不能从分数反推出样本。因此本次先纠正“官方 1/4”的表述并保留历史数值，不为缺失产物补造 manifest。
 
-Microsoft SkillOpt 另行发布了基于 OfficeQA Full 的 ID-only manifest，train/val/test 为 50/24/172。它的三部分并集恰好覆盖 246 个唯一 UID（113 easy、133 hard），但这是 SkillOpt 的下游划分，不是 OfficeQA 官方 split。本目录的 `officeqa_full.json` 仅借它公开的 UID 和 difficulty 构造无 split 的 Full 清单，不把 SkillOpt 的 train/val/test 语义带入官方口径。
+Microsoft SkillOpt 另行发布了基于 OfficeQA Full 的题号划分名单，训练集、验证集与测试集（train、val、test）分别为 50、24 和 172 题。三部分并集覆盖 246 个唯一 UID（113 道 easy、133 道 hard），这是 SkillOpt 的下游划分，并非 OfficeQA 官方数据集定义的 split。本目录的 `officeqa_full.json` 仅参考其公开的 UID 和难度构建无划分的 Full 清单，不将 SkillOpt 的划分语义混入官方基准口径。
+
+如果论文或实验需要与 SkillOpt 使用相同的数据划分进行对比，请使用 [`manifests/officeqa_skillopt_id_split.json`](manifests/officeqa_skillopt_id_split.json)。其中明确记录了 train、val、test 各自包含的 UID。正式主对比建议均在测试集（test，172 题）上评测；训练时是否将验证集合并入训练集属于算法策略差异，记录在训练说明中即可，无需更换测试集题单。
+
+评测模型不限于某一款（例如不仅限于 DeepSeek V4 Flash）。每更换一个做题模型，均需开启独立的一轮运行，并在 `run_config.json` 的 `model` 字段中注明；在相同划分、相同语料和相同 `reward.py` 下可以横向对比多个模型。请勿将不同模型的逐题结果混入同一个 `results.jsonl`。
+
+关于公平对比的做题环境：xskill 与 SkillOpt 在训练答题与正式评测时，均应使用相同的 Claude Code 原生技能环境（避免训练时使用 Chat 接口答题、评测时却切换为 Claude Code）。SkillOpt 中的 Chat 接口如果保留，仅用于改写技能文案，不用于答题，详见 [`what-these-files-are.md`](what-these-files-are.md)。
+
+SkillOpt 训练中的「做题」（target）与「改写技能」（optimizer）可以明确分工：做题环节与评测一致，使用 Claude Code 原生技能；改写文案可继续使用标准 Chat 接口修改技能正文。最终评测在相同做题环境与相同测试集上测试冻结技能，对最终分数是公平的。optimizer 选择 Chat 接口属于方法设定，需在 `train_provenance.json` 中写明。
+
+各文件的详细说明见 [`what-these-files-are.md`](what-these-files-are.md)（文首附有实验记录清单）。字段规范见 `schemas/` 目录，示例见 `examples/` 目录。若需要使用 LiteLLM 记录 token 和费用，可参考 `scripts/bench/officeqa/litellm_usage.py`。
+
 
 ## 固定版本
 

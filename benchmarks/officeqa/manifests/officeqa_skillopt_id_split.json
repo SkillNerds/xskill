@@ -1,0 +1,1018 @@
+{
+  "schema_version": 1,
+  "benchmark": "officeqa_skillopt_id_split",
+  "description": "按 SkillOpt 公开的题号划分：训练约 50 题、验证约 24 题、测试 172 题。父集是 OfficeQA Full 的 246 题。这里只存题号和难度，不存题目和答案。",
+  "parent_benchmark": "officeqa_full",
+  "parent_manifest": "benchmarks/officeqa/manifests/officeqa_full.json",
+  "source": {
+    "repository": "microsoft/SkillOpt",
+    "repository_url": "https://github.com/microsoft/SkillOpt",
+    "commit": "da06b157cb9878e378663ee1ecf429c83fe1a8f9",
+    "path": "data/officeqa_id_split",
+    "source_file_sha256": {
+      "split_manifest.json": "8f76983eadeb6670df2fc88f568fa86c6318d4e8f02912bf05c5c69955a867e7",
+      "train/items.json": "1bb3a9ca003f6ba7aff34cf2d1fe23d9af12ff647060ac8b7d4c22dcb9e84b56",
+      "val/items.json": "1d7fc4443718a8fc565faf4450d31109880dbf8103759a306289f5ba9407f11b",
+      "test/items.json": "563c30589e897f08161df4d2778578e14a8a2887391813e8d45c3d39eafd900d"
+    },
+    "note": "划分来自 SkillOpt 仓库的公开 id split，不是 OfficeQA 上游自己划的 train/val/test。每题 easy/hard 来自同目录的 officeqa_full.json。"
+  },
+  "counts": {
+    "train": 50,
+    "val": 24,
+    "test": 172
+  },
+  "splits": {
+    "train": [
+      {
+        "uid": "UID0002",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0007",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0014",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0017",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0018",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0019",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0026",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0028",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0030",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0031",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0033",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0034",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0044",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0046",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0049",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0056",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0063",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0065",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0073",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0079",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0083",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0085",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0087",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0092",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0098",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0101",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0110",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0115",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0122",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0123",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0133",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0141",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0144",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0145",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0150",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0151",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0162",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0163",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0165",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0166",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0169",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0189",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0195",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0202",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0212",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0222",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0228",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0229",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0238",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0241",
+        "difficulty": "easy"
+      }
+    ],
+    "val": [
+      {
+        "uid": "UID0001",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0027",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0039",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0041",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0052",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0070",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0072",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0086",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0091",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0109",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0142",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0154",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0159",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0161",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0170",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0190",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0213",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0217",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0220",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0233",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0234",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0235",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0239",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0240",
+        "difficulty": "hard"
+      }
+    ],
+    "test": [
+      {
+        "uid": "UID0003",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0004",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0005",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0006",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0008",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0009",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0010",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0011",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0012",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0013",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0015",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0016",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0020",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0021",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0022",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0023",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0024",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0025",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0029",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0032",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0035",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0036",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0037",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0038",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0040",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0042",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0043",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0045",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0047",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0048",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0050",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0051",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0053",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0054",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0055",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0057",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0058",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0059",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0060",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0061",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0062",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0064",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0066",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0067",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0068",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0069",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0071",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0074",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0075",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0076",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0077",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0078",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0080",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0081",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0082",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0084",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0088",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0089",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0090",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0093",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0094",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0095",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0096",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0097",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0099",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0100",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0102",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0103",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0104",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0105",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0106",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0107",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0108",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0111",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0112",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0113",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0114",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0116",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0117",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0118",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0119",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0120",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0121",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0124",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0125",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0126",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0127",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0128",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0129",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0130",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0131",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0132",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0134",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0135",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0136",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0137",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0138",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0139",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0140",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0143",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0146",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0147",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0148",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0149",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0152",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0153",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0155",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0156",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0157",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0158",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0160",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0164",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0167",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0168",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0171",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0172",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0173",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0174",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0175",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0176",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0177",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0178",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0179",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0180",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0181",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0182",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0183",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0184",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0185",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0186",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0187",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0188",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0191",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0192",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0193",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0194",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0196",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0197",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0198",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0199",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0200",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0201",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0203",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0204",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0205",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0206",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0207",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0208",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0209",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0210",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0211",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0214",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0215",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0216",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0218",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0219",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0221",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0223",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0224",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0225",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0226",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0227",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0230",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0231",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0232",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0236",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0237",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0242",
+        "difficulty": "easy"
+      },
+      {
+        "uid": "UID0243",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0244",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0245",
+        "difficulty": "hard"
+      },
+      {
+        "uid": "UID0246",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  "splits_sha256": "0b971653970a7a81efefec1fe85fc00fdc4ac5b37af72acedafc06e6693458d2"
+}

@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SkillNerds/xskill/benchmarks/officeqa/schemas/run_config.schema.json",
+  "title": "OfficeQA 实验运行配置",
+  "description": "记录本次实验的具体配置：数据划分、做题模型、超时时间、技能版本与代码版本等。请勿将 API Key 写入此文件。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "phase",
+    "algo",
+    "split_manifest",
+    "split_name",
+    "full_manifest",
+    "model",
+    "harness",
+    "scorer"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "phase": {
+      "type": "string",
+      "enum": ["train", "eval"],
+      "description": "train 表示训练；eval 表示评测"
+    },
+    "algo": { "type": "string", "description": "算法名称，例如 xskill 或 skillopt" },
+    "split_manifest": {
+      "type": "string",
+      "description": "划分文件相对路径，例如 manifests/officeqa_skillopt_id_split.json"
+    },
+    "split_manifest_sha256": {
+      "type": "string",
+      "description": "上述划分文件的 SHA-256 哈希值，实验完成后填入真实值"
+    },
+    "split_name": {
+      "type": "string",
+      "enum": ["train", "val", "test", "full"],
+      "description": "本次实际评测的子集；主对比建议使用 test"
+    },
+    "full_manifest": {
+      "type": "string",
+      "description": "Full 246 题总名单文件路径"
+    },
+    "full_manifest_sha256": { "type": "string" },
+    "docs_tree_sha256": {
+      "type": "string",
+      "description": "本地语料树的 SHA-256 哈希值，应与 Full manifest 中的哈希一致"
+    },
+    "model": {
+      "type": "string",
+      "description": "本次实验使用的做题模型名称。一次实验只记录一个模型；测试多模型时分别开启独立实验"
+    },
+    "api_base_kind": {
+      "type": "string",
+      "description": "API 调用方式，例如 litellm_proxy 或 openai_compatible；请勿包含带密钥的完整 URL"
+    },
+    "endpoint_label": {
+      "type": "string",
+      "description": "端点标识或别名，例如 local-litellm"
+    },
+    "harness": {
+      "type": "object",
+      "description": "做题环境配置，记录使用的 Agent 框架与工具列表",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "例如 claude_code_native_skills"
+        },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "允许使用的工具列表"
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "scorer": {
+      "type": "object",
+      "description": "判分所用的官方 reward.py 版本与参数",
+      "required": ["commit", "sha256", "tolerance"],
+      "properties": {
+        "commit": { "type": "string" },
+        "sha256": { "type": "string" },
+        "tolerance": { "type": "number" },
+        "path": { "type": "string" }
+      }
+    },
+    "code": {
+      "type": "object",
+      "description": "本次实验所用的代码版本信息",
+      "properties": {
+        "xskill_commit": { "type": "string" },
+        "skillopt_commit": { "type": "string" },
+        "image_digest": { "type": "string" }
+      }
+    },
+    "skill_sha256": {
+      "type": "string",
+      "description": "本次评测所使用的冻结技能文件的 SHA-256 哈希值"
+    },
+    "workers": { "type": "integer", "minimum": 1, "description": "并发运行的工作进程数" },
+    "timeout_s": { "type": "number", "description": "单道题目的超时时间（秒）" },
+    "max_tool_turns": { "type": "integer", "description": "单道题目允许的最大工具调用轮数" },
+    "retry": {
+      "type": "object",
+      "properties": {
+        "request_retries": {
+          "type": "integer",
+          "description": "单次 API 请求失败后的重试次数"
+        },
+        "case_retries": {
+          "type": "integer",
+          "description": "整道题目执行失败后的重试次数"
+        }
+      }
+    },
+    "seed": { "type": "integer" },
+    "failure_policy": {
+      "type": "string",
+      "description": "失败与超时计分规则。约定：timeout 记录为超时状态，在计算准确率时与 fail 同样计为未通过（准确率 = pass 数量 / 总题数，分母包含 timeout）"
+    },
+    "usage": {
+      "type": "object",
+      "description": "token 与费用统计来源",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["litellm", "runner_reported", "none"]
+        },
+        "metadata_keys": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "附加在 API 请求上的追踪标签，例如 run_id、uid"
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}
