@@ -30,6 +30,14 @@ Task grouping 通过 contingency table 线性累计，confirmed Task 的 gold �
 
 `linker_structure_v1.json` 是覆盖 A→B→A、跨 Session 显式/隐式延续、相似负例、新目标、重试、纠正和多 Skill Atom 的小规模合成结构 pilot；它用于锁定指标、风险和生产 linker 行为，不替代后续 50–100 个经人工复核的代表性离线样本。
 
+`codex_history_pilot_v1.json` 是从本机 Codex 对话中人工筛选后进行语义改写的隐私安全 pilot。它保留重复请求、短上下文跟进、“进一步推进”和显式“继续”等真实表达形态，但不包含原始 rollout、绝对路径、账号、凭据或工具输出。运行：
+
+```bash
+python -m scripts.bench.task_graph_replay.evaluate_linker scripts/bench/task_graph_replay/fixtures/codex_history_pilot_v1.json
+```
+
+该 pilot 只有 13 个单人复核 Atom，且 user turn 到 Atom intent 经人工归一化；它用于把真实对话中 rules-only 的漏合并风险变成可重复回归信号，不是正式线上质量结论，也不能替代双人标注、分歧仲裁和 held-out 数据。
+
 ## Fixture 契约
 
 根对象包含版本号、指标配置、运行清单和多个脱敏 case。
