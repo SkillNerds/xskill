@@ -9,6 +9,8 @@ from xskill.pipeline.registry import pooled_connection
 from xskill.tasks.evidence import ExecutionUsageEvent, ScopedTrajectoryEvidence
 from xskill.tasks.models import TaskGraphGeneration
 
+DEFAULT_BACKFILL_BATCH_SIZE = 512
+
 
 def _json(value) -> str:
     return json.dumps(
@@ -73,35 +75,54 @@ def mark_task_graph_dirty(
         connection.commit()
 
 
-def enqueue_untracked_sources(*, db_path: Path | None = None) -> int:
-    """Backfill the durable queue for existing Atom sources after upgrade."""
+def enqueue_untracked_sources(
+    *,
+    batch_size: int = DEFAULT_BACKFILL_BATCH_SIZE,
+    db_path: Path | None = None,
+) -> int:
+    """Backfill existing Atom sources in bounded, independently committed batches."""
+    if (
+        isinstance(batch_size, bool)
+        or not isinstance(batch_size, int)
+        or batch_size <= 0
+    ):
+        raise ValueError("batch_size must be a positive integer")
     with pooled_connection(db_path) as connection:
-        rows = connection.execute(
-            "SELECT t.watch_dir_id,t.filename,w.source_scope_id"
-            " FROM trajectories t JOIN watch_dirs w ON w.id=t.watch_dir_id"
-            " WHERE t.status IN ('split_done','indexed','done')"
-            " OR COALESCE(t.tasks_extracted,0)>0"
-        ).fetchall()
-        tracked = {
-            (row["source_scope_id"], row["traj_id"])
-            for row in connection.execute(
-                "SELECT source_scope_id,traj_id FROM task_graph_source_state"
-            ).fetchall()
-        }
         queued = 0
-        for row in rows:
-            traj_id = row["filename"].removesuffix(".md")
-            if (row["source_scope_id"], traj_id) in tracked:
-                continue
-            cursor = connection.execute(
+        last_trajectory_id = 0
+        while True:
+            rows = connection.execute(
+                "SELECT t.id,t.watch_dir_id,t.filename,w.source_scope_id"
+                " FROM trajectories t JOIN watch_dirs w ON w.id=t.watch_dir_id"
+                " LEFT JOIN task_graph_source_state s"
+                " ON s.source_scope_id=w.source_scope_id"
+                " AND s.traj_id=CASE WHEN substr(t.filename,-3)='.md'"
+                " THEN substr(t.filename,1,length(t.filename)-3) ELSE t.filename END"
+                " LEFT JOIN task_graph_dirty_sources d"
+                " ON d.watch_dir_id=t.watch_dir_id AND d.filename=t.filename"
+                " WHERE t.id>?"
+                " AND (t.status IN ('split_done','indexed','done')"
+                " OR COALESCE(t.tasks_extracted,0)>0)"
+                " AND s.source_scope_id IS NULL AND d.watch_dir_id IS NULL"
+                " ORDER BY t.id LIMIT ?",
+                (last_trajectory_id, batch_size),
+            ).fetchall()
+            if not rows:
+                break
+            last_trajectory_id = int(rows[-1]["id"])
+            changes_before = connection.total_changes
+            connection.executemany(
                 "INSERT INTO task_graph_dirty_sources("
                 "watch_dir_id,filename,source_scope_id,deleted,generation,reason,marked_at)"
                 " VALUES(?,?,?,0,1,'initial_backfill',datetime('now'))"
                 " ON CONFLICT(watch_dir_id,filename) DO NOTHING",
-                (row["watch_dir_id"], row["filename"], row["source_scope_id"]),
+                [
+                    (row["watch_dir_id"], row["filename"], row["source_scope_id"])
+                    for row in rows
+                ],
             )
-            queued += max(0, cursor.rowcount)
-        connection.commit()
+            queued += connection.total_changes - changes_before
+            connection.commit()
         return queued
 
 
