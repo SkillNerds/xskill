@@ -177,12 +177,12 @@ def aggregate(preds: dict, ground: dict, tol: int = 0) -> dict:
 
     ground[case_id] 需含 boundaries / scenario / total_lines。
     """
-    by_scen: dict[str, dict] = {}
-    tot = {"tp": 0, "fp": 0, "fn": 0, "exact": 0, "eof": 0, "err": 0, "n": 0,
-           "pk_sum": 0.0, "wd_sum": 0.0}
-
     def blank() -> dict:
-        return dict(tot)
+        return {"tp": 0, "fp": 0, "fn": 0, "exact": 0, "eof": 0,
+                "err": 0, "n": 0, "pk_sum": 0.0, "wd_sum": 0.0}
+
+    by_scen: dict[str, dict] = {}
+    tot = blank()
 
     for case_id, gt in ground.items():
         pr = preds.get(case_id, {})

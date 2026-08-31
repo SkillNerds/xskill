@@ -117,3 +117,35 @@ def test_aggregate_emits_segmentation_metrics():
     o = out["overall"]
     assert o["f1"] == 1.0 and o["pk"] == 0.0 and o["window_diff"] == 0.0
     assert o["eof_coverage"] == 1.0
+
+
+def test_aggregate_scenarios_do_not_inherit_previous_totals():
+    ground = {
+        "a": {"boundaries": [10], "scenario": "FIRST", "total_lines": 20},
+        "b": {"boundaries": [8], "scenario": "SECOND", "total_lines": 20},
+    }
+    preds = {
+        "a": {"boundaries": [10], "covered_eof": True, "error": None},
+        "b": {"boundaries": [], "covered_eof": False, "error": "failed"},
+    }
+
+    scenarios = ev.aggregate(preds, ground, tol=0)["by_scenario"]
+
+    assert scenarios["FIRST"] == {
+        "n": 1,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "exact_match": 1.0,
+        "eof_coverage": 1.0,
+        "pk": 0.0,
+        "window_diff": 0.0,
+        "errors": 0,
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+    }
+    assert scenarios["SECOND"]["n"] == 1
+    assert scenarios["SECOND"]["tp"] == 0
+    assert scenarios["SECOND"]["fn"] == 1
+    assert scenarios["SECOND"]["errors"] == 1
