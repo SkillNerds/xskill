@@ -22,6 +22,7 @@ from scripts.bench.evaluate import pk, prf, score_case, window_diff
 
 LATEST_SCHEMA_VERSION = 3
 SUPPORTED_SCHEMA_VERSIONS = {1, 2, LATEST_SCHEMA_VERSION}
+SOURCE_SCHEMA_VERSION = 1
 SUPPORTED_LANGUAGES = {"en", "zh"}
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CODE_SPAN_RE = re.compile(r"`[^`]*`")
@@ -390,6 +391,12 @@ def validate_suite(suite: Any) -> None:
             context="suite.run_manifest",
         )
     else:
+        source_version = _require(suite, "source_schema_version", int, "suite")
+        if source_version != SOURCE_SCHEMA_VERSION:
+            raise ReplayValidationError(
+                "suite.source_schema_version: "
+                f"supported={SOURCE_SCHEMA_VERSION}, got={source_version}"
+            )
         if "run_manifest" in suite:
             raise ReplayValidationError(
                 "suite.run_manifest is not allowed in schema v3; use stage_manifests"

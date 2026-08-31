@@ -27,6 +27,7 @@ import yaml
 
 from scripts.bench.algorithm_replay.evaluate import (
     ReplayValidationError,
+    SOURCE_SCHEMA_VERSION,
     evaluate_suite,
     render_text,
     validate_suite,
@@ -35,7 +36,6 @@ from xskill.agents.agno_factory import resolve_agent_llm_config
 from xskill.usage import cost_usd, extract_usage, load_price_table
 from xskill.utils.llm import LLMClient
 
-SOURCE_SCHEMA_VERSION = 1
 DEFAULT_SPLIT_ALGORITHM_VERSION = "offline-boundary-ranker-v1"
 DEFAULT_ROUTE_ALGORITHM_VERSION = "offline-skill-router-v1"
 
@@ -120,7 +120,12 @@ def validate_source_suite(source: Any) -> None:
     """Validate gold data and explicit candidate lines without model calls."""
     if not isinstance(source, dict):
         raise ReplayValidationError("source: expected an object")
-    if source.get("source_schema_version") != SOURCE_SCHEMA_VERSION:
+    source_version = source.get("source_schema_version")
+    if (
+        isinstance(source_version, bool)
+        or not isinstance(source_version, int)
+        or source_version != SOURCE_SCHEMA_VERSION
+    ):
         raise ReplayValidationError(
             "source.source_schema_version: supported=1, "
             f"got={source.get('source_schema_version')!r}"
@@ -200,6 +205,7 @@ def validate_source_suite(source: Any) -> None:
     validate_suite(
         {
             "schema_version": 3,
+            "source_schema_version": source["source_schema_version"],
             "suite_id": source.get("suite_id"),
             "metric_config": source.get("metric_config"),
             "stage_manifests": {
@@ -619,6 +625,7 @@ def _validate_split_before_route(
     validate_suite(
         {
             "schema_version": 3,
+            "source_schema_version": source["source_schema_version"],
             "suite_id": source["suite_id"],
             "metric_config": source["metric_config"],
             "stage_manifests": {
@@ -666,6 +673,7 @@ def _validate_route_batch(
     validate_suite(
         {
             "schema_version": 3,
+            "source_schema_version": source["source_schema_version"],
             "suite_id": source["suite_id"],
             "metric_config": source["metric_config"],
             "stage_manifests": {

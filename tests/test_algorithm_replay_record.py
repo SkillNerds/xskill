@@ -161,6 +161,24 @@ def test_record_source_fixture_is_privacy_safe_and_valid():
     }
 
 
+@pytest.mark.parametrize("source_version", [True, "1", 1.0, 2])
+def test_source_schema_version_requires_the_exact_integer(source_version):
+    source = _source()
+    source["source_schema_version"] = source_version
+
+    with pytest.raises(ReplayValidationError, match="source_schema_version"):
+        validate_source_suite(source)
+
+
+@pytest.mark.parametrize("source_version", [True, "1", 1.0, 2])
+def test_recorded_v3_schema_version_requires_the_exact_integer(source_version):
+    suite = _source()
+    suite["source_schema_version"] = source_version
+
+    with pytest.raises(ReplayValidationError, match="source_schema_version"):
+        validate_suite(suite)
+
+
 def test_checked_in_qwen_recording_replays_with_stable_provenance():
     suite = _source()
 
