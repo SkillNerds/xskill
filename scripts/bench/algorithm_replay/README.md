@@ -16,14 +16,26 @@ python -m scripts.bench.algorithm_replay.evaluate \
   scripts/bench/algorithm_replay/fixtures/baseline_v2.json
 ```
 
-使用 `--format json` 可以输出机器可读报告。测试会把两份报告与入仓的 `*.report.json` 快照比较，因此 schema 和指标定义的变化必须作为可见 diff 接受 review。
+运行真实 Qwen v3 基线：
+
+```bash
+python -m scripts.bench.algorithm_replay.evaluate scripts/bench/algorithm_replay/fixtures/qwen38_baseline_v3.json
+```
+
+验证隐私安全的录制源：
+
+```bash
+python -c 'import json; from pathlib import Path; from scripts.bench.algorithm_replay.record import validate_source_suite; validate_source_suite(json.loads(Path("scripts/bench/algorithm_replay/fixtures/qwen38_baseline_v3.json").read_text()))'
+```
+
+使用 `--format json` 可以输出机器可读报告。测试会把 v1 和 v2 报告与入仓的 `*.report.json` 快照比较，并锁定 v3 的报告哈希和阶段来源，因此 schema 和指标定义的变化必须作为可见 diff 接受 review。
 
 ## Fixture 契约
 
-- `schema_version`：支持 `1` 和 `2`，未知版本会直接失败。
+- `schema_version`：支持 `1`、`2` 和 `3`，未知版本会直接失败。
 - `metric_config.routing_recall_k`：Recall@K 使用的候选截断。
 - `metric_config.atom_alignment_min_iou`：把预测对齐到 gold Atom 时，重复和路由指标要求的最小区间 IoU。
-- `run_manifest`：这份录制预测对应的仓库 revision、模型、Harness、prompt fingerprint、seed、生成参数、token 数、费用和生成时间。
+- `run_manifest`：v1 和 v2 录制预测对应的仓库 revision、模型、Harness、prompt fingerprint、seed、生成参数、token 数、费用和生成时间。
 - `skill_catalog`：本套件里唯一合法的路由标签。
 - `cases`：可按行寻址的合成轨迹、人工标注的 gold Atom，以及不可变的预测 Atom；`line_count` 必须与 `source_lines` 完全一致。
 
@@ -33,11 +45,79 @@ gold 区间不得重叠；预测区间可以重叠，因为重叠本身就是被
 
 `scorable_ranges` 标出覆盖率和重叠率使用的源行。
 
-入仓 fixture 都是合成数据，满足隐私约束。模型名是 `recorded-fixture`：它们只校验评测器契约，不代表当前线上模型效果。
+入仓轨迹都是满足隐私约束的合成数据。
 
-prompt fingerprint 哈希的是字面哨兵串，因为这份合成预测没有使用模型 prompt。
+v1 和 v2 fixture 使用模型名 `recorded-fixture`，只校验评测器契约，不代表当前线上模型效果。
 
-真实离线实验应替换运行清单和 prediction，并保持所选 schema。
+它们的 prompt fingerprint 哈希字面哨兵串，因为这些合成预测没有调用模型。
+
+v3 fixture 记录一次本地 `qwen3.8-27b-ud-iq3-xxs` 通过 llama.cpp OpenAI-compatible endpoint 的运行，包括每个阶段实测的 token 用量、生成时间和配置为零的本地推理费用。
+
+这六个小样本只验证录制和回放链路；其中只有一个正边界且没有路由错误，因此不足以支持模型质量或分数相关性的结论。
+
+## Schema v3 阶段来源
+
+schema v3 用 `stage_manifests` 下唯一的 `split` 和 `route` 两项替代含糊的全局 `run_manifest`。
+
+每个阶段分别记录模型、Harness、prompt fingerprint、算法版本、seed、生成参数、实测输入、输出与缓存 token、估算费用、价格来源、调用次数、生成时间、时间戳和仓库 revision。
+
+两个阶段必须使用相同的仓库 revision，拆分算法版本必须与每条候选边界记录一致。
+
+每个预测 Atom 都必须记录 `weight_scores`，每个最终 Skill 恰好对应一个 1 到 10 的严格整数分数，未采用的候选 Skill 不得出现分数。
+
+schema v1 和 v2 继续受支持，已有入仓报告保持字节级不变。
+
+## 录制真实模型运行
+
+录制器只读取命令行显式提供的 source 和 config 路径，不会发现 `~/.xskill`、coding-agent 历史目录或用户工作区。
+
+入仓 Qwen v3 fixture 包含六个隐私安全的合成 case，覆盖新目标、继续执行、用户纠正、失败重试、近重复请求和一个 Atom 支撑多个 Skills。
+
+fixture 保留 `source_schema_version`、`scenario` 和 `candidate_lines`，因此同一文件可以继续作为录制源，模型预测与人工 gold 标注仍位于不同字段。
+
+运行 `python -m scripts.bench.algorithm_replay.record SOURCE.json OUTPUT.json --config CONFIG.yaml` 可以调用配置中的 split 和 cluster 后端并写出通过校验的 schema v3 套件。
+
+该命令只使用 xskill 的常规运行依赖，并要求 OpenAI-compatible chat-completions endpoint 支持 JSON 输出且返回 prompt 和 completion token 用量。
+
+本地 llama.cpp Qwen endpoint 可以使用如下显式临时配置：
+
+```yaml
+llm:
+  base_url: http://127.0.0.1:8000/v1
+  model: qwen3.8-27b-ud-iq3-xxs
+  max_tokens: 4096
+  temperature: 0.0
+  extra_body:
+    chat_template_kwargs:
+      enable_thinking: false
+llm_agents:
+  split: {}
+  cluster: {}
+pricing:
+  qwen3.8-27b-ud-iq3-xxs:
+    input_per_1m: 0.0
+    output_per_1m: 0.0
+```
+
+使用 `read -rsp "Replay API key: " XSKILL_REPLAY_API_KEY && export XSKILL_REPLAY_API_KEY` 可以在不把凭据写进配置或 shell history 的情况下准备环境变量。
+
+运行 `python -m scripts.bench.algorithm_replay.record scripts/bench/algorithm_replay/fixtures/qwen38_baseline_v3.json /tmp/qwen38-baseline-v3.json --config /tmp/qwen38-replay.yaml --api-key-env XSKILL_REPLAY_API_KEY --harness llama.cpp-openai-compatible` 可以录制新的输出。
+
+模型 endpoint 离线后仍可运行 `python -m scripts.bench.algorithm_replay.evaluate /tmp/qwen38-baseline-v3.json --format json` 复现报告。
+
+录制器对每条轨迹单独调用 split 以匹配 TaskAgent 的隔离边界，再按照当前 cluster batch size 对完整 case 做有界批量路由。
+
+录制器只要求模型返回语义边界选择、intent、summary、路由标签和关系权重。
+
+xskill 在路由前确定性分配 Atom id、从采用的起点推导半开区间并把采用的候选映射到 Atom。
+
+不合法的 split 输出会在路由前失败，因此无效的第一阶段不会继续消耗路由模型请求。
+
+输出文件已存在时必须显式传入 `--overwrite` 才允许覆盖。
+
+套件只保存结构化模型内容和实测用量，不持久化隐藏推理、endpoint URL 或 API key。
+
+生成的 JSON 必须在入仓前进行隐私检查，并使用普通 evaluator 生成报告；真实模型调用不进入常规 CI。
 
 ## Version 2 候选边界契约
 

@@ -190,9 +190,9 @@ def test_source_line_count_mismatch_fails_loudly():
 
 def test_unsupported_schema_version_fails_loudly():
     suite = load_suite(BASELINE_PATH)
-    suite["schema_version"] = 3
+    suite["schema_version"] = 4
 
-    with pytest.raises(ReplayValidationError, match=r"supported=\[1, 2\], got=3"):
+    with pytest.raises(ReplayValidationError, match=r"supported=\[1, 2, 3\], got=4"):
         validate_suite(suite)
 
 
@@ -282,3 +282,18 @@ def test_cli_renders_text_and_json(capsys):
     assert main([str(BASELINE_PATH), "--format", "json"]) == 0
     json_output = json.loads(capsys.readouterr().out)
     assert json_output == evaluate_suite(load_suite(BASELINE_PATH))
+
+
+@pytest.mark.parametrize(
+    ("fixture_path", "report_path"),
+    [
+        (BASELINE_PATH, REPORT_PATH),
+        (BOUNDARY_SCORE_PATH, BOUNDARY_SCORE_REPORT_PATH),
+    ],
+)
+def test_existing_json_cli_output_remains_byte_for_byte_stable(
+    fixture_path, report_path, capsys
+):
+    assert main([str(fixture_path), "--format", "json"]) == 0
+
+    assert capsys.readouterr().out == report_path.read_text(encoding="utf-8")
