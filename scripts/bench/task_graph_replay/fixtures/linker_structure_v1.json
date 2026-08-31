@@ -1,0 +1,420 @@
+{
+  "schema_version": 1,
+  "suite_id": "production-linker-structure-pilot-v1",
+  "run_manifest": {
+    "repository_revision": "b1e08786becab32b2c1289f20e59b42a6c243789",
+    "generated_at": "2026-08-30T00:00:00Z",
+    "fixture_kind": "synthetic-structural-pilot"
+  },
+  "linker_config": {
+    "top_k": 8,
+    "recent_k": 6,
+    "posting_cap": 64
+  },
+  "cases": [
+    {
+      "case_id": "same-session-new-goal",
+      "sessions": [
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-new-goal",
+          "atoms": [
+            {
+              "atom_id": "atom-migrate",
+              "intent": "迁移 SQLite 表结构",
+              "summary": "迁移字段和历史数据",
+              "raw_segment": "## User\n迁移 SQLite 表结构。\n\n## Assistant\n字段和历史数据已经迁移。\n",
+              "skills": ["sqlite-migration"]
+            },
+            {
+              "atom_id": "atom-validate",
+              "intent": "验证迁移后的约束和索引",
+              "summary": "检查联合主键和索引",
+              "raw_segment": "## User\n验证迁移后的约束和索引。\n\n## Assistant\n联合主键和索引符合预期。\n",
+              "skills": ["sqlite-validation"]
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-migrate", "task_id": "task-migrate"},
+        {"atom_id": "atom-validate", "task_id": "task-validate"}
+      ],
+      "expected_attempt_count": 2,
+      "expected_attempt_relations": []
+    },
+    {
+      "case_id": "same-session-a-b-a",
+      "sessions": [
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-a-b-a",
+          "atoms": [
+            {
+              "atom_id": "atom-auth-start",
+              "intent": "修复登录认证失败",
+              "summary": "定位登录 token 校验错误",
+              "raw_segment": "## User\n修复登录认证失败。\n\n## Assistant\n已定位 token 校验错误。\n",
+              "skills": ["authentication-debugging"]
+            },
+            {
+              "atom_id": "atom-release-notes",
+              "intent": "编写版本发布说明",
+              "summary": "整理本次版本的文档变更",
+              "raw_segment": "## User\n编写版本发布说明。\n\n## Assistant\n已整理文档变更。\n",
+              "skills": ["documentation-maintenance"]
+            },
+            {
+              "atom_id": "atom-auth-continue",
+              "intent": "继续修复登录认证失败",
+              "summary": "修正 token 校验并验证登录测试",
+              "raw_segment": "## User\n继续修复登录认证失败。\n\n## Assistant\n已修正 token 校验并通过测试。\n",
+              "skills": ["authentication-debugging"]
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-auth-start", "task_id": "task-auth"},
+        {"atom_id": "atom-release-notes", "task_id": "task-docs"},
+        {"atom_id": "atom-auth-continue", "task_id": "task-auth"}
+      ],
+      "expected_attempt_count": 3,
+      "expected_attempt_relations": [
+        {
+          "from_evidence": [
+            {"atom_id": "atom-auth-continue", "start": 11, "end": 16}
+          ],
+          "to_evidence": [
+            {"atom_id": "atom-auth-start", "start": 1, "end": 6}
+          ],
+          "relation_type": "continuation_of",
+          "decision": "proposed"
+        }
+      ]
+    },
+    {
+      "case_id": "cross-session-phase-shift",
+      "sessions": [
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-index-analysis",
+          "atoms": [
+            {
+              "atom_id": "atom-index-analysis",
+              "intent": "优化数据库索引查询性能",
+              "summary": "分析数据库索引查询的慢路径",
+              "raw_segment": "## User\n优化数据库索引查询性能。\n\n## Assistant\n已分析慢查询路径。\n",
+              "skills": ["sqlite-validation"]
+            }
+          ]
+        },
+        {
+          "source_scope_id": "source-openclaw",
+          "traj_id": "traj-index-implementation",
+          "atoms": [
+            {
+              "atom_id": "atom-index-implementation",
+              "intent": "继续优化数据库索引查询性能",
+              "summary": "补充联合索引并复测慢查询",
+              "raw_segment": "## User\n继续优化数据库索引查询性能。\n\n## Assistant\n已补充联合索引并复测。\n",
+              "skills": ["sqlite-validation"]
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-index-analysis", "task_id": "task-index"},
+        {"atom_id": "atom-index-implementation", "task_id": "task-index"}
+      ],
+      "expected_attempt_count": 2,
+      "expected_attempt_relations": []
+    },
+    {
+      "case_id": "cross-session-high-overlap",
+      "sessions": [
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-cache-analysis",
+          "atoms": [
+            {
+              "atom_id": "atom-cache-analysis",
+              "intent": "优化缓存命中率和查询性能",
+              "summary": "分析缓存命中率和查询性能",
+              "raw_segment": "## User\n优化缓存命中率和查询性能。\n\n## Assistant\n已分析缓存命中率和查询性能。\n",
+              "skills": ["cache-analysis"]
+            }
+          ]
+        },
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-cache-continue",
+          "atoms": [
+            {
+              "atom_id": "atom-cache-continue",
+              "intent": "继续优化缓存命中率和查询性能",
+              "summary": "继续分析缓存命中率和查询性能",
+              "raw_segment": "## User\n继续优化缓存命中率和查询性能。\n\n## Assistant\n已继续分析缓存命中率和查询性能。\n",
+              "skills": ["cache-analysis"]
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-cache-analysis", "task_id": "task-cache"},
+        {"atom_id": "atom-cache-continue", "task_id": "task-cache"}
+      ],
+      "expected_attempt_count": 2,
+      "expected_attempt_relations": [
+        {
+          "from_evidence": [
+            {"atom_id": "atom-cache-continue", "start": 1, "end": 6}
+          ],
+          "to_evidence": [
+            {"atom_id": "atom-cache-analysis", "start": 1, "end": 6}
+          ],
+          "relation_type": "continuation_of",
+          "decision": "proposed"
+        }
+      ]
+    },
+    {
+      "case_id": "cross-session-implicit-continuation",
+      "sessions": [
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-api-start",
+          "atoms": [
+            {
+              "atom_id": "atom-api-start",
+              "intent": "拒绝空 API 请求体",
+              "summary": "在写入边界拒绝空请求体",
+              "raw_segment": "## User\n拒绝空 API 请求体。\n\n## Assistant\n已在写入边界增加校验。\n",
+              "skills": ["api-validation"]
+            }
+          ]
+        },
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-api-tests",
+          "atoms": [
+            {
+              "atom_id": "atom-api-tests",
+              "intent": "为空 API 请求体增加回归测试",
+              "summary": "验证写入边界拒绝空请求体",
+              "raw_segment": "## User\n为空 API 请求体增加回归测试。\n\n## Assistant\n已验证写入边界拒绝空请求体。\n",
+              "skills": ["api-validation", "regression-testing"]
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-api-start", "task_id": "task-api-validation"},
+        {"atom_id": "atom-api-tests", "task_id": "task-api-validation"}
+      ],
+      "expected_attempt_count": 2,
+      "expected_attempt_relations": []
+    },
+    {
+      "case_id": "cross-session-similar-negative",
+      "sessions": [
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-login-timeout",
+          "atoms": [
+            {
+              "atom_id": "atom-login-timeout",
+              "intent": "修复登录请求超时",
+              "summary": "分析登录请求的超时配置",
+              "raw_segment": "## User\n修复登录请求超时。\n\n## Assistant\n已分析登录请求的超时配置。\n",
+              "skills": ["authentication-debugging"]
+            }
+          ]
+        },
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-payment-timeout",
+          "atoms": [
+            {
+              "atom_id": "atom-payment-timeout",
+              "intent": "继续修复支付请求超时",
+              "summary": "分析支付请求的超时配置",
+              "raw_segment": "## User\n继续修复支付请求超时。\n\n## Assistant\n已分析支付请求的超时配置。\n",
+              "skills": ["payment-debugging"]
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-login-timeout", "task_id": "task-login"},
+        {"atom_id": "atom-payment-timeout", "task_id": "task-payment"}
+      ],
+      "expected_attempt_count": 2,
+      "expected_attempt_relations": []
+    },
+    {
+      "case_id": "same-session-explicit-retry",
+      "sessions": [
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-concurrency-retry",
+          "atoms": [
+            {
+              "atom_id": "atom-concurrency-failed",
+              "intent": "修复并发测试失败",
+              "summary": "首次执行仍然超时",
+              "raw_segment": "## User\n修复并发测试失败。\n\n## Assistant\n首次执行仍然超时。\n",
+              "skills": ["flaky-test-debugging"]
+            },
+            {
+              "atom_id": "atom-concurrency-retry",
+              "intent": "重试修复并发测试失败",
+              "summary": "补充同步后测试通过",
+              "raw_segment": "## User\n重试修复并发测试失败。\n\n## Assistant\n补充同步后测试通过。\n",
+              "skills": ["flaky-test-debugging"]
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-concurrency-failed", "task_id": "task-concurrency"},
+        {"atom_id": "atom-concurrency-retry", "task_id": "task-concurrency"}
+      ],
+      "expected_attempt_count": 2,
+      "expected_attempt_relations": [
+        {
+          "from_evidence": [
+            {"atom_id": "atom-concurrency-retry", "start": 6, "end": 11}
+          ],
+          "to_evidence": [
+            {"atom_id": "atom-concurrency-failed", "start": 1, "end": 6}
+          ],
+          "relation_type": "retry_of",
+          "decision": "confirmed"
+        }
+      ]
+    },
+    {
+      "case_id": "intra-atom-retry",
+      "sessions": [
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-intra-retry",
+          "atoms": [
+            {
+              "atom_id": "atom-intra-retry",
+              "intent": "修复登录问题",
+              "summary": "执行并重试登录修复",
+              "raw_segment": "## User\n修复登录问题。\n\n## Assistant\n第一次执行失败。\n\n## User\n重试修复登录问题。\n\n## Assistant\n第二次执行成功。\n",
+              "skills": ["authentication-debugging"]
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-intra-retry", "task_id": "task-login"}
+      ],
+      "expected_attempt_count": 2,
+      "expected_attempt_relations": [
+        {
+          "from_evidence": [
+            {"atom_id": "atom-intra-retry", "start": 7, "end": 12}
+          ],
+          "to_evidence": [
+            {"atom_id": "atom-intra-retry", "start": 1, "end": 7}
+          ],
+          "relation_type": "retry_of",
+          "decision": "confirmed"
+        }
+      ]
+    },
+    {
+      "case_id": "intra-atom-correction",
+      "sessions": [
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-intra-correction",
+          "atoms": [
+            {
+              "atom_id": "atom-export-correction",
+              "intent": "导出汇总结果为 XLSX",
+              "summary": "将 CSV 方案更正为 XLSX",
+              "raw_segment": "## User\n把汇总结果导出为 CSV。\n\n## Assistant\n正在生成 CSV。\n\n## User\n更正一下，不要 CSV，请导出成 XLSX。\n\n## Assistant\n已生成 XLSX 工作簿。\n",
+              "skills": ["spreadsheet-export"]
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-export-correction", "task_id": "task-export"}
+      ],
+      "expected_attempt_count": 2,
+      "expected_attempt_relations": [
+        {
+          "from_evidence": [
+            {"atom_id": "atom-export-correction", "start": 7, "end": 12}
+          ],
+          "to_evidence": [
+            {"atom_id": "atom-export-correction", "start": 1, "end": 7}
+          ],
+          "relation_type": "correction_of",
+          "decision": "confirmed"
+        }
+      ]
+    },
+    {
+      "case_id": "same-session-similar-new-goals",
+      "sessions": [
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-docs",
+          "atoms": [
+            {
+              "atom_id": "atom-readme-docs",
+              "intent": "更新 README 安装说明",
+              "summary": "替换 README 的旧安装命令",
+              "raw_segment": "## User\n更新 README 安装说明。\n\n## Assistant\n已替换旧安装命令。\n",
+              "skills": ["documentation-maintenance"]
+            },
+            {
+              "atom_id": "atom-api-docs",
+              "intent": "更新 API 安装说明",
+              "summary": "替换 API 文档的旧安装命令",
+              "raw_segment": "## User\n更新 API 安装说明。\n\n## Assistant\n已替换 API 文档的旧安装命令。\n",
+              "skills": ["documentation-maintenance"]
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-readme-docs", "task_id": "task-readme"},
+        {"atom_id": "atom-api-docs", "task_id": "task-api-docs"}
+      ],
+      "expected_attempt_count": 2,
+      "expected_attempt_relations": []
+    },
+    {
+      "case_id": "single-atom-multi-skill",
+      "sessions": [
+        {
+          "source_scope_id": "source-codex",
+          "traj_id": "traj-multi-skill",
+          "atoms": [
+            {
+              "atom_id": "atom-multi-skill",
+              "intent": "拒绝空请求体并增加回归测试",
+              "summary": "增加输入校验和回归覆盖",
+              "raw_segment": "## User\n拒绝空请求体并增加回归测试。\n\n## Assistant\n输入校验和回归测试已经完成。\n",
+              "skills": ["api-validation", "regression-testing"]
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-multi-skill", "task_id": "task-multi-skill"}
+      ],
+      "expected_attempt_count": 1,
+      "expected_attempt_relations": []
+    }
+  ]
+}

@@ -1,0 +1,1332 @@
+{
+  "cases": [
+    {
+      "atom_count": 2,
+      "attempt_relations": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "attempts": {
+        "absolute_error": 0,
+        "expected": 2,
+        "predicted": 2
+      },
+      "case_id": "same-session-new-goal",
+      "expected_attempt_relations": [],
+      "gold_task_count": 2,
+      "grouping": {
+        "atom_as_task": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "session_as_task": {
+          "b3": {
+            "f1": 0.666667,
+            "precision": 0.5,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 0.0,
+            "false_negative": 0,
+            "false_positive": 1,
+            "precision": 0.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph_oracle_review": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        }
+      },
+      "predicted_attempt_relations": [],
+      "predicted_task_count": 2,
+      "proposals": {
+        "atoms_with_proposals": 0,
+        "candidates_per_atom": 0.0,
+        "false_split_pairs": 0,
+        "max_proposals_per_atom": 0,
+        "precision": 1.0,
+        "proposed": 0,
+        "recoverable_false_split_pairs": 0,
+        "recoverable_recall": 1.0,
+        "useful": 0
+      }
+    },
+    {
+      "atom_count": 3,
+      "attempt_relations": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "attempts": {
+        "absolute_error": 0,
+        "expected": 3,
+        "predicted": 3
+      },
+      "case_id": "same-session-a-b-a",
+      "expected_attempt_relations": [
+        {
+          "decision": "proposed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-auth-continue",
+              "end": 16,
+              "start": 11
+            }
+          ],
+          "relation_type": "continuation_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-auth-start",
+              "end": 6,
+              "start": 1
+            }
+          ]
+        }
+      ],
+      "gold_task_count": 2,
+      "grouping": {
+        "atom_as_task": {
+          "b3": {
+            "f1": 0.8,
+            "precision": 1.0,
+            "recall": 0.666667
+          },
+          "pairwise": {
+            "f1": 0.0,
+            "false_negative": 1,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 0.0,
+            "true_positive": 0
+          }
+        },
+        "session_as_task": {
+          "b3": {
+            "f1": 0.714286,
+            "precision": 0.555556,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 0.5,
+            "false_negative": 0,
+            "false_positive": 2,
+            "precision": 0.333333,
+            "recall": 1.0,
+            "true_positive": 1
+          }
+        },
+        "task_graph": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 1
+          }
+        },
+        "task_graph_oracle_review": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 1
+          }
+        }
+      },
+      "predicted_attempt_relations": [
+        {
+          "decision": "proposed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-auth-continue",
+              "end": 16,
+              "start": 11
+            }
+          ],
+          "relation_type": "continuation_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-auth-start",
+              "end": 6,
+              "start": 1
+            }
+          ]
+        }
+      ],
+      "predicted_task_count": 2,
+      "proposals": {
+        "atoms_with_proposals": 0,
+        "candidates_per_atom": 0.0,
+        "false_split_pairs": 0,
+        "max_proposals_per_atom": 0,
+        "precision": 1.0,
+        "proposed": 0,
+        "recoverable_false_split_pairs": 0,
+        "recoverable_recall": 1.0,
+        "useful": 0
+      }
+    },
+    {
+      "atom_count": 2,
+      "attempt_relations": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "attempts": {
+        "absolute_error": 0,
+        "expected": 2,
+        "predicted": 2
+      },
+      "case_id": "cross-session-phase-shift",
+      "expected_attempt_relations": [],
+      "gold_task_count": 1,
+      "grouping": {
+        "atom_as_task": {
+          "b3": {
+            "f1": 0.666667,
+            "precision": 1.0,
+            "recall": 0.5
+          },
+          "pairwise": {
+            "f1": 0.0,
+            "false_negative": 1,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 0.0,
+            "true_positive": 0
+          }
+        },
+        "session_as_task": {
+          "b3": {
+            "f1": 0.666667,
+            "precision": 1.0,
+            "recall": 0.5
+          },
+          "pairwise": {
+            "f1": 0.0,
+            "false_negative": 1,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 0.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph": {
+          "b3": {
+            "f1": 0.666667,
+            "precision": 1.0,
+            "recall": 0.5
+          },
+          "pairwise": {
+            "f1": 0.0,
+            "false_negative": 1,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 0.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph_oracle_review": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 1
+          }
+        }
+      },
+      "predicted_attempt_relations": [],
+      "predicted_task_count": 2,
+      "proposals": {
+        "atoms_with_proposals": 1,
+        "candidates_per_atom": 0.5,
+        "false_split_pairs": 1,
+        "max_proposals_per_atom": 1,
+        "precision": 1.0,
+        "proposed": 1,
+        "recoverable_false_split_pairs": 1,
+        "recoverable_recall": 1.0,
+        "useful": 1
+      }
+    },
+    {
+      "atom_count": 2,
+      "attempt_relations": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "attempts": {
+        "absolute_error": 0,
+        "expected": 2,
+        "predicted": 2
+      },
+      "case_id": "cross-session-high-overlap",
+      "expected_attempt_relations": [
+        {
+          "decision": "proposed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-cache-continue",
+              "end": 6,
+              "start": 1
+            }
+          ],
+          "relation_type": "continuation_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-cache-analysis",
+              "end": 6,
+              "start": 1
+            }
+          ]
+        }
+      ],
+      "gold_task_count": 1,
+      "grouping": {
+        "atom_as_task": {
+          "b3": {
+            "f1": 0.666667,
+            "precision": 1.0,
+            "recall": 0.5
+          },
+          "pairwise": {
+            "f1": 0.0,
+            "false_negative": 1,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 0.0,
+            "true_positive": 0
+          }
+        },
+        "session_as_task": {
+          "b3": {
+            "f1": 0.666667,
+            "precision": 1.0,
+            "recall": 0.5
+          },
+          "pairwise": {
+            "f1": 0.0,
+            "false_negative": 1,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 0.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 1
+          }
+        },
+        "task_graph_oracle_review": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 1
+          }
+        }
+      },
+      "predicted_attempt_relations": [
+        {
+          "decision": "proposed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-cache-continue",
+              "end": 6,
+              "start": 1
+            }
+          ],
+          "relation_type": "continuation_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-cache-analysis",
+              "end": 6,
+              "start": 1
+            }
+          ]
+        }
+      ],
+      "predicted_task_count": 1,
+      "proposals": {
+        "atoms_with_proposals": 0,
+        "candidates_per_atom": 0.0,
+        "false_split_pairs": 0,
+        "max_proposals_per_atom": 0,
+        "precision": 1.0,
+        "proposed": 0,
+        "recoverable_false_split_pairs": 0,
+        "recoverable_recall": 1.0,
+        "useful": 0
+      }
+    },
+    {
+      "atom_count": 2,
+      "attempt_relations": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "attempts": {
+        "absolute_error": 0,
+        "expected": 2,
+        "predicted": 2
+      },
+      "case_id": "cross-session-implicit-continuation",
+      "expected_attempt_relations": [],
+      "gold_task_count": 1,
+      "grouping": {
+        "atom_as_task": {
+          "b3": {
+            "f1": 0.666667,
+            "precision": 1.0,
+            "recall": 0.5
+          },
+          "pairwise": {
+            "f1": 0.0,
+            "false_negative": 1,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 0.0,
+            "true_positive": 0
+          }
+        },
+        "session_as_task": {
+          "b3": {
+            "f1": 0.666667,
+            "precision": 1.0,
+            "recall": 0.5
+          },
+          "pairwise": {
+            "f1": 0.0,
+            "false_negative": 1,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 0.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph": {
+          "b3": {
+            "f1": 0.666667,
+            "precision": 1.0,
+            "recall": 0.5
+          },
+          "pairwise": {
+            "f1": 0.0,
+            "false_negative": 1,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 0.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph_oracle_review": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 1
+          }
+        }
+      },
+      "predicted_attempt_relations": [],
+      "predicted_task_count": 2,
+      "proposals": {
+        "atoms_with_proposals": 1,
+        "candidates_per_atom": 0.5,
+        "false_split_pairs": 1,
+        "max_proposals_per_atom": 1,
+        "precision": 1.0,
+        "proposed": 1,
+        "recoverable_false_split_pairs": 1,
+        "recoverable_recall": 1.0,
+        "useful": 1
+      }
+    },
+    {
+      "atom_count": 2,
+      "attempt_relations": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "attempts": {
+        "absolute_error": 0,
+        "expected": 2,
+        "predicted": 2
+      },
+      "case_id": "cross-session-similar-negative",
+      "expected_attempt_relations": [],
+      "gold_task_count": 2,
+      "grouping": {
+        "atom_as_task": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "session_as_task": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph_oracle_review": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        }
+      },
+      "predicted_attempt_relations": [],
+      "predicted_task_count": 2,
+      "proposals": {
+        "atoms_with_proposals": 1,
+        "candidates_per_atom": 0.5,
+        "false_split_pairs": 0,
+        "max_proposals_per_atom": 1,
+        "precision": 0.0,
+        "proposed": 1,
+        "recoverable_false_split_pairs": 0,
+        "recoverable_recall": 1.0,
+        "useful": 0
+      }
+    },
+    {
+      "atom_count": 2,
+      "attempt_relations": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "attempts": {
+        "absolute_error": 0,
+        "expected": 2,
+        "predicted": 2
+      },
+      "case_id": "same-session-explicit-retry",
+      "expected_attempt_relations": [
+        {
+          "decision": "confirmed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-concurrency-retry",
+              "end": 11,
+              "start": 6
+            }
+          ],
+          "relation_type": "retry_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-concurrency-failed",
+              "end": 6,
+              "start": 1
+            }
+          ]
+        }
+      ],
+      "gold_task_count": 1,
+      "grouping": {
+        "atom_as_task": {
+          "b3": {
+            "f1": 0.666667,
+            "precision": 1.0,
+            "recall": 0.5
+          },
+          "pairwise": {
+            "f1": 0.0,
+            "false_negative": 1,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 0.0,
+            "true_positive": 0
+          }
+        },
+        "session_as_task": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 1
+          }
+        },
+        "task_graph": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 1
+          }
+        },
+        "task_graph_oracle_review": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 1
+          }
+        }
+      },
+      "predicted_attempt_relations": [
+        {
+          "decision": "confirmed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-concurrency-retry",
+              "end": 11,
+              "start": 6
+            }
+          ],
+          "relation_type": "retry_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-concurrency-failed",
+              "end": 6,
+              "start": 1
+            }
+          ]
+        }
+      ],
+      "predicted_task_count": 1,
+      "proposals": {
+        "atoms_with_proposals": 0,
+        "candidates_per_atom": 0.0,
+        "false_split_pairs": 0,
+        "max_proposals_per_atom": 0,
+        "precision": 1.0,
+        "proposed": 0,
+        "recoverable_false_split_pairs": 0,
+        "recoverable_recall": 1.0,
+        "useful": 0
+      }
+    },
+    {
+      "atom_count": 1,
+      "attempt_relations": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "attempts": {
+        "absolute_error": 0,
+        "expected": 2,
+        "predicted": 2
+      },
+      "case_id": "intra-atom-retry",
+      "expected_attempt_relations": [
+        {
+          "decision": "confirmed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-intra-retry",
+              "end": 12,
+              "start": 7
+            }
+          ],
+          "relation_type": "retry_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-intra-retry",
+              "end": 7,
+              "start": 1
+            }
+          ]
+        }
+      ],
+      "gold_task_count": 1,
+      "grouping": {
+        "atom_as_task": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "session_as_task": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph_oracle_review": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        }
+      },
+      "predicted_attempt_relations": [
+        {
+          "decision": "confirmed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-intra-retry",
+              "end": 12,
+              "start": 7
+            }
+          ],
+          "relation_type": "retry_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-intra-retry",
+              "end": 7,
+              "start": 1
+            }
+          ]
+        }
+      ],
+      "predicted_task_count": 1,
+      "proposals": {
+        "atoms_with_proposals": 0,
+        "candidates_per_atom": 0.0,
+        "false_split_pairs": 0,
+        "max_proposals_per_atom": 0,
+        "precision": 1.0,
+        "proposed": 0,
+        "recoverable_false_split_pairs": 0,
+        "recoverable_recall": 1.0,
+        "useful": 0
+      }
+    },
+    {
+      "atom_count": 1,
+      "attempt_relations": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "attempts": {
+        "absolute_error": 0,
+        "expected": 2,
+        "predicted": 2
+      },
+      "case_id": "intra-atom-correction",
+      "expected_attempt_relations": [
+        {
+          "decision": "confirmed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-export-correction",
+              "end": 12,
+              "start": 7
+            }
+          ],
+          "relation_type": "correction_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-export-correction",
+              "end": 7,
+              "start": 1
+            }
+          ]
+        }
+      ],
+      "gold_task_count": 1,
+      "grouping": {
+        "atom_as_task": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "session_as_task": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph_oracle_review": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        }
+      },
+      "predicted_attempt_relations": [
+        {
+          "decision": "confirmed",
+          "from_evidence": [
+            {
+              "atom_id": "atom-export-correction",
+              "end": 12,
+              "start": 7
+            }
+          ],
+          "relation_type": "correction_of",
+          "to_evidence": [
+            {
+              "atom_id": "atom-export-correction",
+              "end": 7,
+              "start": 1
+            }
+          ]
+        }
+      ],
+      "predicted_task_count": 1,
+      "proposals": {
+        "atoms_with_proposals": 0,
+        "candidates_per_atom": 0.0,
+        "false_split_pairs": 0,
+        "max_proposals_per_atom": 0,
+        "precision": 1.0,
+        "proposed": 0,
+        "recoverable_false_split_pairs": 0,
+        "recoverable_recall": 1.0,
+        "useful": 0
+      }
+    },
+    {
+      "atom_count": 2,
+      "attempt_relations": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "attempts": {
+        "absolute_error": 0,
+        "expected": 2,
+        "predicted": 2
+      },
+      "case_id": "same-session-similar-new-goals",
+      "expected_attempt_relations": [],
+      "gold_task_count": 2,
+      "grouping": {
+        "atom_as_task": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "session_as_task": {
+          "b3": {
+            "f1": 0.666667,
+            "precision": 0.5,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 0.0,
+            "false_negative": 0,
+            "false_positive": 1,
+            "precision": 0.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph_oracle_review": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        }
+      },
+      "predicted_attempt_relations": [],
+      "predicted_task_count": 2,
+      "proposals": {
+        "atoms_with_proposals": 1,
+        "candidates_per_atom": 0.5,
+        "false_split_pairs": 0,
+        "max_proposals_per_atom": 1,
+        "precision": 0.0,
+        "proposed": 1,
+        "recoverable_false_split_pairs": 0,
+        "recoverable_recall": 1.0,
+        "useful": 0
+      }
+    },
+    {
+      "atom_count": 1,
+      "attempt_relations": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "attempts": {
+        "absolute_error": 0,
+        "expected": 1,
+        "predicted": 1
+      },
+      "case_id": "single-atom-multi-skill",
+      "expected_attempt_relations": [],
+      "gold_task_count": 1,
+      "grouping": {
+        "atom_as_task": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "session_as_task": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        },
+        "task_graph_oracle_review": {
+          "b3": {
+            "f1": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "pairwise": {
+            "f1": 1.0,
+            "false_negative": 0,
+            "false_positive": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "true_positive": 0
+          }
+        }
+      },
+      "predicted_attempt_relations": [],
+      "predicted_task_count": 1,
+      "proposals": {
+        "atoms_with_proposals": 0,
+        "candidates_per_atom": 0.0,
+        "false_split_pairs": 0,
+        "max_proposals_per_atom": 0,
+        "precision": 1.0,
+        "proposed": 0,
+        "recoverable_false_split_pairs": 0,
+        "recoverable_recall": 1.0,
+        "useful": 0
+      }
+    }
+  ],
+  "linker": {
+    "name": "xskill.task_graph.linker",
+    "posting_cap": 64,
+    "recent_k": 6,
+    "top_k": 8,
+    "version": "bounded-rules-v1"
+  },
+  "metrics": {
+    "attempt_relations": {
+      "f1": 1.0,
+      "false_negative": 0,
+      "false_positive": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "true_positive": 5
+    },
+    "attempts": {
+      "absolute_error": 0,
+      "case_count": 11,
+      "exact_case_rate": 1.0,
+      "exact_cases": 11
+    },
+    "grouping": {
+      "atom_as_task": {
+        "b3": {
+          "f1": 0.857143,
+          "precision": 1.0,
+          "recall": 0.75
+        },
+        "pairwise": {
+          "f1": 0.0,
+          "false_negative": 5,
+          "false_positive": 0,
+          "precision": 1.0,
+          "recall": 0.0,
+          "true_positive": 0
+        }
+      },
+      "session_as_task": {
+        "b3": {
+          "f1": 0.841584,
+          "precision": 0.833333,
+          "recall": 0.85
+        },
+        "pairwise": {
+          "f1": 0.363636,
+          "false_negative": 3,
+          "false_positive": 4,
+          "precision": 0.333333,
+          "recall": 0.4,
+          "true_positive": 2
+        }
+      },
+      "task_graph": {
+        "b3": {
+          "f1": 0.947368,
+          "precision": 1.0,
+          "recall": 0.9
+        },
+        "pairwise": {
+          "f1": 0.75,
+          "false_negative": 2,
+          "false_positive": 0,
+          "precision": 1.0,
+          "recall": 0.6,
+          "true_positive": 3
+        }
+      },
+      "task_graph_oracle_review": {
+        "b3": {
+          "f1": 1.0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "pairwise": {
+          "f1": 1.0,
+          "false_negative": 0,
+          "false_positive": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "true_positive": 5
+        }
+      }
+    },
+    "proposals": {
+      "atoms_with_proposals": 4,
+      "candidates_per_atom": 0.2,
+      "false_split_pairs": 2,
+      "max_proposals_per_atom": 1,
+      "precision": 0.5,
+      "proposed": 4,
+      "recoverable_false_split_pairs": 2,
+      "recoverable_recall": 1.0,
+      "useful": 2
+    }
+  },
+  "report_sha256": "785d188b22c1614706401b4afe4b57308693275d93d0d514a74ea7117020213e",
+  "run_manifest": {
+    "fixture_kind": "synthetic-structural-pilot",
+    "generated_at": "2026-08-30T00:00:00Z",
+    "repository_revision": "b1e08786becab32b2c1289f20e59b42a6c243789"
+  },
+  "schema_version": 1,
+  "suite_id": "production-linker-structure-pilot-v1"
+}
