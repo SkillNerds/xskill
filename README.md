@@ -318,7 +318,7 @@ skillhub:
 | Agent | 状态 | 轨迹采集 | 技能安装 |
 | ----- | ---- | -------- | -------- |
 | **Claude Code** | ✅ 已验证 | `~/.claude/projects/` | 软链 → `~/.claude/skills/<name>/` |
-| **Codex CLI** | ✅ 已验证 | `~/.codex/sessions/` | 软链 → `~/.agents/skills/<name>/` |
+| **Codex CLI** | ✅ 已验证 | `~/.codex/sessions/` + `~/.codex/archived_sessions/` | 软链 → `~/.agents/skills/<name>/` |
 | **OpenCode** | ✅ 已验证 | SQLite `~/.local/share/opencode/opencode.db` | 软链 → `~/.agents/skills/<name>/` |
 | **OpenClaw** | 🟡 已实现 | `~/.openclaw/agents/` | 拷贝 → `~/.agents/skills/<name>/` |
 | **Cursor** | 🟡 已实现 | `~/.cursor/projects/*/agent-transcripts/` | 软链 → `~/.cursor/skills/<name>/` |

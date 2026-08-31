@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -43,9 +44,11 @@ from xskill.ecosystems import (
     _codex_sessions_path,
     _codex_session_id_from_path,
     _read_cwd_from_codex_jsonl,
+    detect_known_ecosystems,
     ingest_codex_sessions,
     install_to_codex,
 )
+from xskill.ecosystems.codex import _codex_session_complete
 from xskill.skill.frontmatter import serialize as fm_serialize
 
 
@@ -261,6 +264,76 @@ class TestIngestCodexSessions:
             "bbbbbbbb-cccc-dddd-eeee-222222222222",
         ]
 
+    def test_ingest_includes_flat_archived_sessions(self, tmp_path, fixture_content):
+        archive = tmp_path / ".codex" / "archived_sessions"
+        archive.mkdir(parents=True)
+        archived_session_id = "cccccccc-dddd-eeee-ffff-333333333333"
+        path = archive / (
+            "rollout-2026-02-20T10-00-00-"
+            f"{archived_session_id}.jsonl"
+        )
+        path.write_text(
+            fixture_content.replace(EXPECTED_SESSION_ID, archived_session_id),
+            encoding="utf-8",
+        )
+
+        results = ingest_codex_sessions(tmp_path / "traj", home_root=tmp_path)
+
+        assert [result["session_id"] for result in results] == [archived_session_id]
+
+    def test_ingest_uses_streaming_path_adapter(self, tmp_path, fixture_content, monkeypatch):
+        source_path = _place_fixture_in_codex_home(tmp_path, fixture_content)
+        original_read_text = Path.read_text
+
+        def guarded_read_text(path, *args, **kwargs):
+            if path == source_path:
+                raise AssertionError("Codex source must not be loaded with Path.read_text")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", guarded_read_text)
+
+        results = ingest_codex_sessions(tmp_path / "traj", home_root=tmp_path)
+
+        assert len(results) == 1
+
+    def test_streaming_and_in_memory_adapters_are_equivalent(self, tmp_path, fixture_content):
+        source_path = _place_fixture_in_codex_home(tmp_path, fixture_content)
+
+        expected = adapt_trajectory(fixture_content, "codex_rollout_jsonl")
+        actual = CODEX_SPEC.adapt_path(source_path, {})
+
+        assert actual == expected
+
+    def test_archive_only_codex_home_is_detected(self, tmp_path):
+        (tmp_path / ".codex" / "archived_sessions").mkdir(parents=True)
+
+        detected = detect_known_ecosystems(home_root=tmp_path)
+
+        assert {item["ecosystem"] for item in detected} == {"codex"}
+
+    def test_duplicate_session_id_uses_newest_source(self, tmp_path, fixture_content):
+        active_path = _place_fixture_in_codex_home(
+            tmp_path,
+            fixture_content.replace(EXPECTED_USER_MESSAGE, "active newer"),
+        )
+        archive = tmp_path / ".codex" / "archived_sessions"
+        archive.mkdir(parents=True)
+        archived_path = archive / active_path.name
+        archived_path.write_text(
+            fixture_content.replace(EXPECTED_USER_MESSAGE, "archived older"),
+            encoding="utf-8",
+        )
+        os.utime(archived_path, ns=(1_000_000_000, 1_000_000_000))
+        os.utime(active_path, ns=(2_000_000_000, 2_000_000_000))
+
+        results = ingest_codex_sessions(tmp_path / "traj", home_root=tmp_path)
+
+        assert len(results) == 1
+        metadata = json.loads(
+            Path(results[0]["path"]).with_suffix(".json").read_text(encoding="utf-8")
+        )
+        assert metadata["query"] == "active newer"
+
 
 # ──────────────────────────────────────────────────────────────────
 # T3. JsonlIngester spec dispatching
@@ -457,7 +530,11 @@ class TestPathResolversCrossPlatform:
         """
         home = Path("/another/home")
         assert CC_SPEC.sessions_path(home) == home / ".claude" / "projects"
-        assert CODEX_SPEC.sessions_path(home) == home / ".codex" / "sessions"
+        assert CODEX_SPEC.sessions_path(home) == home / ".codex"
+        assert CODEX_SPEC.sessions_glob == (
+            "sessions/*/*/*/rollout-*.jsonl",
+            "archived_sessions/rollout-*.jsonl",
+        )
         assert CC_SPEC.skills_install_path(home) == home / ".claude" / "skills"
         assert CODEX_SPEC.skills_install_path(home) == home / ".agents" / "skills"
 
@@ -489,6 +566,120 @@ class TestCodexHelpers:
             "payload": {"record_type": "response", "index": 0},
         })
         assert _read_cwd_from_codex_jsonl(only_response) == ""
+
+    def test_completion_follows_latest_task_lifecycle_event(self):
+        started = json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "task_started"},
+        })
+        completed = json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "task_complete"},
+        })
+        tool_call = json.dumps({
+            "type": "response_item",
+            "payload": {"type": "custom_tool_call", "name": "exec"},
+        })
+
+        assert _codex_session_complete("\n".join((started, completed))) is True
+        assert _codex_session_complete("\n".join((completed, started, tool_call))) is False
+
+    def test_legacy_rollout_without_lifecycle_is_complete(self, fixture_content):
+        assert _codex_session_complete(fixture_content) is True
+
+
+class TestCodexStructuredEvidence:
+    @staticmethod
+    def _content() -> str:
+        events = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "sid", "cwd": "/workspace/demo",
+                    "model_provider": "openai",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "fix tests"}],
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "fix tests"},
+            },
+            {
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "checking"},
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message", "role": "assistant",
+                    "content": [{"type": "output_text", "text": "checking"}],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call", "call_id": "call-1",
+                    "name": "exec", "input": "await tools.exec_command({})",
+                    "status": "completed",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output", "call_id": "call-1",
+                    "output": [{
+                        "type": "input_text",
+                        "text": '{"exit_code":1,"output":"failed"}',
+                    }],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call", "call_id": "call-2",
+                    "name": "shell", "arguments": '{"cmd":"true"}',
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output", "call_id": "call-2",
+                    "output": '{"exit_code":0,"output":"ok"}',
+                },
+            },
+        ]
+        return "\n".join(json.dumps(event) for event in events)
+
+    def test_adjacent_mirrored_messages_are_deduplicated(self):
+        _md, meta = adapt_trajectory(self._content(), "codex_rollout_jsonl")
+
+        assert [
+            entry["content"] for entry in meta["timeline"]
+            if entry["role"] == "user"
+        ] == ["fix tests"]
+        assert [
+            entry["content"] for entry in meta["timeline"]
+            if entry["role"] == "assistant"
+        ] == ["checking"]
+
+    def test_tool_calls_outputs_and_errors_match_by_call_id(self):
+        md, meta = adapt_trajectory(self._content(), "codex_rollout_jsonl")
+
+        assert meta["tool_names"] == ["exec", "shell"]
+        assert meta["total_tool_calls"] == 2
+        assert meta["tool_calls"][0]["output_available"] is True
+        assert meta["tool_calls"][0]["is_error"] is True
+        assert meta["tool_calls"][1]["input"] == {"cmd": "true"}
+        assert meta["tool_calls"][1]["is_error"] is False
+        assert "## Tool Call: exec" in md
+        assert "## Tool Output: exec (error)" in md
+        assert "## Tool Output: shell\n" in md
 
 
 # ──────────────────────────────────────────────────────────────────

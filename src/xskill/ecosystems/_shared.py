@@ -86,7 +86,8 @@ class EcosystemSpec:
             和 `detect_known_ecosystems` 上报
         source_kind: 轨迹存储形态。P2 只支持 ``jsonl``；P3 加 ``sqlite``
         sessions_path: ``(home_root) -> Path``，返回该生态的 sessions/projects 根目录
-        sessions_glob: 相对 ``sessions_path`` 的 glob，用于扫所有 session 文件
+        sessions_glob: 相对 ``sessions_path`` 的 glob 或 glob 列表，用于扫所有
+            session 文件
         session_id_from_path: ``(jsonl_path) -> session_id``。CC 用文件名（``stem``），
             codex 用文件名里的 uuid 段
         cwd_from_content: ``(jsonl_content) -> cwd``。CC 扫每条事件找首个 ``cwd``
@@ -98,12 +99,16 @@ class EcosystemSpec:
             ``traj_codex_``）
         skills_install_path: ``(home_root) -> Path``，skill 安装目标根目录
         label: 短标签，给 logger 用
+        is_session_complete_path: 路径流式 adapter 的完成态检查。
+        adapt_path: 可选的路径流式 adapter，用于避免整份大轨迹入内存。
+        prefer_newest_session_source: 同一 session id 存在多个来源时，只处理
+            mtime 最新的文件；用于 Codex 活跃/归档轨迹去重。
     """
 
     name: str
     source_kind: Literal["jsonl"]
     sessions_path: Callable[[Path], Path]
-    sessions_glob: str
+    sessions_glob: str | tuple[str, ...]
     session_id_from_path: Callable[[Path], str]
     cwd_from_content: Callable[[str], str]
     adapter_format: str
@@ -111,12 +116,15 @@ class EcosystemSpec:
     skills_install_path: Callable[[Path], Path]
     label: str
     is_session_complete: Optional[Callable[[str], bool]] = None
+    is_session_complete_path: Optional[Callable[[Path], bool]] = None
     cwd_from_path: Optional[Callable[[Path], str]] = None
+    adapt_path: Optional[Callable[[Path, dict], tuple[str, dict]]] = None
     # 可选：自定义「文件 → 文本」读取。默认 None = ``read_text``。给需要先
     # 解码再解析的生态用（DeepSeek Harness 默认写 zstd 帧序列的
     # ``session.jsonl.zstd``）。返回 None 表示本轮读不了（例如缺解码依赖），
     # ingester 跳过该文件并由 reader 自己负责告警。
     read_content: Optional[Callable[[Path], Optional[str]]] = None
+    prefer_newest_session_source: bool = False
 
 
 @dataclass(frozen=True)
@@ -158,8 +166,8 @@ _KNOWN_ECOSYSTEMS: list[dict] = [
     },
     {
         "id": "codex",
-        # Codex CLI 写 <home>/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
-        "source_subpath": ".codex/sessions",
+        # Codex CLI 在 <home>/.codex 下保留活跃与已归档 rollout。
+        "source_subpath": ".codex",
         "bridge_subpath": ".xskill/codex_sessions",
         "source_kind": "dir",
     },
@@ -439,9 +447,24 @@ def session_start_time(jsonl_path: Path) -> Optional[float]:
     """
     if not jsonl_path.is_file():
         return None
-    return session_start_time_from_content(
-        jsonl_path.read_text(encoding="utf-8", errors="ignore")
-    )
+    try:
+        with jsonl_path.open("r", encoding="utf-8", errors="ignore") as source:
+            for line in source:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                timestamp = event.get("timestamp")
+                if timestamp:
+                    parsed = _parse_iso_to_epoch(timestamp)
+                    if parsed is not None:
+                        return parsed
+    except OSError:
+        return None
+    return None
 
 
 def session_start_time_from_content(content: str) -> Optional[float]:
@@ -704,6 +727,24 @@ def submit_trajectory(
         traj_id = generate_traj_id(traj_dir)
 
     md_content, json_metadata = adapt_trajectory(content, format, metadata)
+    return _store_adapted_trajectory(
+        md_content,
+        json_metadata,
+        traj_id=traj_id,
+        traj_dir=traj_dir,
+        mask_patterns=mask_patterns,
+    )
+
+
+def _store_adapted_trajectory(
+    md_content: str,
+    json_metadata: dict,
+    *,
+    traj_id: str,
+    traj_dir: Path,
+    mask_patterns: Optional[list[str]] = None,
+) -> dict:
+    """持久化已适配的轨迹；供字符串与路径流式 adapter 共用。"""
 
     # 落盘前清洗：去 ANSI 转义 + 控制字符（终端/tool 原始输出常掺入），
     # 保证 splitlines 行数 == \n 行数（atom offset 与人类行号一致）、不喂垃圾给模型。
@@ -738,6 +779,19 @@ def submit_trajectory(
 # ─────────────────────────────────────────────────────────────────
 # JsonlIngester — spec-driven 扫盘 + 桥接
 # ─────────────────────────────────────────────────────────────────
+
+
+def _glob_session_paths(
+    sessions_root: Path,
+    patterns: str | tuple[str, ...],
+) -> list[Path]:
+    """按一个或多个 glob 扫描 JSONL session，并以路径去重。"""
+    normalized = (patterns,) if isinstance(patterns, str) else patterns
+    return sorted({
+        path
+        for pattern in normalized
+        for path in sessions_root.glob(pattern)
+    })
 
 
 class JsonlIngester:
@@ -969,8 +1023,31 @@ class JsonlIngester:
         source_paths = (
             sorted(candidate_paths)
             if candidate_paths is not None
-            else sorted(sessions_root.glob(self.spec.sessions_glob))
+            else _glob_session_paths(sessions_root, self.spec.sessions_glob)
         )
+        if self.spec.prefer_newest_session_source:
+            newest_source_by_session: dict[
+                str, tuple[tuple[int, int, str], Path]
+            ] = {}
+            for source_path in source_paths:
+                source_session_id = self.spec.session_id_from_path(source_path)
+                try:
+                    source_stat = source_path.stat()
+                except OSError:
+                    continue
+                source_key = (
+                    int(source_stat.st_mtime_ns),
+                    int(source_stat.st_size),
+                    str(source_path),
+                )
+                previous = newest_source_by_session.get(source_session_id)
+                if previous is None or source_key > previous[0]:
+                    newest_source_by_session[source_session_id] = (
+                        source_key, source_path,
+                    )
+            source_paths = sorted(
+                value[1] for value in newest_source_by_session.values()
+            )
         for jsonl_path in source_paths:
             sid = self.spec.session_id_from_path(jsonl_path)
             try:
@@ -998,38 +1075,68 @@ class JsonlIngester:
                         continue
                 rebridged = True  # 源在转换后又增长 → 全量重转换覆盖
 
-            if self.spec.read_content is not None:
-                content = self.spec.read_content(jsonl_path)
-                if content is None:
-                    continue  # reader 已告警（如缺解码依赖），本轮跳过
-            else:
-                content = jsonl_path.read_text(encoding="utf-8", errors="ignore")
-            if not content.strip():
-                continue
-            if (
-                self.spec.is_session_complete is not None
-                and settle <= 0
-                and not self.spec.is_session_complete(content)
-            ):
-                # settle=0 的低延迟模式不能把刚创建、仍在续写的 session
-                # 永久记 seen；有明确完成事件后才桥接并触发 side 轮转。
-                continue
-            session_start_t = session_start_time_from_content(content)
-            if before_bridge is not None:
-                before_bridge(
-                    jsonl_path,
-                    sid,
-                    content,
-                    session_start_t,
-                )
-            traj_id = self._make_traj_id(content, sid, source_path=jsonl_path)
-            result = submit_trajectory(
-                content=content,
-                format=self.spec.adapter_format,
-                metadata={"session_id": sid},
-                traj_id=traj_id,
-                traj_dir=target_traj_dir,
+            use_path_adapter = (
+                self.spec.adapt_path is not None
+                and before_bridge is None
+                and after_bridge is None
             )
+            if use_path_adapter:
+                try:
+                    if jsonl_path.stat().st_size <= 0:
+                        continue
+                except OSError:
+                    continue
+                if (
+                    self.spec.is_session_complete_path is not None
+                    and settle <= 0
+                    and not self.spec.is_session_complete_path(jsonl_path)
+                ):
+                    continue
+                session_start_t = session_start_time(jsonl_path)
+                traj_id = self._make_traj_id("", sid, source_path=jsonl_path)
+                md_content, json_metadata = self.spec.adapt_path(
+                    jsonl_path, {"session_id": sid},
+                )
+                result = _store_adapted_trajectory(
+                    md_content,
+                    json_metadata,
+                    traj_id=traj_id,
+                    traj_dir=target_traj_dir,
+                )
+                content = ""
+            else:
+                if self.spec.read_content is not None:
+                    content = self.spec.read_content(jsonl_path)
+                    if content is None:
+                        continue  # reader 已告警（如缺解码依赖），本轮跳过
+                else:
+                    content = jsonl_path.read_text(encoding="utf-8", errors="ignore")
+                if not content.strip():
+                    continue
+                if (
+                    self.spec.is_session_complete is not None
+                    and settle <= 0
+                    and not self.spec.is_session_complete(content)
+                ):
+                    # settle=0 的低延迟模式不能把刚创建、仍在续写的 session
+                    # 永久记 seen；有明确完成事件后才桥接并触发 side 轮转。
+                    continue
+                session_start_t = session_start_time_from_content(content)
+                if before_bridge is not None:
+                    before_bridge(
+                        jsonl_path,
+                        sid,
+                        content,
+                        session_start_t,
+                    )
+                traj_id = self._make_traj_id(content, sid, source_path=jsonl_path)
+                result = submit_trajectory(
+                    content=content,
+                    format=self.spec.adapter_format,
+                    metadata={"session_id": sid},
+                    traj_id=traj_id,
+                    traj_dir=target_traj_dir,
+                )
             result["session_id"] = sid
             result["source_jsonl"] = str(jsonl_path)
             result["session_start_t"] = session_start_t
