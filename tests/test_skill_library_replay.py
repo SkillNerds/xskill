@@ -293,6 +293,38 @@ def test_policy_rejects_negative_gain_and_resource_limits():
         validate_admission_policy(policy, suite)
 
 
+def test_bootstrap_bound_counts_every_reported_statistic():
+    suite = load_suite(BASELINE_PATH)
+    suite["metric_config"]["bootstrap_samples"] = 50_000
+    suite["cases"].append(
+        _copy_case(
+            suite["cases"][0],
+            suffix="work-bound",
+            task_fingerprint="sha256:" + "f" * 64,
+        )
+    )
+
+    with pytest.raises(LibraryReplayValidationError, match="bootstrap work"):
+        validate_suite(suite)
+
+
+def test_admission_work_is_included_in_bootstrap_bound():
+    suite = load_suite(BASELINE_PATH)
+    suite["metric_config"]["bootstrap_samples"] = 43_000
+    suite["cases"].append(
+        _copy_case(
+            suite["cases"][0],
+            suffix="admission-work-bound",
+            task_fingerprint="sha256:" + "f" * 64,
+        )
+    )
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+
+    validate_suite(suite)
+    with pytest.raises(LibraryReplayValidationError, match="bootstrap work"):
+        validate_admission_policy(policy, suite)
+
+
 def test_admission_rejects_bad_absolute_activation_even_without_regression():
     suite, policy = _expanded_policy_suite()
     for case in suite["cases"]:

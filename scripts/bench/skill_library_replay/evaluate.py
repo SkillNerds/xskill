@@ -36,6 +36,10 @@ RESOURCE_FIELDS = (
     "cost_usd",
     "latency_ms",
 )
+MAX_BOOTSTRAP_OPERATIONS = 5_000_000
+ISOLATED_BOOTSTRAP_STATISTICS = 3
+BOOTSTRAP_STATISTICS_PER_LIBRARY_LEVEL = 10 + len(RESOURCE_FIELDS)
+ADMISSION_BASE_BOOTSTRAP_STATISTICS = 3
 _SHA256_RE = "sha256:"
 _BASELINE_CELL = "old_body__old_description"
 _CANDIDATE_CELLS = tuple(cell for cell in CELL_KEYS if cell != _BASELINE_CELL)
@@ -43,6 +47,37 @@ _CANDIDATE_CELLS = tuple(cell for cell in CELL_KEYS if cell != _BASELINE_CELL)
 
 class LibraryReplayValidationError(ValueError):
     """Raised when a library-aware replay violates its data contract."""
+
+
+def _estimated_bootstrap_operations(
+    *,
+    case_count: int,
+    library_levels: int,
+    bootstrap_samples: int,
+    additional_statistics: int = 0,
+) -> int:
+    statistics = (
+        ISOLATED_BOOTSTRAP_STATISTICS
+        + library_levels * BOOTSTRAP_STATISTICS_PER_LIBRARY_LEVEL
+        + additional_statistics
+    )
+    return case_count * bootstrap_samples * statistics
+
+
+def _validate_bootstrap_work(
+    suite: dict[str, Any], *, additional_statistics: int = 0
+) -> None:
+    estimated_operations = _estimated_bootstrap_operations(
+        case_count=len(suite["cases"]),
+        library_levels=len(suite["library_ladder"]),
+        bootstrap_samples=suite["metric_config"]["bootstrap_samples"],
+        additional_statistics=additional_statistics,
+    )
+    if estimated_operations > MAX_BOOTSTRAP_OPERATIONS:
+        raise LibraryReplayValidationError(
+            "suite: estimated bootstrap work exceeds "
+            f"the {MAX_BOOTSTRAP_OPERATIONS} operation bound"
+        )
 
 
 def _require(mapping: dict[str, Any], key: str, expected: type, context: str) -> Any:
@@ -398,10 +433,7 @@ def validate_suite(suite: Any) -> None:
         raise LibraryReplayValidationError(
             "suite.cases: every task_fingerprint must use the same seed set"
         )
-    if len(cases) * bootstrap_samples > 5_000_000:
-        raise LibraryReplayValidationError(
-            "suite: cases * bootstrap_samples exceeds the 5000000 work bound"
-        )
+    _validate_bootstrap_work(suite)
 
 
 def load_suite(path: Path | str) -> dict[str, Any]:
@@ -559,6 +591,12 @@ def validate_admission_policy(policy: Any, suite: dict[str, Any]) -> None:
         raise LibraryReplayValidationError(
             "policy.non_evaluable_error_types: expected unique non-empty strings"
         )
+    _validate_bootstrap_work(
+        suite,
+        additional_statistics=(
+            ADMISSION_BASE_BOOTSTRAP_STATISTICS + len(resource_limits)
+        ),
+    )
 
 
 def load_admission_policy(path: Path | str, suite: dict[str, Any]) -> dict[str, Any]:

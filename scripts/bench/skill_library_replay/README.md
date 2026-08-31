@@ -81,7 +81,7 @@ python -m scripts.bench.skill_library_replay.evaluate scripts/bench/skill_librar
 
 只包含一个 Task 的子集将 `confidence_interval` 设为 `null`，避免把多个 seed 或没有跨 Task 信息的点估计伪装成有效区间。
 
-评测器限制 `cases × bootstrap_samples` 不超过 5,000,000，且预先索引每个 case 的 library level，因此除 bootstrap 外的聚合复杂度为 `O(cases × library_levels)`。
+评测器按 `cases × bootstrap_samples × 实际统计量数量` 限制总 bootstrap 工作量不超过 5,000,000，统计量数量随 library ladder 级数增长；使用准入策略时还会计入准入效果和资源门禁。评测器同时预先索引每个 case 的 library level，因此除 bootstrap 外的聚合复杂度为 `O(cases × library_levels)`。
 
 ## 预注册准入策略
 
