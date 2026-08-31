@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SkillNerds/xskill/benchmarks/officeqa/schemas/summary.schema.json",
+  "title": "OfficeQA 汇总",
+  "description": "从 results.jsonl 汇总出的数字。论文主表应引用本文件（并保留其 SHA-256）。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "n_total",
+    "n_pass",
+    "accuracy",
+    "status_counts"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string" },
+    "model": {
+      "type": "string",
+      "description": "本 run 的做题模型，与 run_config.model 一致；多模型对比时靠这个字段区分"
+    },
+    "n_total": { "type": "integer", "description": "题数" },
+    "n_pass": { "type": "integer", "description": "答对题数" },
+    "accuracy": { "type": "number", "description": "准确率，n_pass / n_total" },
+    "by_difficulty": {
+      "type": "object",
+      "description": "按 easy / hard 拆开的统计"
+    },
+    "status_counts": {
+      "type": "object",
+      "description": "pass / fail / timeout 等各有多少"
+    },
+    "usage_totals": {
+      "type": "object",
+      "description": "全 run 的 token 与费用合计",
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"] },
+        "output_tokens": { "type": ["integer", "null"] },
+        "cost_usd": { "type": ["number", "null"] },
+        "usage_missing_n": {
+          "type": "integer",
+          "description": "有多少题没有采到用量"
+        }
+      }
+    },
+    "refs": {
+      "type": "object",
+      "description": "汇总时用到的配置、结果、技能、名单的 SHA-256",
+      "properties": {
+        "run_config_sha256": { "type": "string" },
+        "results_sha256": { "type": "string" },
+        "skill_sha256": { "type": "string" },
+        "split_manifest_sha256": { "type": "string" },
+        "full_manifest_sha256": { "type": "string" }
+      }
+    },
+    "started_at": { "type": "string" },
+    "finished_at": { "type": "string" },
+    "resumed": {
+      "type": "boolean",
+      "description": "是否从中断处续跑过"
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "run_id": "demo-eval-20260831",
+  "uid": "UID0002",
+  "status": "pass",
+  "difficulty": "easy",
+  "is_correct": true,
+  "pred_answer": "(示例占位；真实预测不要提交进 Git)",
+  "latency_ms": 12345,
+  "usage": {
+    "source": "litellm",
+    "input_tokens": 1000,
+    "output_tokens": 200,
+    "cache_read_tokens": 100,
+    "total_tokens": 1200,
+    "cost_usd": 0.0012,
+    "request_ids": ["chatcmpl-demo-1"]
+  },
+  "skill_sha256": "replace-with-frozen-skill-sha256",
+  "scorer_commit": "7b9a3c154ef9fb40215bb67934afc43e6799de16",
+  "attempts": 1
+}

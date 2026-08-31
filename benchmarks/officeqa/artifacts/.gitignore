@@ -1,0 +1,4 @@
+# Real experiment outputs stay outside git.
+*
+!.gitignore
+!README.md

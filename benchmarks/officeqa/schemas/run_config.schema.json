@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SkillNerds/xskill/benchmarks/officeqa/schemas/run_config.schema.json",
+  "title": "OfficeQA 单次运行配置",
+  "description": "记录这一次怎么跑：题单、模型、超时、技能版本、代码版本等。不要把 API key 写进来。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "phase",
+    "algo",
+    "split_manifest",
+    "split_name",
+    "full_manifest",
+    "model",
+    "harness",
+    "scorer"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "phase": {
+      "type": "string",
+      "enum": ["train", "eval"],
+      "description": "train=训练；eval=评测"
+    },
+    "algo": { "type": "string", "description": "算法名，例如 xskill 或 skillopt" },
+    "split_manifest": {
+      "type": "string",
+      "description": "划分文件路径，例如 manifests/officeqa_skillopt_id_split.json"
+    },
+    "split_manifest_sha256": {
+      "type": "string",
+      "description": "上述划分文件的 SHA-256，跑完后填真实值"
+    },
+    "split_name": {
+      "type": "string",
+      "enum": ["train", "val", "test", "full"],
+      "description": "这次实际跑哪一段；主对比用 test"
+    },
+    "full_manifest": {
+      "type": "string",
+      "description": "Full 246 题名单路径"
+    },
+    "full_manifest_sha256": { "type": "string" },
+    "docs_tree_sha256": {
+      "type": "string",
+      "description": "本地语料树的 SHA-256，应与 Full manifest 里写死的一致"
+    },
+    "model": {
+      "type": "string",
+      "description": "本 run 的做题模型名。一次 run 只写一个模型；要测多个模型就开多次 run"
+    },
+    "api_base_kind": {
+      "type": "string",
+      "description": "请求怎么走，例如 litellm_proxy 或 openai_compatible；不要写带密钥的完整 URL"
+    },
+    "endpoint_label": {
+      "type": "string",
+      "description": "给人看的 endpoint 昵称，例如 local-litellm"
+    },
+    "harness": {
+      "type": "object",
+      "description": "做题环境：用哪套 agent / 工具",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "例如 claude_code_native_skills"
+        },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "允许的工具名列表"
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "scorer": {
+      "type": "object",
+      "description": "判分用的官方 reward.py 版本",
+      "required": ["commit", "sha256", "tolerance"],
+      "properties": {
+        "commit": { "type": "string" },
+        "sha256": { "type": "string" },
+        "tolerance": { "type": "number" },
+        "path": { "type": "string" }
+      }
+    },
+    "code": {
+      "type": "object",
+      "description": "本次用到的代码版本",
+      "properties": {
+        "xskill_commit": { "type": "string" },
+        "skillopt_commit": { "type": "string" },
+        "image_digest": { "type": "string" }
+      }
+    },
+    "skill_sha256": {
+      "type": "string",
+      "description": "本次评测所用冻结技能的 SHA-256"
+    },
+    "workers": { "type": "integer", "minimum": 1, "description": "并行工人数" },
+    "timeout_s": { "type": "number", "description": "单题超时（秒）" },
+    "max_tool_turns": { "type": "integer", "description": "单题最多工具轮数" },
+    "retry": {
+      "type": "object",
+      "properties": {
+        "request_retries": {
+          "type": "integer",
+          "description": "单次请求失败后的重试次数"
+        },
+        "case_retries": {
+          "type": "integer",
+          "description": "整题失败后的外层重试次数"
+        }
+      }
+    },
+    "seed": { "type": "integer" },
+    "failure_policy": {
+      "type": "string",
+      "description": "失败怎么计分。约定：timeout 可单独标记原因，但计分时与 fail 一样算未通过（与榜单一致）；准确率分母含 timeout"
+    },
+    "usage": {
+      "type": "object",
+      "description": "token / 费用从哪来",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["litellm", "runner_reported", "none"]
+        },
+        "metadata_keys": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "打到 LiteLLM 请求上的标记，例如 run_id、uid"
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

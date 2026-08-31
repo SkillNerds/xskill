@@ -10,6 +10,17 @@ xskill README 中的 60.47% 是历史下游子集结果。仓库没有保留该�
 
 Microsoft SkillOpt 另行发布了基于 OfficeQA Full 的 ID-only manifest，train/val/test 为 50/24/172。它的三部分并集恰好覆盖 246 个唯一 UID（113 easy、133 hard），但这是 SkillOpt 的下游划分，不是 OfficeQA 官方 split。本目录的 `officeqa_full.json` 仅借它公开的 UID 和 difficulty 构造无 split 的 Full 清单，不把 SkillOpt 的 train/val/test 语义带入官方口径。
 
+若论文或实验要和 SkillOpt 用同一套划分比分，请用 [`manifests/officeqa_skillopt_id_split.json`](manifests/officeqa_skillopt_id_split.json)。里面写清 train / val / test 各自有哪些 UID。正式主对比建议都在 test（172 题）上评；训练时 val 是否并进 train，属于算法用法差异，写进训练说明即可，不要换测试题单。
+
+模型不限于某一个（例如不只有 DeepSeek V4 Flash）。每换一个做题模型，就开一次独立 run，在 `run_config.json` 的 `model` 字段写明；同一划分、同一文档、同一 `reward.py` 下可以横向比较多个模型。不要把多个模型的逐题结果写进同一个 `results.jsonl`。
+
+公平对比的做题环境：xskill 与 SkillOpt 在训练做题和正式测评时，都应使用同一套 Claude Code 原生 Skills（不要训练用 `openai_chat` 做题、测评却换 Claude Code）。SkillOpt 的 `openai_chat` 若保留，只用于改技能文案，不用于答题。详见 [`what-these-files-are.md`](what-these-files-are.md)。
+
+SkillOpt 训练里「做题」（target）和「改技能文案」（optimizer）可以分开：做题应与评测一样走 Claude Code 原生 Skills；改文案仍可用 `openai_chat`，只改技能正文。最终成绩在同一做题环境、同一 test 上比冻结技能，这样对最终分数是公平的。`optimizer` 留在 Chat 是方法选择，必须在 `train_provenance.json` 写明。
+
+各文件白话说明见 [`what-these-files-are.md`](what-these-files-are.md)（文首有「每跑一趟要记下哪些信息」清单）。字段约定见 `schemas/`，填法示例见 `examples/`。若用 LiteLLM 记 token / 费用，见 `scripts/bench/officeqa/litellm_usage.py`。
+
+
 ## 固定版本
 
 | 工件 | 固定值 | 核验说明 |

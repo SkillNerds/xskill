@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SkillNerds/xskill/benchmarks/officeqa/schemas/train_provenance.schema.json",
+  "title": "OfficeQA 训练来源说明",
+  "description": "这个技能是怎么训出来的。论文主表分数应另用冻结技能做评测，不要用训练中的中间分。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "algo",
+    "split_manifest",
+    "merge_val_into_train",
+    "skill_sha256"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string" },
+    "algo": { "type": "string", "description": "例如 xskill 或 skillopt" },
+    "split_manifest": { "type": "string" },
+    "split_manifest_sha256": { "type": "string" },
+    "train_uids_sha256": {
+      "type": "string",
+      "description": "对本趟实际用于训练的题号（UID）名单计算的 SHA-256。先把 UID 按固定顺序排好再哈希。用来证明训了哪几道题；与仓库里的 SkillOpt 标准 train 划分不是同一个概念（例如 val 并进 train 后，这里对应合并后的那一子集）"
+    },
+    "merge_val_into_train": {
+      "type": "boolean",
+      "description": "是否把 val 并进 train。xskill 常见为 true；SkillOpt 常见为 false（val 用于 gate）"
+    },
+    "selection_split": {
+      "type": ["string", "null"],
+      "description": "若用某一段数据做 gate / 选技能，填 val；否则填 null"
+    },
+    "hyperparameters": {
+      "type": "object",
+      "description": "训练超参，按算法自己填"
+    },
+    "optimizer_backend": {
+      "type": "string",
+      "description": "改技能文案用的后端，例如 openai_chat。不去做题。"
+    },
+    "target_harness": {
+      "type": "string",
+      "description": "训练时真正做题的环境，例如 claude_code_native_skills；应与正式评测一致。"
+    },
+    "code": {
+      "type": "object",
+      "properties": {
+        "xskill_commit": { "type": "string" },
+        "skillopt_commit": { "type": "string" }
+      }
+    },
+    "skill_sha256": {
+      "type": "string",
+      "description": "训练结束冻结技能的 SHA-256"
+    },
+    "notes": { "type": "string" }
+  },
+  "additionalProperties": true
+}

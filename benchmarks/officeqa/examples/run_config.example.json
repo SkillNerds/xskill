@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "run_id": "demo-eval-20260831",
+  "phase": "eval",
+  "algo": "xskill",
+  "split_manifest": "benchmarks/officeqa/manifests/officeqa_skillopt_id_split.json",
+  "split_manifest_sha256": "replace-after-generating-real-run",
+  "split_name": "test",
+  "full_manifest": "benchmarks/officeqa/manifests/officeqa_full.json",
+  "full_manifest_sha256": "replace-after-generating-real-run",
+  "docs_tree_sha256": "851bfc5dbf2fc42abb1cc5aa4a4b5de872cf1f3b473d8cf6dd8f7c637d0c7d24",
+  "model": "deepseek-v4-flash",
+  "api_base_kind": "litellm_proxy",
+  "endpoint_label": "local-litellm",
+  "harness": {
+    "id": "claude_code_native_skills",
+    "tools": ["Read", "Write", "Edit", "Bash", "Skill"],
+    "notes": "示例只用 deepseek-v4-flash。换模型时新建 run_id，改 model 字段，不要和别的模型共用一份 results.jsonl。现成的 scripts/bench/officeqa/run.py 是另一套 OpenAI 兼容工具环境；实际用哪套就把 harness.id 写成哪套。"
+  },
+  "scorer": {
+    "commit": "7b9a3c154ef9fb40215bb67934afc43e6799de16",
+    "sha256": "0d91698c87df6d889339aac36f63ae0966607f169890b0bf8b472b26bfe8138f",
+    "tolerance": 0.0,
+    "path": "scripts/bench/officeqa/vendor/reward.py"
+  },
+  "code": {
+    "xskill_commit": "replace-with-real-commit"
+  },
+  "skill_sha256": "replace-with-frozen-skill-sha256",
+  "workers": 4,
+  "timeout_s": 600,
+  "max_tool_turns": 24,
+  "retry": {
+    "request_retries": 3,
+    "case_retries": 1
+  },
+  "seed": 0,
+  "failure_policy": "timeout 在结果里单独标成 timeout（方便区分原因），计分时与 fail 一样算未通过；和榜单一致。准确率 = pass 数 / 全部应考题数（含 timeout）",
+  "usage": {
+    "provider": "litellm",
+    "metadata_keys": ["run_id", "uid", "phase", "algo"]
+  }
+}

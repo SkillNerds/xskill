@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SkillNerds/xskill/benchmarks/officeqa/schemas/result_record.schema.json",
+  "title": "OfficeQA 单题结果",
+  "description": "results.jsonl 里的一行，表示一题的最终结果。不要把受控题目原文提交进 Git。",
+  "type": "object",
+  "required": ["schema_version", "run_id", "uid", "status"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string" },
+    "uid": { "type": "string", "description": "题号，例如 UID0002" },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail", "invalid", "timeout", "infra_error", "skipped"],
+      "description": "pass=答对；fail=答错；timeout=超时（计分时与 fail 一样算未通过）；invalid=输出无法判分（计分也算未通过）；infra_error=基础设施错误；skipped=跳过。status 区分原因；准确率只有 pass 算对"
+    },
+    "difficulty": { "type": "string", "enum": ["easy", "hard"] },
+    "is_correct": {
+      "type": ["boolean", "null"],
+      "description": "是否答对；不可判分时可为 null"
+    },
+    "pred_answer": {
+      "type": ["string", "null"],
+      "description": "模型预测答案；对外分享前按数据许可决定是否删除"
+    },
+    "latency_ms": { "type": ["number", "null"], "description": "耗时（毫秒）" },
+    "usage": {
+      "type": "object",
+      "description": "本题的 token 与费用",
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["litellm", "runner_reported", "missing"],
+          "description": "litellm=从 LiteLLM 补；runner_reported=runner 自己记；missing=没有采到"
+        },
+        "input_tokens": { "type": ["integer", "null"] },
+        "output_tokens": { "type": ["integer", "null"] },
+        "cache_read_tokens": { "type": ["integer", "null"] },
+        "total_tokens": { "type": ["integer", "null"] },
+        "cost_usd": { "type": ["number", "null"] },
+        "request_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "相关请求 id，便于去 LiteLLM 对账"
+        }
+      }
+    },
+    "skill_sha256": { "type": "string" },
+    "scorer_commit": { "type": "string" },
+    "attempts": { "type": "integer", "description": "本题尝试次数" }
+  },
+  "additionalProperties": true
+}
