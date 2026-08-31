@@ -30,6 +30,49 @@ python -c 'import json; from pathlib import Path; from scripts.bench.algorithm_r
 
 使用 `--format json` 可以输出机器可读报告。测试会把 v1 和 v2 报告与入仓的 `*.report.json` 快照比较，并锁定 v3 的报告哈希和阶段来源，因此 schema 和指标定义的变化必须作为可见 diff 接受 review。
 
+## Raw-only Formation 数据契约
+
+Formation 运行只能读取 raw suite，raw case 严格只包含不携带语义答案的 `case_id` 和原始 `raw_content`。
+
+`payload` 会把原始 case id 再映射成顺序无语义的 `case-000001` 形式，避免 `new-goal`、`retry` 等命名把场景答案泄漏给 Formation，原始映射只由 scorer 保留。
+
+数据集名称、固定 revision、来源地址和许可证保存在 raw suite 的 manifest 中，但 `payload` 子命令不会把 manifest 传给 Formation runner。
+
+Gold 边界、来源任务 ID、组合场景、证据引用、终态和学习资格保存在物理分离的 truth suite 中。
+
+`payload` 子命令的参数结构没有 truth 路径，因此产生 Formation 输入时不需要读取或发现评分文件。
+
+Formation runner 可以从原始内容构造全局目标地图并按需读取局部证据，不要求把完整 raw content 一次性塞进模型 Prompt。
+
+```bash
+python -m scripts.bench.algorithm_replay.formation_data payload \
+  scripts/bench/algorithm_replay/fixtures/formation_raw_v1.json
+```
+
+`validate` 子命令属于 scorer 侧，它使用 `raw_sha256` 把标注绑定到原始内容，并校验两个文件的 suite 和 case 集合完全一致。
+
+```bash
+python -m scripts.bench.algorithm_replay.formation_data validate \
+  scripts/bench/algorithm_replay/fixtures/formation_raw_v1.json \
+  scripts/bench/algorithm_replay/fixtures/formation_truth_v1.json
+```
+
+truth suite 必须标注每个内部用户回合是 `split` 还是 `keep`，并记录 `new_goal`、`continue`、`clarify`、`correct`、`retry`、`noise`、`abandon_or_return` 或 `uncertain` 边界类型。
+
+v1 只把大小写和左侧缩进均符合生产 `TaskAgent` 语法的 `## User` 与 `## Initial Query` 行视为结构化用户回合，正文中的小写标题和缩进代码不会成为候选边界。
+
+结构合法但被生产 F0 过滤的机器噪声回合仍保存在 scorer truth 中，并使用 `keep/noise` 作为硬负例，避免把当前算法过滤结果写成 Gold 事实。
+
+Gold Atom 必须从第一行连续无重叠地覆盖到 EOF，内部起点必须与 `split` 决策完全一致，所有证据行都必须落在所属 Atom 的原始范围内。
+
+证据引用不能指向空行或 Markdown section header，非 `unknown` 终态必须至少引用一条 outcome、verification、user acceptance 或 user rejection 证据。
+
+每个 Gold Atom 分别记录 outcome、evidence completeness 和 learning eligibility，不能用 `ux_score` 或 `(atom_id, skill)` 的 `weightscore` 替代 Formation 质量。
+
+低价值、失败或不确定 Atom 仍保存在 truth 事实中，`learning_eligibility` 只控制下游是否学习，不能用来静默删除原始片段。
+
+当前两条隐私安全 fixture 只验证 raw/truth 隔离、标注 schema、范围和证据不变量，不代表真实模型或生产 Formation 的质量。
+
 ## Fixture 契约
 
 - `schema_version`：支持 `1`、`2` 和 `3`，未知版本会直接失败。
