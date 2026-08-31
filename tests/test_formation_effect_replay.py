@@ -58,9 +58,11 @@ def test_primary_contrast_measures_method_effect_and_quality_guards():
     assert primary["false_trigger_rate_delta"]["mean"] == -1.0
     assert primary["known_pass_rate_delta"]["mean"] == 0.5
     assert primary["mcnemar_pass"] == {
+        "n_tasks": 6,
+        "task_pass_rule": "seed_pass_rate>=0.5",
         "treated_only_pass": 5,
         "control_only_pass": 0,
-        "discordant_pairs": 5,
+        "discordant_tasks": 5,
         "exact_two_sided_p": 0.0625,
     }
     assert report["decision"]["passed"] is True
@@ -165,6 +167,7 @@ def test_duplicate_run_id_fails_loudly():
 
 def test_repeated_seeds_are_clustered_by_task():
     suite = load_suite(BASELINE_PATH)
+    baseline = evaluate_suite(deepcopy(suite))
     for original in list(suite["cases"]):
         repeated = deepcopy(original)
         repeated["case_id"] += "-seed-2"
@@ -179,6 +182,14 @@ def test_repeated_seeds_are_clustered_by_task():
 
     assert effect["n_pairs"] == 12
     assert effect["n_tasks"] == 6
+    repeated_mcnemar = _mode(report, "natural_output")["contrasts"][
+        "task_grounded_minus_atom"
+    ]["mcnemar_pass"]
+    baseline_mcnemar = _mode(baseline, "natural_output")["contrasts"][
+        "task_grounded_minus_atom"
+    ]["mcnemar_pass"]
+    assert repeated_mcnemar == baseline_mcnemar
+    assert repeated_mcnemar["n_tasks"] == 6
 
 
 def test_unbalanced_seed_sets_fail_loudly():

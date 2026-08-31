@@ -64,8 +64,10 @@
         "gold_task_minus_task_grounded": {
           "mcnemar_pass": {
             "control_only_pass": 0,
-            "discordant_pairs": 0,
+            "discordant_tasks": 0,
             "exact_two_sided_p": 1.0,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
             "treated_only_pass": 0
           },
           "pass_rate_delta": {
@@ -120,8 +122,10 @@
           },
           "mcnemar_pass": {
             "control_only_pass": 0,
-            "discordant_pairs": 5,
+            "discordant_tasks": 5,
             "exact_two_sided_p": 0.0625,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
             "treated_only_pass": 5
           },
           "novel_pass_rate_delta": {
@@ -228,8 +232,10 @@
         "task_grounded_minus_no_skill": {
           "mcnemar_pass": {
             "control_only_pass": 0,
-            "discordant_pairs": 2,
+            "discordant_tasks": 2,
             "exact_two_sided_p": 0.5,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
             "treated_only_pass": 2
           },
           "pass_rate_delta": {
@@ -260,8 +266,10 @@
         "task_grounded_minus_session": {
           "mcnemar_pass": {
             "control_only_pass": 0,
-            "discordant_pairs": 4,
+            "discordant_tasks": 4,
             "exact_two_sided_p": 0.125,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
             "treated_only_pass": 4
           },
           "pass_rate_delta": {
@@ -414,8 +422,10 @@
         "gold_task_minus_task_grounded": {
           "mcnemar_pass": {
             "control_only_pass": 0,
-            "discordant_pairs": 0,
+            "discordant_tasks": 0,
             "exact_two_sided_p": 1.0,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
             "treated_only_pass": 0
           },
           "pass_rate_delta": {
@@ -470,8 +480,10 @@
           },
           "mcnemar_pass": {
             "control_only_pass": 0,
-            "discordant_pairs": 5,
+            "discordant_tasks": 5,
             "exact_two_sided_p": 0.0625,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
             "treated_only_pass": 5
           },
           "novel_pass_rate_delta": {
@@ -578,8 +590,10 @@
         "task_grounded_minus_no_skill": {
           "mcnemar_pass": {
             "control_only_pass": 0,
-            "discordant_pairs": 2,
+            "discordant_tasks": 2,
             "exact_two_sided_p": 0.5,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
             "treated_only_pass": 2
           },
           "pass_rate_delta": {
@@ -610,8 +624,10 @@
         "task_grounded_minus_session": {
           "mcnemar_pass": {
             "control_only_pass": 0,
-            "discordant_pairs": 4,
+            "discordant_tasks": 4,
             "exact_two_sided_p": 0.125,
+            "n_tasks": 6,
+            "task_pass_rule": "seed_pass_rate>=0.5",
             "treated_only_pass": 4
           },
           "pass_rate_delta": {

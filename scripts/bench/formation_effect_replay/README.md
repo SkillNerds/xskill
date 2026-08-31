@@ -60,7 +60,7 @@ python -m scripts.bench.formation_effect_replay.evaluate scripts/bench/formation
 
 每个对照报告逐 case 配对差值、按 Task 聚类的 percentile bootstrap 置信区间、wins/ties/losses 和二元成功的 McNemar exact test。
 
-McNemar 结果按 `task × seed` 配对，仅作为辅助描述，包含重复 seed 时以按 Task 聚类 bootstrap 为主要统计证据。
+McNemar 先在每个 Task 内汇总 seed：某方法至少一半 seed 通过时将该 Task 记为通过，再在 Task 间计算 exact test，避免把重复 seed 当成独立样本；按 Task 聚类 bootstrap 仍是主要统计证据。
 
 评测器根据 case 数、bootstrap 次数、预算模式、对照数量和 task family 数估算总工作量，超过固定上限时明确失败，避免扩大样本后出现最坏情况的计算膨胀。
 

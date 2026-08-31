@@ -603,11 +603,20 @@ def _mcnemar(
     control: str,
     pass_threshold: float,
 ) -> dict[str, Any]:
+    paired_passes_by_task: dict[str, list[tuple[bool, bool]]] = defaultdict(list)
+    for case in cases:
+        paired_passes_by_task[case["task_fingerprint"]].append(
+            (
+                _observation(case, mode_id, treated)["score"] >= pass_threshold,
+                _observation(case, mode_id, control)["score"] >= pass_threshold,
+            )
+        )
     treated_only = 0
     control_only = 0
-    for case in cases:
-        treated_passed = _observation(case, mode_id, treated)["score"] >= pass_threshold
-        control_passed = _observation(case, mode_id, control)["score"] >= pass_threshold
+    for task_id in sorted(paired_passes_by_task):
+        paired_passes = paired_passes_by_task[task_id]
+        treated_passed = _mean([float(pair[0]) for pair in paired_passes]) >= 0.5
+        control_passed = _mean([float(pair[1]) for pair in paired_passes]) >= 0.5
         treated_only += int(treated_passed and not control_passed)
         control_only += int(control_passed and not treated_passed)
     discordant = treated_only + control_only
@@ -620,9 +629,11 @@ def _mcnemar(
         ) / (2**discordant)
         p_value = min(1.0, 2 * tail)
     return {
+        "n_tasks": len(paired_passes_by_task),
+        "task_pass_rule": "seed_pass_rate>=0.5",
         "treated_only_pass": treated_only,
         "control_only_pass": control_only,
-        "discordant_pairs": discordant,
+        "discordant_tasks": discordant,
         "exact_two_sided_p": _round(p_value),
     }
 
