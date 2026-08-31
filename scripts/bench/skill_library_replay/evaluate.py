@@ -33,11 +33,24 @@ RESOURCE_FIELDS = (
     "cost_usd",
     "latency_ms",
 )
+MAX_BOOTSTRAP_OPERATIONS = 5_000_000
+ISOLATED_BOOTSTRAP_STATISTICS = 3
+BOOTSTRAP_STATISTICS_PER_LIBRARY_LEVEL = 10 + len(RESOURCE_FIELDS)
 _SHA256_RE = "sha256:"
 
 
 class LibraryReplayValidationError(ValueError):
     """Raised when a library-aware replay violates its data contract."""
+
+
+def _estimated_bootstrap_operations(
+    *, case_count: int, library_levels: int, bootstrap_samples: int
+) -> int:
+    statistics = (
+        ISOLATED_BOOTSTRAP_STATISTICS
+        + library_levels * BOOTSTRAP_STATISTICS_PER_LIBRARY_LEVEL
+    )
+    return case_count * bootstrap_samples * statistics
 
 
 def _require(mapping: dict[str, Any], key: str, expected: type, context: str) -> Any:
@@ -360,9 +373,15 @@ def validate_suite(suite: Any) -> None:
         raise LibraryReplayValidationError(
             "suite.cases must include both positive and negative activation cases"
         )
-    if len(cases) * bootstrap_samples > 5_000_000:
+    estimated_operations = _estimated_bootstrap_operations(
+        case_count=len(cases),
+        library_levels=len(ladder),
+        bootstrap_samples=bootstrap_samples,
+    )
+    if estimated_operations > MAX_BOOTSTRAP_OPERATIONS:
         raise LibraryReplayValidationError(
-            "suite: cases * bootstrap_samples exceeds the 5000000 work bound"
+            "suite: estimated bootstrap work exceeds "
+            f"the {MAX_BOOTSTRAP_OPERATIONS} operation bound"
         )
 
 

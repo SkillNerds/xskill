@@ -202,6 +202,23 @@ def test_suite_requires_positive_and_negative_activation_cases():
         validate_suite(suite)
 
 
+def test_bootstrap_bound_counts_every_reported_statistic():
+    suite = load_suite(BASELINE_PATH)
+    suite["metric_config"]["bootstrap_samples"] = 50_000
+    repeated = deepcopy(suite["cases"][0])
+    repeated["case_id"] += "-repeated"
+    repeated["task_fingerprint"] = "sha256:" + "f" * 64
+    for observation in repeated["isolated"].values():
+        observation["run_id"] += "-repeated"
+    for level in repeated["libraries"]:
+        for observation in level["deployed"].values():
+            observation["run_id"] += "-repeated"
+    suite["cases"].append(repeated)
+
+    with pytest.raises(LibraryReplayValidationError, match="bootstrap work"):
+        validate_suite(suite)
+
+
 def test_cli_renders_text_and_json(capsys):
     report = evaluate_suite(load_suite(BASELINE_PATH))
 
