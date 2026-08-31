@@ -116,7 +116,7 @@ class TaskGraphService:
         task_config = self.config.get("task_graph") or {}
         if not isinstance(task_config, dict):
             raise ValueError("task_graph config must be a mapping")
-        enabled = task_config.get("enabled", False)
+        enabled = task_config.get("enabled", True)
         if not isinstance(enabled, bool):
             raise ValueError("task_graph.enabled must be a boolean")
         self.enabled = enabled

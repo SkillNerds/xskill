@@ -130,6 +130,22 @@ def test_reading_missing_tenant_identity_has_no_filesystem_side_effect(tmp_path)
     assert not (tmp_path / "task_graph").exists()
 
 
+def test_task_graph_is_enabled_by_default_and_explicit_false_still_wins(tmp_path):
+    default_service = TaskGraphService(
+        state_root=tmp_path,
+        db_path=tmp_path / "registry.db",
+        config={},
+    )
+    disabled_service = TaskGraphService(
+        state_root=tmp_path,
+        db_path=tmp_path / "registry.db",
+        config={"task_graph": {"enabled": False}},
+    )
+
+    assert default_service.enabled is True
+    assert disabled_service.enabled is False
+
+
 def test_runtime_projects_task_attempt_evidence_and_conserved_usage(tmp_path):
     db_path = tmp_path / "registry.db"
     source = _add_source(
