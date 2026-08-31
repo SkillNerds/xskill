@@ -1,8 +1,9 @@
 # dashboard static 构建说明 / Build Notes
 
 前端为零构建运行时（vanilla JS + Tailwind 编译产物），浏览器端不加载任何
-CDN / 外部资源。`i18n.js` 在 DOM 边界翻译 `index.html` / `app.js` 中的界面
-文案，并把语言选择保存在浏览器 localStorage。仅当改动 `index.html` /
+CDN / 外部资源。`i18n.js` 提供稳定 key 的翻译表与语言状态；静态文案通过
+`data-i18n`、动态文案通过渲染时调用 `tr()` 完成翻译，API 数据与日志不做
+翻译。语言选择保存在浏览器 localStorage。仅当改动 `index.html` /
 `app.js` / `i18n.js` 里的 Tailwind 类名后需要
 重新编译 CSS。
 

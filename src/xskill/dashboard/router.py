@@ -82,18 +82,23 @@ def build_dashboard_router(db_path: Optional[Path] = None, *,
                                unknown_model=default_model)
 
     @router.get("/", response_class=HTMLResponse)
-    def index() -> str:
-        return (_STATIC / "index.html").read_text(encoding="utf-8")
+    def index() -> HTMLResponse:
+        return HTMLResponse(
+            (_STATIC / "index.html").read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @router.get("/app.js")
     def appjs() -> Response:
         return Response((_STATIC / "app.js").read_text(encoding="utf-8"),
-                        media_type="application/javascript")
+                        media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache"})
 
     @router.get("/i18n.js")
     def i18njs() -> Response:
         return Response((_STATIC / "i18n.js").read_text(encoding="utf-8"),
-                        media_type="application/javascript")
+                        media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache"})
 
     @router.get("/api/v1/dashboard/overview")
     def overview() -> dict:

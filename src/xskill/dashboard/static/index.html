@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>xskill 控制台</title>
+<title data-i18n="ui.xskill_console">xskill 控制台</title>
 <!-- Tailwind 编译产物内联（构建方式见 BUILD.md；后端只服务 /、/app.js 与 /i18n.js，无静态目录挂载，故不用 <link> 外部文件） -->
 <style id="twcss">*,:after,:before{--tw-border-spacing-x:0;--tw-border-spacing-y:0;--tw-translate-x:0;--tw-translate-y:0;--tw-rotate:0;--tw-skew-x:0;--tw-skew-y:0;--tw-scale-x:1;--tw-scale-y:1;--tw-pan-x: ;--tw-pan-y: ;--tw-pinch-zoom: ;--tw-scroll-snap-strictness:proximity;--tw-gradient-from-position: ;--tw-gradient-via-position: ;--tw-gradient-to-position: ;--tw-ordinal: ;--tw-slashed-zero: ;--tw-numeric-figure: ;--tw-numeric-spacing: ;--tw-numeric-fraction: ;--tw-ring-inset: ;--tw-ring-offset-width:0px;--tw-ring-offset-color:#fff;--tw-ring-color:rgba(59,130,246,.5);--tw-ring-offset-shadow:0 0 #0000;--tw-ring-shadow:0 0 #0000;--tw-shadow:0 0 #0000;--tw-shadow-colored:0 0 #0000;--tw-blur: ;--tw-brightness: ;--tw-contrast: ;--tw-grayscale: ;--tw-hue-rotate: ;--tw-invert: ;--tw-saturate: ;--tw-sepia: ;--tw-drop-shadow: ;--tw-backdrop-blur: ;--tw-backdrop-brightness: ;--tw-backdrop-contrast: ;--tw-backdrop-grayscale: ;--tw-backdrop-hue-rotate: ;--tw-backdrop-invert: ;--tw-backdrop-opacity: ;--tw-backdrop-saturate: ;--tw-backdrop-sepia: ;--tw-contain-size: ;--tw-contain-layout: ;--tw-contain-paint: ;--tw-contain-style: }::backdrop{--tw-border-spacing-x:0;--tw-border-spacing-y:0;--tw-translate-x:0;--tw-translate-y:0;--tw-rotate:0;--tw-skew-x:0;--tw-skew-y:0;--tw-scale-x:1;--tw-scale-y:1;--tw-pan-x: ;--tw-pan-y: ;--tw-pinch-zoom: ;--tw-scroll-snap-strictness:proximity;--tw-gradient-from-position: ;--tw-gradient-via-position: ;--tw-gradient-to-position: ;--tw-ordinal: ;--tw-slashed-zero: ;--tw-numeric-figure: ;--tw-numeric-spacing: ;--tw-numeric-fraction: ;--tw-ring-inset: ;--tw-ring-offset-width:0px;--tw-ring-offset-color:#fff;--tw-ring-color:rgba(59,130,246,.5);--tw-ring-offset-shadow:0 0 #0000;--tw-ring-shadow:0 0 #0000;--tw-shadow:0 0 #0000;--tw-shadow-colored:0 0 #0000;--tw-blur: ;--tw-brightness: ;--tw-contrast: ;--tw-grayscale: ;--tw-hue-rotate: ;--tw-invert: ;--tw-saturate: ;--tw-sepia: ;--tw-drop-shadow: ;--tw-backdrop-blur: ;--tw-backdrop-brightness: ;--tw-backdrop-contrast: ;--tw-backdrop-grayscale: ;--tw-backdrop-hue-rotate: ;--tw-backdrop-invert: ;--tw-backdrop-opacity: ;--tw-backdrop-saturate: ;--tw-backdrop-sepia: ;--tw-contain-size: ;--tw-contain-layout: ;--tw-contain-paint: ;--tw-contain-style: }
 /*! tailwindcss v3.4.19 | MIT License | https://tailwindcss.com*/*,:after,:before{box-sizing:border-box;border:0 solid #e5e7eb}:after,:before{--tw-content:""}:host,html{line-height:1.5;-webkit-text-size-adjust:100%;-moz-tab-size:4;-o-tab-size:4;tab-size:4;font-family:ui-sans-serif,system-ui,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol,Noto Color Emoji;font-feature-settings:normal;font-variation-settings:normal;-webkit-tap-highlight-color:transparent}body{margin:0;line-height:inherit}hr{height:0;color:inherit;border-top-width:1px}abbr:where([title]){-webkit-text-decoration:underline dotted;text-decoration:underline dotted}h1,h2,h3,h4,h5,h6{font-size:inherit;font-weight:inherit}a{color:inherit;text-decoration:inherit}b,strong{font-weight:bolder}code,kbd,pre,samp{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,Liberation Mono,Courier New,monospace;font-feature-settings:normal;font-variation-settings:normal;font-size:1em}small{font-size:80%}sub,sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}sub{bottom:-.25em}sup{top:-.5em}table{text-indent:0;border-color:inherit;border-collapse:collapse}button,input,optgroup,select,textarea{font-family:inherit;font-feature-settings:inherit;font-variation-settings:inherit;font-size:100%;font-weight:inherit;line-height:inherit;letter-spacing:inherit;color:inherit;margin:0;padding:0}button,select{text-transform:none}button,input:where([type=button]),input:where([type=reset]),input:where([type=submit]){-webkit-appearance:button;background-color:transparent;background-image:none}:-moz-focusring{outline:auto}:-moz-ui-invalid{box-shadow:none}progress{vertical-align:baseline}::-webkit-inner-spin-button,::-webkit-outer-spin-button{height:auto}[type=search]{-webkit-appearance:textfield;outline-offset:-2px}::-webkit-search-decoration{-webkit-appearance:none}::-webkit-file-upload-button{-webkit-appearance:button;font:inherit}summary{display:list-item}blockquote,dd,dl,figure,h1,h2,h3,h4,h5,h6,hr,p,pre{margin:0}fieldset{margin:0}fieldset,legend{padding:0}menu,ol,ul{list-style:none;margin:0;padding:0}dialog{padding:0}textarea{resize:vertical}input::-moz-placeholder,textarea::-moz-placeholder{opacity:1;color:#9ca3af}input::placeholder,textarea::placeholder{opacity:1;color:#9ca3af}[role=button],button{cursor:pointer}:disabled{cursor:default}audio,canvas,embed,iframe,img,object,svg,video{display:block;vertical-align:middle}img,video{max-width:100%;height:auto}[hidden]:where(:not([hidden=until-found])){display:none}.fixed{position:fixed}.absolute{position:absolute}.relative{position:relative}.sticky{position:sticky}.inset-0{inset:0}.left-6{left:1.5rem}.right-6{right:1.5rem}.top-0{top:0}.top-\[17px\]{top:17px}.z-10{z-index:10}.z-50{z-index:50}.col-span-12{grid-column:span 12/span 12}.-mx-2{margin-left:-.5rem;margin-right:-.5rem}.mx-1{margin-left:.25rem;margin-right:.25rem}.mb-1{margin-bottom:.25rem}.mb-1\.5{margin-bottom:.375rem}.mb-2{margin-bottom:.5rem}.mb-4{margin-bottom:1rem}.ml-1{margin-left:.25rem}.ml-2{margin-left:.5rem}.mr-2{margin-right:.5rem}.mt-0{margin-top:0}.mt-0\.5{margin-top:.125rem}.mt-1{margin-top:.25rem}.mt-1\.5{margin-top:.375rem}.mt-2{margin-top:.5rem}.mt-2\.5{margin-top:.625rem}.mt-3{margin-top:.75rem}.mt-4{margin-top:1rem}.mt-5{margin-top:1.25rem}.mt-6{margin-top:1.5rem}.mt-auto{margin-top:auto}.line-clamp-2{overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}.block{display:block}.inline-block{display:inline-block}.flex{display:flex}.inline-flex{display:inline-flex}.table{display:table}.grid{display:grid}.hidden{display:none}.h-0{height:0}.h-0\.5{height:.125rem}.h-1{height:.25rem}.h-1\.5{height:.375rem}.h-12{height:3rem}.h-2{height:.5rem}.h-2\.5{height:.625rem}.h-5{height:1.25rem}.h-6{height:1.5rem}.h-8{height:2rem}.h-9{height:2.25rem}.h-full{height:100%}.h-screen{height:100vh}.max-h-36{max-height:9rem}.max-h-44{max-height:11rem}.max-h-72{max-height:18rem}.max-h-80{max-height:20rem}.min-h-screen{min-height:100vh}.w-1{width:.25rem}.w-1\.5{width:.375rem}.w-10{width:2.5rem}.w-16{width:4rem}.w-2{width:.5rem}.w-2\.5{width:.625rem}.w-20{width:5rem}.w-24{width:6rem}.w-36{width:9rem}.w-4{width:1rem}.w-5{width:1.25rem}.w-52{width:13rem}.w-6{width:1.5rem}.w-8{width:2rem}.w-9{width:2.25rem}.w-full{width:100%}.min-w-0{min-width:0}.min-w-\[60px\]{min-width:60px}.min-w-\[92px\]{min-width:92px}.min-w-max{min-width:-moz-max-content;min-width:max-content}.max-w-\[200px\]{max-width:200px}.max-w-\[280px\]{max-width:280px}.max-w-\[360px\]{max-width:360px}.max-w-\[480px\]{max-width:480px}.flex-1{flex:1 1 0%}.shrink-0{flex-shrink:0}.transform{transform:translate(var(--tw-translate-x),var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y))}@keyframes pulse{50%{opacity:.5}}.animate-pulse{animation:pulse 2s cubic-bezier(.4,0,.6,1) infinite}.cursor-help{cursor:help}.cursor-not-allowed{cursor:not-allowed}.cursor-pointer{cursor:pointer}.grid-cols-1{grid-template-columns:repeat(1,minmax(0,1fr))}.grid-cols-12{grid-template-columns:repeat(12,minmax(0,1fr))}.grid-cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}.grid-cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}.flex-col{flex-direction:column}.flex-wrap{flex-wrap:wrap}.items-start{align-items:flex-start}.items-center{align-items:center}.items-baseline{align-items:baseline}.items-stretch{align-items:stretch}.justify-end{justify-content:flex-end}.justify-center{justify-content:center}.justify-between{justify-content:space-between}.gap-1{gap:.25rem}.gap-1\.5{gap:.375rem}.gap-2{gap:.5rem}.gap-2\.5{gap:.625rem}.gap-3{gap:.75rem}.gap-4{gap:1rem}.gap-5{gap:1.25rem}.space-y-0>:not([hidden])~:not([hidden]){--tw-space-y-reverse:0;margin-top:calc(0px*(1 - var(--tw-space-y-reverse)));margin-bottom:calc(0px*var(--tw-space-y-reverse))}.space-y-0\.5>:not([hidden])~:not([hidden]){--tw-space-y-reverse:0;margin-top:calc(.125rem*(1 - var(--tw-space-y-reverse)));margin-bottom:calc(.125rem*var(--tw-space-y-reverse))}.space-y-1>:not([hidden])~:not([hidden]){--tw-space-y-reverse:0;margin-top:calc(.25rem*(1 - var(--tw-space-y-reverse)));margin-bottom:calc(.25rem*var(--tw-space-y-reverse))}.space-y-2>:not([hidden])~:not([hidden]){--tw-space-y-reverse:0;margin-top:calc(.5rem*(1 - var(--tw-space-y-reverse)));margin-bottom:calc(.5rem*var(--tw-space-y-reverse))}.space-y-2\.5>:not([hidden])~:not([hidden]){--tw-space-y-reverse:0;margin-top:calc(.625rem*(1 - var(--tw-space-y-reverse)));margin-bottom:calc(.625rem*var(--tw-space-y-reverse))}.space-y-3>:not([hidden])~:not([hidden]){--tw-space-y-reverse:0;margin-top:calc(.75rem*(1 - var(--tw-space-y-reverse)));margin-bottom:calc(.75rem*var(--tw-space-y-reverse))}.space-y-4>:not([hidden])~:not([hidden]){--tw-space-y-reverse:0;margin-top:calc(1rem*(1 - var(--tw-space-y-reverse)));margin-bottom:calc(1rem*var(--tw-space-y-reverse))}.divide-y>:not([hidden])~:not([hidden]){--tw-divide-y-reverse:0;border-top-width:calc(1px*(1 - var(--tw-divide-y-reverse)));border-bottom-width:calc(1px*var(--tw-divide-y-reverse))}.divide-slate-100>:not([hidden])~:not([hidden]){--tw-divide-opacity:1;border-color:rgb(241 245 249/var(--tw-divide-opacity,1))}.divide-slate-50>:not([hidden])~:not([hidden]){--tw-divide-opacity:1;border-color:rgb(248 250 252/var(--tw-divide-opacity,1))}.self-center{align-self:center}.overflow-auto{overflow:auto}.overflow-hidden{overflow:hidden}.overflow-x-auto{overflow-x:auto}.overflow-y-auto{overflow-y:auto}.truncate{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.whitespace-pre-wrap{white-space:pre-wrap}.break-all{word-break:break-all}.rounded{border-radius:.25rem}.rounded-2xl{border-radius:1rem}.rounded-full{border-radius:9999px}.rounded-lg{border-radius:.5rem}.rounded-md{border-radius:.375rem}.rounded-xl{border-radius:.75rem}.border-b{border-bottom-width:1px}.border-r{border-right-width:1px}.border-t{border-top-width:1px}.border-slate-100{--tw-border-opacity:1;border-color:rgb(241 245 249/var(--tw-border-opacity,1))}.border-slate-200{--tw-border-opacity:1;border-color:rgb(226 232 240/var(--tw-border-opacity,1))}.bg-amber-100{--tw-bg-opacity:1;background-color:rgb(254 243 199/var(--tw-bg-opacity,1))}.bg-amber-400{--tw-bg-opacity:1;background-color:rgb(251 191 36/var(--tw-bg-opacity,1))}.bg-amber-50{--tw-bg-opacity:1;background-color:rgb(255 251 235/var(--tw-bg-opacity,1))}.bg-amber-50\/60{background-color:rgba(255,251,235,.6)}.bg-amber-50\/70{background-color:rgba(255,251,235,.7)}.bg-blue-600{--tw-bg-opacity:1;background-color:rgb(37 99 235/var(--tw-bg-opacity,1))}.bg-emerald-100{--tw-bg-opacity:1;background-color:rgb(209 250 229/var(--tw-bg-opacity,1))}.bg-emerald-50{--tw-bg-opacity:1;background-color:rgb(236 253 245/var(--tw-bg-opacity,1))}.bg-emerald-500{--tw-bg-opacity:1;background-color:rgb(16 185 129/var(--tw-bg-opacity,1))}.bg-indigo-100{--tw-bg-opacity:1;background-color:rgb(224 231 255/var(--tw-bg-opacity,1))}.bg-rose-100{--tw-bg-opacity:1;background-color:rgb(255 228 230/var(--tw-bg-opacity,1))}.bg-rose-50{--tw-bg-opacity:1;background-color:rgb(255 241 242/var(--tw-bg-opacity,1))}.bg-rose-50\/50{background-color:rgba(255,241,242,.5)}.bg-rose-500{--tw-bg-opacity:1;background-color:rgb(244 63 94/var(--tw-bg-opacity,1))}.bg-sky-100{--tw-bg-opacity:1;background-color:rgb(224 242 254/var(--tw-bg-opacity,1))}.bg-sky-50{--tw-bg-opacity:1;background-color:rgb(240 249 255/var(--tw-bg-opacity,1))}.bg-slate-100{--tw-bg-opacity:1;background-color:rgb(241 245 249/var(--tw-bg-opacity,1))}.bg-slate-200{--tw-bg-opacity:1;background-color:rgb(226 232 240/var(--tw-bg-opacity,1))}.bg-slate-300{--tw-bg-opacity:1;background-color:rgb(203 213 225/var(--tw-bg-opacity,1))}.bg-slate-50{--tw-bg-opacity:1;background-color:rgb(248 250 252/var(--tw-bg-opacity,1))}.bg-slate-900{--tw-bg-opacity:1;background-color:rgb(15 23 42/var(--tw-bg-opacity,1))}.bg-slate-900\/40{background-color:rgba(15,23,42,.4)}.bg-teal-50{--tw-bg-opacity:1;background-color:rgb(240 253 250/var(--tw-bg-opacity,1))}.bg-teal-50\/40{background-color:rgba(240,253,250,.4)}.bg-teal-50\/50{background-color:rgba(240,253,250,.5)}.bg-teal-500{--tw-bg-opacity:1;background-color:rgb(20 184 166/var(--tw-bg-opacity,1))}.bg-teal-600{--tw-bg-opacity:1;background-color:rgb(13 148 136/var(--tw-bg-opacity,1))}.bg-violet-100{--tw-bg-opacity:1;background-color:rgb(237 233 254/var(--tw-bg-opacity,1))}.bg-white{--tw-bg-opacity:1;background-color:rgb(255 255 255/var(--tw-bg-opacity,1))}.bg-gradient-to-br{background-image:linear-gradient(to bottom right,var(--tw-gradient-stops))}.from-teal-500{--tw-gradient-from:#14b8a6 var(--tw-gradient-from-position);--tw-gradient-to:rgba(20,184,166,0) var(--tw-gradient-to-position);--tw-gradient-stops:var(--tw-gradient-from),var(--tw-gradient-to)}.to-cyan-700{--tw-gradient-to:#0e7490 var(--tw-gradient-to-position)}.p-3{padding:.75rem}.p-4{padding:1rem}.p-5{padding:1.25rem}.p-6{padding:1.5rem}.p-7{padding:1.75rem}.px-1{padding-left:.25rem;padding-right:.25rem}.px-1\.5{padding-left:.375rem;padding-right:.375rem}.px-2{padding-left:.5rem;padding-right:.5rem}.px-2\.5{padding-left:.625rem;padding-right:.625rem}.px-3{padding-left:.75rem;padding-right:.75rem}.px-3\.5{padding-left:.875rem;padding-right:.875rem}.px-4{padding-left:1rem;padding-right:1rem}.px-5{padding-left:1.25rem;padding-right:1.25rem}.py-0{padding-top:0;padding-bottom:0}.py-0\.5{padding-top:.125rem;padding-bottom:.125rem}.py-1{padding-top:.25rem;padding-bottom:.25rem}.py-1\.5{padding-top:.375rem;padding-bottom:.375rem}.py-2{padding-top:.5rem;padding-bottom:.5rem}.py-2\.5{padding-top:.625rem;padding-bottom:.625rem}.py-3{padding-top:.75rem;padding-bottom:.75rem}.py-4{padding-top:1rem;padding-bottom:1rem}.pb-2{padding-bottom:.5rem}.pb-4{padding-bottom:1rem}.pl-4{padding-left:1rem}.pl-6{padding-left:1.5rem}.pt-3{padding-top:.75rem}.pt-5{padding-top:1.25rem}.text-left{text-align:left}.text-center{text-align:center}.text-right{text-align:right}.font-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,Liberation Mono,Courier New,monospace}.text-\[10\.5px\]{font-size:10.5px}.text-\[10px\]{font-size:10px}.text-\[11\.5px\]{font-size:11.5px}.text-\[11px\]{font-size:11px}.text-\[12\.5px\]{font-size:12.5px}.text-\[13px\]{font-size:13px}.text-\[15px\]{font-size:15px}.text-\[26px\]{font-size:26px}.text-\[9px\]{font-size:9px}.text-base{font-size:1rem;line-height:1.5rem}.text-lg{font-size:1.125rem;line-height:1.75rem}.text-sm{font-size:.875rem;line-height:1.25rem}.text-xl{font-size:1.25rem;line-height:1.75rem}.text-xs{font-size:.75rem;line-height:1rem}.font-bold{font-weight:700}.font-medium{font-weight:500}.font-normal{font-weight:400}.font-semibold{font-weight:600}.tabular-nums{--tw-numeric-spacing:tabular-nums;font-variant-numeric:var(--tw-ordinal) var(--tw-slashed-zero) var(--tw-numeric-figure) var(--tw-numeric-spacing) var(--tw-numeric-fraction)}.leading-4{line-height:1rem}.leading-\[2\.4\]{line-height:2.4}.leading-normal{line-height:1.5}.leading-relaxed{line-height:1.625}.tracking-tight{letter-spacing:-.025em}.text-amber-600{--tw-text-opacity:1;color:rgb(217 119 6/var(--tw-text-opacity,1))}.text-amber-700{--tw-text-opacity:1;color:rgb(180 83 9/var(--tw-text-opacity,1))}.text-emerald-600{--tw-text-opacity:1;color:rgb(5 150 105/var(--tw-text-opacity,1))}.text-emerald-700{--tw-text-opacity:1;color:rgb(4 120 87/var(--tw-text-opacity,1))}.text-emerald-800{--tw-text-opacity:1;color:rgb(6 95 70/var(--tw-text-opacity,1))}.text-indigo-700{--tw-text-opacity:1;color:rgb(67 56 202/var(--tw-text-opacity,1))}.text-rose-400{--tw-text-opacity:1;color:rgb(251 113 133/var(--tw-text-opacity,1))}.text-rose-600{--tw-text-opacity:1;color:rgb(225 29 72/var(--tw-text-opacity,1))}.text-rose-700{--tw-text-opacity:1;color:rgb(190 18 60/var(--tw-text-opacity,1))}.text-rose-800{--tw-text-opacity:1;color:rgb(159 18 57/var(--tw-text-opacity,1))}.text-sky-700{--tw-text-opacity:1;color:rgb(3 105 161/var(--tw-text-opacity,1))}.text-slate-100{--tw-text-opacity:1;color:rgb(241 245 249/var(--tw-text-opacity,1))}.text-slate-300{--tw-text-opacity:1;color:rgb(203 213 225/var(--tw-text-opacity,1))}.text-slate-400{--tw-text-opacity:1;color:rgb(148 163 184/var(--tw-text-opacity,1))}.text-slate-500{--tw-text-opacity:1;color:rgb(100 116 139/var(--tw-text-opacity,1))}.text-slate-600{--tw-text-opacity:1;color:rgb(71 85 105/var(--tw-text-opacity,1))}.text-slate-700{--tw-text-opacity:1;color:rgb(51 65 85/var(--tw-text-opacity,1))}.text-slate-800{--tw-text-opacity:1;color:rgb(30 41 59/var(--tw-text-opacity,1))}.text-slate-900{--tw-text-opacity:1;color:rgb(15 23 42/var(--tw-text-opacity,1))}.text-teal-600{--tw-text-opacity:1;color:rgb(13 148 136/var(--tw-text-opacity,1))}.text-teal-700{--tw-text-opacity:1;color:rgb(15 118 110/var(--tw-text-opacity,1))}.text-teal-800{--tw-text-opacity:1;color:rgb(17 94 89/var(--tw-text-opacity,1))}.text-violet-600{--tw-text-opacity:1;color:rgb(124 58 237/var(--tw-text-opacity,1))}.text-violet-700{--tw-text-opacity:1;color:rgb(109 40 217/var(--tw-text-opacity,1))}.text-white{--tw-text-opacity:1;color:rgb(255 255 255/var(--tw-text-opacity,1))}.underline{text-decoration-line:underline}.decoration-teal-200{text-decoration-color:#99f6e4}.underline-offset-2{text-underline-offset:2px}.opacity-60{opacity:.6}.outline-none{outline:2px solid transparent;outline-offset:2px}.ring-1{--tw-ring-offset-shadow:var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);--tw-ring-shadow:var(--tw-ring-inset) 0 0 0 calc(1px + var(--tw-ring-offset-width)) var(--tw-ring-color)}.ring-1,.ring-2{box-shadow:var(--tw-ring-offset-shadow),var(--tw-ring-shadow),var(--tw-shadow,0 0 #0000)}.ring-2{--tw-ring-offset-shadow:var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);--tw-ring-shadow:var(--tw-ring-inset) 0 0 0 calc(2px + var(--tw-ring-offset-width)) var(--tw-ring-color)}.ring-4{--tw-ring-offset-shadow:var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);--tw-ring-shadow:var(--tw-ring-inset) 0 0 0 calc(4px + var(--tw-ring-offset-width)) var(--tw-ring-color);box-shadow:var(--tw-ring-offset-shadow),var(--tw-ring-shadow),var(--tw-shadow,0 0 #0000)}.ring-amber-100{--tw-ring-opacity:1;--tw-ring-color:rgb(254 243 199/var(--tw-ring-opacity,1))}.ring-amber-200{--tw-ring-opacity:1;--tw-ring-color:rgb(253 230 138/var(--tw-ring-opacity,1))}.ring-emerald-200{--tw-ring-opacity:1;--tw-ring-color:rgb(167 243 208/var(--tw-ring-opacity,1))}.ring-rose-200{--tw-ring-opacity:1;--tw-ring-color:rgb(254 205 211/var(--tw-ring-opacity,1))}.ring-sky-200{--tw-ring-opacity:1;--tw-ring-color:rgb(186 230 253/var(--tw-ring-opacity,1))}.ring-slate-100{--tw-ring-opacity:1;--tw-ring-color:rgb(241 245 249/var(--tw-ring-opacity,1))}.ring-slate-200{--tw-ring-opacity:1;--tw-ring-color:rgb(226 232 240/var(--tw-ring-opacity,1))}.ring-slate-300{--tw-ring-opacity:1;--tw-ring-color:rgb(203 213 225/var(--tw-ring-opacity,1))}.ring-teal-100{--tw-ring-opacity:1;--tw-ring-color:rgb(204 251 241/var(--tw-ring-opacity,1))}.ring-teal-200{--tw-ring-opacity:1;--tw-ring-color:rgb(153 246 228/var(--tw-ring-opacity,1))}.filter{filter:var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow)}.ease-out{transition-timing-function:cubic-bezier(0,0,.2,1)}.first\:mt-0:first-child{margin-top:0}.hover\:bg-rose-50:hover{--tw-bg-opacity:1;background-color:rgb(255 241 242/var(--tw-bg-opacity,1))}.hover\:bg-slate-100:hover{--tw-bg-opacity:1;background-color:rgb(241 245 249/var(--tw-bg-opacity,1))}.hover\:bg-slate-50:hover{--tw-bg-opacity:1;background-color:rgb(248 250 252/var(--tw-bg-opacity,1))}.hover\:bg-teal-700:hover{--tw-bg-opacity:1;background-color:rgb(15 118 110/var(--tw-bg-opacity,1))}.focus\:ring-teal-500:focus{--tw-ring-opacity:1;--tw-ring-color:rgb(20 184 166/var(--tw-ring-opacity,1))}@media (min-width:768px){.md\:col-span-4{grid-column:span 4/span 4}.md\:col-span-5{grid-column:span 5/span 5}.md\:col-span-7{grid-column:span 7/span 7}.md\:col-span-8{grid-column:span 8/span 8}.md\:grid-cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}.md\:grid-cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}.md\:grid-cols-4{grid-template-columns:repeat(4,minmax(0,1fr))}}@media (min-width:1024px){.lg\:col-span-5{grid-column:span 5/span 5}.lg\:col-span-7{grid-column:span 7/span 7}}@media (min-width:1280px){.xl\:col-span-5{grid-column:span 5/span 5}.xl\:col-span-7{grid-column:span 7/span 7}.xl\:grid-cols-5{grid-template-columns:repeat(5,minmax(0,1fr))}}</style>
@@ -111,18 +111,18 @@
   <aside class="w-52 shrink-0 bg-white border-r border-slate-200 flex flex-col sticky top-0 h-screen">
     <div class="px-5 pt-5 pb-4 flex items-center gap-2.5">
       <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-teal-500 to-cyan-700 flex items-center justify-center text-white font-bold text-base">x</div>
-      <div><div class="font-bold text-[15px] leading-4 text-slate-900">xskill</div><div class="text-[10.5px] text-slate-400 mt-0.5">控制台</div></div>
+      <div><div class="font-bold text-[15px] leading-4 text-slate-900">xskill</div><div class="text-[10.5px] text-slate-400 mt-0.5"><span data-i18n="ui.console">控制台</span></div></div>
     </div>
     <nav class="px-3 space-y-0.5 mt-1 text-[13px]" id="nav">
-      <a href="#overview" data-pg="overview" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="1.5" width="5.4" height="5.4" rx="1.5"/><rect x="9.1" y="1.5" width="5.4" height="5.4" rx="1.5"/><rect x="1.5" y="9.1" width="5.4" height="5.4" rx="1.5"/><rect x="9.1" y="9.1" width="5.4" height="5.4" rx="1.5"/></svg>总览</a>
-      <a href="#skills" data-pg="skills" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5l5.5 3v7l-5.5 3-5.5-3v-7l5.5-3z"/><path d="M2.5 4.5L8 7.5l5.5-3M8 7.5v7"/></svg>技能库</a>
-      <a href="#pipeline" data-pg="pipeline" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="6" width="3.2" height="4" rx="1"/><rect x="6.4" y="6" width="3.2" height="4" rx="1"/><rect x="11.3" y="6" width="3.2" height="4" rx="1"/><path d="M4.7 8h1.7M9.6 8h1.7"/></svg>流水线</a>
-      <a href="#traj" data-pg="traj" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h9M2 8h12M2 12h7"/><circle cx="13.5" cy="4" r="1.4" fill="currentColor" stroke="none"/></svg>轨迹 &amp; 原子</a>
-      <a href="#users" data-pg="users" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5" r="2.4"/><circle cx="11.5" cy="6" r="1.9"/><path d="M1.5 13.5c0-2.4 1.8-4 4-4s4 1.6 4 4M10 13.5c0-1.9 1.3-3.2 3-3.2s3 1.3 3 3.2" transform="scale(0.92)"/></svg>用户 &amp; 画像</a>
-      <a href="#canary" data-pg="canary" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 1.5h4M7 1.5v4.2L3 12a2 2 0 001.8 3h6.4A2 2 0 0013 12L9 5.7V1.5"/><path d="M4.5 10.5h7"/></svg>灰度 Canary</a>
-      <a href="#my" data-pg="my" class="nav-link auth-user hidden flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5.2" r="2.7"/><path d="M2.5 14c.6-3 2.8-4.5 5.5-4.5s4.9 1.5 5.5 4.5"/></svg>我的</a>
-      <a href="#admin" data-pg="admin" class="nav-link auth-admin hidden flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5l5.5 2v3.6c0 3.6-2.3 6-5.5 7.4-3.2-1.4-5.5-3.8-5.5-7.4V3.5l5.5-2z"/></svg>管理</a>
-      <a href="#settings" data-pg="settings" class="nav-link auth-admin hidden flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2.2M8 12.3v2.2M1.5 8h2.2M12.3 8h2.2M3.8 3.8l1.5 1.5M10.7 10.7l1.5 1.5M12.2 3.8l-1.5 1.5M5.3 10.7l-1.5 1.5"/></svg>设置</a>
+      <a href="#overview" data-pg="overview" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="1.5" width="5.4" height="5.4" rx="1.5"/><rect x="9.1" y="1.5" width="5.4" height="5.4" rx="1.5"/><rect x="1.5" y="9.1" width="5.4" height="5.4" rx="1.5"/><rect x="9.1" y="9.1" width="5.4" height="5.4" rx="1.5"/></svg><span data-i18n="ui.overview">总览</span></a>
+      <a href="#skills" data-pg="skills" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5l5.5 3v7l-5.5 3-5.5-3v-7l5.5-3z"/><path d="M2.5 4.5L8 7.5l5.5-3M8 7.5v7"/></svg><span data-i18n="ui.skills">技能库</span></a>
+      <a href="#pipeline" data-pg="pipeline" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="6" width="3.2" height="4" rx="1"/><rect x="6.4" y="6" width="3.2" height="4" rx="1"/><rect x="11.3" y="6" width="3.2" height="4" rx="1"/><path d="M4.7 8h1.7M9.6 8h1.7"/></svg><span data-i18n="ui.pipeline">流水线</span></a>
+      <a href="#traj" data-pg="traj" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h9M2 8h12M2 12h7"/><circle cx="13.5" cy="4" r="1.4" fill="currentColor" stroke="none"/></svg><span data-i18n="ui.trajectories_and_atoms">轨迹 &amp; 原子</span></a>
+      <a href="#users" data-pg="users" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5" r="2.4"/><circle cx="11.5" cy="6" r="1.9"/><path d="M1.5 13.5c0-2.4 1.8-4 4-4s4 1.6 4 4M10 13.5c0-1.9 1.3-3.2 3-3.2s3 1.3 3 3.2" transform="scale(0.92)"/></svg><span data-i18n="ui.users_and_profiles">用户 &amp; 画像</span></a>
+      <a href="#canary" data-pg="canary" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 1.5h4M7 1.5v4.2L3 12a2 2 0 001.8 3h6.4A2 2 0 0013 12L9 5.7V1.5"/><path d="M4.5 10.5h7"/></svg><span data-i18n="ui.canary">灰度 Canary</span></a>
+      <a href="#my" data-pg="my" class="nav-link auth-user hidden flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5.2" r="2.7"/><path d="M2.5 14c.6-3 2.8-4.5 5.5-4.5s4.9 1.5 5.5 4.5"/></svg><span data-i18n="ui.my_dashboard">我的</span></a>
+      <a href="#admin" data-pg="admin" class="nav-link auth-admin hidden flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5l5.5 2v3.6c0 3.6-2.3 6-5.5 7.4-3.2-1.4-5.5-3.8-5.5-7.4V3.5l5.5-2z"/></svg><span data-i18n="ui.admin">管理</span></a>
+      <a href="#settings" data-pg="settings" class="nav-link auth-admin hidden flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2.2M8 12.3v2.2M1.5 8h2.2M12.3 8h2.2M3.8 3.8l1.5 1.5M10.7 10.7l1.5 1.5M12.2 3.8l-1.5 1.5M5.3 10.7l-1.5 1.5"/></svg><span data-i18n="ui.settings">设置</span></a>
     </nav>
     <div class="mt-auto px-4 py-4 border-t border-slate-100">
       <div class="mb-3 flex items-center justify-center gap-1.5 text-[11px]" role="group" aria-label="Language">
@@ -130,33 +130,33 @@
         <span class="text-slate-300">/</span>
         <button type="button" data-language="zh" class="text-slate-400 hover:bg-slate-50 px-1.5 py-0.5 rounded" aria-pressed="true">中文</button>
       </div>
-      <div id="who-anon"><button id="btn-login" class="w-full py-1.5 rounded-lg ring-1 ring-slate-200 text-slate-600 hover:bg-slate-50 text-[12.5px]">登录</button></div>
+      <div id="who-anon"><button id="btn-login" class="w-full py-1.5 rounded-lg ring-1 ring-slate-200 text-slate-600 hover:bg-slate-50 text-[12.5px]"><span data-i18n="ui.sign_in">登录</span></button></div>
       <div id="who-user" class="hidden flex items-center justify-between gap-2">
         <span class="text-[12.5px] text-slate-700 truncate"><b id="who-name"></b> <span id="who-role" class="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700"></span></span>
-        <button id="btn-logout" class="text-[11px] text-slate-400 hover:bg-slate-50 px-1.5 py-0.5 rounded">退出</button>
+        <button id="btn-logout" class="text-[11px] text-slate-400 hover:bg-slate-50 px-1.5 py-0.5 rounded"><span data-i18n="ui.sign_out">退出</span></button>
       </div>
-      <div class="mt-2 text-[10.5px] text-slate-400">connect --name 后终端打印登录 token</div>
+      <div class="mt-2 text-[10.5px] text-slate-400"><span data-i18n="ui.after_connect_name_the_terminal_prints_a_sign_in_token">connect --name 后终端打印登录 token</span></div>
     </div>
   </aside>
 
   <!-- 主区 -->
   <main class="flex-1 p-7 min-w-0">
     <div class="flex items-center justify-between mb-4">
-      <h1 class="text-xl font-bold tracking-tight" id="pgname">总览</h1>
+      <h1 class="text-xl font-bold tracking-tight" id="pgname"><span data-i18n="ui.overview">总览</span></h1>
       <div class="flex items-center gap-3">
-        <span class="text-[11px] text-slate-400">指标口径见 docs/dashboard-metrics.md（卡片 ⓘ 同源）</span>
+        <span class="text-[11px] text-slate-400"><span data-i18n="ui.metric_definitions_docs_dashboard_metrics_md_same_source_as_card_tips">指标口径见 docs/dashboard-metrics.md（卡片 ⓘ 同源）</span></span>
         <!-- P3 全局铃铛:所有页面可见(登录后),未读数轮询 -->
         <div class="relative auth-user hidden" id="bell-wrap">
-          <button id="bell-btn" class="relative w-8 h-8 rounded-lg ring-1 ring-slate-200 bg-white hover:bg-slate-50 flex items-center justify-center" title="通知">
+          <button id="bell-btn" class="relative w-8 h-8 rounded-lg ring-1 ring-slate-200 bg-white hover:bg-slate-50 flex items-center justify-center" title="通知" data-i18n-title="ui.notifications">
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" class="text-slate-600"><path d="M8 1.8a4.2 4.2 0 00-4.2 4.2c0 3.2-1.3 4.4-1.3 4.4h11s-1.3-1.2-1.3-4.4A4.2 4.2 0 008 1.8z"/><path d="M6.6 13.2a1.5 1.5 0 002.8 0"/></svg>
             <span id="bell-badge" class="hidden rounded-full bg-rose-500 text-white text-[10px] font-semibold text-center px-1"></span>
           </button>
           <div id="bell-dd" class="hidden bg-white rounded-2xl ring-1 ring-slate-200 p-3">
             <div class="flex items-center justify-between px-1">
-              <span class="text-[12.5px] font-semibold">通知</span>
+              <span class="text-[12.5px] font-semibold"><span data-i18n="ui.notifications">通知</span></span>
               <button id="bell-sysnotif" class="hidden text-[10.5px] text-slate-400 hover:bg-slate-50 px-1.5 py-0.5 rounded"></button>
             </div>
-            <div id="bell-list" class="mt-2 space-y-1"><span class="text-[11px] text-slate-400 px-1">加载中…</span></div>
+            <div id="bell-list" class="mt-2 space-y-1"><span class="text-[11px] text-slate-400 px-1"><span data-i18n="ui.loading">加载中…</span></span></div>
           </div>
         </div>
       </div>
@@ -166,63 +166,63 @@
     <div class="sec-page on" id="pg-overview">
       <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 px-5 py-4">
-          <div class="text-[11px] text-slate-400 font-medium">轨迹 <span class="hint" title="registry 中已入库的轨迹行数。">ⓘ</span></div>
+          <div class="text-[11px] text-slate-400 font-medium"><span data-i18n="ui.trajectories">轨迹</span> <span class="hint" title="registry 中已入库的轨迹行数。" data-i18n-title="ui.number_of_trajectory_rows_stored_in_the_registry">ⓘ</span></div>
           <div class="mt-1 text-[26px] font-semibold tracking-tight tabular-nums" data-m="overview.trajs">—</div>
         </div>
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 px-5 py-4">
-          <div class="text-[11px] text-slate-400 font-medium">原子 <span class="hint" title="所有轨迹拆出的 AtomTask 总数。">ⓘ</span></div>
+          <div class="text-[11px] text-slate-400 font-medium"><span data-i18n="ui.atoms">原子</span> <span class="hint" title="所有轨迹拆出的 AtomTask 总数。" data-i18n-title="ui.total_atomtasks_split_from_all_trajectories">ⓘ</span></div>
           <div class="mt-1 text-[26px] font-semibold tracking-tight tabular-nums" data-m="overview.atoms">—</div>
-          <div class="mt-0.5 text-[11px] text-slate-500">单轨迹均 <span class="tabular-nums" data-m="overview.avg_atoms_per_traj">—</span> <span class="hint" title="已成功拆分轨迹的原子数之和 ÷ 已成功拆分轨迹数。">ⓘ</span></div>
+          <div class="mt-0.5 text-[11px] text-slate-500"><span data-i18n="ui.average_per_trajectory">单轨迹均</span> <span class="tabular-nums" data-m="overview.avg_atoms_per_traj">—</span> <span class="hint" title="已成功拆分轨迹的原子数之和 ÷ 已成功拆分轨迹数。" data-i18n-title="ui.atoms_from_successfully_split_trajectories_successfully_split_trajectori">ⓘ</span></div>
         </div>
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 px-5 py-4">
-          <div class="text-[11px] text-slate-400 font-medium">平均 ux <span class="hint" title="所有轨迹的平均用户体验分（1–10）。">ⓘ</span></div>
+          <div class="text-[11px] text-slate-400 font-medium"><span data-i18n="ui.average_ux">平均 ux</span> <span class="hint" title="所有轨迹的平均用户体验分（1–10）。" data-i18n-title="ui.average_user_experience_score_across_all_trajectories_1_10">ⓘ</span></div>
           <div class="mt-1 flex items-baseline gap-1"><span class="text-[26px] font-semibold tracking-tight tabular-nums" data-m="overview.avg_ux">—</span><span class="text-xs text-slate-400">/10</span></div>
           <div class="mt-0.5 text-[11px] text-slate-500" data-m="overview.ux_n"></div>
         </div>
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 px-5 py-4">
-          <div class="text-[11px] text-slate-400 font-medium">处理成功率 <span class="hint" title="处理到 done 的轨迹占比。终态口径：done ÷ (done+error+filtered)，在途轨迹不进分母。">ⓘ</span></div>
+          <div class="text-[11px] text-slate-400 font-medium"><span data-i18n="ui.processing_success_rate">处理成功率</span> <span class="hint" title="处理到 done 的轨迹占比。终态口径：done ÷ (done+error+filtered)，在途轨迹不进分母。" data-i18n-title="ui.share_of_trajectories_reaching_done_terminal_state_definition_done_done_">ⓘ</span></div>
           <div class="mt-1 text-[26px] font-semibold tracking-tight tabular-nums" data-m="overview.success_rate">—</div>
           <div class="mt-0.5 text-[11px] text-slate-500" data-m="overview.filtered"></div>
         </div>
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 px-5 py-4">
-          <div class="text-[11px] text-slate-400 font-medium">重试率 <span class="hint" title="处理中发生过重试的轨迹占比。">ⓘ</span></div>
+          <div class="text-[11px] text-slate-400 font-medium"><span data-i18n="ui.retry_rate">重试率</span> <span class="hint" title="处理中发生过重试的轨迹占比。" data-i18n-title="ui.share_of_trajectories_retried_during_processing">ⓘ</span></div>
           <div class="mt-1 text-[26px] font-semibold tracking-tight tabular-nums" data-m="overview.retry_rate">—</div>
         </div>
       </div>
 
       <div class="grid grid-cols-12 gap-4 mt-4">
         <div class="col-span-12 xl:col-span-7 bg-white rounded-2xl ring-1 ring-slate-200 p-5">
-          <h2 class="font-semibold text-sm">蒸馏管线 <span class="font-normal text-[11px] text-slate-400 ml-2">轨迹状态实时计数</span></h2>
-          <div id="pipe-stages" class="mt-4 flex items-stretch gap-2 overflow-x-auto"><span class="text-slate-400">加载中…</span></div>
+          <h2 class="font-semibold text-sm"><span data-i18n="ui.distillation_pipeline">蒸馏管线</span> <span class="font-normal text-[11px] text-slate-400 ml-2"><span data-i18n="ui.live_trajectory_state_counts">轨迹状态实时计数</span></span></h2>
+          <div id="pipe-stages" class="mt-4 flex items-stretch gap-2 overflow-x-auto"><span class="text-slate-400"><span data-i18n="ui.loading">加载中…</span></span></div>
           <div id="pipe-cold"></div>
           <div id="pipe-cands" class="mt-4"></div>
         </div>
         <div class="col-span-12 xl:col-span-5 space-y-4">
           <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5">
-            <h2 class="font-semibold text-sm">关键比率</h2>
+            <h2 class="font-semibold text-sm"><span data-i18n="ui.key_rates">关键比率</span></h2>
             <div class="mt-3 grid grid-cols-3 gap-3 text-center">
-              <div><div class="text-lg font-semibold tabular-nums" data-m="rates.trigger">—</div><div class="text-[11px] text-slate-400 mt-0.5">推荐触发率 <span class="hint" title="被推荐给用户的 skill 中、随后被实际采用的占比。">ⓘ</span></div></div>
-              <div><div class="text-lg font-semibold tabular-nums" data-m="rates.adoption">—</div><div class="text-[11px] text-slate-400 mt-0.5">原子采纳率 <span class="hint" title="拆出的原子中被聚合进某个 skill 的比例。">ⓘ</span></div></div>
-              <div><div class="text-lg font-semibold tabular-nums" data-m="rates.promotion">—</div><div class="text-[11px] text-slate-400 mt-0.5">canary 晋升率 <span class="hint" title="灰度候选裁决中晋升为正式版的比例 = 晋升 ÷ 已裁决（晋升+拒绝+超时丢弃）。">ⓘ</span></div></div>
+              <div><div class="text-lg font-semibold tabular-nums" data-m="rates.trigger">—</div><div class="text-[11px] text-slate-400 mt-0.5"><span data-i18n="ui.recommendation_trigger_rate">推荐触发率</span> <span class="hint" title="被推荐给用户的 skill 中、随后被实际采用的占比。" data-i18n-title="ui.share_of_recommended_skills_that_users_subsequently_adopted">ⓘ</span></div></div>
+              <div><div class="text-lg font-semibold tabular-nums" data-m="rates.adoption">—</div><div class="text-[11px] text-slate-400 mt-0.5"><span data-i18n="ui.atom_adoption_rate">原子采纳率</span> <span class="hint" title="拆出的原子中被聚合进某个 skill 的比例。" data-i18n-title="ui.share_of_extracted_atoms_aggregated_into_a_skill">ⓘ</span></div></div>
+              <div><div class="text-lg font-semibold tabular-nums" data-m="rates.promotion">—</div><div class="text-[11px] text-slate-400 mt-0.5"><span data-i18n="ui.canary_promotion_rate">canary 晋升率</span> <span class="hint" title="灰度候选裁决中晋升为正式版的比例 = 晋升 ÷ 已裁决（晋升+拒绝+超时丢弃）。" data-i18n-title="ui.share_of_canary_decisions_promoted_to_production_promoted_decided_promot">ⓘ</span></div></div>
             </div>
           </div>
           <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5">
-            <h2 class="font-semibold text-sm">生态分布 <span class="font-normal text-[11px] text-slate-400 ml-1">按轨迹来源</span></h2>
-            <div id="eco-bars" class="mt-3 space-y-2.5"><span class="text-slate-400">加载中…</span></div>
+            <h2 class="font-semibold text-sm"><span data-i18n="ui.ecosystem_distribution">生态分布</span> <span class="font-normal text-[11px] text-slate-400 ml-1"><span data-i18n="ui.by_trajectory_source">按轨迹来源</span></span></h2>
+            <div id="eco-bars" class="mt-3 space-y-2.5"><span class="text-slate-400"><span data-i18n="ui.loading">加载中…</span></span></div>
           </div>
           <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5">
-            <h2 class="font-semibold text-sm">用户模型分布</h2>
-            <div id="model-bars" class="mt-3 space-y-2.5"><span class="text-slate-400">加载中…</span></div>
+            <h2 class="font-semibold text-sm"><span data-i18n="ui.user_model_distribution">用户模型分布</span></h2>
+            <div id="model-bars" class="mt-3 space-y-2.5"><span class="text-slate-400"><span data-i18n="ui.loading">加载中…</span></span></div>
           </div>
         </div>
       </div>
 
       <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
         <div class="flex items-baseline justify-between">
-          <h2 class="font-semibold text-sm">成本 &amp; 用量 <span class="font-normal text-[11px] text-slate-400 ml-2">流水线 LLM/embedding 调用</span></h2>
+          <h2 class="font-semibold text-sm"><span data-i18n="ui.cost_and_usage">成本 &amp; 用量</span> <span class="font-normal text-[11px] text-slate-400 ml-2"><span data-i18n="ui.pipeline_llm_embedding_calls">流水线 LLM/embedding 调用</span></span></h2>
           <div class="flex gap-5 text-[11px] text-slate-500">
-            <span>今日 <b class="text-slate-800 tabular-nums" data-m="cost.today">—</b></span>
-            <span>累计 <b class="text-slate-800 tabular-nums" data-m="cost.total">—</b></span>
+            <span><span data-i18n="ui.today">今日</span> <b class="text-slate-800 tabular-nums" data-m="cost.today">—</b></span>
+            <span><span data-i18n="ui.total">累计</span> <b class="text-slate-800 tabular-nums" data-m="cost.total">—</b></span>
             <span>tokens <b class="text-slate-800 tabular-nums" data-m="cost.tokens">—</b></span>
             <span>calls <b class="text-slate-800 tabular-nums" data-m="cost.calls">—</b></span>
           </div>
@@ -231,13 +231,13 @@
         <div class="grid grid-cols-12 gap-4 mt-3">
           <div class="col-span-12 md:col-span-7 overflow-x-auto">
             <table class="w-full text-[12.5px]">
-              <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">模型</th><th class="text-right font-medium">tokens</th><th class="text-right font-medium">calls</th><th class="text-right font-medium">成本</th></tr></thead>
-              <tbody id="cost-model-body" class="divide-y divide-slate-50"><tr><td colspan="4" class="py-2 text-slate-400">加载中…</td></tr></tbody></table>
+              <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2"><span data-i18n="ui.model">模型</span></th><th class="text-right font-medium">tokens</th><th class="text-right font-medium">calls</th><th class="text-right font-medium"><span data-i18n="ui.cost">成本</span></th></tr></thead>
+              <tbody id="cost-model-body" class="divide-y divide-slate-50"><tr><td colspan="4" class="py-2 text-slate-400"><span data-i18n="ui.loading">加载中…</span></td></tr></tbody></table>
           </div>
           <div class="col-span-12 md:col-span-5 overflow-x-auto">
             <table class="w-full text-[12.5px]">
-              <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">步骤</th><th class="text-right font-medium">tokens</th><th class="text-right font-medium">成本</th></tr></thead>
-              <tbody id="cost-step-body" class="divide-y divide-slate-50"><tr><td colspan="3" class="py-2 text-slate-400">加载中…</td></tr></tbody></table>
+              <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2"><span data-i18n="ui.step">步骤</span></th><th class="text-right font-medium">tokens</th><th class="text-right font-medium"><span data-i18n="ui.cost">成本</span></th></tr></thead>
+              <tbody id="cost-step-body" class="divide-y divide-slate-50"><tr><td colspan="3" class="py-2 text-slate-400"><span data-i18n="ui.loading">加载中…</span></td></tr></tbody></table>
           </div>
         </div>
       </div>
@@ -247,9 +247,9 @@
     <div class="sec-page" id="pg-skills">
       <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5">
         <div class="flex items-baseline justify-between gap-3 flex-wrap">
-          <h2 class="font-semibold text-sm">技能库</h2>
+          <h2 class="font-semibold text-sm"><span data-i18n="ui.skills">技能库</span></h2>
           <div class="flex items-center gap-2">
-            <input id="skills-q" autocomplete="off" placeholder="检索技能名 / 描述"
+            <input id="skills-q" autocomplete="off" placeholder="检索技能名 / 描述" data-i18n-placeholder="ui.search_skill_name_description"
               class="ring-1 ring-slate-200 rounded-lg px-2.5 py-1 text-[12px] outline-none focus:ring-teal-500 w-52 bg-white">
             <span class="text-[11px] text-slate-400" data-m="skills.summary">—</span>
           </div>
@@ -258,24 +258,24 @@
         <table class="w-full mt-2 text-[12.5px]">
           <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100">
             <th class="text-left font-medium py-2 w-8"></th>
-            <th class="text-left font-medium py-2">技能</th><th class="text-left font-medium">状态 <span class="hint" title="baby=cluster 刚建的草稿；main=已正式产出；staging=灰度候选并存。">ⓘ</span></th>
-            <th class="text-left font-medium">描述</th><th class="text-right font-medium">版本</th>
-            <th class="text-right font-medium">候选 <span class="hint" title=".candidates.yml 里待攒分的 atom 数。">ⓘ</span></th></tr></thead>
-          <tbody id="skills-body" class="divide-y divide-slate-50"><tr><td colspan="6" class="py-2 text-slate-400">加载中…</td></tr></tbody></table>
+            <th class="text-left font-medium py-2"><span data-i18n="ui.skill">技能</span></th><th class="text-left font-medium"><span data-i18n="ui.status">状态</span> <span class="hint" title="baby=cluster 刚建的草稿；main=已正式产出；staging=灰度候选并存。" data-i18n-title="ui.baby_newly_clustered_draft_main_released_staging_coexisting_canary_candi">ⓘ</span></th>
+            <th class="text-left font-medium"><span data-i18n="ui.description">描述</span></th><th class="text-right font-medium"><span data-i18n="ui.version">版本</span></th>
+            <th class="text-right font-medium"><span data-i18n="ui.candidates">候选</span> <span class="hint" title=".candidates.yml 里待攒分的 atom 数。" data-i18n-title="ui.atoms_still_accumulating_scores_in_candidates_yml">ⓘ</span></th></tr></thead>
+          <tbody id="skills-body" class="divide-y divide-slate-50"><tr><td colspan="6" class="py-2 text-slate-400"><span data-i18n="ui.loading">加载中…</span></td></tr></tbody></table>
           <div id="skills-pager" class="flex items-center justify-end gap-2 mt-2 text-[11px] text-slate-500"></div>
         </div>
       </div>
 
       <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4" id="trigger-rate-card">
         <button type="button" id="trigger-rate-toggle" class="w-full flex items-center justify-between gap-2 text-left" aria-expanded="false">
-          <h2 class="font-semibold text-sm">单 skill 触发率 <span class="font-normal text-[11px] text-slate-400 ml-2">去重 (client, skill) 推荐对 → 之后被采用</span></h2>
-          <span id="trigger-rate-chevron" class="text-[11px] text-slate-400 shrink-0">▶ 展开</span>
+          <h2 class="font-semibold text-sm"><span data-i18n="ui.per_skill_trigger_rate">单 skill 触发率</span> <span class="font-normal text-[11px] text-slate-400 ml-2"><span data-i18n="ui.unique_client_skill_recommendations_later_adopted">去重 (client, skill) 推荐对 → 之后被采用</span></span></h2>
+          <span id="trigger-rate-chevron" class="text-[11px] text-slate-400 shrink-0"><span data-i18n="ui.expand_2">▶ 展开</span></span>
         </button>
         <div id="trigger-rate-body" class="hidden overflow-x-auto mt-2">
         <table class="w-full text-[12.5px]">
           <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100">
-            <th class="text-left font-medium py-2">技能</th><th class="text-right font-medium">曝光对</th><th class="text-right font-medium">采用对</th><th class="text-right font-medium">触发率</th></tr></thead>
-          <tbody id="trigger-body" class="divide-y divide-slate-50"><tr><td colspan="4" class="py-2 text-slate-400">加载中…</td></tr></tbody></table>
+            <th class="text-left font-medium py-2"><span data-i18n="ui.skill">技能</span></th><th class="text-right font-medium"><span data-i18n="ui.recommended_pairs">曝光对</span></th><th class="text-right font-medium"><span data-i18n="ui.adopted_pairs">采用对</span></th><th class="text-right font-medium"><span data-i18n="ui.trigger_rate">触发率</span></th></tr></thead>
+          <tbody id="trigger-body" class="divide-y divide-slate-50"><tr><td colspan="4" class="py-2 text-slate-400"><span data-i18n="ui.loading">加载中…</span></td></tr></tbody></table>
         </div>
       </div>
 
@@ -286,28 +286,28 @@
     <div class="sec-page" id="pg-pipeline">
       <div id="pm-bubbles" class="pm-bubbles"></div>
       <div id="pm-stages" class="pm-stages"></div>
-      <div id="pm-drawer" class="pm-drawer empty ring-1 ring-slate-200">点选进行中的任务看实时日志</div>
+      <div id="pm-drawer" class="pm-drawer empty ring-1 ring-slate-200"><span data-i18n="ui.select_a_running_task_to_view_its_live_log">点选进行中的任务看实时日志</span></div>
     </div>
 
     <!-- ══ 轨迹 & 原子 ══ -->
     <div class="sec-page" id="pg-traj">
       <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5">
-        <h2 class="font-semibold text-sm">打开轨迹</h2>
+        <h2 class="font-semibold text-sm"><span data-i18n="ui.open_trajectory">打开轨迹</span></h2>
         <div class="mt-3 flex gap-2.5">
-          <input id="traj-input" class="flex-1 bg-white ring-1 ring-slate-200 rounded-xl px-3.5 py-2 outline-none focus:ring-teal-500 font-mono text-xs" placeholder="输入 traj_id（文件名去 .md 后缀）——暂无全轨迹列表端点，也可从技能血缘的贡献原子跳转进入">
-          <button id="traj-open" class="px-5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-medium">打开</button>
+          <input id="traj-input" class="flex-1 bg-white ring-1 ring-slate-200 rounded-xl px-3.5 py-2 outline-none focus:ring-teal-500 font-mono text-xs" placeholder="输入 traj_id（文件名去 .md 后缀）——暂无全轨迹列表端点，也可从技能血缘的贡献原子跳转进入" data-i18n-placeholder="ui.enter_traj_id_filename_without_md_there_is_no_full_trajectory_list_endpo">
+          <button id="traj-open" class="px-5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-medium"><span data-i18n="ui.open">打开</span></button>
         </div>
       </div>
 
       <div id="traj-detail" class="mt-4"></div>
 
       <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
-        <h2 class="font-semibold text-sm">生态目录 <span class="font-normal text-[11px] text-slate-400 ml-2">已注册的轨迹来源目录</span></h2>
+        <h2 class="font-semibold text-sm"><span data-i18n="ui.ecosystem_directories">生态目录</span> <span class="font-normal text-[11px] text-slate-400 ml-2"><span data-i18n="ui.registered_trajectory_source_directories">已注册的轨迹来源目录</span></span></h2>
         <div class="overflow-x-auto">
         <table class="w-full mt-2 text-[12.5px]">
           <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100">
-            <th class="text-left font-medium py-2">生态</th><th class="text-right font-medium">轨迹</th><th class="text-right font-medium">已索引</th><th class="text-left font-medium pl-6">路径</th></tr></thead>
-          <tbody id="dirs-body" class="divide-y divide-slate-50"><tr><td colspan="4" class="py-2 text-slate-400">加载中…</td></tr></tbody></table>
+            <th class="text-left font-medium py-2"><span data-i18n="ui.ecosystem">生态</span></th><th class="text-right font-medium"><span data-i18n="ui.trajectories">轨迹</span></th><th class="text-right font-medium"><span data-i18n="ui.indexed">已索引</span></th><th class="text-left font-medium pl-6"><span data-i18n="ui.path">路径</span></th></tr></thead>
+          <tbody id="dirs-body" class="divide-y divide-slate-50"><tr><td colspan="4" class="py-2 text-slate-400"><span data-i18n="ui.loading">加载中…</span></td></tr></tbody></table>
         </div>
       </div>
     </div>
@@ -316,17 +316,17 @@
     <div class="sec-page" id="pg-users">
       <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5">
         <div class="flex items-baseline justify-between">
-          <h2 class="font-semibold text-sm">用户连接状态</h2>
+          <h2 class="font-semibold text-sm"><span data-i18n="ui.user_connection_status">用户连接状态</span></h2>
           <span class="flex items-center gap-1.5 text-[11px] text-slate-500"><span class="w-2 h-2 rounded-full bg-emerald-500"></span><span data-m="users.online">—</span></span>
         </div>
         <div id="users-reason"></div>
         <div class="overflow-x-auto">
         <table class="w-full mt-2 text-[12.5px]">
           <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100">
-            <th class="text-left font-medium py-2">用户</th><th class="text-left font-medium">状态</th>
-            <th class="text-left font-medium">上次活跃</th><th class="text-left font-medium">版本 <span class="hint" title="client 上报的 xskill 版本;低于 server 当前版本标‘落后’;空=旧 client 未上报。">ⓘ</span></th><th class="text-right font-medium">轨迹 · 原子</th>
-            <th class="text-left font-medium pl-6">harness</th><th class="text-left font-medium">主力模型</th></tr></thead>
-          <tbody id="ustatus-body" class="divide-y divide-slate-50"><tr><td colspan="7" class="py-2 text-slate-400">加载中…</td></tr></tbody></table>
+            <th class="text-left font-medium py-2"><span data-i18n="ui.user">用户</span></th><th class="text-left font-medium"><span data-i18n="ui.status">状态</span></th>
+            <th class="text-left font-medium"><span data-i18n="ui.last_active">上次活跃</span></th><th class="text-left font-medium"><span data-i18n="ui.version">版本</span> <span class="hint" title="client 上报的 xskill 版本;低于 server 当前版本标‘落后’;空=旧 client 未上报。" data-i18n-title="ui.xskill_version_reported_by_the_client_versions_below_the_server_are_mark">ⓘ</span></th><th class="text-right font-medium"><span data-i18n="ui.trajectories_atoms">轨迹 · 原子</span></th>
+            <th class="text-left font-medium pl-6">harness</th><th class="text-left font-medium"><span data-i18n="ui.primary_model">主力模型</span></th></tr></thead>
+          <tbody id="ustatus-body" class="divide-y divide-slate-50"><tr><td colspan="7" class="py-2 text-slate-400"><span data-i18n="ui.loading">加载中…</span></td></tr></tbody></table>
         </div>
       </div>
 
@@ -335,10 +335,10 @@
 
       <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
         <div class="flex items-baseline justify-between">
-          <h2 class="font-semibold text-sm">标签云 / 关键词</h2>
-          <span class="text-[11px] text-slate-400">来自原子 tags 聚合，字号 ∝ 出现次数 · 悬浮/点击用户行高亮其标签</span>
+          <h2 class="font-semibold text-sm"><span data-i18n="ui.tag_cloud_keywords">标签云 / 关键词</span></h2>
+          <span class="text-[11px] text-slate-400"><span data-i18n="ui.aggregated_from_atom_tags_size_frequency_hover_click_a_user_row_to_highl">来自原子 tags 聚合，字号 ∝ 出现次数 · 悬浮/点击用户行高亮其标签</span></span>
         </div>
-        <div class="mt-3 leading-[2.4]" id="tagcloud"><span class="text-slate-400">加载中…</span></div>
+        <div class="mt-3 leading-[2.4]" id="tagcloud"><span class="text-slate-400"><span data-i18n="ui.loading">加载中…</span></span></div>
       </div>
     </div>
 
@@ -346,63 +346,63 @@
     <div class="sec-page" id="pg-canary">
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 px-5 py-4">
-          <div class="text-[11px] text-slate-400 font-medium">canary 晋升率 <span class="hint" title="灰度候选裁决中晋升为正式版的比例 = 晋升 ÷ 已裁决（晋升+拒绝+超时丢弃）。">ⓘ</span></div>
+          <div class="text-[11px] text-slate-400 font-medium"><span data-i18n="ui.canary_promotion_rate">canary 晋升率</span> <span class="hint" title="灰度候选裁决中晋升为正式版的比例 = 晋升 ÷ 已裁决（晋升+拒绝+超时丢弃）。" data-i18n-title="ui.share_of_canary_decisions_promoted_to_production_promoted_decided_promot">ⓘ</span></div>
           <div class="mt-1 text-[26px] font-semibold tracking-tight tabular-nums" data-m="rates.promotion2">—</div>
           <div class="mt-0.5 text-[11px] text-slate-500" data-m="promotion.detail">—</div>
         </div>
       </div>
       <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
-        <h2 class="font-semibold text-sm">灰度分桶分布 <span class="font-normal text-[11px] text-slate-400 ml-2">使用打分记录按 side 聚合，与灰度裁决同源</span></h2>
+        <h2 class="font-semibold text-sm"><span data-i18n="ui.canary_bucket_distribution">灰度分桶分布</span> <span class="font-normal text-[11px] text-slate-400 ml-2"><span data-i18n="ui.usage_ratings_grouped_by_side_using_the_same_source_as_canary_decisions">使用打分记录按 side 聚合，与灰度裁决同源</span></span></h2>
         <div class="overflow-x-auto">
         <table class="w-full mt-2 text-[12.5px]">
           <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100">
-            <th class="text-left font-medium py-2">分桶</th><th class="text-right font-medium">使用</th><th class="text-right font-medium">平均 ux</th></tr></thead>
-          <tbody id="canary-body" class="divide-y divide-slate-50"><tr><td colspan="3" class="py-2 text-slate-400">加载中…</td></tr></tbody></table>
+            <th class="text-left font-medium py-2"><span data-i18n="ui.bucket">分桶</span></th><th class="text-right font-medium"><span data-i18n="ui.usage">使用</span></th><th class="text-right font-medium"><span data-i18n="ui.average_ux">平均 ux</span></th></tr></thead>
+          <tbody id="canary-body" class="divide-y divide-slate-50"><tr><td colspan="3" class="py-2 text-slate-400"><span data-i18n="ui.loading">加载中…</span></td></tr></tbody></table>
         </div>
       </div>
     </div>
 
     <!-- ══ 我的（P2 + #174） ══ -->
     <div class="sec-page" id="pg-my">
-      <div id="my-guard" class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400">请先登录（左下角）。</div>
+      <div id="my-guard" class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400"><span data-i18n="ui.please_sign_in_first_bottom_left">请先登录（左下角）。</span></div>
       <div id="my-body" class="hidden">
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5">
           <div class="flex items-center justify-between gap-3 flex-wrap">
             <div class="flex items-center gap-3 flex-wrap min-w-0">
-              <div class="push-ctl" id="my-push-step" title="client 截取服务器推送队列前 N 个并安装到 harness">
-                <span class="p">推给我</span>
+              <div class="push-ctl" id="my-push-step" title="client 截取服务器推送队列前 N 个并安装到 harness" data-i18n-title="ui.the_client_takes_the_first_n_items_from_the_server_push_queue_and_instal">
+                <span class="p"><span data-i18n="ui.pushed_to_me">推给我</span></span>
                 <div class="push-step">
-                  <input type="number" class="n" id="my-push-val" value="0" min="0" max="100" step="1" inputmode="numeric" title="点击直接编辑" aria-label="安装个数">
+                  <input type="number" class="n" id="my-push-val" value="0" min="0" max="100" step="1" inputmode="numeric" title="点击直接编辑" data-i18n-title="ui.click_to_edit" aria-label="安装个数" data-i18n-aria-label="ui.number_to_install">
                   <div class="push-step-btns">
-                    <button type="button" id="my-push-up" title="增加" aria-label="增加推送个数">
+                    <button type="button" id="my-push-up" title="增加" data-i18n-title="ui.increase" aria-label="增加推送个数" data-i18n-aria-label="ui.increase_pushed_count">
                       <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor"><path d="M5 0l5 6H0z"/></svg>
                     </button>
-                    <button type="button" id="my-push-down" title="减少" aria-label="减少推送个数">
+                    <button type="button" id="my-push-down" title="减少" data-i18n-title="ui.decrease" aria-label="减少推送个数" data-i18n-aria-label="ui.decrease_pushed_count">
                       <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor"><path d="M5 6L0 0h10z"/></svg>
                     </button>
                   </div>
                 </div>
-                <span class="u" id="my-push-unit">个 SKILL</span>
+                <span class="u" id="my-push-unit"><span data-i18n="ui.skills_2">个 SKILL</span></span>
               </div>
               <input type="hidden" id="my-push-count" value="0">
               <span id="my-pref-msg" class="text-[11px] text-slate-400"></span>
               <span id="my-push-max-label" class="hidden"></span>
             </div>
             <div class="flex items-center gap-2">
-              <input id="my-slots-q" autocomplete="off" placeholder="检索技能"
+              <input id="my-slots-q" autocomplete="off" placeholder="检索技能" data-i18n-placeholder="ui.search_skills"
                 class="ring-1 ring-slate-200 rounded-lg px-2.5 py-1 text-[12px] outline-none focus:ring-teal-500 w-44 bg-white">
               <span class="text-[11px] text-slate-400" id="my-slot-sum">—</span>
             </div>
           </div>
-          <div id="my-slots" class="mt-3 space-y-2"><span class="text-slate-400">加载中…</span></div>
-          <div class="mt-4"><h3 class="text-[12.5px] font-medium text-slate-500">已屏蔽</h3>
+          <div id="my-slots" class="mt-3 space-y-2"><span class="text-slate-400"><span data-i18n="ui.loading">加载中…</span></span></div>
+          <div class="mt-4"><h3 class="text-[12.5px] font-medium text-slate-500"><span data-i18n="ui.blocked">已屏蔽</span></h3>
             <div id="my-blocked" class="mt-2 flex flex-wrap gap-2"></div></div>
         </div>
 
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-4 mt-4" id="contrib-card">
           <div class="flex items-baseline justify-between">
-            <h2 class="font-semibold text-sm">我的贡献去向</h2>
-            <button type="button" id="contrib-toggle" class="text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50 text-slate-500">收起</button>
+            <h2 class="font-semibold text-sm"><span data-i18n="ui.where_my_contributions_went">我的贡献去向</span></h2>
+            <button type="button" id="contrib-toggle" class="text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50 text-slate-500"><span data-i18n="ui.collapse">收起</span></button>
           </div>
           <div id="my-steps" class="mt-2 flex items-center gap-2 overflow-x-auto"></div>
           <div id="contrib-detail" class="mt-2.5">
@@ -410,16 +410,16 @@
               <div class="grid grid-cols-12 gap-3">
                 <div class="col-span-12 md:col-span-4">
                   <div class="flex items-baseline justify-between px-0.5">
-                    <h3 class="font-semibold text-sm text-slate-700">轨迹</h3>
+                    <h3 class="font-semibold text-sm text-slate-700"><span data-i18n="ui.trajectories">轨迹</span></h3>
                     <span class="text-[11px] text-slate-400" id="traj-page-sum"></span>
                   </div>
                   <div class="mt-1 flex gap-2 items-start">
                     <div class="flex flex-col items-center gap-0.5 shrink-0 pt-0.5">
-                      <button type="button" id="traj-up" class="feed-tri" title="上一页" aria-label="上一页">
+                      <button type="button" id="traj-up" class="feed-tri" title="上一页" data-i18n-title="ui.previous_page" aria-label="上一页" data-i18n-aria-label="ui.previous_page">
                         <svg width="12" height="8" viewBox="0 0 12 8" fill="currentColor"><path d="M6 0L12 8H0z"/></svg>
                       </button>
                       <span class="text-[10px] text-slate-400 tabular-nums leading-none py-1" id="traj-page-label"></span>
-                      <button type="button" id="traj-down" class="feed-tri" title="下一页" aria-label="下一页">
+                      <button type="button" id="traj-down" class="feed-tri" title="下一页" data-i18n-title="ui.next_page" aria-label="下一页" data-i18n-aria-label="ui.next_page">
                         <svg width="12" height="8" viewBox="0 0 12 8" fill="currentColor"><path d="M6 8L0 0h12z"/></svg>
                       </button>
                     </div>
@@ -427,7 +427,7 @@
                   </div>
                 </div>
                 <div class="col-span-12 md:col-span-8">
-                  <h3 class="font-semibold text-sm text-slate-700 px-0.5">关系图</h3>
+                  <h3 class="font-semibold text-sm text-slate-700 px-0.5"><span data-i18n="ui.relationship_graph">关系图</span></h3>
                   <div class="mt-1 overflow-x-auto">
                     <div class="flex items-start gap-1.5 min-w-max">
                       <div id="contrib-graph"></div>
@@ -439,17 +439,17 @@
 
               <div class="mt-4 pt-3 border-t border-slate-100">
                 <div class="flex items-baseline justify-between px-0.5">
-                  <h3 class="font-semibold text-sm text-slate-700">我上传的 skill</h3>
+                  <h3 class="font-semibold text-sm text-slate-700"><span data-i18n="ui.skills_i_uploaded">我上传的 skill</span></h3>
                   <span class="text-[11px] text-slate-400" id="my-uploads-sum">—</span>
                 </div>
-                <p class="text-[10.5px] text-slate-400 px-0.5 mt-0.5">点 skill 进详情；右侧可展开用户评分原子</p>
+                <p class="text-[10.5px] text-slate-400 px-0.5 mt-0.5"><span data-i18n="ui.open_a_skill_for_details_expand_user_rating_atoms_on_the_right">点 skill 进详情；右侧可展开用户评分原子</span></p>
                 <div class="grid grid-cols-12 gap-3 mt-2">
                   <div class="col-span-12 md:col-span-4">
                     <div id="my-uploads-list" class="space-y-1.5 max-h-64 overflow-y-auto"></div>
                   </div>
                   <div class="col-span-12 md:col-span-8">
                     <div id="my-uploads-usage" class="rounded-xl ring-1 ring-slate-100 bg-slate-50 px-3 py-3 min-h-[10rem]">
-                      <div class="text-[11px] text-slate-400">点左侧旁的「使用」查看谁在用、评分原子</div>
+                      <div class="text-[11px] text-slate-400"><span data-i18n="ui.select_usage_on_the_left_to_see_users_and_rating_atoms">点左侧旁的「使用」查看谁在用、评分原子</span></div>
                     </div>
                   </div>
                 </div>
@@ -457,10 +457,10 @@
 
               <div class="mt-4 pt-3 border-t border-slate-100">
                 <div class="flex items-baseline justify-between px-0.5">
-                  <h3 class="font-semibold text-sm text-slate-700">我贡献的 skill commit</h3>
+                  <h3 class="font-semibold text-sm text-slate-700"><span data-i18n="ui.skill_commits_i_contributed">我贡献的 skill commit</span></h3>
                   <span class="text-[11px] text-slate-400" id="my-commits-sum">—</span>
                 </div>
-                <p class="text-[10.5px] text-slate-400 px-0.5 mt-0.5">本地改 skill → 线上提交；状态：被吸收 / 灰测中 / 已上线</p>
+                <p class="text-[10.5px] text-slate-400 px-0.5 mt-0.5"><span data-i18n="ui.local_skill_edit_online_commit_states_absorbed_in_canary_released">本地改 skill → 线上提交；状态：被吸收 / 灰测中 / 已上线</span></p>
                 <div id="my-commits-list" class="mt-2 space-y-1.5 max-h-72 overflow-y-auto"></div>
               </div>
             </div>
@@ -469,40 +469,40 @@
 
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
           <div class="flex items-baseline justify-between">
-            <h2 class="font-semibold text-sm">世界消息</h2>
+            <h2 class="font-semibold text-sm"><span data-i18n="ui.team_activity">世界消息</span></h2>
             <span class="text-[11px] text-slate-400" id="feed-sum"></span>
           </div>
           <div class="mt-3 flex gap-2.5 items-start">
             <div class="flex flex-col items-center gap-0.5 shrink-0 pt-0.5">
-              <button type="button" id="feed-up" class="feed-tri" title="上一页" aria-label="上一页">
+              <button type="button" id="feed-up" class="feed-tri" title="上一页" data-i18n-title="ui.previous_page" aria-label="上一页" data-i18n-aria-label="ui.previous_page">
                 <svg width="12" height="8" viewBox="0 0 12 8" fill="currentColor"><path d="M6 0L12 8H0z"/></svg>
               </button>
               <span class="text-[10px] text-slate-400 tabular-nums leading-none py-1" id="feed-page-label"></span>
-              <button type="button" id="feed-down" class="feed-tri" title="下一页" aria-label="下一页">
+              <button type="button" id="feed-down" class="feed-tri" title="下一页" data-i18n-title="ui.next_page" aria-label="下一页" data-i18n-aria-label="ui.next_page">
                 <svg width="12" height="8" viewBox="0 0 12 8" fill="currentColor"><path d="M6 8L0 0h12z"/></svg>
               </button>
             </div>
-            <div id="world-feed" class="min-w-0 flex-1"><span class="text-slate-400">加载中…</span></div>
+            <div id="world-feed" class="min-w-0 flex-1"><span class="text-slate-400"><span data-i18n="ui.loading">加载中…</span></span></div>
           </div>
         </div>
 
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4" id="rt-card">
           <div class="flex items-baseline justify-between">
-            <h2 class="font-semibold text-sm">历史推荐</h2>
+            <h2 class="font-semibold text-sm"><span data-i18n="ui.recommendation_history">历史推荐</span></h2>
             <div class="flex items-center gap-2">
               <span class="text-[11px] text-slate-400" id="rt-sum"></span>
-              <button type="button" id="rt-toggle" class="text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50 text-slate-500">展开</button>
+              <button type="button" id="rt-toggle" class="text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50 text-slate-500"><span data-i18n="ui.expand">展开</span></button>
             </div>
           </div>
           <div id="rt-body" class="hidden mt-2">
             <div class="overflow-x-auto"><table class="w-full text-[12.5px]">
-              <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">技能</th><th class="text-right font-medium">推荐次数</th><th class="text-right font-medium">实际触发</th><th class="text-right font-medium">命中率</th><th class="text-left font-medium pl-6">结论</th></tr></thead>
+              <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2"><span data-i18n="ui.skill">技能</span></th><th class="text-right font-medium"><span data-i18n="ui.recommendations">推荐次数</span></th><th class="text-right font-medium"><span data-i18n="ui.actual_triggers">实际触发</span></th><th class="text-right font-medium"><span data-i18n="ui.hit_rate">命中率</span></th><th class="text-left font-medium pl-6"><span data-i18n="ui.result_2">结论</span></th></tr></thead>
               <tbody id="my-rt-body" class="divide-y divide-slate-50"></tbody></table></div>
             <div class="mt-3 flex items-center justify-between">
               <span class="text-[11px] text-slate-400" id="rt-page-label"></span>
               <div class="flex gap-1.5">
-                <button type="button" id="rt-prev" class="text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50">上一页</button>
-                <button type="button" id="rt-next" class="text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50">下一页</button>
+                <button type="button" id="rt-prev" class="text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50"><span data-i18n="ui.previous_page">上一页</span></button>
+                <button type="button" id="rt-next" class="text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50"><span data-i18n="ui.next_page">下一页</span></button>
               </div>
             </div>
           </div>
@@ -512,46 +512,46 @@
 
     <!-- ══ 管理（admin） ══ -->
     <div class="sec-page" id="pg-admin">
-      <div id="admin-guard" class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400">仅 admin。请先以 admin 登录（左下角）。</div>
+      <div id="admin-guard" class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400"><span data-i18n="ui.admin_only_please_sign_in_as_admin_bottom_left">仅 admin。请先以 admin 登录（左下角）。</span></div>
       <div id="admin-body" class="hidden">
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5">
           <div class="flex items-baseline justify-between">
-            <h2 class="font-semibold text-sm">用户 × 推送/配置</h2>
-            <div class="flex items-center gap-2 text-[11px]"><span class="text-slate-400">全局 pin:</span><span id="admin-gpins" class="flex flex-wrap gap-1"></span>
-              <input id="gpin-input" class="ring-1 ring-slate-200 rounded-lg px-2 py-1 outline-none focus:ring-teal-500 font-mono text-[11px] w-36" placeholder="skill 名">
-              <button id="gpin-add" class="px-2 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white">+ 全局 pin</button></div>
+            <h2 class="font-semibold text-sm"><span data-i18n="ui.users_push_configuration">用户 × 推送/配置</span></h2>
+            <div class="flex items-center gap-2 text-[11px]"><span class="text-slate-400"><span data-i18n="ui.global_pins">全局 pin:</span></span><span id="admin-gpins" class="flex flex-wrap gap-1"></span>
+              <input id="gpin-input" class="ring-1 ring-slate-200 rounded-lg px-2 py-1 outline-none focus:ring-teal-500 font-mono text-[11px] w-36" placeholder="skill 名" data-i18n-placeholder="ui.skill_name">
+              <button id="gpin-add" class="px-2 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white"><span data-i18n="ui.global_pin">+ 全局 pin</span></button></div>
           </div>
           <div class="overflow-x-auto"><table class="w-full mt-2 text-[12.5px]">
-            <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">用户</th><th class="text-left font-medium">版本</th><th class="text-right font-medium">当前推送</th><th class="text-right font-medium">灰度</th><th class="text-right font-medium">触发率</th><th class="text-right font-medium">pinned·blocked</th><th class="text-left font-medium pl-6">轨迹处理</th><th class="text-left font-medium pl-6">停推建议</th><th class="text-right font-medium">操作</th></tr></thead>
-            <tbody id="admin-users-body" class="divide-y divide-slate-50"><tr><td colspan="9" class="py-2 text-slate-400">加载中…</td></tr></tbody></table></div>
+            <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2"><span data-i18n="ui.user">用户</span></th><th class="text-left font-medium"><span data-i18n="ui.version">版本</span></th><th class="text-right font-medium"><span data-i18n="ui.current_push">当前推送</span></th><th class="text-right font-medium"><span data-i18n="ui.canary_2">灰度</span></th><th class="text-right font-medium"><span data-i18n="ui.trigger_rate">触发率</span></th><th class="text-right font-medium">pinned·blocked</th><th class="text-left font-medium pl-6"><span data-i18n="ui.trajectory_processing">轨迹处理</span></th><th class="text-left font-medium pl-6"><span data-i18n="ui.stop_push_suggestion">停推建议</span></th><th class="text-right font-medium"><span data-i18n="ui.actions">操作</span></th></tr></thead>
+            <tbody id="admin-users-body" class="divide-y divide-slate-50"><tr><td colspan="9" class="py-2 text-slate-400"><span data-i18n="ui.loading">加载中…</span></td></tr></tbody></table></div>
           <div id="admin-drawer" class="hidden mt-3 rounded-xl ring-1 ring-slate-200 bg-slate-50 p-4"></div>
         </div>
         <!-- P3 画像聚类 graph -->
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
-          <h2 class="font-semibold text-sm">画像聚类 <span class="font-normal text-[11px] text-slate-400 ml-2">节点=用户(大小∝原子) · 边=兴趣相似度&gt;0.6(粗细∝相似度) · 无边灰点=冷启动 · 悬停边看共同标签/skill</span></h2>
-          <div id="cluster-graph" class="mt-3"><span class="text-slate-400">加载中…</span></div>
+          <h2 class="font-semibold text-sm"><span data-i18n="ui.profile_clusters">画像聚类</span> <span class="font-normal text-[11px] text-slate-400 ml-2" data-i18n="ui.profile_cluster_help">节点=用户(大小∝原子) · 边=兴趣相似度&gt;0.6(粗细∝相似度) · 无边灰点=冷启动 · 悬停边看共同标签/skill</span></h2>
+          <div id="cluster-graph" class="mt-3"><span class="text-slate-400"><span data-i18n="ui.loading">加载中…</span></span></div>
         </div>
         <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 mt-4">
-          <h2 class="font-semibold text-sm">技能管理 <span class="font-normal text-[11px] text-slate-400 ml-2">两段式:先下线观察,再删除;删除需输入 skill 名确认</span></h2>
+          <h2 class="font-semibold text-sm"><span data-i18n="ui.skill_management">技能管理</span> <span class="font-normal text-[11px] text-slate-400 ml-2"><span data-i18n="ui.two_steps_retire_and_observe_then_delete_deletion_requires_typing_the_sk">两段式:先下线观察,再删除;删除需输入 skill 名确认</span></span></h2>
           <div class="overflow-x-auto"><table class="w-full mt-2 text-[12.5px]">
-            <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">技能</th><th class="text-left font-medium">状态</th><th class="text-right font-medium">近 30 日使用</th><th class="text-right font-medium">操作</th></tr></thead>
-            <tbody id="admin-skills-body" class="divide-y divide-slate-50"><tr><td colspan="4" class="py-2 text-slate-400">加载中…</td></tr></tbody></table></div>
+            <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2"><span data-i18n="ui.skill">技能</span></th><th class="text-left font-medium"><span data-i18n="ui.status">状态</span></th><th class="text-right font-medium"><span data-i18n="ui.30_day_usage">近 30 日使用</span></th><th class="text-right font-medium"><span data-i18n="ui.actions">操作</span></th></tr></thead>
+            <tbody id="admin-skills-body" class="divide-y divide-slate-50"><tr><td colspan="4" class="py-2 text-slate-400"><span data-i18n="ui.loading">加载中…</span></td></tr></tbody></table></div>
         </div>
       </div>
     </div>
 
     <!-- ══ 设置（admin） ══ -->
     <div class="sec-page" id="pg-settings">
-      <div id="settings-guard" class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400">仅 admin。请先以 admin 登录（左下角）。</div>
+      <div id="settings-guard" class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400"><span data-i18n="ui.admin_only_please_sign_in_as_admin_bottom_left">仅 admin。请先以 admin 登录（左下角）。</span></div>
       <div id="settings-body" class="hidden bg-white rounded-2xl ring-1 ring-slate-200 p-5">
         <div class="flex items-baseline justify-between">
           <h2 class="font-semibold text-sm">config.yaml <span class="font-normal text-[11px] text-slate-400 ml-2" id="cfg-path"></span></h2>
-          <span class="text-[11px] text-slate-400">dashboard/canary/recommend/skillhub 段热生效;<b>llm/watch_dirs 改动需重启 serve</b></span>
+          <span class="text-[11px] text-slate-400"><span data-i18n="ui.dashboard_canary_recommend_skillhub_sections_reload_live">dashboard/canary/recommend/skillhub 段热生效;</span><b><span data-i18n="ui.llm_watch_dirs_changes_require_restarting_serve">llm/watch_dirs 改动需重启 serve</span></b></span>
         </div>
         <textarea id="cfg-editor" class="w-full mt-3 ring-1 ring-slate-200 rounded-xl p-3 outline-none focus:ring-teal-500 font-mono text-xs" rows="22" spellcheck="false"></textarea>
         <div class="mt-3 flex items-center gap-2.5">
-          <button id="cfg-validate" class="px-4 py-1.5 rounded-xl ring-1 ring-slate-200 text-slate-700 hover:bg-slate-50 font-medium">仅校验</button>
-          <button id="cfg-reload" class="px-4 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-medium">校验并热加载</button>
+          <button id="cfg-validate" class="px-4 py-1.5 rounded-xl ring-1 ring-slate-200 text-slate-700 hover:bg-slate-50 font-medium"><span data-i18n="ui.validate_only">仅校验</span></button>
+          <button id="cfg-reload" class="px-4 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-medium"><span data-i18n="ui.validate_and_hot_reload">校验并热加载</span></button>
           <span id="cfg-result" class="text-[12.5px]"></span>
         </div>
       </div>
@@ -561,42 +561,42 @@
 </div>
 
 <div id="pm-chip-pop" class="pm-chip-pop" hidden role="dialog" aria-labelledby="pm-chip-pop-title">
-  <div class="pm-chip-pop-title" id="pm-chip-pop-title">席位</div>
+  <div class="pm-chip-pop-title" id="pm-chip-pop-title"><span data-i18n="ui.slots">席位</span></div>
   <div class="pm-chip-pop-hint" id="pm-chip-pop-hint"></div>
   <div class="push-step">
-    <input id="pm-chip-pop-n" class="n" type="number" min="1" step="1" inputmode="numeric" aria-label="数值">
+    <input id="pm-chip-pop-n" class="n" type="number" min="1" step="1" inputmode="numeric" aria-label="数值" data-i18n-aria-label="ui.value">
     <div class="push-step-btns">
-      <button type="button" data-pm-step="1" title="增加" aria-label="增加">
+      <button type="button" data-pm-step="1" title="增加" data-i18n-title="ui.increase" aria-label="增加" data-i18n-aria-label="ui.increase">
         <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor"><path d="M5 0l5 6H0z"/></svg>
       </button>
-      <button type="button" data-pm-step="-1" title="减少" aria-label="减少">
+      <button type="button" data-pm-step="-1" title="减少" data-i18n-title="ui.decrease" aria-label="减少" data-i18n-aria-label="ui.decrease">
         <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor"><path d="M5 6L0 0h10z"/></svg>
       </button>
     </div>
   </div>
   <div class="pm-chip-pop-err" id="pm-chip-pop-err"></div>
   <div class="pm-chip-pop-actions">
-    <button type="button" class="pm-btn" data-pm-chip-cancel>取消</button>
-    <button type="button" class="pm-btn primary" data-pm-chip-save>保存</button>
+    <button type="button" class="pm-btn" data-pm-chip-cancel><span data-i18n="ui.cancel">取消</span></button>
+    <button type="button" class="pm-btn primary" data-pm-chip-save><span data-i18n="ui.save">保存</span></button>
   </div>
 </div>
 
 <!-- 登录弹窗 -->
 <div id="login-modal" class="hidden fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center">
   <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-6 w-full max-w-[360px]">
-    <h2 class="font-semibold text-base">登录 xskill 控制台</h2>
-    <input id="login-user" class="w-full mt-4 ring-1 ring-slate-200 rounded-xl px-3.5 py-2 outline-none focus:ring-teal-500" placeholder="用户名（connect --name）">
-    <input id="login-secret" type="password" class="w-full mt-2.5 ring-1 ring-slate-200 rounded-xl px-3.5 py-2 outline-none focus:ring-teal-500 font-mono text-xs" placeholder="dashboard token / admin 口令">
+    <h2 class="font-semibold text-base"><span data-i18n="ui.sign_in_to_xskill_console">登录 xskill 控制台</span></h2>
+    <input id="login-user" class="w-full mt-4 ring-1 ring-slate-200 rounded-xl px-3.5 py-2 outline-none focus:ring-teal-500" placeholder="用户名（connect --name）" data-i18n-placeholder="ui.username_connect_name">
+    <input id="login-secret" type="password" class="w-full mt-2.5 ring-1 ring-slate-200 rounded-xl px-3.5 py-2 outline-none focus:ring-teal-500 font-mono text-xs" placeholder="dashboard token / admin 口令" data-i18n-placeholder="ui.dashboard_token_admin_password">
     <div id="login-err" class="mt-2 text-[11.5px] text-rose-600"></div>
     <div class="mt-4 flex justify-end gap-2.5">
-      <button id="login-cancel" class="px-4 py-1.5 rounded-xl ring-1 ring-slate-200 text-slate-600 hover:bg-slate-50">取消</button>
-      <button id="login-submit" class="px-4 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-medium">登录</button>
+      <button id="login-cancel" class="px-4 py-1.5 rounded-xl ring-1 ring-slate-200 text-slate-600 hover:bg-slate-50"><span data-i18n="ui.cancel">取消</span></button>
+      <button id="login-submit" class="px-4 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-medium"><span data-i18n="ui.sign_in">登录</span></button>
     </div>
   </div>
 </div>
 <!-- P3:页内 toast(任意页面右下角弹) + 散点 hover 预览卡 -->
 <div id="toasts"></div>
 <div id="scatter-tip" class="hidden bg-slate-900 text-slate-100 rounded-xl px-3 py-2 text-[11px]"></div>
-<script src="i18n.js?v=2" defer></script>
-<script src="app.js?v=2" defer></script>
+<script src="i18n.js" defer></script>
+<script src="app.js" defer></script>
 </body></html>
