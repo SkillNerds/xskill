@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import re
 import unicodedata
@@ -12,6 +13,12 @@ from dataclasses import dataclass, replace
 from functools import partial
 from operator import attrgetter
 
+from xskill.tasks.adjudicator import (
+    TaskLinkAdjudicator,
+    TaskLinkCandidate,
+    TaskLinkJudgement,
+    TaskLinkQuestion,
+)
 from xskill.tasks.evidence import ScopedAtomEvidence, ScopedTrajectoryEvidence
 from xskill.tasks.models import (
     AtomRef,
@@ -31,6 +38,7 @@ from xskill.tasks.store import OverrideEvent, utc_now
 ALGORITHM_VERSION = "bounded-rules-v1"
 GENERATOR_NAME = "xskill.task_graph.linker"
 MAX_SHARED_USAGE_ALLOCATION_EDGES = 4096
+logger = logging.getLogger("xskill.task_graph")
 _WORD_RE = re.compile(r"[a-z0-9_./+-]+", re.IGNORECASE)
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 _CONTINUATION_RE = re.compile(
@@ -165,23 +173,42 @@ class BoundedTaskLinker:
     """Link only bounded candidates and keep every uncertain alternative."""
 
     def __init__(self, *, top_k: int = 8, recent_k: int = 6,
-                 posting_cap: int = 64):
-        for name, value in (("top_k", top_k), ("recent_k", recent_k), ("posting_cap", posting_cap)):
+                 posting_cap: int = 64,
+                 adjudicator: TaskLinkAdjudicator | None = None,
+                 max_model_judgements_per_build: int = 64):
+        for name, value in (
+            ("top_k", top_k),
+            ("recent_k", recent_k),
+            ("posting_cap", posting_cap),
+            ("max_model_judgements_per_build", max_model_judgements_per_build),
+        ):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
         self.top_k = top_k
         self.recent_k = recent_k
         self.posting_cap = posting_cap
+        self.adjudicator = adjudicator
+        self.max_model_judgements_per_build = max_model_judgements_per_build
+        self.auto_confirm_model_links = bool(
+            adjudicator is not None
+            and adjudicator.descriptor().get("auto_confirm", False)
+        )
 
     def generator_descriptor(self) -> dict:
         """Return every input that can change deterministic linker output."""
-        return {
+        descriptor = {
             "name": GENERATOR_NAME,
             "version": ALGORITHM_VERSION,
             "top_k": self.top_k,
             "recent_k": self.recent_k,
             "posting_cap": self.posting_cap,
         }
+        if self.adjudicator is not None:
+            descriptor["adjudicator"] = {
+                **self.adjudicator.descriptor(),
+                "max_judgements_per_build": self.max_model_judgements_per_build,
+            }
+        return descriptor
 
     def build(
         self,
@@ -235,6 +262,12 @@ class BoundedTaskLinker:
         proposed_count = 0
         confirmed_reuse_count = 0
         changed_atom_count = 0
+        model_judgement_count = 0
+        model_judgement_failure_count = 0
+        model_confirmed_count = 0
+        model_proposed_count = 0
+        model_needs_review_count = 0
+        adjudicator_available = self.adjudicator is not None
         affected_task_ids: set[str] = set()
         atoms_by_key = {stable_ref_key(atom.atom_ref): atom for atom in atoms}
 
@@ -289,6 +322,41 @@ class BoundedTaskLinker:
                 and previous_membership.task_id in tasks
                 else self._confirmed_candidate(candidates, marker)
             )
+            model_judgement: TaskLinkJudgement | None = None
+            model_confirmed = False
+            if (
+                confirmed_task_id is None
+                and previous_membership is None
+                and adjudicator_available
+                and model_judgement_count < self.max_model_judgements_per_build
+                and self._should_adjudicate(
+                    atom, candidates, recent_by_session,
+                )
+            ):
+                model_judgement_count += 1
+                try:
+                    model_judgement = self._adjudicate(
+                        atom=atom,
+                        candidates=candidates,
+                        tasks=tasks,
+                        recent_by_session=recent_by_session,
+                        marker=marker,
+                    )
+                except Exception as error:
+                    model_judgement_failure_count += 1
+                    adjudicator_available = False
+                    logger.warning(
+                        "Task link adjudication failed; using rules-only fallback: %s",
+                        type(error).__name__,
+                    )
+                else:
+                    if (
+                        model_judgement.decision == "same_task"
+                        and self.auto_confirm_model_links
+                    ):
+                        confirmed_task_id = model_judgement.task_id
+                        model_confirmed = True
+                        model_confirmed_count += 1
             if confirmed_task_id is None:
                 task_id = _opaque("tsk")
                 task = LogicalTask(
@@ -306,23 +374,53 @@ class BoundedTaskLinker:
                     role="primary",
                     confidence=None,
                     decision="confirmed",
-                    decided_by="rule:new_atom_boundary",
+                    decided_by=(
+                        self._model_decided_by("new_task")
+                        if model_judgement is not None
+                        and model_judgement.decision == "new_task"
+                        else "rule:new_atom_boundary"
+                    ),
                     algorithm_version=f"{ALGORITHM_VERSION}:uncalibrated",
                     evidence_refs=(),
                     observed_at=atom.observed_at,
                 ))
+                model_candidate_id = (
+                    model_judgement.task_id
+                    if model_judgement is not None
+                    and model_judgement.decision in ("same_task", "needs_review")
+                    else None
+                )
                 for candidate_id, score in candidates:
-                    if score < 0.18:
+                    is_model_candidate = candidate_id == model_candidate_id
+                    if score < 0.18 and not is_model_candidate:
                         continue
-                    proposed_count += 1
+                    membership_decision = (
+                        "needs_review"
+                        if is_model_candidate
+                        and model_judgement.decision == "needs_review"
+                        else "proposed"
+                    )
+                    if membership_decision == "proposed":
+                        proposed_count += 1
+                    if (
+                        is_model_candidate
+                        and model_judgement.decision == "same_task"
+                    ):
+                        model_proposed_count += 1
+                    elif membership_decision == "needs_review":
+                        model_needs_review_count += 1
                     memberships.append(TaskAtomMembership(
                         membership_id=_digest("mem", candidate_id, atom_key, "proposed"),
                         task_id=candidate_id,
                         atom_ref=atom.atom_ref,
                         role="primary",
                         confidence=None,
-                        decision="proposed",
-                        decided_by=f"heuristic:lexical_score={score:.4f}",
+                        decision=membership_decision,
+                        decided_by=(
+                            self._model_decided_by(model_judgement.decision)
+                            if is_model_candidate
+                            else f"heuristic:lexical_score={score:.4f}"
+                        ),
                         algorithm_version=f"{ALGORITHM_VERSION}:uncalibrated",
                         evidence_refs=(),
                         observed_at=atom.observed_at,
@@ -357,7 +455,11 @@ class BoundedTaskLinker:
                         decided_by=(
                             "rule:stable_atom_identity"
                             if stable_atom_reuse
-                            else f"rule:explicit_{marker}"
+                            else (
+                                self._model_decided_by("same_task")
+                                if model_confirmed
+                                else f"rule:explicit_{marker}"
+                            )
                         ),
                         algorithm_version=f"{ALGORITHM_VERSION}:uncalibrated",
                         evidence_refs=(),
@@ -475,7 +577,11 @@ class BoundedTaskLinker:
                 "atom_count": len(atoms),
                 "task_count": sum(1 for task in tasks.values() if not task.tombstoned),
                 "candidate_count": candidate_count,
-                "model_judgement_count": 0,
+                "model_judgement_count": model_judgement_count,
+                "model_judgement_failure_count": model_judgement_failure_count,
+                "model_confirmed_membership_count": model_confirmed_count,
+                "model_proposed_membership_count": model_proposed_count,
+                "model_needs_review_membership_count": model_needs_review_count,
                 "proposed_membership_count": proposed_count,
                 "reused_membership_count": confirmed_reuse_count,
                 "max_candidates_per_atom": self.top_k,
@@ -552,6 +658,85 @@ class BoundedTaskLinker:
             except ValueError:
                 pass
             posting.append(task_id)
+
+    @staticmethod
+    def _should_adjudicate(
+        atom: ScopedAtomEvidence,
+        candidates: list[tuple[str, float]],
+        recent_by_session: dict[tuple[str, str], deque[str]],
+    ) -> bool:
+        if not candidates:
+            return False
+        session_key = (
+            atom.atom_ref.source_scope_id,
+            atom.atom_ref.traj_id,
+        )
+        recent = set(recent_by_session.get(session_key, ()))
+        return any(
+            task_id in recent or score >= 0.18
+            for task_id, score in candidates
+        )
+
+    def _adjudicate(
+        self,
+        *,
+        atom: ScopedAtomEvidence,
+        candidates: list[tuple[str, float]],
+        tasks: dict[str, LogicalTask],
+        recent_by_session: dict[tuple[str, str], deque[str]],
+        marker: str,
+    ) -> TaskLinkJudgement:
+        if self.adjudicator is None:
+            raise RuntimeError("Task link adjudicator is not configured")
+        session_key = (
+            atom.atom_ref.source_scope_id,
+            atom.atom_ref.traj_id,
+        )
+        recent = set(recent_by_session.get(session_key, ()))
+        bounded_candidates = tuple(
+            TaskLinkCandidate(
+                task_id=task_id,
+                title=tasks[task_id].title,
+                summary=tasks[task_id].summary,
+                lexical_score=score,
+                same_session_recent=task_id in recent,
+            )
+            for task_id, score in candidates
+            if task_id in tasks and not tasks[task_id].tombstoned
+        )
+        if not bounded_candidates:
+            raise RuntimeError("Task link candidates disappeared before adjudication")
+        judgement = self.adjudicator.judge(TaskLinkQuestion(
+            tenant_id=atom.atom_ref.tenant_id,
+            task_scope_id=atom.atom_ref.task_scope_id,
+            source_scope_id=atom.atom_ref.source_scope_id,
+            traj_id=atom.atom_ref.traj_id,
+            atom_id=atom.atom_ref.atom_id,
+            intent=atom.atom.intent,
+            summary=atom.atom.summary,
+            explicit_marker=marker,
+            candidates=bounded_candidates,
+        ))
+        if not isinstance(judgement, TaskLinkJudgement):
+            raise TypeError("Task link adjudicator returned an invalid judgement")
+        candidate_ids = {candidate.task_id for candidate in bounded_candidates}
+        if (
+            judgement.task_id is not None
+            and judgement.task_id not in candidate_ids
+        ):
+            raise ValueError("Task link adjudicator selected an unbounded candidate")
+        return judgement
+
+    def _model_decided_by(self, decision: str) -> str:
+        if self.adjudicator is None:
+            return f"model:unavailable:{decision}"
+        descriptor = self.adjudicator.descriptor()
+        version = str(
+            descriptor.get("version")
+            or descriptor.get("name")
+            or "unavailable"
+        )
+        return f"model:{version}:{decision}"
 
     def _candidates(
         self,
