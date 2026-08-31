@@ -17,13 +17,16 @@ function put(sel, val) {
 function rows(bodyId, html, empty) {
   const tb = document.getElementById(bodyId);
   if (tb) tb.innerHTML = html
-    || `<tr><td colspan="9" class="py-2 text-slate-400">${empty || '暂无数据'}</td></tr>`;
+    || `<tr><td colspan="9" class="py-2 text-slate-400">${empty || tr('ui.no_data')}</td></tr>`;
 }
 const money = n => '$' + (Number(n) || 0).toFixed(4);
 const tok = n => { n = Number(n) || 0; return n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : '' + n; };
 // 任何要塞进 innerHTML 的值一律转义（model 名可能是 `<synthetic>`）
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const tr = (key, params) => typeof window !== 'undefined' && window.XSkillI18n
+  ? window.XSkillI18n.tr(key, params)
+  : key;
 // ux 是 1–10 分；null/0 = 还没有评分，显示 —
 const ux = v => (v == null || Number(v) === 0) ? '—' : v;
 // 分母为 0 → —（无数据 ≠ 0%）
@@ -53,9 +56,9 @@ async function loadOverview() {
   put('overview.atoms', o.atoms);
   put('overview.avg_atoms_per_traj', o.avg_atoms_per_traj != null ? o.avg_atoms_per_traj : '—');
   put('overview.avg_ux', (o.ux_n > 0 && o.avg_ux != null) ? o.avg_ux : '—');
-  put('overview.ux_n', o.ux_n > 0 ? `${o.ux_n} 份使用打分` : '还没有使用打分');
+  put('overview.ux_n', o.ux_n > 0 ? `${tr('ui.p0_usage_ratings', { p0: (o.ux_n) })}` : tr('ui.no_usage_ratings_yet'));
   put('overview.retry_rate', o.trajs > 0 ? o.retry_rate + '%' : '—');
-  put('overview.filtered', o.filtered > 0 ? `filtered ${o.filtered} 条不进分母` : '');
+  put('overview.filtered', o.filtered > 0 ? `${tr('ui.filtered_p0_excluded_from_denominator', { p0: (o.filtered) })}` : '');
   // 成功率是终态口径：分母 = done+error+filtered。done/error 在 pipeline 端点里。
   try {
     const p = await jc('api/v1/dashboard/pipeline');
@@ -66,8 +69,8 @@ async function loadOverview() {
   }
   const h = o.price_health, el = document.getElementById('price-warn');
   if (el && h && h.ok === false) {
-    const reason = { schema_changed: '上游格式变更', source_moved: '上游地址失效', unreachable: '上游不可达' }[h.kind] || '刷新异常';
-    el.innerHTML = `<div class="mt-2 rounded-xl bg-amber-50/70 ring-1 ring-amber-100 px-3.5 py-2 text-[11px] text-amber-700">价格表 ${h.stale_days != null ? h.stale_days + 'd' : '从未'} 未刷新 · ${reason}，沿用旧价</div>`;
+    const reason = { schema_changed: tr('ui.upstream_format_changed'), source_moved: tr('ui.upstream_location_unavailable'), unreachable: tr('ui.upstream_unreachable') }[h.kind] || tr('ui.refresh_failed');
+    el.innerHTML = `<div class="mt-2 rounded-xl bg-amber-50/70 ring-1 ring-amber-100 px-3.5 py-2 text-[11px] text-amber-700">${tr('ui.price_table_not_refreshed_for_p0_p1_using_previous_prices', { p0: (h.stale_days != null ? h.stale_days + 'd' : tr('ui.never')), p1: (reason) })}</div>`;
   }
 }
 
@@ -79,18 +82,18 @@ async function loadRates() {
   put('rates.promotion', pctOr(r.promotion.rate, r.promotion.decided));
   put('rates.promotion2', pctOr(r.promotion.rate, r.promotion.decided));
   put('promotion.detail', r.promotion.decided > 0
-    ? `${r.promotion.promoted}/${r.promotion.decided} 已裁决` : '还没有灰度裁决');
+    ? `${tr('ui.p0_p1_decided', { p0: (r.promotion.promoted), p1: (r.promotion.decided) })}` : tr('ui.no_canary_decisions_yet'));
   rows('trigger-body', (r.trigger.by_skill || []).map(s =>
     `<tr><td class="py-2 font-medium text-slate-800">${esc(s.skill)}</td>`
     + `<td class="text-right tabular-nums">${s.recommended}</td>`
     + `<td class="text-right tabular-nums">${s.used}</td>`
     + `<td class="text-right"><div class="flex items-center gap-2 justify-end">${bar(s.rate)}<span class="tabular-nums text-[11px] text-slate-500 w-10 text-right">${pctOr(s.rate, s.recommended)}</span></div></td></tr>`).join(''),
-    '还没有推荐曝光记录');
+    tr('ui.no_recommendation_impressions_yet'));
 }
 
 const STAGE_DEFS = [
-  ['pending_split', '待拆分'], ['splitting', '拆分中'],
-  ['clustering', '聚类分派中'], ['done', '已完成'], ['error', '错误'],
+  ['pending_split', tr('ui.pending_split')], ['splitting', tr('ui.splitting')],
+  ['clustering', tr('ui.assigning_clusters')], ['done', tr('ui.completed')], ['error', tr('ui.errors')],
 ];
 async function loadPipeline() {
   const p = await jc('api/v1/dashboard/pipeline');
@@ -114,12 +117,12 @@ async function loadPipeline() {
   cold.innerHTML = (p.cold_start && p.cold_start.active)
     ? `<div class="mt-4 rounded-xl bg-slate-50 ring-1 ring-slate-100 px-4 py-3 flex items-center gap-2">
         <span class="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse"></span>
-        <span class="text-xs font-medium text-slate-600">冷启动屏障激活中</span>
-        <span class="text-[11px] text-slate-400">收集满后统一蒸馏，避免碎片化 skill</span></div>`
+        <span class="text-xs font-medium text-slate-600">${tr('ui.cold_start_barrier_active')}</span>
+        <span class="text-[11px] text-slate-400">${tr('ui.distill_after_the_collection_fills_to_avoid_fragmented_skills')}</span></div>`
     : '';
   const cands = document.getElementById('pipe-cands');
   if (!(p.candidates || []).length) { cands.innerHTML = ''; return; }
-  cands.innerHTML = `<div class="text-[11px] text-slate-400 mb-2">候选孵化进度 · weightscore 满 ${esc(p.candidates[0].threshold)} 触发蒸馏</div>
+  cands.innerHTML = `<div class="text-[11px] text-slate-400 mb-2">${tr('ui.candidate_incubation_distill_when_weightscore_reaches_p0', { p0: (esc(p.candidates[0].threshold)) })}</div>
     <div class="space-y-3">` + p.candidates.map(c => `
       <div>
         <div class="flex items-baseline justify-between">
@@ -127,14 +130,14 @@ async function loadPipeline() {
           <span class="text-[11px] tabular-nums ${c.progress >= 0.8 ? 'text-teal-700' : 'text-slate-600'} font-semibold">${esc(c.weightscore)} <span class="text-slate-300 font-normal">/ ${esc(c.threshold)}</span></span>
         </div>
         <div class="mt-1.5 h-2 rounded-full bg-slate-100 overflow-hidden"><div class="h-full rounded-full bg-teal-500" style="width:${(c.progress * 100).toFixed(0)}%"></div></div>
-        <div class="mt-1 text-[10.5px] text-slate-400">${c.atoms} 个原子贡献</div>
+        <div class="mt-1 text-[10.5px] text-slate-400">${tr('ui.p5_contributing_atoms', { p5: (c.atoms) })}</div>
       </div>`).join('') + '</div>';
 }
 
 function shareBars(elId, arr, key) {
   const el = document.getElementById(elId);
   if (!el) return;
-  if (!(arr || []).length) { el.innerHTML = '<span class="text-slate-400">暂无数据</span>'; return; }
+  if (!(arr || []).length) { el.innerHTML = `<span class="text-slate-400">${tr('ui.no_data')}</span>`; return; }
   const total = arr.reduce((a, r) => a + (r.trajs || 0), 0) || 1;
   const max = Math.max(...arr.map(r => r.trajs || 0)) || 1;
   el.innerHTML = arr.map(r => `
@@ -142,7 +145,7 @@ function shareBars(elId, arr, key) {
       <span class="w-24 text-slate-600 text-xs text-right truncate" title="${esc(r[key])}">${esc(r[key])}</span>
       ${bar(r.trajs / max * 100)}
       <span class="tabular-nums text-slate-500 w-9 text-right text-[11px]">${Math.round(r.trajs / total * 100)}%</span>
-      <span class="tabular-nums text-slate-400 w-20 text-right text-[11px]">${r.trajs} · ${r.atoms} 原子</span>
+      <span class="tabular-nums text-slate-400 w-20 text-right text-[11px]">${tr('ui.p4_p5_atoms', { p4: (r.trajs), p5: (r.atoms) })}</span>
     </div>`).join('');
 }
 async function loadDomain() {
@@ -159,10 +162,10 @@ async function loadCost() {
   put('cost.calls', c.total_calls);
   rows('cost-model-body', (c.by_model || []).map(m =>
     `<tr><td class="py-2">${esc(m.model)}</td><td class="text-right tabular-nums">${tok(m.tokens)}</td><td class="text-right tabular-nums">${m.calls}</td><td class="text-right tabular-nums">${money(m.cost)}</td></tr>`).join(''),
-    '还没有调用记录');
+    tr('ui.no_calls_yet'));
   rows('cost-step-body', (c.by_step || []).map(s =>
     `<tr><td class="py-2">${esc(s.step)}</td><td class="text-right tabular-nums">${tok(s.tokens)}</td><td class="text-right tabular-nums">${money(s.cost)}</td></tr>`).join(''),
-    '还没有调用记录');
+    tr('ui.no_calls_yet'));
 }
 
 // ── 技能库 ───────────────────────────────────────────────────────
@@ -177,10 +180,10 @@ const stateBadge = s =>
 
 // 来源徽章：skillhub 三方技能标醒目的"第三方"并显示 hub 来源；自产技能标淡色"自产"。
 const sourceBadge = s => s.source === 'skillhub'
-  ? `<span class="ml-2 inline-block px-2 py-0.5 rounded-md text-[11px] font-medium bg-indigo-100 text-indigo-700">第三方 · skillhub</span>`
+  ? `<span class="ml-2 inline-block px-2 py-0.5 rounded-md text-[11px] font-medium bg-indigo-100 text-indigo-700">${tr('ui.third_party_skillhub')}</span>`
     + (s.hub ? `<span class="ml-2 inline-block text-[11px] text-slate-400">${esc(s.hub)}</span>` : '')
   : s.source === 'native'
-    ? `<span class="ml-2 inline-block px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-100 text-slate-500">自产</span>`
+    ? `<span class="ml-2 inline-block px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-100 text-slate-500">${tr('ui.native')}</span>`
     : '';
 
 // 海量 skill(如 1 万条)分页:一次只拉/渲一页,别让前端一次性渲 1 万行 DOM 炸锅。
@@ -197,21 +200,21 @@ function libRelationHtml(s) {
   }
   if (s.in_push) {
     const cls = BUCKET_CHIP[s.bucket] || 'bg-slate-100 text-slate-500';
-    return `<span class="text-[10px] px-1.5 py-0.5 rounded ${cls}">推给我</span>`;
+    return `<span class="text-[10px] px-1.5 py-0.5 rounded ${cls}">${tr('ui.pushed_to_me')}</span>`;
   }
   return '';
 }
 
 function libStarHtml(s) {
   if (s.pinned && !s.user_removable) {
-    return `<span class="inline-flex items-center justify-center w-7 h-7 text-amber-400 opacity-70" title="admin/全局 pin，不可取消">${_myStarSvg(true)}</span>`;
+    return `<span class="inline-flex items-center justify-center w-7 h-7 text-amber-400 opacity-70" title="${esc(tr('ui.pin_global_locked'))}">${_myStarSvg(true)}</span>`;
   }
   if (s.pinned) {
     return `<button type="button" class="lib-star inline-flex items-center justify-center w-7 h-7 rounded-md text-amber-400 hover:text-amber-500 hover:bg-slate-50"
-      data-skill="${esc(s.name)}" data-act="clear" title="已 pin · 点击取消" aria-label="取消 pin">${_myStarSvg(true)}</button>`;
+      data-skill="${esc(s.name)}" data-act="clear" title="${esc(tr('ui.pin_remove'))}" aria-label="${esc(tr('ui.pin_remove_aria'))}">${_myStarSvg(true)}</button>`;
   }
   return `<button type="button" class="lib-star inline-flex items-center justify-center w-7 h-7 rounded-md text-slate-300 hover:text-amber-300 hover:bg-slate-50"
-    data-skill="${esc(s.name)}" data-act="pin" title="未 pin · 点击加入推荐流" aria-label="pin">${_myStarSvg(false)}</button>`;
+    data-skill="${esc(s.name)}" data-act="pin" title="${esc(tr('ui.pin_add_feed'))}" aria-label="pin">${_myStarSvg(false)}</button>`;
 }
 
 async function loadSkills() {
@@ -227,7 +230,10 @@ async function loadSkills() {
   const d = await j(`api/v1/dashboard/skills?${sp}`);
   const bs = d.by_state || {};
   const parts = Object.keys(bs).sort().map(k => `${k} ${bs[k]}`).join(' · ');
-  put('skills.summary', `${q ? '匹配' : '共'} ${d.total} 个${parts ? ' · ' + parts : ''}`);
+  put('skills.summary', tr(q ? 'ui.skills_matches_summary' : 'ui.skills_total_summary', {
+    count: d.total,
+    detail: parts ? ' · ' + parts : '',
+  }));
   const canPin = !!(d.viewer && d.viewer.can_pin);
   rows('skills-body', (d.skills || []).map(s =>
     `<tr class="hover:bg-slate-50 cursor-pointer" data-skill-row="${esc(s.name)}">`
@@ -237,7 +243,7 @@ async function loadSkills() {
     + `<td class="text-slate-500 max-w-[480px] truncate" title="${esc(s.description)}">${esc(s.description) || '—'}</td>`
     + `<td class="text-right tabular-nums">v${esc(s.version)}</td>`
     + `<td class="text-right tabular-nums">${s.candidates || 0}</td></tr>`).join(''),
-    q ? '无匹配技能' : '技能库还是空的');
+    q ? tr('ui.no_matching_skills') : tr('ui.the_skill_library_is_empty'));
   renderSkillsPager(d.total || 0);
 }
 
@@ -250,9 +256,9 @@ function renderSkillsPager(total) {
   const btn = (label, page, disabled) =>
     `<button class="px-2 py-0.5 rounded border border-slate-200 ${disabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-slate-50'}"`
     + `${disabled ? ' disabled' : ` data-skills-page="${page}"`}>${label}</button>`;
-  pager.innerHTML = btn('‹ 上一页', skillsPage - 1, skillsPage <= 0)
-    + `<span>第 ${skillsPage + 1} / ${pages} 页 · 共 ${total} 个</span>`
-    + btn('下一页 ›', skillsPage + 1, skillsPage >= pages - 1);
+  pager.innerHTML = btn(tr('ui.previous'), skillsPage - 1, skillsPage <= 0)
+    + `<span>${tr('ui.page_p0_p1_p2_total', { p0: (skillsPage + 1), p1: (pages), p2: (total) })}</span>`
+    + btn(tr('ui.next'), skillsPage + 1, skillsPage >= pages - 1);
   pager.querySelectorAll('[data-skills-page]').forEach(b => {
     b.onclick = () => { skillsPage = parseInt(b.getAttribute('data-skills-page'), 10) || 0; loadSkills(); };
   });
@@ -276,7 +282,7 @@ function renderGraph(g) {
   all.forEach(n => depth(n.sha));
   all.sort((a, b) => (b.ts - a.ts) || (gen.get(b.sha) - gen.get(a.sha)));
   const nodes = all.slice(0, 30);
-  if (!nodes.length) return '<div class="text-slate-400 text-xs mt-3">还没有提交历史</div>';
+  if (!nodes.length) return `<div class="text-slate-400 text-xs mt-3">${tr('ui.no_commit_history_yet')}</div>`;
   const ROW = 48, top = 24;
   const xOf = n => (n.lanes || []).includes('main') ? 22 : 64;
   const hasStg = nodes.some(n => xOf(n) === 64);
@@ -301,43 +307,43 @@ function renderGraph(g) {
     let sub = '', subCls = 'text-slate-400', rowCls = '';
     if (n.decision === 'promoted') {
       const d = n.decision_detail || {};
-      sub = `晋升${d.staging_avg != null && d.main_avg != null ? ` · ${d.staging_avg} > ${d.main_avg}` : ''}${n.is_head_main ? ' · main HEAD' : ''}`;
+      sub = `${tr('ui.promoted_p0_p1', { p0: (d.staging_avg != null && d.main_avg != null ? ` · ${d.staging_avg} > ${d.main_avg}` : ''), p1: (n.is_head_main ? ' · main HEAD' : '') })}`;
       subCls = 'text-emerald-600';
     } else if (n.decision === 'rejected') {
       const d = n.decision_detail || {};
-      sub = `回滚${d.staging_avg != null && d.main_avg != null ? ` · ${d.staging_avg} < ${d.main_avg}` : ''}`;
+      sub = `${tr('ui.rolled_back_p0', { p0: (d.staging_avg != null && d.main_avg != null ? ` · ${d.staging_avg} < ${d.main_avg}` : '') })}`;
       subCls = 'text-rose-600';
     } else if (n.is_head_staging) {
-      sub = '灰度观察中 · staging HEAD'; subCls = 'text-amber-700';
+      sub = tr('ui.under_observation_staging_head'); subCls = 'text-amber-700';
       rowCls = 'bg-amber-50/60 ring-1 ring-amber-100';
     } else if (n.is_head_main) {
       sub = 'main HEAD'; subCls = 'text-slate-500';
     } else {
-      sub = (n.lanes || []).includes('main') ? 'main 提交' : 'staging 提交';
+      sub = (n.lanes || []).includes('main') ? tr('ui.main_commit') : tr('ui.staging_commit');
     }
     const rej = (n.lanes || []).includes('rejected') && n.decision !== 'rejected'
       ? ' <span class="px-1.5 py-0.5 rounded bg-rose-50 text-rose-600 text-[10px]">rejected</span>' : '';
     return `<div class="h-12 flex items-center justify-between gap-2 rounded-lg px-2 -mx-2 cursor-pointer hover:bg-slate-50 ${rowCls}" data-gnode="${esc(n.sha)}" data-gside="${n.is_head_staging ? 'staging' : (n.is_head_main ? 'main' : '')}">
-      <div class="min-w-0"><div class="font-medium truncate">${esc(n.subject) || '(无提交说明)'}${rej}</div>
-        <div class="text-[11px] ${subCls}">${esc(sub)}${n.is_head_staging ? ' · 点击看推送给谁' : (n.is_head_main ? ' · 点击看推送给谁' : '')}</div></div>
+      <div class="min-w-0"><div class="font-medium truncate">${esc(n.subject) || tr('ui.no_commit_message')}${rej}</div>
+        <div class="text-[11px] ${subCls}">${esc(sub)}${n.is_head_staging || n.is_head_main ? esc(tr('ui.head_select_recipients')) : ''}</div></div>
       <code class="text-[11px] text-slate-400 shrink-0">${esc(n.sha.slice(0, 7))}</code></div>`;
   }).join('');
   const unloc = (g.decisions_unlocated || []).length;
   return `<div class="flex mt-3">${svg}<div class="flex-1 min-w-0" style="padding-top:2px">${rowsHtml}</div></div>
     <div class="flex gap-4 mt-3 pt-3 border-t border-slate-100 text-[11px] text-slate-500 flex-wrap">
-      <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>晋升</span>
-      <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span>回滚</span>
-      <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span>观察中（点黄点看推送对象）</span>
-      <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-white ring-2 ring-slate-300"></span>普通提交</span>
-      ${(g.nodes || []).length > 30 ? '<span class="text-slate-400">仅显示最近 30 个节点</span>' : ''}
+      <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>${tr('ui.promoted')}</span>
+      <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span>${tr('ui.rolled_back')}</span>
+      <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span>${tr('ui.under_observation_select_the_yellow_node_for_recipients')}</span>
+      <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-white ring-2 ring-slate-300"></span>${tr('ui.regular_commit')}</span>
+      ${(g.nodes || []).length > 30 ? `<span class="text-slate-400">${tr('ui.latest_nodes_only')}</span>` : ''}
     </div>
-    ${unloc ? `<div class="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-[11px] text-slate-400">${unloc} 条历史裁决无法定位到节点</div>` : ''}`;
+    ${unloc ? `<div class="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-[11px] text-slate-400">${tr('ui.p0_historical_decisions_could_not_be_mapped_to_nodes', { p0: (unloc) })}</div>` : ''}`;
 }
 
 // 得分趋势：main/staging 双折线（main 实线 blue-600 / staging 虚线 emerald-500）
 function renderDual(daily) {
   const pts = (daily || []).filter(d => d.avg_ux != null);
-  if (!pts.length) return '<div class="text-slate-400 text-xs mt-3">还没有使用打分</div>';
+  if (!pts.length) return `<div class="text-slate-400 text-xs mt-3">${tr('ui.no_usage_ratings_yet')}</div>`;
   const dates = [...new Set(pts.map(p => p.date))].sort();
   const W = 620, H = 200, L = 34, R = 12, T = 16, B = 26;
   const xOf = d => dates.length > 1
@@ -349,7 +355,7 @@ function renderDual(daily) {
     if (!arr.length) return '';
     const path = arr.map((p, i) => `${i ? 'L' : 'M'}${xOf(p.date).toFixed(1)} ${yOf(p.avg_ux).toFixed(1)}`).join(' ');
     return `<path d="${path}" fill="none" stroke="${color}" stroke-width="2"${dash ? ' stroke-dasharray="5 4"' : ''}/>`
-      + arr.map(p => `<circle class="trend-pt cursor-pointer" data-day="${esc(p.date)}" data-side="${esc(p.side)}" cx="${xOf(p.date).toFixed(1)}" cy="${yOf(p.avg_ux).toFixed(1)}" r="4.5" fill="${color}" stroke="#fff" stroke-width="1.5"><title>${esc(p.date)} ${esc(p.side)} ${p.avg_ux} · ${p.n} 份 · 点击看当日原子</title></circle>`).join('');
+      + arr.map(p => `<circle class="trend-pt cursor-pointer" data-day="${esc(p.date)}" data-side="${esc(p.side)}" cx="${xOf(p.date).toFixed(1)}" cy="${yOf(p.avg_ux).toFixed(1)}" r="4.5" fill="${color}" stroke="#fff" stroke-width="1.5"><title>${esc(tr('ui.daily_score_point', { date: p.date, side: p.side, ux: p.avg_ux, count: p.n }))}</title></circle>`).join('');
   };
   const grid = [2, 4, 6, 8, 10].map(v =>
     `<line x1="${L}" y1="${yOf(v)}" x2="${W - R}" y2="${yOf(v)}" stroke="#f1f5f9"/>`
@@ -371,22 +377,22 @@ function renderDual(daily) {
 async function drillTrendDay(skill, day, side) {
   const box = document.getElementById('trend-drill');
   if (!box) return;
-  box.innerHTML = '<div class="text-slate-400 text-[11px] mt-2">加载当日原子…</div>';
+  box.innerHTML = `<div class="text-slate-400 text-[11px] mt-2">${tr('ui.loading_daily_atoms')}</div>`;
   let data;
   try {
     data = await j('api/v1/dashboard/skill/' + encodeURIComponent(skill)
       + '/ux/atoms?days=365' + (side ? '&side=' + encodeURIComponent(side) : ''));
   } catch (e) {
-    box.innerHTML = `<div class="text-rose-600 text-[11px] mt-2">下钻失败：${esc(e.message)}</div>`;
+    box.innerHTML = `<div class="text-rose-600 text-[11px] mt-2">${esc(tr('ui.drill_down_failed', { message: e.message }))}</div>`;
     return;
   }
   const rows_ = (data.scores || []).filter(r => (r.scored_at || '').slice(0, 10) === day);
   if (!rows_.length) {
-    box.innerHTML = `<div class="text-slate-400 text-[11px] mt-2">${esc(day)} · ${esc(side)}：无逐条记录</div>`;
+    box.innerHTML = `<div class="text-slate-400 text-[11px] mt-2">${tr('ui.p0_p1_no_individual_records', { p0: (esc(day)), p1: (esc(side)) })}</div>`;
     return;
   }
   box.innerHTML = `<div class="mt-2 rounded-xl ring-1 ring-slate-100 divide-y divide-slate-50">
-    <div class="px-3 py-1.5 text-[11px] text-slate-400">${esc(day)} · ${esc(side)} · ${rows_.length} 份打分</div>
+    <div class="px-3 py-1.5 text-[11px] text-slate-400">${tr('ui.p0_p1_p2_ratings', { p0: (esc(day)), p1: (esc(side)), p2: (rows_.length) })}</div>
     ${rows_.map(r => `<div class="px-3 py-2 flex items-center gap-2 text-xs">
       <span class="atom-jump font-mono text-teal-700 cursor-pointer" data-atom="${esc(r.atom_id || r.traj_id || '')}">${esc(r.atom_id || r.traj_id || '?')}</span>
       <span class="text-slate-400 flex-1 truncate">${esc((r.atom && r.atom.intent) || r.reasons || '')}</span>
@@ -404,29 +410,29 @@ function renderLineage(lin) {
       ${avatar(u.user)}<span class="w-16 text-slate-600 truncate" title="${esc(u.user)}">${esc(u.user)}</span>
       ${bar(u.atoms / maxU * 100)}
       <span class="tabular-nums text-slate-700 font-medium w-6 text-right">${u.atoms}</span>
-    </div>`).join('') || '<span class="text-slate-400 text-xs">还没有贡献原子</span>';
+    </div>`).join('') || `<span class="text-slate-400 text-xs">${tr('ui.no_contributing_atoms_yet')}</span>`;
   const modelChips = (lin.by_model || []).map(m =>
     `<span class="px-2.5 py-1 rounded-lg bg-slate-100 text-xs text-slate-600">${esc(m.model)} <b class="text-slate-800">${m.atoms}</b></span>`).join(' ');
   const atomRows = (lin.atoms || []).map(a => {
     const clickable = !a.source_cleaned && a.traj_id;
     const title = a.source_cleaned
-      ? '<span class="text-slate-400">源已清理 <span class="text-[11px]">（原子文件已过期回收，保留记录）</span></span>'
+      ? `<span class="text-slate-400">${tr('ui.source_cleaned_up')} <span class="text-[11px]">${tr('ui.expired_atom_file')}</span></span>`
       : `<span class="text-slate-800">${esc(a.intent) || esc(a.atom_id)}</span>`;
     const st = a.state === 'adopted'
-      ? '<span class="text-[10.5px] text-emerald-600">已采纳</span>'
-      : '<span class="text-[10.5px] text-amber-600">候选中</span>';
+      ? `<span class="text-[10.5px] text-emerald-600">${tr('ui.adopted')}</span>`
+      : `<span class="text-[10.5px] text-amber-600">${tr('ui.candidate')}</span>`;
     return `<div class="py-2.5 flex items-center justify-between gap-2 ${clickable ? 'cursor-pointer hover:bg-slate-50 rounded-lg px-2 -mx-2' : ''}"
         ${clickable ? `data-atom-jump="${esc(a.traj_id)}/${esc(a.atom_id)}"` : ''}>
       <div class="min-w-0"><div class="truncate">${title}</div>
         <div class="text-[11px] ${a.source_cleaned ? 'text-slate-300' : 'text-slate-400'}">${esc(a.user)} · ${esc(a.model)} ${st}</div></div>
       <span class="px-2 py-0.5 rounded-md ${a.source_cleaned ? 'bg-slate-50 text-slate-400' : 'bg-teal-50 text-teal-700'} text-[11px] font-semibold tabular-nums shrink-0">${a.weightscore != null ? esc(a.weightscore) : '—'}</span>
     </div>`;
-  }).join('') || '<div class="text-slate-400 text-xs py-2">还没有贡献原子</div>';
+  }).join('') || `<div class="text-slate-400 text-xs py-2">${tr('ui.no_contributing_atoms_yet')}</div>`;
   return { userRows, modelChips, atomRows };
 }
 
 function renderDiff(diff) {
-  if (!diff) return '<span class="text-slate-400">无 diff</span>';
+  if (!diff) return `<span class="text-slate-400">${tr('ui.no_diff')}</span>`;
   return '<pre class="text-[11.5px] leading-relaxed overflow-x-auto">' + diff.split('\n').map(line => {
     const e = esc(line);
     if (line.startsWith('+') && !line.startsWith('+++')) return `<span class="block bg-emerald-50 text-emerald-800">${e}</span>`;
@@ -456,9 +462,9 @@ async function openSkill(name) {
   _curSkill = name;
   const box = document.getElementById('skill-detail');
   const back = _skillBackHash === 'my'
-    ? `<a href="#my" class="text-teal-700 hover:underline">我的</a>`
-    : '技能库';
-  box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400">加载 ${esc(name)} …</div>`;
+    ? `<a href="#my" class="text-teal-700 hover:underline">${tr('ui.my_dashboard')}</a>`
+    : tr('ui.skills');
+  box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400">${tr('ui.loading_p0', { p0: (esc(name)) })}</div>`;
   // 三方 skill 无 git / staging，走 skillhub 专用端点(自产 detail 对其 404)。
   if (await skillSource(name) === 'skillhub') { await renderSkillhubDetail(name, box); return; }
   const [dR, gR, uR, lR, tR] = await Promise.allSettled([
@@ -469,7 +475,7 @@ async function openSkill(name) {
     jc('api/v1/dashboard/skill/' + encodeURIComponent(name) + '/tree'),
   ]);
   if (dR.status === 'rejected') {
-    box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-rose-600">加载失败：${esc(dR.reason)}</div>`;
+    box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-rose-600">${esc(tr('ui.load_failed', { message: dR.reason }))}</div>`;
     return;
   }
   const d = dR.value;
@@ -481,14 +487,14 @@ async function openSkill(name) {
   const heads = (g && g.heads) || {};
   const headChips = [
     heads.main ? `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white ring-1 ring-slate-200 text-xs font-medium text-slate-600">main <code class="text-slate-400">${esc(heads.main.slice(0, 7))}</code></span>` : '',
-    heads.staging ? `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 ring-1 ring-amber-200 text-xs font-medium text-amber-700"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>staging 灰度中 <code class="opacity-60">${esc(heads.staging.slice(0, 7))}</code></span>` : '',
+    heads.staging ? `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 ring-1 ring-amber-200 text-xs font-medium text-amber-700"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>${tr('ui.staging_canary')} <code class="opacity-60">${esc(heads.staging.slice(0, 7))}</code></span>` : '',
   ].join(' ');
   const sc = d.scripting || {};
   let scriptBtn = '';
   if (typeof IDENT !== 'undefined' && IDENT && IDENT.role === 'admin') {
     const disabled = !sc.enabled;
-    const title = sc.reason || '把当前主干技能改得更偏可执行脚本';
-    scriptBtn = `<button type="button" class="px-2.5 py-1 rounded-lg text-xs ring-1 ${disabled ? 'bg-slate-50 text-slate-400 ring-slate-200 cursor-not-allowed' : 'bg-white text-teal-800 ring-teal-200 hover:bg-teal-50'}" data-skill-scripting="${esc(name)}" ${disabled ? 'disabled' : ''} title="${esc(title)}">脚本化（实验性）</button>`;
+    const title = sc.reason || tr('ui.make_the_current_main_skill_more_executable_as_a_script');
+    scriptBtn = `<button type="button" class="px-2.5 py-1 rounded-lg text-xs ring-1 ${disabled ? 'bg-slate-50 text-slate-400 ring-slate-200 cursor-not-allowed' : 'bg-white text-teal-800 ring-teal-200 hover:bg-teal-50'}" data-skill-scripting="${esc(name)}" ${disabled ? 'disabled' : ''} title="${esc(title)}">${tr('ui.scriptify_experimental')}</button>`;
   }
 
   const vrows = (d.versions || []).map(v =>
@@ -497,20 +503,20 @@ async function openSkill(name) {
     + `<td class="text-right tabular-nums">${ux(v.avg_ux)}</td>`
     + `<td class="text-right tabular-nums">${v.atoms}</td>`
     + `<td class="text-slate-500 pl-4">${fdate(v.first_ts).slice(0, 10)}</td></tr>`).join('')
-    || '<tr><td colspan="5" class="py-2 text-slate-400">还没有版本触发数据</td></tr>';
+    || `<tr><td colspan="5" class="py-2 text-slate-400">${tr('ui.no_version_trigger_data_yet')}</td></tr>`;
   const byUserRows = (d.by_user || []).map(u =>
     `<tr><td class="py-2"><span class="flex items-center gap-2">${avatar(u.user, 'sm')}${esc(u.user)}</span></td>`
     + `<td class="text-right tabular-nums">${u.triggers}</td>`
     + `<td class="text-right tabular-nums">${ux(u.avg_ux)}</td></tr>`).join('')
-    || '<tr><td colspan="3" class="py-2 text-slate-400">还没有触发记录</td></tr>';
+    || `<tr><td colspan="3" class="py-2 text-slate-400">${tr('ui.no_trigger_records_yet')}</td></tr>`;
 
   const L = renderLineage(lin);
   const fileItems = (tree.files || []).map(f =>
     `<a href="javascript:void(0)" class="skf block px-2 py-1 rounded hover:bg-slate-50 text-xs text-slate-600" data-skill="${esc(name)}" data-path="${esc(f.path)}">${esc(f.path)} <span class="text-slate-300">(${f.size})</span></a>`).join('')
-    || '<span class="text-slate-400 text-xs px-2">空目录</span>';
+    || `<span class="text-slate-400 text-xs px-2">${tr('ui.empty_directory')}</span>`;
   const gitItems = (d.versions_git || []).map(v =>
     `<a href="javascript:void(0)" class="skd block px-2 py-1 rounded hover:bg-slate-50 text-xs text-slate-600" data-skill="${esc(name)}" data-sha="${esc(v.sha)}"><code class="text-[11px] text-slate-400">${esc(v.short)}</code> ${esc(v.subject)}</a>`).join('')
-    || '<span class="text-slate-400 text-xs px-2">非 git 仓</span>';
+    || `<span class="text-slate-400 text-xs px-2">${tr('ui.not_a_git_repository')}</span>`;
 
   box.innerHTML = `
   <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5">
@@ -518,9 +524,9 @@ async function openSkill(name) {
     <div class="flex items-start justify-between gap-3 flex-wrap">
       <div>
         <h2 class="text-lg font-bold tracking-tight">${esc(name)}</h2>
-        <div class="text-slate-500 text-xs mt-1">总触发 <b class="text-slate-800 tabular-nums">${d.total_triggers}</b> 次
-          · 贡献原子 <b class="text-slate-800 tabular-nums">${(lin.atoms || []).length}</b> 个
-          ${lin.avg_ux != null ? `· 血缘平均 ux <b class="text-slate-800 tabular-nums">${lin.avg_ux}</b>` : ''}</div>
+        <div class="text-slate-500 text-xs mt-1">${tr('ui.total_triggers')} <b class="text-slate-800 tabular-nums">${d.total_triggers}</b> ${tr('ui.times')}
+          ${tr('ui.contributing_atom_summary', { count: `<b class="text-slate-800 tabular-nums">${(lin.atoms || []).length}</b>` })}
+          ${lin.avg_ux != null ? `${tr('ui.lineage_average_ux')} <b class="text-slate-800 tabular-nums">${lin.avg_ux}</b>` : ''}</div>
       </div>
       <div class="flex gap-2 items-center flex-wrap">${headChips}${scriptBtn}</div>
     </div>
@@ -528,25 +534,25 @@ async function openSkill(name) {
     <div class="grid grid-cols-12 gap-4 mt-4">
       <div class="col-span-12 lg:col-span-5 rounded-2xl ring-1 ring-slate-200 p-5">
         <div class="flex items-baseline justify-between">
-          <h3 class="font-semibold text-sm">进化路径</h3>
-          <span class="text-[11px] text-slate-400">点黄点 / main HEAD 看推送给谁；其它节点看 diff</span>
+          <h3 class="font-semibold text-sm">${tr('ui.evolution_path')}</h3>
+          <span class="text-[11px] text-slate-400">${tr('ui.select_the_yellow_node_or_main_head_to_view_recipients_select_other_node')}</span>
         </div>
-        ${g ? renderGraph(g) : '<div class="text-slate-400 text-xs mt-3">非 git 仓，暂无进化路径</div>'}
+        ${g ? renderGraph(g) : `<div class="text-slate-400 text-xs mt-3">${tr('ui.not_a_git_repository_no_evolution_path')}</div>`}
       </div>
       <div class="col-span-12 lg:col-span-7 space-y-4">
         <div id="skill-routing" class="hidden"></div>
         <div class="rounded-2xl ring-1 ring-slate-200 p-5">
-          <h3 class="font-semibold text-sm">得分趋势 <span class="font-normal text-[11px] text-slate-400 ml-2">ux 日均 · 悬停节点看当日样本数</span></h3>
+          <h3 class="font-semibold text-sm">${tr('ui.score_trend')} <span class="font-normal text-[11px] text-slate-400 ml-2">${tr('ui.daily_average_ux_hover_a_node_for_that_days_sample_count')}</span></h3>
           ${renderDual(daily)}
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div class="rounded-2xl ring-1 ring-slate-200 p-5">
-            <h3 class="font-semibold text-sm">贡献来源 <span class="font-normal text-[11px] text-slate-400 ml-1">${(lin.atoms || []).length} 个原子</span></h3>
+            <h3 class="font-semibold text-sm">${tr('ui.contribution_sources')} <span class="font-normal text-[11px] text-slate-400 ml-1">${tr('ui.atom_count', { count: (lin.atoms || []).length })}</span></h3>
             <div class="mt-3 space-y-2.5">${L.userRows}</div>
-            ${L.modelChips ? `<div class="mt-4 pt-3 border-t border-slate-100 text-[11px] text-slate-400">来源模型</div><div class="mt-2 flex gap-2 flex-wrap">${L.modelChips}</div>` : ''}
+            ${L.modelChips ? `<div class="mt-4 pt-3 border-t border-slate-100 text-[11px] text-slate-400">${tr('ui.source_models')}</div><div class="mt-2 flex gap-2 flex-wrap">${L.modelChips}</div>` : ''}
           </div>
           <div class="rounded-2xl ring-1 ring-slate-200 p-5">
-            <h3 class="font-semibold text-sm">贡献原子 <span class="font-normal text-[11px] text-slate-400 ml-1">点击跳原子详情</span></h3>
+            <h3 class="font-semibold text-sm">${tr('ui.contributing_atoms')} <span class="font-normal text-[11px] text-slate-400 ml-1">${tr('ui.select_to_open_atom_details')}</span></h3>
             <div class="mt-1 divide-y divide-slate-100 max-h-72 overflow-y-auto">${L.atomRows}</div>
           </div>
         </div>
@@ -555,33 +561,33 @@ async function openSkill(name) {
 
     <div class="grid grid-cols-12 gap-4 mt-4">
       <div class="col-span-12 lg:col-span-7">
-        <h3 class="font-semibold text-sm">版本统计 <span class="font-normal text-[11px] text-slate-400 ml-1">触发 / UX / 去重原子 / 首用</span></h3>
+        <h3 class="font-semibold text-sm">${tr('ui.version_statistics')} <span class="font-normal text-[11px] text-slate-400 ml-1">${tr('ui.triggers_ux_unique_atoms_first_use')}</span></h3>
         <div class="overflow-x-auto"><table class="w-full mt-1 text-[12.5px]">
-          <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">版本</th><th class="text-right font-medium">触发</th><th class="text-right font-medium">UX</th><th class="text-right font-medium">原子</th><th class="text-left font-medium pl-4">首用</th></tr></thead>
+          <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">${tr('ui.version')}</th><th class="text-right font-medium">${tr('ui.triggered')}</th><th class="text-right font-medium">UX</th><th class="text-right font-medium">${tr('ui.atoms')}</th><th class="text-left font-medium pl-4">${tr('ui.first_use')}</th></tr></thead>
           <tbody class="divide-y divide-slate-50">${vrows}</tbody></table></div>
       </div>
       <div class="col-span-12 lg:col-span-5">
-        <h3 class="font-semibold text-sm">按用户</h3>
+        <h3 class="font-semibold text-sm">${tr('ui.by_user')}</h3>
         <div class="overflow-x-auto"><table class="w-full mt-1 text-[12.5px]">
-          <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">用户</th><th class="text-right font-medium">触发</th><th class="text-right font-medium">UX</th></tr></thead>
+          <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">${tr('ui.user')}</th><th class="text-right font-medium">${tr('ui.triggered')}</th><th class="text-right font-medium">UX</th></tr></thead>
           <tbody class="divide-y divide-slate-50">${byUserRows}</tbody></table></div>
       </div>
     </div>
 
     <div class="grid grid-cols-12 gap-4 mt-4">
       <div class="col-span-12 md:col-span-4">
-        <h3 class="font-semibold text-sm">文件目录</h3>
+        <h3 class="font-semibold text-sm">${tr('ui.files')}</h3>
         <div class="mt-1 max-h-44 overflow-y-auto rounded-xl ring-1 ring-slate-100 py-1">${fileItems}</div>
-        <h3 class="font-semibold text-sm mt-3">版本（点击看 diff）</h3>
+        <h3 class="font-semibold text-sm mt-3">${tr('ui.versions_select_to_view_diff')}</h3>
         <div class="mt-1 max-h-36 overflow-y-auto rounded-xl ring-1 ring-slate-100 py-1">${gitItems}</div>
       </div>
       <div class="col-span-12 md:col-span-8">
-        <h3 class="font-semibold text-sm">预览 / diff</h3>
-        <div id="skill-preview" class="mt-1 rounded-xl ring-1 ring-slate-100 p-3 max-h-80 overflow-auto"><span class="text-slate-400 text-xs">点左侧文件或版本、或进化路径节点查看</span></div>
+        <h3 class="font-semibold text-sm">${tr('ui.preview_diff')}</h3>
+        <div id="skill-preview" class="mt-1 rounded-xl ring-1 ring-slate-100 p-3 max-h-80 overflow-auto"><span class="text-slate-400 text-xs">${tr('ui.select_a_file_version_or_evolution_node_on_the_left')}</span></div>
       </div>
     </div>
 
-    <div id="skill-trigger" class="mt-4"><div class="text-slate-400 text-xs">加载离线触发评测…</div></div>
+    <div id="skill-trigger" class="mt-4"><div class="text-slate-400 text-xs">${tr('ui.loading_offline_trigger_evaluation')}</div></div>
   </div>`;
   box.scrollIntoView({ behavior: 'smooth' });
   loadTriggerPanel(name).catch(console.error);
@@ -606,8 +612,8 @@ function _routeUsersUrl(extra) {
 
 function _routePushPill(u) {
   return u.in_manifest
-    ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100 shrink-0">推送</span>`
-    : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 ring-1 ring-slate-200 shrink-0">未推送</span>`;
+    ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100 shrink-0">${tr('ui.pushed')}</span>`
+    : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 ring-1 ring-slate-200 shrink-0">${tr('ui.not_pushed')}</span>`;
 }
 
 function _routeCanEdit(user) {
@@ -626,7 +632,7 @@ function _routeUserRowHtml(u) {
     const sideBtn = (side, label) => {
       const on = curSide === side;
       return `<button type="button" class="route-row-side px-1.5 py-0.5 ${on ? (side === 'staging' ? 'bg-amber-400 text-white' : 'bg-teal-600 text-white') : 'bg-white text-slate-500 hover:bg-slate-50'}"
-        data-user="${esc(u.user)}" data-side="${side}" data-skill="${esc(skill)}" title="pin 到 ${label}">${label}</button>`;
+        data-user="${esc(u.user)}" data-side="${side}" data-skill="${esc(skill)}" title="${esc(tr('ui.pin_to_side', { side: label }))}">${label}</button>`;
     };
     sideCtl = `<div class="inline-flex rounded-md ring-1 ring-slate-200 overflow-hidden text-[10px]">${sideBtn('main', 'main')}${sideBtn('staging', 'staging')}</div>`;
   } else if (hasStaging) {
@@ -642,13 +648,13 @@ function _routeUserRowHtml(u) {
     : `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M8 1.2l1.76 3.56 3.93.57-2.84 2.77.67 3.91L8 10.16l-3.52 1.85.67-3.91L2.3 5.33l3.93-.57L8 1.2z"/></svg>`;
   let starBtn;
   if (!canEdit) {
-    starBtn = `<span class="inline-flex items-center justify-center w-7 h-7 ${starCls} opacity-70" title="${u.pinned ? '已 pin（只读）' : '未 pin（只读）'}">${starSvg}</span>`;
+    starBtn = `<span class="inline-flex items-center justify-center w-7 h-7 ${starCls} opacity-70" title="${esc(tr(u.pinned ? 'ui.pin_read_only' : 'ui.not_pinned_read_only'))}">${starSvg}</span>`;
   } else if (u.pinned) {
     starBtn = `<button type="button" class="route-row-unpin inline-flex items-center justify-center w-7 h-7 rounded-md hover:bg-slate-50 ${starCls}"
-        data-user="${esc(u.user)}" data-skill="${esc(skill)}" title="已 pin · 点击取消" aria-label="取消 pin">${starSvg}</button>`;
+        data-user="${esc(u.user)}" data-skill="${esc(skill)}" title="${esc(tr('ui.pin_remove'))}" aria-label="${esc(tr('ui.pin_remove_aria'))}">${starSvg}</button>`;
   } else {
     starBtn = `<button type="button" class="route-row-pin inline-flex items-center justify-center w-7 h-7 rounded-md hover:bg-slate-50 ${starCls}"
-        data-user="${esc(u.user)}" data-side="${esc(curSide)}" data-skill="${esc(skill)}" title="未 pin · 点击 pin 到当前 side" aria-label="pin">${starSvg}</button>`;
+        data-user="${esc(u.user)}" data-side="${esc(curSide)}" data-skill="${esc(skill)}" title="${esc(tr('ui.pin_add_side'))}" aria-label="pin">${starSvg}</button>`;
   }
   return `<div class="route-user-row flex items-center gap-2 py-2 border-b border-slate-50 last:border-0" data-user="${esc(u.user)}">
     ${avatar(u.user, 'sm')}
@@ -657,11 +663,11 @@ function _routeUserRowHtml(u) {
         <span>${esc(u.user)}</span>
         ${_routePushPill(u)}
         ${u.overridden ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">pinned</span>' : ''}
-        ${u.auto_canary && !u.overridden ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 ring-1 ring-sky-100">自动灰度</span>' : ''}
+        ${u.auto_canary && !u.overridden ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 ring-1 ring-sky-100">${tr('ui.auto_canary')}</span>` : ''}
       </div>
       <div class="text-[10.5px] text-slate-400 mt-0.5 flex items-center gap-1.5">
         ${u.sha ? `<code>${esc(String(u.sha).slice(0, 7))}</code>` : '<span>—</span>'}
-        ${u.in_manifest ? '' : '<span>不在 manifest</span>'}
+        ${u.in_manifest ? '' : `<span>${tr('ui.not_in_manifest')}</span>`}
       </div>
     </div>
     <div class="shrink-0 flex items-center gap-1.5">
@@ -675,7 +681,7 @@ async function _routePref(user, action, side) {
   const skill = _routeState.skill;
   if (!skill || !user) return;
   if (!_routeCanEdit(user)) {
-    throw new Error('无权配置其他用户：仅管理员可代操作，普通用户只能改自己');
+    throw new Error(tr('ui.forbidden_other_user'));
   }
   const body = { user_key: user, skill_name: skill, action };
   if (side) body.side = side;
@@ -705,10 +711,10 @@ function _paintColPager(col) {
       class="route-page-btn w-6 h-6 inline-flex items-center justify-center rounded-md ring-1 ring-slate-200 text-[11px] leading-none
       ${disabled ? 'text-slate-300 cursor-not-allowed' : 'text-slate-700 hover:bg-white'}">${label}</button>`;
   box.innerHTML = `
-    ${mk('up', '▲', atFirst, '上一页')}
+    ${mk('up', '▲', atFirst, tr('ui.previous_page'))}
     <span class="text-[10.5px] text-slate-500 tabular-nums px-1">${st.page + 1}/${pages}</span>
-    ${mk('down', '▼', atLast, '下一页')}
-    <span class="text-[10px] text-slate-400 ml-1">${st.total} 人</span>`;
+    ${mk('down', '▼', atLast, tr('ui.next_page'))}
+    <span class="text-[10px] text-slate-400 ml-1">${tr('ui.p4_users', { p4: (st.total) })}</span>`;
   box.querySelectorAll('.route-page-btn').forEach(btn => {
     btn.onclick = (ev) => {
       ev.preventDefault();
@@ -724,7 +730,7 @@ function _paintColList(col) {
   const body = document.getElementById('route-list-' + col);
   if (!body || !st) return;
   body.innerHTML = (st.users || []).map(_routeUserRowHtml).join('')
-    || `<div class="text-[11px] text-slate-400 py-3">当前无人被推送此${col === 'staging' ? '灰度' : '主干'}版本</div>`;
+    || `<div class="text-[11px] text-slate-400 py-3">${tr('ui.no_current_recipients', { side: tr(col === 'staging' ? 'ui.canary_side' : 'ui.main_side') })}</div>`;
   _paintColPager(col);
 }
 
@@ -743,7 +749,7 @@ async function _fetchRouteCol(col) {
   const st = _routeState.cols[col];
   const seq = ++st.seq;
   const body = document.getElementById('route-list-' + col);
-  if (body) body.innerHTML = `<div class="text-[11px] text-slate-400 py-3">加载中…</div>`;
+  if (body) body.innerHTML = `<div class="text-[11px] text-slate-400 py-3">${tr('ui.loading')}</div>`;
   try {
     const d = await j(_routeUsersUrl({
       filter: col,
@@ -783,13 +789,13 @@ async function _fetchRouteSuggest(q) {
   }
   const seq = ++_routeState.suggestSeq;
   box.classList.remove('hidden');
-  box.innerHTML = `<div class="px-3 py-2 text-[11px] text-slate-400">检索中…</div>`;
+  box.innerHTML = `<div class="px-3 py-2 text-[11px] text-slate-400">${tr('ui.searching')}</div>`;
   try {
     const d = await j(_routeUsersUrl({ q, limit: '8' }));
     if (seq !== _routeState.suggestSeq) return;
     _routeState.suggest = d.users || [];
     if (!_routeState.suggest.length) {
-      box.innerHTML = `<div class="px-3 py-2 text-[11px] text-slate-400">无匹配（最多返回 8 条）</div>`;
+      box.innerHTML = `<div class="px-3 py-2 text-[11px] text-slate-400">${tr('ui.no_matches_limit_8')}</div>`;
       return;
     }
     box.innerHTML = `<div class="px-2">${_routeState.suggest.map(_routeUserRowHtml).join('')}</div>`;
@@ -827,19 +833,19 @@ async function loadSkillRouting(name, focusSide) {
   box.innerHTML = `
     <div class="rounded-2xl ring-1 ring-slate-200 p-5" id="skill-routing-card" data-skill="${esc(name)}">
       <div class="flex items-baseline justify-between flex-wrap gap-2">
-        <h3 class="font-semibold text-sm">当前推送对象</h3>
+        <h3 class="font-semibold text-sm">${tr('ui.current_recipients')}</h3>
         <span class="text-[11px] text-slate-400">${meta.has_staging
           ? `staging ${c.staging || 0} · main ${c.main || 0} · manifest ${c.in_manifest || 0}/${c.users || 0}`
-          : `无 staging · 仅 main ${c.main || 0}`}</span>
+          : `${tr('ui.no_staging_main_only_p0', { p0: (c.main || 0) })}`}</span>
       </div>
 
       <div class="mt-3 relative max-w-md">
-        <div class="text-[11px] text-slate-400 mb-1">检索用户 <span class="text-slate-300">· ${
+        <div class="text-[11px] text-slate-400 mb-1">${tr('ui.search_users')} <span class="text-slate-300">· ${
           IDENT && IDENT.role === 'admin'
-            ? '管理员可代 pin / 配 side · ≤8'
-            : '仅可配置自己 · 他人只读 · ≤8'
+            ? tr('ui.admin_route_help')
+            : tr('ui.user_route_help')
         }</span></div>
-        <input id="route-user-q" value="${esc(_routeState.q)}" autocomplete="off" placeholder="输入关键字，如 alice / user-0"
+        <input id="route-user-q" value="${esc(_routeState.q)}" autocomplete="off" placeholder="${esc(tr('ui.user_search_placeholder'))}"
           class="w-full ring-1 ring-slate-200 rounded-lg px-2.5 py-1.5 text-[12.5px] outline-none focus:ring-teal-500 bg-white">
         <div id="route-suggest" class="hidden absolute z-20 left-0 right-0 mt-1 bg-white rounded-xl ring-1 ring-slate-200 shadow-lg max-h-72 overflow-y-auto"></div>
       </div>
@@ -851,7 +857,7 @@ async function loadSkillRouting(name, focusSide) {
               <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-700 ring-1 ring-amber-200">
                 <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>staging
               </span>
-              <span>灰度版推送给</span>
+              <span>${tr('ui.canary_version_pushed_to')}</span>
             </div>
             <div id="route-pager-staging" class="flex items-center"></div>
           </div>
@@ -861,7 +867,7 @@ async function loadSkillRouting(name, focusSide) {
           <div class="flex items-center justify-between gap-2 px-2 mb-1">
             <div class="text-[11px] font-medium text-slate-600 flex items-center gap-1.5">
               <span class="inline-flex items-center px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600 ring-1 ring-slate-200">main</span>
-              <span>主干版推送给</span>
+              <span>${tr('ui.main_version_pushed_to')}</span>
             </div>
             <div id="route-pager-main" class="flex items-center"></div>
           </div>
@@ -904,7 +910,7 @@ async function renderSkillhubDetail(name, box) {
     jc('api/v1/dashboard/skillhub/' + encodeURIComponent(name) + '/ux/atoms?days=30'),
   ]);
   if (vR.status === 'rejected') {
-    box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-rose-600">加载失败：${esc(vR.reason)}</div>`;
+    box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-rose-600">${esc(tr('ui.load_failed', { message: vR.reason }))}</div>`;
     return;
   }
   const d = vR.value;
@@ -916,12 +922,12 @@ async function renderSkillhubDetail(name, box) {
   const vrows = versions.map(v => {
     const isCur = curSha && v.commit_sha === curSha;
     return `<tr><td class="py-2"><code class="text-[11px]">${esc((v.commit_sha || '').slice(0, 8))}</code>`
-      + `${isCur ? ' <span class="px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 ring-1 ring-sky-200 text-[10px] font-medium">当前</span>' : ''}</td>`
+      + `${isCur ? ` <span class="px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 ring-1 ring-sky-200 text-[10px] font-medium">${tr('ui.current')}</span>` : ''}</td>`
       + `<td class="text-right tabular-nums">${v.count}</td>`
       + `<td class="text-right tabular-nums">${ux(v.avg)}</td>`
       + `<td class="text-slate-500 pl-4">${fdate(v.first_scored_at).slice(0, 10)}</td>`
       + `<td class="text-slate-500 pl-4">${fdate(v.last_scored_at).slice(0, 10)}</td></tr>`;
-  }).join('') || '<tr><td colspan="5" class="py-2 text-slate-400">还没有 ux 打分数据</td></tr>';
+  }).join('') || `<tr><td colspan="5" class="py-2 text-slate-400">${tr('ui.no_ux_rating_data_yet')}</td></tr>`;
 
   const scores = at.scores || [];
   const atomUnavailable = (at.atom_lookup !== 'ok');
@@ -935,33 +941,33 @@ async function renderSkillhubDetail(name, box) {
         <span class="px-2 py-0.5 rounded-md bg-teal-50 text-teal-700 text-[11px] font-semibold tabular-nums shrink-0">${s.score != null ? esc(s.score) : '—'}</span>
       </div>
       ${s.reasons ? `<div class="text-[11px] text-slate-500 mt-1">${esc(s.reasons)}</div>` : ''}
-    </div>`).join('') || '<div class="py-2 text-slate-400 text-xs">还没有关联打分原子</div>';
+    </div>`).join('') || `<div class="py-2 text-slate-400 text-xs">${tr('ui.no_related_rating_atoms_yet')}</div>`;
 
   box.innerHTML = `
   <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5">
-    <div class="text-xs text-slate-400 mb-1.5">技能库 <span class="mx-1">/</span> <span class="text-slate-600">${esc(name)}</span></div>
+    <div class="text-xs text-slate-400 mb-1.5">${tr('ui.skills')} <span class="mx-1">/</span> <span class="text-slate-600">${esc(name)}</span></div>
     <div class="flex items-start justify-between gap-3 flex-wrap">
       <div>
         <div class="flex items-center gap-2 flex-wrap">
           <h2 class="text-lg font-bold tracking-tight">${esc(name)}</h2>
-          <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-50 ring-1 ring-sky-200 text-xs font-medium text-sky-700">第三方 · skillhub</span>
+          <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-50 ring-1 ring-sky-200 text-xs font-medium text-sky-700">${tr('ui.third_party_skillhub')}</span>
         </div>
-        <div class="text-slate-500 text-xs mt-1">按 content_sha 版本聚合 · 累计样本 <b class="text-slate-800 tabular-nums">${totalSamples}</b> 次
-          ${curSha ? `· 当前版本 <code class="text-[11px] text-slate-400">${esc(curSha.slice(0, 8))}</code>` : ''}</div>
+        <div class="text-slate-500 text-xs mt-1">${tr('ui.skillhub_version_summary', { count: `<b class="text-slate-800 tabular-nums">${totalSamples}</b>` })}
+          ${curSha ? `${tr('ui.current_version_sha', { sha: `<code class="text-[11px] text-slate-400">${esc(curSha.slice(0, 8))}</code>` })}` : ''}</div>
       </div>
-      <div class="text-[11px] text-slate-400 max-w-[280px]">三方技能无 git / 无灰度 staging，故无进化路径、晋升与灰度裁决版块。</div>
+      <div class="text-[11px] text-slate-400 max-w-[280px]">${tr('ui.third_party_skills_have_no_git_or_canary_staging_so_evolution_promotion_')}</div>
     </div>
 
     <div class="grid grid-cols-12 gap-4 mt-4">
       <div class="col-span-12 lg:col-span-7">
-        <h3 class="font-semibold text-sm">版本统计 <span class="font-normal text-[11px] text-slate-400 ml-1">content_sha 聚合 · 样本 / UX / 首末打分</span></h3>
+        <h3 class="font-semibold text-sm">${tr('ui.version_statistics')} <span class="font-normal text-[11px] text-slate-400 ml-1">${tr('ui.grouped_by_content_sha_samples_ux_first_and_last_rating')}</span></h3>
         <div class="overflow-x-auto"><table class="w-full mt-1 text-[12.5px]">
-          <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">版本</th><th class="text-right font-medium">样本</th><th class="text-right font-medium">UX</th><th class="text-left font-medium pl-4">首次</th><th class="text-left font-medium pl-4">末次</th></tr></thead>
+          <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">${tr('ui.version')}</th><th class="text-right font-medium">${tr('ui.samples')}</th><th class="text-right font-medium">UX</th><th class="text-left font-medium pl-4">${tr('ui.first')}</th><th class="text-left font-medium pl-4">${tr('ui.last')}</th></tr></thead>
           <tbody class="divide-y divide-slate-50">${vrows}</tbody></table></div>
       </div>
       <div class="col-span-12 lg:col-span-5 rounded-2xl ring-1 ring-slate-200 p-5">
-        <h3 class="font-semibold text-sm">关联打分原子 <span class="font-normal text-[11px] text-slate-400 ml-1">${scores.length} 条</span></h3>
-        ${atomUnavailable ? '<div class="text-[11px] text-slate-400 mt-1">非团队服务器模式，原子内容不可反查（仅评分）</div>' : ''}
+        <h3 class="font-semibold text-sm">${tr('ui.related_rating_atoms')} <span class="font-normal text-[11px] text-slate-400 ml-1">${tr('ui.p5_items', { p5: (scores.length) })}</span></h3>
+        ${atomUnavailable ? `<div class="text-[11px] text-slate-400 mt-1">${tr('ui.atom_content_unavailable')}</div>` : ''}
         <div class="mt-1 divide-y divide-slate-100 max-h-80 overflow-y-auto">${arows}</div>
       </div>
     </div>
@@ -984,24 +990,24 @@ async function loadTriggerPanel(name) {
     + `<td class="text-right tabular-nums">${h.n_cases}</td>`
     + `<td class="text-right tabular-nums">${h.catalog_size}</td>`
     + `<td class="text-slate-500 pl-4">${fdate(h.ts)}</td></tr>`).join('')
-    || '<tr><td colspan="6" class="py-2 text-slate-400">还没有离线触发评测</td></tr>';
+    || `<tr><td colspan="6" class="py-2 text-slate-400">${tr('ui.no_offline_trigger_evaluation_yet')}</td></tr>`;
   const crows = (cases.cases || []).map(c =>
     `<tr><td class="py-2 max-w-[280px] truncate" title="${esc(c.query)}">${esc(c.query)}</td>`
-    + `<td class="text-center">${c.should_trigger ? '是' : '否'}</td>`
-    + `<td class="text-center">${c.did_trigger ? '触发' : '未触发'}</td>`
+    + `<td class="text-center">${c.should_trigger ? tr('ui.yes') : tr('ui.no')}</td>`
+    + `<td class="text-center">${c.did_trigger ? tr('ui.triggered') : tr('ui.not_triggered')}</td>`
     + `<td class="text-center">${c.passed
-      ? '<span class="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10.5px] font-medium">通过</span>'
-      : '<span class="px-1.5 py-0.5 rounded bg-rose-50 text-rose-600 text-[10.5px] font-medium">未过</span>'}</td>`
+      ? `<span class="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10.5px] font-medium">${tr('ui.passed')}</span>`
+      : `<span class="px-1.5 py-0.5 rounded bg-rose-50 text-rose-600 text-[10.5px] font-medium">${tr('ui.failed')}</span>`}</td>`
     + `<td class="text-slate-400 text-[11px] max-w-[200px] truncate" title="${esc((c.catalog || []).join(', '))}">${esc((c.catalog || []).join(', '))}</td>`
-    + `<td class="text-right"><button class="trig-rerun px-2.5 py-1 rounded-lg ring-1 ring-slate-200 text-[11px] text-slate-600 hover:bg-slate-50" data-skill="${esc(name)}" data-query="${esc(c.query)}">重跑</button></td></tr>`).join('')
-    || '<tr><td colspan="6" class="py-2 text-slate-400">无 case（该 skill 还没跑过触发优化）</td></tr>';
-  el.innerHTML = `<h3 class="font-semibold text-sm">离线探针触发率 <span class="font-normal text-[11px] text-slate-400 ml-1">描述质量信号——真跑代理在语义相关技能清单里抢触发；区别于上方"总触发"的线上真实使用</span></h3>
+    + `<td class="text-right"><button class="trig-rerun px-2.5 py-1 rounded-lg ring-1 ring-slate-200 text-[11px] text-slate-600 hover:bg-slate-50" data-skill="${esc(name)}" data-query="${esc(c.query)}">${tr('ui.rerun')}</button></td></tr>`).join('')
+    || `<tr><td colspan="6" class="py-2 text-slate-400">${tr('ui.no_cases_trigger_optimization_has_not_run_for_this_skill')}</td></tr>`;
+  el.innerHTML = `<h3 class="font-semibold text-sm">${tr('ui.offline_probe_trigger_rate')} <span class="font-normal text-[11px] text-slate-400 ml-1">${tr('ui.description_quality_signal_a_real_agent_competes_for_activation_among_se')}</span></h3>
     <div class="overflow-x-auto"><table class="w-full mt-1 text-[12.5px]">
-      <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">版本</th><th class="text-right font-medium">test 触发率</th><th class="text-right font-medium">train</th><th class="text-right font-medium">cases</th><th class="text-right font-medium">诱饵数</th><th class="text-left font-medium pl-4">时间</th></tr></thead>
+      <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">${tr('ui.version')}</th><th class="text-right font-medium">${tr('ui.test_trigger_rate')}</th><th class="text-right font-medium">train</th><th class="text-right font-medium">cases</th><th class="text-right font-medium">${tr('ui.decoys')}</th><th class="text-left font-medium pl-4">${tr('ui.time')}</th></tr></thead>
       <tbody class="divide-y divide-slate-50">${hrows}</tbody></table></div>
-    <h3 class="font-semibold text-sm mt-3">逐 case <span class="font-normal text-[11px] text-slate-400 ml-1">实验 ${esc(cases.exp || '—')} · 点"重跑"用当前描述真跑一轮探针</span></h3>
+    <h3 class="font-semibold text-sm mt-3">${tr('ui.per_case_results')} <span class="font-normal text-[11px] text-slate-400 ml-1">${tr('ui.experiment_p1_select_rerun_to_execute_a_probe_with_the_current_descripti', { p1: (esc(cases.exp || '—')) })}</span></h3>
     <div class="overflow-x-auto"><table class="w-full mt-1 text-[12.5px]">
-      <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">query</th><th class="text-center font-medium">应触发</th><th class="text-center font-medium">实测</th><th class="text-center font-medium">判定</th><th class="text-left font-medium">诱饵清单</th><th></th></tr></thead>
+      <thead><tr class="text-[11px] text-slate-400 border-b border-slate-100"><th class="text-left font-medium py-2">query</th><th class="text-center font-medium">${tr('ui.expected')}</th><th class="text-center font-medium">${tr('ui.actual')}</th><th class="text-center font-medium">${tr('ui.result')}</th><th class="text-left font-medium">${tr('ui.decoy_list')}</th><th></th></tr></thead>
       <tbody class="divide-y divide-slate-50">${crows}</tbody></table></div>`;
 }
 
@@ -1010,7 +1016,7 @@ let _curTraj = null;
 async function openTraj(trajId, atomId) {
   _curTraj = trajId;
   const box = document.getElementById('traj-detail');
-  box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400">加载 ${esc(trajId)} …</div>`;
+  box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400">${tr('ui.loading_p0', { p0: (esc(trajId)) })}</div>`;
   let meta, atoms;
   try {
     [meta, atoms] = await Promise.all([
@@ -1018,14 +1024,14 @@ async function openTraj(trajId, atomId) {
       jc('api/v1/dashboard/traj/' + encodeURIComponent(trajId) + '/atoms'),
     ]);
   } catch (e) {
-    box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-rose-600">轨迹加载失败：${esc(e.message)}</div>`;
+    box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-rose-600">${tr('ui.could_not_load_trajectory_p0', { p0: (esc(e.message)) })}</div>`;
     return;
   }
   const list = atoms.atoms || [];
   const steps = list.map((a, i) => {
     const orphan = a.chain === 'orphan';
     const num = String(i + 1).padStart(2, '0');
-    return `<div class="flex flex-col items-center w-36 shrink-0 text-center cursor-pointer atom-step" data-atom="${esc(a.atom_id)}" ${orphan ? 'title="链表断裂，按位置排序"' : ''}>
+    return `<div class="flex flex-col items-center w-36 shrink-0 text-center cursor-pointer atom-step" data-atom="${esc(a.atom_id)}" ${orphan ? `title="${esc(tr('ui.broken_chain_title'))}"` : ''}>
       <div class="w-9 h-9 rounded-full ${orphan ? 'bg-amber-400 ring-4 ring-amber-100 text-white' : 'bg-white ring-2 ring-slate-300 text-slate-500'} flex items-center justify-center text-[11px] font-semibold z-10 atom-dot">${num}</div>
       <div class="mt-2.5 font-medium text-slate-700 text-xs line-clamp-2" title="${esc(a.intent)}">${esc(a.intent) || esc(a.atom_id)}</div>
       <div class="text-[11px] text-slate-400 mt-0.5">${a.ux_score != null ? 'ux ' + esc(a.ux_score) : ''}</div>
@@ -1033,23 +1039,23 @@ async function openTraj(trajId, atomId) {
   }).join('');
   box.innerHTML = `
   <div class="bg-white rounded-2xl ring-1 ring-slate-200 p-6">
-    <div class="text-xs text-slate-400 mb-1.5">轨迹 &amp; 原子 <span class="mx-1">/</span> <span class="text-slate-600 font-mono">${esc(trajId)}</span></div>
+    <div class="text-xs text-slate-400 mb-1.5">${tr('ui.trajectory_atom_breadcrumb')} <span class="mx-1">/</span> <span class="text-slate-600 font-mono">${esc(trajId)}</span></div>
     <div class="flex items-start justify-between gap-3 flex-wrap">
       <h2 class="text-lg font-bold tracking-tight font-mono break-all">${esc(trajId)}</h2>
       <div class="flex gap-2 text-xs flex-wrap">
         <span class="px-2.5 py-1 rounded-lg bg-white ring-1 ring-slate-200 text-slate-600">${esc(meta.harness) || '?'} · ${esc(meta.model) || '?'}</span>
         <span class="px-2.5 py-1 rounded-lg bg-white ring-1 ring-slate-200 text-slate-600">${esc(meta.user)}</span>
         <span class="px-2.5 py-1 rounded-lg ${meta.status === 'done' ? 'bg-emerald-50 ring-1 ring-emerald-200 text-emerald-700' : meta.status === 'error' ? 'bg-rose-50 ring-1 ring-rose-200 text-rose-700' : 'bg-slate-100 ring-1 ring-slate-200 text-slate-600'} font-medium">${esc(meta.status)}</span>
-        <span class="px-2.5 py-1 rounded-lg bg-white ring-1 ring-slate-200 text-slate-600">原子 <b class="tabular-nums">${meta.atoms}</b></span>
+        <span class="px-2.5 py-1 rounded-lg bg-white ring-1 ring-slate-200 text-slate-600">${tr('ui.atoms')} <b class="tabular-nums">${meta.atoms}</b></span>
         <span class="px-2.5 py-1 rounded-lg bg-white ring-1 ring-slate-200 text-slate-600">${fdate(meta.discovered_at)}</span>
       </div>
     </div>
-    <h3 class="font-semibold text-sm mt-6">原子时间线 <span class="font-normal text-[11px] text-slate-400 ml-2">按链表序 pre/post_atom_id · 点击节点查看详情</span></h3>
+    <h3 class="font-semibold text-sm mt-6">${tr('ui.atom_timeline')} <span class="font-normal text-[11px] text-slate-400 ml-2">${tr('ui.ordered_by_pre_post_atom_id_chain_select_a_node_for_details')}</span></h3>
     ${list.length ? `<div class="relative mt-6 overflow-x-auto pb-2">
       <div class="relative flex gap-2 min-w-max px-2">
         <div class="absolute left-6 right-6 top-[17px] h-0.5 bg-slate-200"></div>
         ${steps}
-      </div></div>` : '<div class="text-slate-400 text-xs mt-3">该轨迹还没有拆出原子</div>'}
+      </div></div>` : `<div class="text-slate-400 text-xs mt-3">${tr('ui.no_atoms_have_been_extracted_from_this_trajectory')}</div>`}
     ${relationGraph(trajId, list)}
     <div id="atom-detail" class="mt-4"></div>
   </div>`;
@@ -1085,8 +1091,8 @@ function relationGraph(trajId, atoms) {
       <rect x="300" y="${sy(i) - 15}" width="150" height="30" rx="9" fill="#f0fdfa" stroke="#99f6e4"/>
       <text x="375" y="${sy(i) + 4}" font-size="10.5" text-anchor="middle" fill="#0f766e" font-weight="600">${esc(sk.length > 22 ? sk.slice(0, 21) + '…' : sk)}</text>
     </g>`).join('');
-  return `<h3 class="font-semibold text-sm mt-6">关系图 <span class="font-normal text-[11px] text-slate-400 ml-2">traj — atom — skill · 贡献边标 weightscore · 点节点跳转</span></h3>
-    ${skills.length ? '' : '<div class="text-[11px] text-slate-400 mt-1">该轨迹的原子尚未进入任何 skill（无贡献边）</div>'}
+  return `<h3 class="font-semibold text-sm mt-6">${tr('ui.relationship_graph')} <span class="font-normal text-[11px] text-slate-400 ml-2">${tr('ui.traj_atom_skill_contribution_edges_show_weightscore_select_a_node_to_nav')}</span></h3>
+    ${skills.length ? '' : `<div class="text-[11px] text-slate-400 mt-1">${tr('ui.no_atoms_from_this_trajectory_have_entered_a_skill_yet_no_contribution_e')}</div>`}
     <svg viewBox="0 0 470 ${H}" class="mt-2" style="max-width:470px">
       <rect x="10" y="${midY - 16}" width="86" height="32" rx="9" fill="#134e4a"/>
       <text x="53" y="${midY + 4}" font-size="10" fill="#fff" text-anchor="middle" font-family="ui-monospace,monospace">${esc(trajId.length > 12 ? trajId.slice(0, 11) + '…' : trajId)}</text>
@@ -1097,7 +1103,7 @@ function relationGraph(trajId, atoms) {
 async function openAtom(trajId, atomId) {
   const el = document.getElementById('atom-detail');
   if (!el) return;
-  el.innerHTML = '<div class="text-slate-400 text-xs">加载原子…</div>';
+  el.innerHTML = `<div class="text-slate-400 text-xs">${tr('ui.loading_atom')}</div>`;
   // 高亮选中节点
   document.querySelectorAll('.atom-step .atom-dot').forEach(d => {
     d.classList.remove('bg-teal-600', 'ring-4', 'ring-teal-100', 'text-white');
@@ -1111,7 +1117,7 @@ async function openAtom(trajId, atomId) {
   try {
     a = await jc('api/v1/dashboard/traj/' + encodeURIComponent(trajId) + '/atom/' + encodeURIComponent(atomId));
   } catch (e) {
-    el.innerHTML = `<div class="text-rose-600 text-xs">原子加载失败:${esc(e.message)}</div>`;
+    el.innerHTML = `<div class="text-rose-600 text-xs">${tr('ui.could_not_load_atom_p0', { p0: (esc(e.message)) })}</div>`;
     return;
   }
   const chips = arr => (arr || []).map(t =>
@@ -1120,11 +1126,11 @@ async function openAtom(trajId, atomId) {
     `<span class="skill-jump px-2 py-0.5 rounded-md bg-teal-50 ring-1 ring-teal-200 text-teal-700 text-[11px] font-medium cursor-pointer" data-skill="${esc(s)}">${esc(s)}</span>`).join(' ') || '<span class="text-slate-300">—</span>';
   const dest = (a.destinations || []).map(d =>
     `<span class="skill-jump text-teal-700 font-medium underline decoration-teal-200 underline-offset-2 cursor-pointer" data-skill="${esc(d.skill)}">${esc(d.skill)}</span>
-     <span class="text-slate-500">（weightscore ${d.weightscore != null ? esc(d.weightscore) : '—'} · ${d.state === 'adopted' ? '已采纳' : '候选中'}）</span>`).join('<br>')
-    || '<span class="text-slate-400">未进入任何 skill</span>';
+     <span class="text-slate-500">（weightscore ${d.weightscore != null ? esc(d.weightscore) : '—'} · ${d.state === 'adopted' ? tr('ui.adopted') : tr('ui.candidate')}）</span>`).join('<br>')
+    || `<span class="text-slate-400">${tr('ui.not_included_in_any_skill')}</span>`;
   const rawBlock = a.raw_status === 'source_cleaned'
-    ? '<div class="rounded-xl bg-slate-900 p-4 font-mono text-[11.5px] text-rose-400">源已清理（轨迹原文已过期回收，保留原子记录）</div>'
-    : `<div class="rounded-xl bg-slate-900 p-4 font-mono text-[11.5px] leading-relaxed text-slate-300 whitespace-pre-wrap max-h-80 overflow-auto">${esc(a.raw || '')}${a.raw_total_chars > 8000 ? `\n<span class="text-slate-500">（截取 8000/${a.raw_total_chars} 字符）</span>` : ''}</div>`;
+    ? `<div class="rounded-xl bg-slate-900 p-4 font-mono text-[11.5px] text-rose-400">${tr('ui.source_cleaned_trajectory')}</div>`
+    : `<div class="rounded-xl bg-slate-900 p-4 font-mono text-[11.5px] leading-relaxed text-slate-300 whitespace-pre-wrap max-h-80 overflow-auto">${esc(a.raw || '')}${a.raw_total_chars > 8000 ? `\n<span class="text-slate-500">${tr('ui.showing_8000_p0_characters', { p0: (a.raw_total_chars) })}</span>` : ''}</div>`;
   el.innerHTML = `
   <div class="rounded-2xl ring-1 ring-slate-200 p-5">
     <div class="flex items-center justify-between">
@@ -1136,10 +1142,10 @@ async function openAtom(trajId, atomId) {
       <div class="flex gap-4"><dt class="w-20 text-slate-400 shrink-0">summary</dt><dd class="text-slate-800">${esc(a.summary) || '—'}</dd></div>
       <div class="flex gap-4"><dt class="w-20 text-slate-400 shrink-0">tags</dt><dd class="flex gap-1.5 flex-wrap">${chips(a.tags)}</dd></div>
       <div class="flex gap-4"><dt class="w-20 text-slate-400 shrink-0">used_skills</dt><dd class="flex gap-1.5 flex-wrap">${skillChips}</dd></div>
-      <div class="flex gap-4"><dt class="w-20 text-slate-400 shrink-0">去向</dt><dd class="text-slate-800">${dest}</dd></div>
-      <div class="flex gap-4"><dt class="w-20 text-slate-400 shrink-0">offset</dt><dd class="tabular-nums text-slate-600">行 ${a.offset_start} – ${a.offset_end}</dd></div>
+      <div class="flex gap-4"><dt class="w-20 text-slate-400 shrink-0">${tr('ui.destinations')}</dt><dd class="text-slate-800">${dest}</dd></div>
+      <div class="flex gap-4"><dt class="w-20 text-slate-400 shrink-0">offset</dt><dd class="tabular-nums text-slate-600">${tr('ui.lines_p7_p8', { p7: (a.offset_start), p8: (a.offset_end) })}</dd></div>
     </dl>
-    <div class="text-[11px] text-slate-400 mt-5 mb-1.5">原文切片（按 offset 行号定位 · 只读）</div>
+    <div class="text-[11px] text-slate-400 mt-5 mb-1.5">${tr('ui.source_excerpt_located_by_offset_line_numbers_read_only')}</div>
     ${rawBlock}
   </div>`;
 }
@@ -1150,15 +1156,15 @@ async function loadDirs() {
     `<tr><td class="py-2"><span class="px-2 py-0.5 rounded-md bg-teal-50 text-teal-700 text-[11px] font-medium">${esc(x.ecosystem || 'manual')}</span></td>`
     + `<td class="text-right tabular-nums">${x.traj_count}</td>`
     + `<td class="text-right tabular-nums">${x.indexed_count}</td>`
-    + `<td class="pl-6 text-slate-500 font-mono text-[11px]">${x.path ? esc(x.path) : '独立只读实例隐藏路径'}</td></tr>`).join(''),
-    '还没有注册目录');
+    + `<td class="pl-6 text-slate-500 font-mono text-[11px]">${x.path ? esc(x.path) : tr('ui.path_hidden_in_standalone_read_only_mode')}</td></tr>`).join(''),
+    tr('ui.no_registered_directories_yet'));
 }
 
 // ── 用户 & 画像 ──────────────────────────────────────────────────
 async function loadUsersStatus() {
   const d = await jc('api/v1/dashboard/users/status');
   const users = d.users || [];
-  put('users.online', `在线 ${d.online} / ${users.length}`);
+  put('users.online', `${tr('ui.p0_p1_online', { p0: (d.online), p1: (users.length) })}`);
   const rEl = document.getElementById('users-reason');
   if (d.reason) rEl.innerHTML = `<div class="mt-2 rounded-xl bg-slate-50 ring-1 ring-slate-100 px-3.5 py-2 text-[11px] text-slate-400">${esc(d.reason)}</div>`;
   rows('ustatus-body', users.map(u => {
@@ -1166,21 +1172,21 @@ async function loadUsersStatus() {
       `<span class="px-1.5 py-0.5 rounded bg-teal-50 text-teal-700 text-[10.5px]">${esc(h.harness)} ${h.pct}%</span>`).join(' ') || '<span class="text-slate-300">—</span>';
     const topM = (u.models || [])[0];
     const model = u.trajs <= 1
-      ? '<span class="text-slate-400">样本不足</span>'
+      ? `<span class="text-slate-400">${tr('ui.sample_insufficient')}</span>`
       : topM ? `${esc(topM.model)} <span class="text-slate-400">${topM.pct}%</span>` : '<span class="text-slate-300">—</span>';
     return `<tr data-uid="${esc(u.user)}" class="cursor-pointer hover:bg-slate-50">
       <td class="py-2.5"><span class="flex items-center gap-2">${avatar(u.user)}<b>${esc(u.user)}</b></span></td>
       <td>${u.online
-        ? '<span class="inline-flex items-center gap-1.5 text-emerald-600 font-medium text-xs"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>在线</span>'
-        : '<span class="inline-flex items-center gap-1.5 text-slate-400 text-xs"><span class="w-2 h-2 rounded-full bg-slate-300"></span>离线</span>'}</td>
+        ? `<span class="inline-flex items-center gap-1.5 text-emerald-600 font-medium text-xs"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>${tr('ui.online')}</span>`
+        : `<span class="inline-flex items-center gap-1.5 text-slate-400 text-xs"><span class="w-2 h-2 rounded-full bg-slate-300"></span>${tr('ui.offline')}</span>`}</td>
       <td class="text-slate-500 text-xs">${fdate(u.last_seen)}</td>
       <td class="text-xs">${u.client_version
-        ? `${esc(u.client_version)}${u.version_stale ? ' <span class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px]">落后</span>' : ''}`
-        : '<span class="text-slate-300">未上报</span>'}</td>
+        ? `${esc(u.client_version)}${u.version_stale ? ` <span class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px]">${tr('ui.behind')}</span>` : ''}`
+        : `<span class="text-slate-300">${tr('ui.not_reported')}</span>`}</td>
       <td class="text-right tabular-nums text-slate-600">${u.trajs} · ${u.atoms}</td>
       <td class="pl-6">${hs}</td>
       <td class="text-slate-600 text-xs">${model}</td></tr>`;
-  }).join(''), '暂无团队用户（非 team server 或尚无 client 连接）');
+  }).join(''), tr('ui.no_team_users_not_a_team_server_or_no_clients_connected_yet'));
 }
 
 async function loadTags() {
@@ -1188,12 +1194,12 @@ async function loadTags() {
   const el = document.getElementById('tagcloud');
   const tags = d.tags || [];
   if (!el) return;
-  if (!tags.length) { el.innerHTML = '<span class="text-slate-400">暂无标签（轨迹还没拆出带 tags 的原子）</span>'; return; }
+  if (!tags.length) { el.innerHTML = `<span class="text-slate-400">${tr('ui.no_tags_yet_no_atoms_with_tags_have_been_extracted')}</span>`; return; }
   const max = Math.max(...tags.map(t => t.count)), min = Math.min(...tags.map(t => t.count));
   el.innerHTML = tags.map(t => {
     const sz = (12 + (max > min ? (t.count - min) / (max - min) * 16 : 4)).toFixed(0);
     const users = (t.users || []).map(esc).join(' ');
-    return `<span class="tagchip inline-block px-2 py-0.5 rounded-lg bg-teal-50 text-teal-700 mr-2 mb-1" data-users="${users}" title="${esc(t.count)} 次" style="font-size:${sz}px">${esc(t.tag)}</span>`;
+    return `<span class="tagchip inline-block px-2 py-0.5 rounded-lg bg-teal-50 text-teal-700 mr-2 mb-1" data-users="${users}" title="${esc(tr('ui.p1_times', { p1: t.count }))}" style="font-size:${sz}px">${esc(t.tag)}</span>`;
   }).join(' ');
 }
 
@@ -1227,7 +1233,7 @@ async function loadCanary() {
       : `<span class="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 text-[11px] font-medium">${esc(s.side)}</span>`}</td>`
     + `<td class="text-right tabular-nums">${s.uses}</td>`
     + `<td class="text-right tabular-nums">${ux(s.avg_ux)}</td></tr>`).join(''),
-    '还没有灰度使用记录');
+    tr('ui.no_canary_usage_records_yet'));
 }
 
 // ═════════════ 流水线 Monitor（四栏固定席位：后两栏共用 edit 池） ═════════════
@@ -1235,16 +1241,16 @@ async function loadCanary() {
 // 点选席位/任务后 pipeline/log 轮询日志尾巴。禁止 fallback：状态文件缺失、
 // 日志不存在、席位已腾空一律显式空态，绝不编造。
 const PM_POOLS = [
-  { key: 'split', title: 'Split', subtitle: '轨迹', weight: true, batch: false },
-  { key: 'cluster', title: 'Cluster', subtitle: 'atom 批', weight: true, batch: true },
-  { key: 'edit', title: 'SkillEditAgent', subtitle: 'A→B 转移', weight: true, batch: true },
-  { key: 'generate', title: 'GenerateAgent', subtitle: '与 SkillEdit 共用席位', weight: true, batch: false, shared: 'edit' },
+  { key: 'split', title: 'Split', subtitle: tr('ui.trajectories'), weight: true, batch: false },
+  { key: 'cluster', title: 'Cluster', subtitle: tr('ui.atom_batches'), weight: true, batch: true },
+  { key: 'edit', title: 'SkillEditAgent', subtitle: tr('ui.a_b_transfer'), weight: true, batch: true },
+  { key: 'generate', title: 'GenerateAgent', subtitle: tr('ui.shares_slots_with_skilledit'), weight: true, batch: false, shared: 'edit' },
 ];
 const PM_XFER = {
-  baby_main: { from: 'baby', to: 'main', tip: '冷启动消化后 graduate' },
-  main_staging: { from: 'main', to: 'staging', tip: '产灰度候选' },
-  staging_main: { from: 'staging', to: 'main', tip: 'Jam 强砍回 main' },
-  main_scripting: { from: 'main', to: 'scripting', tip: '把主干技能脚本化（实验性）', label: 'main scripting' },
+  baby_main: { from: 'baby', to: 'main', tip: tr('ui.stage_baby_main_tip') },
+  main_staging: { from: 'main', to: 'staging', tip: tr('ui.stage_main_staging_tip') },
+  staging_main: { from: 'staging', to: 'main', tip: tr('ui.stage_staging_main_tip') },
+  main_scripting: { from: 'main', to: 'scripting', tip: tr('ui.make_the_current_main_skill_more_executable_as_a_script'), label: 'main scripting' },
 };
 const PM_POLL_MS = 3000, PM_LOG_MS = 2500;
 let pmState = null;      // 最近一次 live 响应
@@ -1279,8 +1285,8 @@ function pmRenderBubbles() {
   const d = pmState, el = document.getElementById('pm-bubbles');
   if (!d) { el.innerHTML = ''; return; }
   if (!d.pools) {  // running:false 的显式空态（无状态文件 / 空上报）
-    el.innerHTML = `<div class="pm-bubble bad ring-1 ring-slate-200"><span class="pm-dot"></span><span class="k">心跳</span><span class="v">已停</span></div>`
-      + `<div class="pm-bubble ring-1 ring-slate-200"><span class="k">${esc(d.message || 'agent-worker 未在运行')}</span></div>`;
+    el.innerHTML = `<div class="pm-bubble bad ring-1 ring-slate-200"><span class="pm-dot"></span><span class="k">${tr('ui.heartbeat')}</span><span class="v">${tr('ui.stopped')}</span></div>`
+      + `<div class="pm-bubble ring-1 ring-slate-200"><span class="k">${esc(d.message || tr('ui.agent_worker_is_not_running'))}</span></div>`;
     return;
   }
   const llm = d.llm || {};
@@ -1289,18 +1295,18 @@ function pmRenderBubbles() {
     (n, p) => n + ((d.pools[p.key] || {}).failed || 0), 0);
   const hbAge = Math.max(0, Date.now() / 1000 - (d.heartbeat_at || 0));
   let html = `<div class="pm-bubble ${d.running && d.ok !== false ? '' : 'bad'} ring-1 ring-slate-200">`
-    + `<span class="pm-dot"></span><span class="k">心跳</span>`
-    + `<span class="v">${d.running ? pmAgeText(hbAge) + '前' : '已停'}</span></div>`;
-  html += `<div class="pm-bubble ring-1 ring-slate-200"><span class="k">模型请求</span><span class="v">${llm.inflight || 0}</span></div>`;
-  if (quotaWait > 0) html += `<div class="pm-bubble warn ring-1 ring-slate-200"><span class="pm-dot"></span><span class="k">配额排队</span><span class="v">${quotaWait}</span></div>`;
-  html += `<div class="pm-bubble ring-1 ring-slate-200"><span class="k">未归类原子</span><span class="v">${d.pending_atoms || 0}</span></div>`;
+    + `<span class="pm-dot"></span><span class="k">${tr('ui.heartbeat')}</span>`
+    + `<span class="v">${d.running ? tr('ui.age_ago', { age: pmAgeText(hbAge) }) : tr('ui.stopped')}</span></div>`;
+  html += `<div class="pm-bubble ring-1 ring-slate-200"><span class="k">${tr('ui.model_requests')}</span><span class="v">${llm.inflight || 0}</span></div>`;
+  if (quotaWait > 0) html += `<div class="pm-bubble warn ring-1 ring-slate-200"><span class="pm-dot"></span><span class="k">${tr('ui.quota_queue')}</span><span class="v">${quotaWait}</span></div>`;
+  html += `<div class="pm-bubble ring-1 ring-slate-200"><span class="k">${tr('ui.unclassified_atoms')}</span><span class="v">${d.pending_atoms || 0}</span></div>`;
   const reverseSync = d.reverse_sync || {};
   const reverseFailures = Array.isArray(reverseSync.failures) ? reverseSync.failures : [];
   if (reverseFailures.length > 0) {
-    const detail = reverseFailures.map(f => `${f.skill || '未知技能'} · ${f.ecosystem || '未知生态'} · ${f.error_type || 'REVERSE_SYNC_FAILED'}`).join('\n');
-    html += `<div class="pm-bubble bad ring-1 ring-slate-200" title="${esc(detail)}"><span class="pm-dot"></span><span class="k">回流受阻</span><span class="v">${reverseFailures.length}</span></div>`;
+    const detail = reverseFailures.map(f => `${f.skill || tr('ui.unknown_skill')} · ${f.ecosystem || tr('ui.unknown_ecosystem')} · ${f.error_type || 'REVERSE_SYNC_FAILED'}`).join('\n');
+    html += `<div class="pm-bubble bad ring-1 ring-slate-200" title="${esc(detail)}"><span class="pm-dot"></span><span class="k">${tr('ui.reverse_sync_blocked')}</span><span class="v">${reverseFailures.length}</span></div>`;
   }
-  if (failed > 0) html += `<div class="pm-bubble bad ring-1 ring-slate-200"><span class="pm-dot"></span><span class="k">异常</span><span class="v">${failed}</span></div>`;
+  if (failed > 0) html += `<div class="pm-bubble bad ring-1 ring-slate-200"><span class="pm-dot"></span><span class="k">${tr('ui.issues')}</span><span class="v">${failed}</span></div>`;
   for (const p of PM_POOLS) {
     const pool = d.pools[p.key] || {};
     html += `<div class="pm-bubble ring-1 ring-slate-200"><span class="k">${p.title}</span><span class="v">${pmOccupied(pool).length}/${pool.workers || 0}</span></div>`;
@@ -1324,15 +1330,15 @@ function pmTaskCard(task, poolKey, selKey) {
     return `<div class="pm-card${sel}"${open}${style}>
       <div class="nm font-mono">${esc(task.skill_name)}</div>
       ${xferHtml}
-      <div class="inf">${task.candidates != null ? `cand <b>${esc(task.candidates)}</b> · ` : ''}${task.weightscore != null ? `ws <b>${esc(task.weightscore)}</b> · ` : ''}${task._age != null ? pmAgeText(task._age) : '排队中'}</div>
+      <div class="inf">${task.candidates != null ? `cand <b>${esc(task.candidates)}</b> · ` : ''}${task.weightscore != null ? `ws <b>${esc(task.weightscore)}</b> · ` : ''}${task._age != null ? pmAgeText(task._age) : tr('ui.queued')}</div>
     </div>`;
   }
   if (task.kind === 'atom_batch') {
     const ids = task.atom_ids || [];
     const preview = ids.slice(0, 4).map(a => `<code class="font-mono" style="font-size:10px;color:#0f766e">${esc(a)}</code>`).join(' ');
     return `<div class="pm-card${sel}"${open}${style}>
-      <div class="nm">本批 ${ids.length} 个原子</div>
-      <div class="inf">${task._age != null ? pmAgeText(task._age) : '排队中'}</div>
+      <div class="nm">${tr('ui.p3_atoms_in_this_batch', { p3: (ids.length) })}</div>
+      <div class="inf">${task._age != null ? pmAgeText(task._age) : tr('ui.queued')}</div>
       <div class="mt-1 flex flex-wrap gap-1">${preview}${ids.length > 4 ? `<span class="inf">+${ids.length - 4}</span>` : ''}</div>
     </div>`;
   }
@@ -1340,13 +1346,13 @@ function pmTaskCard(task, poolKey, selKey) {
     const preview = task.instruction || '';
     return `<div class="pm-card${sel}"${open}${style}>
       <div class="nm font-mono">${esc(task.user_id || task.job_id || '?')}</div>
-      <div class="inf">${preview ? esc(preview) + ' · ' : ''}${task._age != null ? pmAgeText(task._age) : '排队中'}</div>
+      <div class="inf">${preview ? esc(preview) + ' · ' : ''}${task._age != null ? pmAgeText(task._age) : tr('ui.queued')}</div>
     </div>`;
   }
   // traj（拆分代理没有任务名，只有轨迹 id）
   return `<div class="pm-card${sel}"${open}${style}>
     <div class="nm font-mono">${esc(task.traj_id || '?')}</div>
-    <div class="inf">${esc(task.watch_dir || '')}${task._age != null ? ' · ' + pmAgeText(task._age) : ' · 排队中'}</div>
+    <div class="inf">${esc(task.watch_dir || '')}${task._age != null ? ' · ' + pmAgeText(task._age) : tr('ui.queued_suffix')}</div>
   </div>`;
 }
 
@@ -1355,7 +1361,7 @@ function pmRenderStages() {
   const d = pmState;
   if (!d || !d.pools) {
     wrap.innerHTML = `<div class="pm-stage ring-1 ring-slate-200" style="align-items:center;justify-content:center;min-height:160px">
-      <span class="text-slate-400 text-xs">${esc((d && d.message) || 'agent-worker 未在运行')}</span></div>`;
+      <span class="text-slate-400 text-xs">${esc((d && d.message) || tr('ui.agent_worker_is_not_running'))}</span></div>`;
     return;
   }
   wrap.innerHTML = PM_POOLS.map(def => {
@@ -1366,34 +1372,34 @@ function pmRenderStages() {
     const admin = typeof IDENT !== 'undefined' && IDENT && IDENT.role === 'admin' && !def.shared;
     const seatOn = pmChipEdit && pmChipEdit.pool === def.key && pmChipEdit.field === 'workers' ? ' on' : '';
     const seatChip = admin
-      ? `<button type="button" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 hover:bg-slate-100${seatOn}" data-pm-pool="${def.key}" data-pm-field="workers" title="点击修改席位">席位 ${pool.workers ?? '—'}</button>`
-      : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600" title="${def.shared ? '与 SkillEdit 共用座位' : 'pools.' + def.key + '.workers'}">席位 ${pool.workers ?? '—'}</span>`;
+      ? `<button type="button" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 hover:bg-slate-100${seatOn}" data-pm-pool="${def.key}" data-pm-field="workers" title="${esc(tr('ui.click_to_edit_slots'))}">${tr('ui.slots_p2', { p2: (pool.workers ?? '—') })}</button>`
+      : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600" title="${esc(def.shared ? tr('ui.shared_edit_slots') : 'pools.' + def.key + '.workers')}">${tr('ui.slots_p1', { p1: (pool.workers ?? '—') })}</span>`;
     chips.push(seatChip);
     if (def.shared) {
-      chips.push(`<span class="text-[10px] px-1.5 py-0.5 rounded bg-teal-50 text-teal-700" title="有 generate 在等时，大模型名额先给它">大模型优先</span>`);
+      chips.push(`<span class="text-[10px] px-1.5 py-0.5 rounded bg-teal-50 text-teal-700" title="${esc(tr('ui.prioritize_large_model_capacity_when_generate_is_waiting'))}">${tr('ui.large_model_priority')}</span>`);
     } else if (def.weight && pool.llm_weight != null) {
       const weightOn = pmChipEdit && pmChipEdit.pool === def.key && pmChipEdit.field === 'llm_weight' ? ' on' : '';
       const weightChip = admin
-        ? `<button type="button" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 hover:bg-slate-100${weightOn}" data-pm-pool="${def.key}" data-pm-field="llm_weight" title="点击修改配额比">配额比 ${esc(pool.llm_weight)}</button>`
-        : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600" title="pools.${def.key}.llm_weight">配额比 ${esc(pool.llm_weight)}</span>`;
+        ? `<button type="button" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 hover:bg-slate-100${weightOn}" data-pm-pool="${def.key}" data-pm-field="llm_weight" title="${esc(tr('ui.click_to_edit_quota_weight'))}">${tr('ui.quota_weight_p2', { p2: (esc(pool.llm_weight)) })}</button>`
+        : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600" title="pools.${def.key}.llm_weight">${tr('ui.quota_weight_p1', { p1: (esc(pool.llm_weight)) })}</span>`;
       chips.push(weightChip);
     }
-    if (def.batch && pool.batch_size != null) chips.push(`<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600" title="pools.${def.key}.batch_size（暂只读）">批量 ${esc(pool.batch_size)}</span>`);
+    if (def.batch && pool.batch_size != null) chips.push(`<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600" title="${esc(tr('ui.pools_p0_batch_size_read_only_for_now', { p0: (def.key) }))}">${tr('ui.batch_p1', { p1: (esc(pool.batch_size)) })}</span>`);
     const seatHtml = seats.map((seat, i) => {
-      if (!seat) return `<button type="button" class="pm-seat" title="席位 ${i + 1} · 空闲"></button>`;
+      if (!seat) return `<button type="button" class="pm-seat" title="${esc(tr('ui.slot_p0_idle', { p0: (i + 1) }))}"></button>`;
       const task = { ...(seat.task || {}), _seat: i, _age: pmSeatAge(seat) };
       const sel = pmSelected && pmSelected.pool === def.key && pmSelected.seat === i;
       const color = pmSeatColor(task._age);
       return `<button type="button" class="pm-seat busy${sel ? ' sel' : ''}" data-pm-open="${def.key}:${i}"
-        title="席位 ${i + 1} · 已跑 ${pmAgeText(task._age)}" style="background:${color};border-color:${color}"></button>`;
+        title="${esc(tr('ui.slot_p3_running_for_p4', { p3: (i + 1), p4: (pmAgeText(task._age)) }))}" style="background:${color};border-color:${color}"></button>`;
     }).join('');
     const activeCards = seats.map((seat, i) => seat && { ...(seat.task || {}), _seat: i, _age: pmSeatAge(seat) })
       .filter(Boolean).map(t => pmTaskCard(t, def.key,
         pmSelected && pmSelected.pool === def.key && pmSelected.seat === t._seat)).join('');
     const queueCards = queue.map((t, i) => pmTaskCard({ ...t, _seat: 'q' + i, _age: null }, def.key, false)).join('');
     const qlabel = def.key === 'cluster'
-      ? `未归类 ${d.pending_atoms || 0} · 排队 ${pool.queued || queue.length}`
-      : `排队 ${pool.queued || queue.length}`;
+      ? `${tr('ui.p0_unclassified_p1_queued', { p0: (d.pending_atoms || 0), p1: (pool.queued || queue.length) })}`
+      : `${tr('ui.p0_queued', { p0: (pool.queued || queue.length) })}`;
     return `<section class="pm-stage ring-1 ring-slate-200">
       <div class="flex items-baseline justify-between gap-1.5">
         <div><div class="font-semibold text-[13px]">${def.title}</div>
@@ -1401,11 +1407,11 @@ function pmRenderStages() {
         <div class="flex flex-wrap gap-1 justify-end">${chips.join('')}</div>
       </div>
       <div class="pm-seats">${seatHtml}</div>
-      <div class="text-[10.5px] text-slate-400 font-medium">进行中 ${pmOccupied(pool).length}</div>
+      <div class="text-[10.5px] text-slate-400 font-medium">${tr('ui.p4_running', { p4: (pmOccupied(pool).length) })}</div>
       <div class="pm-lane">${activeCards || '<div class="text-[11px] text-slate-400">—</div>'}</div>
       <div class="text-[10.5px] text-slate-400 font-medium">${qlabel}</div>
       <div class="pm-lane">${queueCards || '<div class="text-[11px] text-slate-400">—</div>'}</div>
-      <div class="pm-foot"><span>完成 ${pool.completed || 0}</span><span>失败 ${pool.failed || 0}</span></div>
+      <div class="pm-foot"><span>${tr('ui.p8_completed', { p8: (pool.completed || 0) })}</span><span>${tr('ui.p9_failed', { p9: (pool.failed || 0) })}</span></div>
     </section>`;
   }).join('');
 }
@@ -1430,8 +1436,8 @@ function pmRenderDrawer() {
     pmStopLog();
     dr.className = 'pm-drawer empty ring-1 ring-slate-200';
     dr.innerHTML = pmSelected
-      ? '该席位任务已结束 <button type="button" class="pm-btn ghost" data-pm-close>关闭</button>'
-      : '点选进行中的任务看实时日志';
+      ? `${tr('ui.slot_task_finished')} <button type="button" class="pm-btn ghost" data-pm-close>${tr('ui.close')}</button>`
+      : tr('ui.select_a_running_task_to_view_its_live_log');
     if (pmSelected) pmSelected = null;
     return;
   }
@@ -1444,7 +1450,7 @@ function pmRenderDrawer() {
   const existingLog = existingEl ? existingEl.innerHTML : '';
   const stickBottom = pmLogNearBottom(existingEl);
   const savedScroll = existingEl ? existingEl.scrollTop : 0;
-  const logPane = `<div class="pm-log" id="pm-log">${existingLog || '<div class="dim">日志加载中…</div>'}</div>`;
+  const logPane = `<div class="pm-log" id="pm-log">${existingLog || `<div class="dim">${tr('ui.loading_log')}</div>`}</div>`;
   let head = '', logHtml = '';
   if (task.kind === 'skill') {
     const x = PM_XFER[task.xfer];
@@ -1454,29 +1460,29 @@ function pmRenderDrawer() {
         : `<span class="pm-xfer pm-xfer-${task.xfer}" style="margin-top:0">${x.from} <span class="arrow">→</span> ${x.to}</span>`)
       : '';
     head = `<h2 class="font-mono text-sm font-semibold break-all">${esc(task.skill_name)}</h2>
-      <div class="text-[11px] text-slate-400 mt-0.5">${def.title} · 席位 ${pmSelected.seat + 1} · 已跑 ${age}</div>
+      <div class="text-[11px] text-slate-400 mt-0.5">${tr('ui.p1_slot_p2_running_for_p3', { p1: (def.title), p2: (pmSelected.seat + 1), p3: (age) })}</div>
       ${x ? `<div class="flex items-center gap-2 flex-wrap mt-1">${xferHead}<span class="text-xs text-slate-500">${x.tip}</span>
       <span class="text-[11px] text-slate-400">${task.candidates != null ? `cand ${esc(task.candidates)} · ` : ''}${task.weightscore != null ? `ws ${esc(task.weightscore)}` : ''}</span></div>` : ''}`;
     logHtml = logPane;
   } else if (task.kind === 'traj') {
     head = `<h2 class="font-mono text-sm font-semibold break-all">${esc(task.traj_id || '?')}</h2>
-      <div class="text-[11px] text-slate-400 mt-0.5">${def.title} · ${esc(task.watch_dir || '')} · 席位 ${pmSelected.seat + 1} · 已跑 ${age}</div>`;
+      <div class="text-[11px] text-slate-400 mt-0.5">${tr('ui.p1_p2_slot_p3_running_for_p4', { p1: (def.title), p2: (esc(task.watch_dir || '')), p3: (pmSelected.seat + 1), p4: (age) })}</div>`;
     logHtml = logPane;
   } else if (task.kind === 'generate') {
     head = `<h2 class="font-mono text-sm font-semibold break-all">${esc(task.user_id || task.job_id || '?')}</h2>
-      <div class="text-[11px] text-slate-400 mt-0.5">${def.title} · 席位 ${pmSelected.seat + 1} · 已跑 ${age}</div>
+      <div class="text-[11px] text-slate-400 mt-0.5">${tr('ui.p1_slot_p2_running_for_p3', { p1: (def.title), p2: (pmSelected.seat + 1), p3: (age) })}</div>
       <div class="text-xs text-slate-600 mt-1">${esc(task.instruction || '')}</div>`;
     logHtml = logPane;
   } else {  // atom_batch：Cluster 批没有独立日志，展示本批原子名单（概念稿语义）
     const ids = (task.atom_ids || []).map(a => `<code class="font-mono text-[11px] text-teal-700">${esc(a)}</code>`).join(' · ');
-    head = `<h2 class="text-sm font-semibold">本批 ${(task.atom_ids || []).length} 个原子</h2>
-      <div class="text-[11px] text-slate-400 mt-0.5">${def.title} · 席位 ${pmSelected.seat + 1} · 已跑 ${age}</div>
+    head = `<h2 class="text-sm font-semibold">${tr('ui.p0_atoms_in_this_batch', { p0: ((task.atom_ids || []).length) })}</h2>
+      <div class="text-[11px] text-slate-400 mt-0.5">${tr('ui.p1_slot_p2_running_for_p3', { p1: (def.title), p2: (pmSelected.seat + 1), p3: (age) })}</div>
       <div class="flex flex-wrap gap-1.5 mt-1">${ids || '<span class="text-[11px] text-slate-400">—</span>'}</div>`;
-    logHtml = '<div class="pm-log" style="min-height:60px"><div class="dim">Cluster 批没有独立日志文件（逐轮 trace 在 split/edit 任务上）</div></div>';
+    logHtml = `<div class="pm-log" style="min-height:60px"><div class="dim">${tr('ui.cluster_batches_have_no_separate_log_file_per_round_traces_are_on_split_')}</div></div>`;
   }
   dr.className = 'pm-drawer ring-1 ring-slate-200';
   dr.innerHTML = `<div class="flex items-start justify-between gap-2"><div class="min-w-0">${head}</div>
-    <button type="button" class="pm-btn ghost shrink-0" data-pm-close>关闭</button></div>${logHtml}`;
+    <button type="button" class="pm-btn ghost shrink-0" data-pm-close>${tr('ui.close')}</button></div>${logHtml}`;
   const newLog = document.getElementById('pm-log');
   if (newLog && existingLog) {
     newLog.scrollTop = stickBottom ? newLog.scrollHeight : savedScroll;
@@ -1500,17 +1506,17 @@ async function pmPollLog() {
       + '&name=' + encodeURIComponent(name) + '&tail=300');
     const log = document.getElementById('pm-log');
     if (!log) return;
-    if (!r.exists) { log.innerHTML = `<div class="dim">${esc(r.message || '该任务暂无日志文件')}</div>`; return; }
+    if (!r.exists) { log.innerHTML = `<div class="dim">${esc(r.message || tr('ui.no_log_file_for_this_task_yet'))}</div>`; return; }
     const stickBottom = pmLogNearBottom(log);
     log.innerHTML = (r.lines || []).map(l => {
       const cls = pmLogClassify(l);
       return cls ? `<div class="${cls}">${esc(l)}</div>` : `<div>${esc(l)}</div>`;
-    }).join('') || '<div class="dim">（日志为空）</div>';
-    if (r.truncated) log.insertAdjacentHTML('afterbegin', '<div class="dim">…（仅显示日志尾部）</div>');
+    }).join('') || `<div class="dim">${tr('ui.log_is_empty')}</div>`;
+    if (r.truncated) log.insertAdjacentHTML('afterbegin', `<div class="dim">${tr('ui.showing_only_the_end_of_the_log')}</div>`);
     if (stickBottom) log.scrollTop = log.scrollHeight;
   } catch (e) {
     const log = document.getElementById('pm-log');
-    if (log) log.innerHTML = `<div class="err">日志读取失败：${esc(e.message)}</div>`;
+    if (log) log.innerHTML = `<div class="err">${tr('ui.could_not_read_log_p0', { p0: (esc(e.message)) })}</div>`;
   }
 }
 function pmStartLog(kind, name) {
@@ -1528,19 +1534,19 @@ function pmStopLog() {
 
 const PM_CHIP_COPY = {
   workers: {
-    title: '席位',
+    title: tr('ui.slots'),
     hint: {
-      split: '这一栏同时拆几条轨迹。占满后新轨迹先等。下一轮扫描生效，不用重启。',
-      cluster: '这一栏同时归几批原子。占满后新批次先等。下一轮扫描生效，不用重启。',
-      edit: 'SkillEdit 和 Generate 共用这些座位。占满后新任务先等。下一轮扫描生效，不用重启。',
+      split: tr('ui.how_many_trajectories_this_column_splits_concurrently_new_trajectories_w'),
+      cluster: tr('ui.how_many_atom_batches_this_column_clusters_concurrently_new_batches_wait'),
+      edit: tr('ui.skilledit_and_generate_share_these_slots_new_tasks_wait_when_full_takes_'),
     },
   },
   llm_weight: {
-    title: '配额比',
+    title: tr('ui.quota_weight'),
     hint: {
-      split: '拆分、归类、编辑共用大模型并发。数字越大越先拿到空闲名额。有 Generate 在等时仍先给它。',
-      cluster: '拆分、归类、编辑共用大模型并发。数字越大越先拿到空闲名额。有 Generate 在等时仍先给它。',
-      edit: '拆分、归类、编辑共用大模型并发。数字越大越先拿到空闲名额。有 Generate 在等时仍先给它。',
+      split: tr('ui.split_cluster_and_edit_share_large_model_concurrency_higher_values_get_f'),
+      cluster: tr('ui.split_cluster_and_edit_share_large_model_concurrency_higher_values_get_f'),
+      edit: tr('ui.split_cluster_and_edit_share_large_model_concurrency_higher_values_get_f'),
     },
   },
 };
@@ -1607,7 +1613,7 @@ function pmOpenChipPop(pool, field) {
     (copy.hint && copy.hint[pool]) || '';
   pmChipSetError('');
   const saveBtn = pop.querySelector('[data-pm-chip-save]');
-  if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存'; }
+  if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = tr('ui.save'); }
   input.disabled = false;
   input.value = current == null ? '' : String(current);
   pop.hidden = false;
@@ -1628,7 +1634,7 @@ async function pmSaveChipPop() {
   if (!pmChipEdit || pmChipEdit.saving) return;
   const n = pmChipReadValue();
   if (n == null) {
-    pmChipSetError('请填写大于 0 的整数');
+    pmChipSetError(tr('ui.enter_an_integer_greater_than_0'));
     const input = pmChipInput();
     if (input) input.focus();
     return;
@@ -1644,7 +1650,7 @@ async function pmSaveChipPop() {
   const saveBtn = pop && pop.querySelector('[data-pm-chip-save]');
   if (input) input.disabled = true;
   pop.querySelectorAll('button').forEach(b => { b.disabled = true; });
-  if (saveBtn) saveBtn.textContent = '保存中…';
+  if (saveBtn) saveBtn.textContent = tr('ui.saving');
   try {
     const r = await fetch('api/v1/dashboard/admin/pipeline/pools', {
       method: 'PATCH',
@@ -1663,8 +1669,8 @@ async function pmSaveChipPop() {
     pmChipEdit.saving = false;
     if (input) input.disabled = false;
     pop.querySelectorAll('button').forEach(b => { b.disabled = false; });
-    if (saveBtn) saveBtn.textContent = '保存';
-    pmChipSetError('没保存上：' + (err && err.message ? err.message : err));
+    if (saveBtn) saveBtn.textContent = tr('ui.save');
+    pmChipSetError(tr('ui.could_not_save') + (err && err.message ? err.message : err));
   }
 }
 
@@ -1673,7 +1679,7 @@ async function pmFetchLive() {
     pmState = await j('api/v1/dashboard/pipeline/live');  // 不走 jc：每轮都要新数据
     pmFetchAt = Date.now();
   } catch (e) {
-    pmState = { running: false, message: '流水线状态读取失败：' + e.message };
+    pmState = { running: false, message: tr('ui.could_not_read_pipeline_status') + e.message };
   }
   pmRenderBubbles();
   if (pmChipEdit) {
@@ -1760,7 +1766,7 @@ document.addEventListener('keydown', e => {
 window.addEventListener('resize', pmPlaceChipPop);
 
 // ── SPA-lite 路由（hash）─────────────────────────────────────────
-const NAMES = { overview: '总览', skills: '技能库', pipeline: '流水线', traj: '轨迹 & 原子', users: '用户 & 画像', canary: '灰度 Canary', my: '我的', admin: '管理', settings: '设置' };
+const NAMES = { overview: 'ui.overview', skills: 'ui.skills', pipeline: 'ui.pipeline', traj: 'ui.trajectories_and_atoms', users: 'ui.users_and_profiles', canary: 'ui.canary', my: 'ui.my_dashboard', admin: 'ui.admin', settings: 'ui.settings' };
 function showPage(pg) {
   if (!document.getElementById('pg-' + pg)) pg = 'overview';
   document.querySelectorAll('.sec-page').forEach(s => s.classList.remove('on'));
@@ -1772,7 +1778,7 @@ function showPage(pg) {
     n.classList.toggle('font-semibold', on);
     n.classList.toggle('text-slate-500', !on);
   });
-  document.getElementById('pgname').textContent = NAMES[pg] || '总览';
+  document.getElementById('pgname').textContent = tr(NAMES[pg] || 'ui.overview');
   window.scrollTo(0, 0);
   pmSetActive(pg === 'pipeline');   // 只在流水线页轮询，离开即停
 }
@@ -1797,6 +1803,7 @@ function route() {
   showPage(pg);
 }
 window.addEventListener('hashchange', route);
+document.addEventListener('xskill:languagechange', () => window.location.reload());
 
 // ── 全局点击委托 ────────────────────────────────────────────────
 document.addEventListener('click', async e => {
@@ -1836,7 +1843,7 @@ document.addEventListener('click', async e => {
     }
     const pv = document.getElementById('skill-preview');
     if (pv) {
-      pv.innerHTML = '<span class="text-slate-400 text-xs">加载 diff…</span>';
+      pv.innerHTML = `<span class="text-slate-400 text-xs">${tr('ui.loading_diff')}</span>`;
       try {
         const r = await j('api/v1/dashboard/skill/' + encodeURIComponent(_curSkill) + '/diff?sha=' + encodeURIComponent(gn.dataset.gnode));
         pv.innerHTML = renderDiff(r.diff);
@@ -1866,29 +1873,29 @@ document.addEventListener('click', async e => {
   // 逐 case"重跑"：用当前描述真跑一轮探针，结果回填按钮
   const rb = e.target.closest('.trig-rerun');
   if (rb) {
-    rb.disabled = true; rb.textContent = '跑…';
+    rb.disabled = true; rb.textContent = tr('ui.running');
     try {
       const resp = await fetch('api/v1/dashboard/skill/' + encodeURIComponent(rb.dataset.skill) + '/trigger/rerun',
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: rb.dataset.query }) });
       const data = await resp.json();
       rb.classList.remove('ring-slate-200', 'text-slate-600');
-      if (data.error) { rb.textContent = '错误'; rb.classList.add('ring-rose-200', 'text-rose-600'); }
-      else if (data.did_trigger) { rb.textContent = '已触发'; rb.classList.add('ring-emerald-200', 'text-emerald-700'); }
-      else { rb.textContent = '未触发'; rb.classList.add('ring-slate-200', 'text-slate-400'); }
-      rb.title = '诱饵清单: ' + ((data.catalog || []).join(', ') || '空');
-    } catch (err) { rb.textContent = '错误'; }
+      if (data.error) { rb.textContent = tr('ui.errors'); rb.classList.add('ring-rose-200', 'text-rose-600'); }
+      else if (data.did_trigger) { rb.textContent = tr('ui.triggered_2'); rb.classList.add('ring-emerald-200', 'text-emerald-700'); }
+      else { rb.textContent = tr('ui.not_triggered'); rb.classList.add('ring-slate-200', 'text-slate-400'); }
+      rb.title = tr('ui.decoy_list_2') + ((data.catalog || []).join(', ') || tr('ui.empty'));
+    } catch (err) { rb.textContent = tr('ui.errors'); }
     rb.disabled = false;
     return;
   }
   const scriptBtn = e.target.closest('[data-skill-scripting]');
   if (scriptBtn && !scriptBtn.disabled) {
     scriptBtn.disabled = true;
-    scriptBtn.textContent = '已排队…';
+    scriptBtn.textContent = tr('ui.queued_2');
     jpost('api/v1/dashboard/skill/' + encodeURIComponent(scriptBtn.dataset.skillScripting) + '/scripting', {})
-      .then(() => { scriptBtn.textContent = '脚本化进行中'; })
+      .then(() => { scriptBtn.textContent = tr('ui.scriptification_in_progress'); })
       .catch(err => {
         scriptBtn.disabled = false;
-        scriptBtn.textContent = '脚本化（实验性）';
+        scriptBtn.textContent = tr('ui.scriptify_experimental');
         scriptBtn.title = String(err && err.message ? err.message : err);
       });
     return;
@@ -2015,16 +2022,16 @@ let _feedExhausted = false;
 
 function bucketLabel(s) {
   if (s.bucket !== 'pinned') return s.bucket;
-  return s.pin_scope === 'global' ? 'pinned·全局' : (s.user_removable ? 'pinned·自己' : 'pinned·admin');
+  return tr(s.pin_scope === 'global' ? 'ui.pinned_global' : (s.user_removable ? 'ui.pinned_self' : 'ui.pinned_admin'));
 }
 function mySourceBadge(s, withDetail) {
   const src = s.source || 'native';
-  let b = `<span class="src-badge src-native">自产</span>`;
-  if (src === 'skillhub') b = `<span class="src-badge src-hub">第三方</span>`;
-  else if (src === 'upload') b = `<span class="src-badge src-upload">上传</span>`;
+  let b = `<span class="src-badge src-native">${tr('ui.native')}</span>`;
+  if (src === 'skillhub') b = `<span class="src-badge src-hub">${tr('ui.third_party')}</span>`;
+  else if (src === 'upload') b = `<span class="src-badge src-upload">${tr('ui.upload')}</span>`;
   if (src === 'native' && s.producer) {
-    b += ` <span class="text-[10px] text-slate-500">主要贡献人 <b class="font-medium text-slate-700">${esc(s.producer)}</b></span>`;
-    if (withDetail && s.producer_trajs != null) b += ` <span class="src-path">${s.producer_trajs} 条轨迹</span>`;
+    b += ` <span class="text-[10px] text-slate-500">${tr('ui.primary_contributor')} <b class="font-medium text-slate-700">${esc(s.producer)}</b></span>`;
+    if (withDetail && s.producer_trajs != null) b += ` <span class="src-path">${tr('ui.trajectory_count', { count: s.producer_trajs })}</span>`;
   } else if (withDetail) {
     if (s.source_path) b += ` <span class="src-path">${esc(s.source_path)}</span>`;
   }
@@ -2046,7 +2053,7 @@ function sparkline(vals, w, h) {
 }
 
 function contribRelationGraph(trajId, atoms) {
-  if (!atoms.length) return { svg: '<span class="text-slate-400 text-xs">暂无原子</span>', skills: [], H: 40, top: 18, rowH: 78, chipH: 68, atomN: 0, skillN: 0 };
+  if (!atoms.length) return { svg: `<span class="text-slate-400 text-xs">${tr('ui.no_atoms')}</span>`, skills: [], H: 40, top: 18, rowH: 78, chipH: 68, atomN: 0, skillN: 0 };
   const skills = [];
   atoms.forEach(a => (a.destinations || []).forEach(d => {
     if (d.skill && !skills.includes(d.skill)) skills.push(d.skill);
@@ -2083,7 +2090,7 @@ function contribRelationGraph(trajId, atoms) {
   return { svg, skills, H, top, rowH, chipH, atomN: atoms.length, skillN: skills.length };
 }
 function contribSkillChips(skills, layout, metaMap) {
-  if (!skills.length) return '<span class="text-[11px] text-slate-400 px-1">暂无关联 skill</span>';
+  if (!skills.length) return `<span class="text-[11px] text-slate-400 px-1">${tr('ui.no_related_skills')}</span>`;
   const top = layout.top + (Math.max(0, layout.atomN - layout.skillN) * layout.rowH) / 2;
   const chipH = layout.chipH || 68;
   return `<div style="position:relative;height:${layout.H}px;width:268px">${skills.map((sk, i) => {
@@ -2095,7 +2102,7 @@ function contribSkillChips(skills, layout, metaMap) {
       <div class="min-w-0 flex-1">
         <div class="nm">${esc(sk)}</div>
         <div class="meta">${mySourceBadge(m)}<span class="text-[10px] text-slate-500">ux <b class="tabular-nums text-slate-700">${m.ux != null ? esc(m.ux) : '—'}</b></span></div>
-        <div class="text-[10px] text-slate-400 truncate leading-tight">最近 ${recent || '—'} · 最多 ${esc(topU.user || '—')}×${topU.count != null ? topU.count : 0}</div>
+        <div class="text-[10px] text-slate-400 truncate leading-tight">${tr('ui.recent_top', { recent: recent || '—', user: esc(topU.user || '—'), count: topU.count != null ? topU.count : 0 })}</div>
       </div>
       <div class="shrink-0 opacity-90">${sparkline(m.trend || [0])}</div>
     </button>`;
@@ -2126,7 +2133,7 @@ async function renderContribDetail() {
   if (_trajPage >= pages) _trajPage = pages - 1;
   const trajs = d.trajs || [];
   if (!trajs.find(t => t.traj_id === _contribTraj) && trajs[0]) _contribTraj = trajs[0].traj_id;
-  document.getElementById('traj-page-sum').textContent = `${total} 条`;
+  document.getElementById('traj-page-sum').textContent = `${tr('ui.p0_items', { p0: (total) })}`;
   document.getElementById('traj-page-label').textContent = `${_trajPage + 1}/${pages}`;
   document.getElementById('traj-up').disabled = _trajPage === 0;
   document.getElementById('traj-down').disabled = _trajPage >= pages - 1;
@@ -2135,9 +2142,9 @@ async function renderContribDetail() {
     const on = t.traj_id === _contribTraj;
     return `<a href="javascript:void(0)" class="contrib-traj ${on ? 'on' : ''}" data-traj="${esc(t.traj_id)}">
       <code class="text-[11px]">${esc(t.traj_id)}</code>
-      <span class="text-slate-400 ml-1">${t.atoms.length} 原子 · ${adopted} 采纳</span>
+      <span class="text-slate-400 ml-1">${tr('ui.atom_adoption_count', { atoms: t.atoms.length, adopted })}</span>
     </a>`;
-  }).join('') || '<span class="text-[11px] text-slate-400">暂无轨迹</span>';
+  }).join('') || `<span class="text-[11px] text-slate-400">${tr('ui.no_trajectories')}</span>`;
   const cur = trajs.find(t => t.traj_id === _contribTraj) || trajs[0];
   if (!cur) {
     graphEl.innerHTML = '';
@@ -2154,24 +2161,24 @@ let _myUploadSelected = null;
 function renderMyUploadsList() {
   const box = document.getElementById('my-uploads-list');
   const sum = document.getElementById('my-uploads-sum');
-  if (sum) sum.textContent = `${_myUploads.length} 个`;
+  if (sum) sum.textContent = `${tr('ui.p0_items_2', { p0: (_myUploads.length) })}`;
   if (!box) return;
   if (!_myUploads.length) {
-    box.innerHTML = '<div class="text-[11px] text-slate-400 py-2">还没有上传过 skill</div>';
+    box.innerHTML = `<div class="text-[11px] text-slate-400 py-2">${tr('ui.no_skills_uploaded_yet')}</div>`;
     return;
   }
   box.innerHTML = _myUploads.map(s => {
     const on = _myUploadSelected === s.name;
     return `<div class="flex items-stretch gap-1 rounded-lg ring-1 ${on ? 'ring-teal-200 bg-teal-50' : 'ring-slate-100'}">
-      <button type="button" class="skill-jump min-w-0 flex-1 text-left px-2.5 py-2 rounded-lg hover:bg-white/60" data-skill="${esc(s.name)}" title="打开技能详情">
+      <button type="button" class="skill-jump min-w-0 flex-1 text-left px-2.5 py-2 rounded-lg hover:bg-white/60" data-skill="${esc(s.name)}" title="${esc(tr('ui.open_skill_details'))}">
         <div class="text-[12.5px] font-medium text-teal-700 truncate">${esc(s.name)}</div>
         <div class="text-[10.5px] text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
-          <span class="src-badge src-upload">上传</span>
-          <span>${s.uses_30d ?? 0} 次 · ${s.users_30d ?? 0} 人</span>
+          <span class="src-badge src-upload">${tr('ui.upload')}</span>
+          <span>${tr('ui.uses_users', { uses: s.uses_30d ?? 0, users: s.users_30d ?? 0 })}</span>
           <span>ux <b class="text-slate-600 tabular-nums">${s.avg_ux != null ? esc(s.avg_ux) : '—'}</b></span>
         </div>
       </button>
-      <button type="button" class="my-upload-usage shrink-0 px-2 text-[10.5px] text-slate-500 hover:text-teal-700 hover:bg-white/70 rounded-r-lg" data-skill="${esc(s.name)}" title="查看使用情况">使用</button>
+      <button type="button" class="my-upload-usage shrink-0 px-2 text-[10.5px] text-slate-500 hover:text-teal-700 hover:bg-white/70 rounded-r-lg" data-skill="${esc(s.name)}" title="${esc(tr('ui.view_usage'))}">${tr('ui.usage')}</button>
     </div>`;
   }).join('');
 }
@@ -2180,12 +2187,12 @@ async function loadMyUploadUsage(name) {
   const box = document.getElementById('my-uploads-usage');
   if (!box) return;
   if (!name) {
-    box.innerHTML = '<div class="text-[11px] text-slate-400">点左侧旁的「使用」查看谁在用、评分原子</div>';
+    box.innerHTML = `<div class="text-[11px] text-slate-400">${tr('ui.select_usage_on_the_left_to_see_users_and_rating_atoms')}</div>`;
     return;
   }
   _myUploadSelected = name;
   renderMyUploadsList();
-  box.innerHTML = `<div class="text-[11px] text-slate-400">加载 ${esc(name)} 使用情况…</div>`;
+  box.innerHTML = `<div class="text-[11px] text-slate-400">${tr('ui.loading_skill_usage', { skill: esc(name) })}</div>`;
   try {
     const d = await j('/api/v1/dashboard/my/uploads/' + encodeURIComponent(name) + '/usage');
     if (_myUploadSelected !== name) return;
@@ -2197,26 +2204,26 @@ async function loadMyUploadUsage(name) {
           <span class="font-mono font-normal text-[10px] opacity-70">${esc(String(a.atom_id || '').slice(-4))}</span>
           <span>${a.score != null ? esc(a.score) : '—'}</span>
         </button>`;
-      }).join(' ') || '<span class="text-[10.5px] text-slate-300">无原子明细</span>';
+      }).join(' ') || `<span class="text-[10.5px] text-slate-300">${tr('ui.no_atom_details')}</span>`;
       return `<div class="py-2 border-b border-slate-100 last:border-0">
         <div class="flex items-center justify-between gap-2">
           <span class="flex items-center gap-2 min-w-0">${avatar(u.user, 'sm')}<span class="font-medium truncate">${esc(u.user)}</span></span>
-          <span class="text-[11px] text-slate-400 shrink-0 tabular-nums">${u.uses} 次 · 均 ${u.avg_ux != null ? esc(u.avg_ux) : '—'}</span>
+          <span class="text-[11px] text-slate-400 shrink-0 tabular-nums">${tr('ui.user_usage_average', { uses: u.uses, average: u.avg_ux != null ? esc(u.avg_ux) : '—' })}</span>
         </div>
         <div class="mt-1.5 flex flex-wrap gap-1.5">${atoms}</div>
         <div class="mt-1 text-[10.5px] text-slate-400">${fdate(u.last_used).slice(0, 10)}</div>
       </div>`;
-    }).join('') || '<div class="py-3 text-slate-400 text-[11px]">近 30 天暂无使用</div>';
+    }).join('') || `<div class="py-3 text-slate-400 text-[11px]">${tr('ui.no_usage_in_the_last_30_days')}</div>`;
     box.innerHTML = `
       <div class="flex items-baseline justify-between flex-wrap gap-2">
         <div>
           <button type="button" class="skill-jump text-[13px] font-semibold text-teal-700 underline decoration-teal-200 underline-offset-2" data-skill="${esc(name)}">${esc(name)}</button>
-          <div class="text-[11px] text-slate-400 mt-0.5">近 ${s.days || 30} 天 · 点评分徽章进原子页</div>
+          <div class="text-[11px] text-slate-400 mt-0.5">${tr('ui.last_days_rating_hint', { days: s.days || 30 })}</div>
         </div>
         <div class="flex gap-3 text-[11px] text-slate-500">
-          <span>使用 <b class="text-slate-800 tabular-nums">${s.uses ?? 0}</b></span>
-          <span>用户 <b class="text-slate-800 tabular-nums">${s.users ?? 0}</b></span>
-          <span>均分 <b class="text-slate-800 tabular-nums">${s.avg_ux != null ? esc(s.avg_ux) : '—'}</b></span>
+          <span>${tr('ui.usage')} <b class="text-slate-800 tabular-nums">${s.uses ?? 0}</b></span>
+          <span>${tr('ui.user')} <b class="text-slate-800 tabular-nums">${s.users ?? 0}</b></span>
+          <span>${tr('ui.average')} <b class="text-slate-800 tabular-nums">${s.avg_ux != null ? esc(s.avg_ux) : '—'}</b></span>
         </div>
       </div>
       <div class="mt-2 max-h-56 overflow-y-auto">${rowsHtml}</div>`;
@@ -2244,11 +2251,11 @@ function commitStatusPill(c) {
   const st = c.status || 'live';
   let label = c.status_label;
   if (!label) {
-    if (st === 'canary') label = '灰测中';
+    if (st === 'canary') label = tr('ui.in_canary');
     else if (st === 'absorbed') {
       const into = (c.absorbed_into && c.absorbed_into.label) || ('main@' + String(c.sha || '').slice(0, 7));
-      label = '被吸收到 ' + into;
-    } else label = '已上线';
+      label = tr('ui.absorbed_into') + into;
+    } else label = tr('ui.released');
   }
   const cls = st === 'canary' ? 'canary' : (st === 'absorbed' ? 'absorbed' : 'live');
   return `<span class="commit-pill ${cls}">${esc(label)}</span>`;
@@ -2258,13 +2265,13 @@ async function loadMyCommits() {
   const box = document.getElementById('my-commits-list');
   const sum = document.getElementById('my-commits-sum');
   if (!box) return;
-  box.innerHTML = '<div class="text-[11px] text-slate-400">加载中…</div>';
+  box.innerHTML = `<div class="text-[11px] text-slate-400">${tr('ui.loading')}</div>`;
   try {
     const d = await j('/api/v1/dashboard/my/commits');
     const list = d.commits || [];
-    if (sum) sum.textContent = `${list.length} 条`;
+    if (sum) sum.textContent = `${tr('ui.p0_items', { p0: (list.length) })}`;
     if (!list.length) {
-      box.innerHTML = '<div class="text-[11px] text-slate-400 py-2">还没有线上提交的 skill commit</div>';
+      box.innerHTML = `<div class="text-[11px] text-slate-400 py-2">${tr('ui.no_online_skill_commits_yet')}</div>`;
       return;
     }
     box.innerHTML = list.map(c => `
@@ -2273,10 +2280,10 @@ async function loadMyCommits() {
           <div class="flex items-center gap-2 flex-wrap">
             <button type="button" class="skill-jump font-medium text-teal-700 underline decoration-teal-200 underline-offset-2" data-skill="${esc(c.skill)}">${esc(c.skill)}</button>
             ${commitStatusPill(c)}
-            <button type="button" class="skill-jump font-mono text-[11px] text-slate-500 hover:text-teal-700" data-skill="${esc(c.skill)}" title="打开技能详情">${esc(String(c.sha || '').slice(0, 7))}</button>
+            <button type="button" class="skill-jump font-mono text-[11px] text-slate-500 hover:text-teal-700" data-skill="${esc(c.skill)}" title="${esc(tr('ui.open_skill_details'))}">${esc(String(c.sha || '').slice(0, 7))}</button>
           </div>
           <div class="mt-1 text-[12.5px] text-slate-700 truncate" title="${esc(c.subject)}">${esc(c.subject || '—')}</div>
-          <div class="mt-1 text-[10.5px] text-slate-400">${fdate(c.ts)} · 本地改 → 线上提交</div>
+          <div class="mt-1 text-[10.5px] text-slate-400">${fdate(c.ts)} · ${tr('ui.local_edit_online_submission')}</div>
         </div>
       </div>`).join('');
   } catch (err) {
@@ -2290,7 +2297,7 @@ function setContribOpen(on) {
   const detail = document.getElementById('contrib-detail');
   const btn = document.getElementById('contrib-toggle');
   if (detail) detail.classList.toggle('hidden', !on);
-  if (btn) btn.textContent = on ? '收起' : '展开';
+  if (btn) btn.textContent = on ? tr('ui.collapse') : tr('ui.expand');
   if (on) {
     renderContribDetail().catch(console.error);
     loadMyUploads().catch(console.error);
@@ -2307,7 +2314,7 @@ function renderRT() {
   const VC = { '高价值': 'bg-emerald-100 text-emerald-700', '正常': 'bg-slate-100 text-slate-600' };
   const sum = document.getElementById('rt-sum');
   if (!_rtOpen) {
-    if (sum) sum.textContent = `${total} 条`;
+    if (sum) sum.textContent = `${tr('ui.p0_items', { p0: (total) })}`;
     return;
   }
   rows('my-rt-body', slice.map(r => `<tr>
@@ -2315,8 +2322,8 @@ function renderRT() {
     <td class="text-right tabular-nums">${r.exposures}</td><td class="text-right tabular-nums">${r.triggers}</td>
     <td class="text-right tabular-nums">${pctf(r.rate)}</td>
     <td class="pl-6"><span class="text-[10px] px-1.5 py-0.5 rounded ${VC[r.verdict] || 'bg-rose-100 text-rose-700'}">${esc(r.verdict)}</span></td></tr>`).join(''),
-    '暂无推荐记录');
-  if (sum) sum.textContent = total ? `${start + 1}–${start + slice.length} / ${total}` : '0 条';
+    tr('ui.no_recommendation_history'));
+  if (sum) sum.textContent = total ? `${start + 1}–${start + slice.length} / ${total}` : tr('ui.0_items');
   const lab = document.getElementById('rt-page-label');
   if (lab) lab.textContent = `${_rtPage + 1} / ${pages}`;
   const prev = document.getElementById('rt-prev');
@@ -2329,7 +2336,7 @@ function setRtOpen(on) {
   const body = document.getElementById('rt-body');
   const btn = document.getElementById('rt-toggle');
   if (body) body.classList.toggle('hidden', !on);
-  if (btn) btn.textContent = on ? '收起' : '展开';
+  if (btn) btn.textContent = on ? tr('ui.collapse') : tr('ui.expand');
   renderRT();
 }
 
@@ -2360,7 +2367,7 @@ function _mySlotRowHtml(s) {
     const sideBtn = (side, label) => {
       const on = curSide === side;
       return `<button type="button" class="my-row-side px-1.5 py-0.5 ${on ? (side === 'staging' ? 'bg-amber-400 text-white' : 'bg-teal-600 text-white') : 'bg-white text-slate-500 hover:bg-slate-50'}"
-        data-skill="${esc(s.skill_name)}" data-side="${side}" title="pin 到 ${label}">${label}</button>`;
+        data-skill="${esc(s.skill_name)}" data-side="${side}" title="${esc(tr('ui.pin_to_side', { side: label }))}">${label}</button>`;
     };
     sideCtl = `<div class="inline-flex rounded-md ring-1 ring-slate-200 overflow-hidden text-[10px]">${sideBtn('main', 'main')}${sideBtn('staging', 'staging')}</div>`;
   } else {
@@ -2368,13 +2375,13 @@ function _mySlotRowHtml(s) {
   }
   let starBtn;
   if (locked) {
-    starBtn = `<span class="inline-flex items-center justify-center w-7 h-7 text-amber-400 opacity-70" title="admin/全局 pin，不可取消">${_myStarSvg(true)}</span>`;
+    starBtn = `<span class="inline-flex items-center justify-center w-7 h-7 text-amber-400 opacity-70" title="${esc(tr('ui.pin_global_locked'))}">${_myStarSvg(true)}</span>`;
   } else if (pinned) {
     starBtn = `<button type="button" class="my-row-unpin inline-flex items-center justify-center w-7 h-7 rounded-md text-amber-400 hover:text-amber-500 hover:bg-slate-50"
-      data-skill="${esc(s.skill_name)}" title="已 pin · 点击取消" aria-label="取消 pin">${_myStarSvg(true)}</button>`;
+      data-skill="${esc(s.skill_name)}" title="${esc(tr('ui.pin_remove'))}" aria-label="${esc(tr('ui.pin_remove_aria'))}">${_myStarSvg(true)}</button>`;
   } else {
     starBtn = `<button type="button" class="my-row-pin inline-flex items-center justify-center w-7 h-7 rounded-md text-slate-300 hover:text-amber-300 hover:bg-slate-50"
-      data-skill="${esc(s.skill_name)}" data-side="${esc(curSide)}" title="未 pin · 点击 pin 到当前 side" aria-label="pin">${_myStarSvg(false)}</button>`;
+      data-skill="${esc(s.skill_name)}" data-side="${esc(curSide)}" title="${esc(tr('ui.pin_add_side'))}" aria-label="pin">${_myStarSvg(false)}</button>`;
   }
   const rank = s.rank != null
     ? `<span class="text-[10px] text-slate-400 tabular-nums shrink-0">#${s.rank}</span>`
@@ -2389,11 +2396,11 @@ function _mySlotRowHtml(s) {
       </div>
       <div class="mt-1 flex items-center gap-1.5 flex-wrap">${mySourceBadge(s, true)}</div>
     </div>
-    <span class="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-teal-50 text-teal-700 tabular-nums">我触发 ${s.my_triggers ?? 0} 次</span>
+    <span class="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-teal-50 text-teal-700 tabular-nums">${tr('ui.i_triggered_p7_times', { p7: (s.my_triggers ?? 0) })}</span>
     <div class="shrink-0 flex items-center gap-1.5">
       ${sideCtl}
       ${starBtn}
-      ${!pinned ? `<button type="button" class="my-pref text-[11px] px-1.5 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50 text-rose-600" data-skill="${esc(s.skill_name)}" data-act="block" title="不再推送">✕</button>` : ''}
+      ${!pinned ? `<button type="button" class="my-pref text-[11px] px-1.5 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50 text-rose-600" data-skill="${esc(s.skill_name)}" data-act="block" title="${esc(tr('ui.stop_pushing'))}">✕</button>` : ''}
     </div>
   </div>`;
 }
@@ -2418,14 +2425,14 @@ function renderMySlots() {
   if (sum) {
     const srv = _myServerPushed || _myServerQueue.length || _myServerPushDefault;
     sum.textContent = q
-      ? `匹配 ${list.length} / ${_mySlotsAll.length} · 已装 ${_mySlotsAll.length} / 服务器 ${srv}`
-      : `已装 ${_mySlotsAll.length} · 服务器推送 ${srv}`;
+      ? `${tr('ui.p0_p1_matches_p2_installed_p3_on_server', { p0: (list.length), p1: (_mySlotsAll.length), p2: (_mySlotsAll.length), p3: (srv) })}`
+      : `${tr('ui.p0_installed_p1_pushed_by_server', { p0: (_mySlotsAll.length), p1: (srv) })}`;
   }
   const box = document.getElementById('my-slots');
   if (box) {
-    let empty = '暂无已安装 skill';
-    if (q) empty = '无匹配技能';
-    else if (_myTotalSlots === 0) empty = '安装个数为 0：服务器仍可能推送，但本机不装 harness';
+    let empty = tr('ui.no_installed_skills');
+    if (q) empty = tr('ui.no_matching_skills');
+    else if (_myTotalSlots === 0) empty = tr('ui.install_count_is_0_the_server_may_still_push_but_this_client_will_not_in');
     box.innerHTML = list.map(_mySlotRowHtml).join('')
       || `<span class="text-slate-400">${empty}</span>`;
   }
@@ -2444,7 +2451,7 @@ function syncPushStepper(push) {
     val.min = '0';
     if (document.activeElement !== val) val.value = String(n);
   }
-  if (unit) unit.textContent = n === 0 ? '个（不安装）' : '个 SKILL';
+  if (unit) unit.textContent = n === 0 ? tr('ui.install_none') : tr('ui.skills_2');
   if (up) up.disabled = n >= _myServerPushDefault;
   if (down) down.disabled = n <= 0;
   return n;
@@ -2467,10 +2474,10 @@ function applyMyPrefForm(st) {
   const maxLabel = document.getElementById('my-push-max-label');
   const take = st.take_n != null ? st.take_n : (st.push_count != null ? st.push_count : max);
   syncPushStepper(take);
-  if (maxLabel) maxLabel.textContent = `服务器 skill_slots=${max} · client 截取安装`;
+  if (maxLabel) maxLabel.textContent = `${tr('ui.server_skill_slots_p0_client_installs_a_prefix', { p0: (max) })}`;
   const step = document.getElementById('my-push-step');
   if (step) {
-    step.title = `client 从服务器推送队列截取前 N 个安装到 harness（上限=服务器 skill_slots ${max}；0=不安装）`;
+    step.title = tr('ui.push_install_limit', { max });
   }
 }
 
@@ -2488,11 +2495,11 @@ async function saveMyPrefs(partial) {
     applyMyPrefForm(saved);
     applyTakeNToSlots(n);
     if (msg) {
-      msg.textContent = n === 0 ? '已保存：不安装' : '已保存';
+      msg.textContent = n === 0 ? tr('ui.saved_install_none') : tr('ui.saved');
       msg.className = 'text-[11px] text-emerald-600';
     }
   } catch (err) {
-    if (msg) { msg.textContent = err.message || '保存失败'; msg.className = 'text-[11px] text-rose-600'; }
+    if (msg) { msg.textContent = err.message || tr('ui.save_failed'); msg.className = 'text-[11px] text-rose-600'; }
   } finally {
     _myPrefSaving = false;
   }
@@ -2531,11 +2538,11 @@ async function loadMy() {
   applyTakeNToSlots(take);
   document.getElementById('my-blocked').innerHTML = _myBlocked.map(b => `
     <span class="inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-lg bg-rose-50 text-rose-700 ring-1 ring-rose-200">${esc(b.skill_name)}
-      <button class="my-pref font-medium" data-skill="${esc(b.skill_name)}" data-act="clear">恢复</button></span>`).join('')
-    || '<span class="text-[11px] text-slate-400">无</span>';
+      <button class="my-pref font-medium" data-skill="${esc(b.skill_name)}" data-act="clear">${tr('ui.restore')}</button></span>`).join('')
+    || `<span class="text-[11px] text-slate-400">${tr('ui.none')}</span>`;
   const st = ct.steps;
   document.getElementById('my-steps').innerHTML =
-    [['轨迹', st.trajs], ['原子', st.atoms], ['被采纳', st.adopted_atoms], ['进入 skill', st.skills]]
+    [[tr('ui.trajectories'), st.trajs], [tr('ui.atoms'), st.atoms], [tr('ui.was_adopted'), st.adopted_atoms], [tr('ui.entered_skills'), st.skills]]
       .map(([k, v], i) => `${i ? '<span class="text-slate-300 text-xs">→</span>' : ''}
         <div class="px-3 py-1.5 rounded-lg bg-slate-50 ring-1 ring-slate-100 text-center min-w-[4.5rem]">
           <div class="text-base font-semibold tabular-nums leading-tight">${v}</div><div class="text-[10px] text-slate-400">${k}</div></div>`).join('');
@@ -2597,7 +2604,7 @@ document.getElementById('trigger-rate-toggle')?.addEventListener('click', () => 
   if (!body) return;
   const open = body.classList.toggle('hidden') === false;
   if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-  if (chev) chev.textContent = open ? '▼ 收起' : '▶ 展开';
+  if (chev) chev.textContent = open ? tr('ui.collapse_with_icon') : tr('ui.expand_2');
 });
 document.getElementById('skills-q')?.addEventListener('input', e => {
   skillsQ = e.target.value;
@@ -2674,18 +2681,18 @@ async function loadAdmin() {
   ]);
   document.getElementById('admin-gpins').innerHTML = um.global_pinned.map(g => `
     <span class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">${g}
-      <button class="gpin-del font-bold" data-skill="${g}" title="移除全局 pin">✕</button></span>`).join('') || '<span class="text-slate-400">无</span>';
+      <button class="gpin-del font-bold" data-skill="${g}" title="${esc(tr('ui.remove_global_pin'))}">✕</button></span>`).join('') || `<span class="text-slate-400">${tr('ui.none')}</span>`;
   rows('admin-users-body', um.users.map(u => {
     const pauseDetail = [u.ingest_paused_at, u.ingest_paused_by, u.ingest_pause_reason]
       .filter(Boolean).join(' · ');
     const ingestState = u.ingest_paused
-      ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title="${esc(pauseDetail)}">已暂停</span>`
-      : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">处理中</span>';
+      ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title="${esc(pauseDetail)}">${tr('ui.paused')}</span>`
+      : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">${tr('ui.processing')}</span>`;
     const cur = u.current_slots != null ? u.current_slots : '—';
     const stg = u.staging_slots != null ? u.staging_slots : '—';
     return `<tr>
       <td class="py-2 font-medium">${esc(u.user)}</td>
-      <td>${u.client_version ? esc(u.client_version) : '<span class="text-slate-300">未上报</span>'}</td>
+      <td>${u.client_version ? esc(u.client_version) : `<span class="text-slate-300">${tr('ui.not_reported')}</span>`}</td>
       <td class="text-right tabular-nums">${cur}</td>
       <td class="text-right tabular-nums ${u.staging_slots ? 'text-amber-700' : ''}">${stg}</td>
       <td class="text-right tabular-nums">${u.rate === null ? '—' : pctf(u.rate)}</td>
@@ -2693,12 +2700,12 @@ async function loadAdmin() {
       <td class="pl-6">${ingestState}</td>
       <td class="pl-6">${u.stale_advice.map(a => `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 mr-2">${esc(a.skill)}</span>`).join('') || '<span class="text-slate-300">—</span>'}</td>
       <td class="text-right whitespace-nowrap">
-        <button class="adm-ingest text-[11px] px-2 py-0.5 rounded ring-1 ${u.ingest_paused ? 'ring-emerald-200 text-emerald-700 hover:bg-emerald-50' : 'ring-amber-200 text-amber-700 hover:bg-amber-50'}" data-client-id="${esc(u.client_id)}" data-paused="${u.ingest_paused ? '1' : '0'}">${u.ingest_paused ? '恢复轨迹' : '暂停轨迹'}</button>
-        <button class="adm-cfg text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50 ml-1" data-user="${esc(u.user)}">配置…</button>
+        <button class="adm-ingest text-[11px] px-2 py-0.5 rounded ring-1 ${u.ingest_paused ? 'ring-emerald-200 text-emerald-700 hover:bg-emerald-50' : 'ring-amber-200 text-amber-700 hover:bg-amber-50'}" data-client-id="${esc(u.client_id)}" data-paused="${u.ingest_paused ? '1' : '0'}">${tr(u.ingest_paused ? 'ui.resume_trajectories' : 'ui.pause_trajectories')}</button>
+        <button class="adm-cfg text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50 ml-1" data-user="${esc(u.user)}">${tr('ui.configure')}</button>
       </td></tr>`;
   }).join(''),
-    '暂无 client');
-  const ST = { active: ['在役', 'bg-emerald-100 text-emerald-700'], canary: ['灰度中', 'bg-amber-100 text-amber-700'], retired: ['已下线', 'bg-rose-100 text-rose-700'] };
+    tr('ui.no_clients'));
+  const ST = { active: [tr('ui.active'), 'bg-emerald-100 text-emerald-700'], canary: [tr('ui.in_canary_2'), 'bg-amber-100 text-amber-700'], retired: [tr('ui.retired'), 'bg-rose-100 text-rose-700'] };
   rows('admin-skills-body', sk.skills.map(s => {
     const [label, cls] = ST[s.state];
     return `<tr><td class="py-2 font-medium">${s.name}</td>
@@ -2706,11 +2713,11 @@ async function loadAdmin() {
       <td class="text-right tabular-nums">${s.usage_30d}</td>
       <td class="text-right">
         ${s.state === 'retired'
-          ? `<button class="adm-life text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50" data-skill="${s.name}" data-act="unretire">恢复在役</button>
-             <button class="adm-life text-[11px] px-2 py-0.5 rounded ring-1 ring-rose-200 text-rose-700 hover:bg-rose-50 ml-1" data-skill="${s.name}" data-act="delete">删除…</button>`
-          : `<button class="adm-life text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50" data-skill="${s.name}" data-act="retire">下线</button>`}
+          ? `<button class="adm-life text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50" data-skill="${s.name}" data-act="unretire">${tr('ui.restore_active')}</button>
+             <button class="adm-life text-[11px] px-2 py-0.5 rounded ring-1 ring-rose-200 text-rose-700 hover:bg-rose-50 ml-1" data-skill="${s.name}" data-act="delete">${tr('ui.delete')}</button>`
+          : `<button class="adm-life text-[11px] px-2 py-0.5 rounded ring-1 ring-slate-200 hover:bg-slate-50" data-skill="${s.name}" data-act="retire">${tr('ui.retire')}</button>`}
       </td></tr>`;
-  }).join(''), '暂无 skill');
+  }).join(''), tr('ui.no_skills'));
 }
 async function openAdminDrawer(user) {
   const d = document.getElementById('admin-drawer');
@@ -2734,26 +2741,26 @@ async function openAdminDrawer(user) {
           <button class="adm-side px-2 py-0.5 ${s.side === 'staging' ? 'bg-teal-600 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'}" data-user="${esc(user)}" data-skill="${esc(s.skill_name)}" data-side="staging">staging</button>
         </div>` : ''}
     </div>`).join('')
-    || '<span class="text-[11px] text-slate-400">暂无当前推送记录</span>';
+    || `<span class="text-[11px] text-slate-400">${tr('ui.no_current_push_records')}</span>`;
   d.classList.remove('hidden');
   d.innerHTML = `<div class="flex items-baseline justify-between">
-      <h3 class="font-medium text-[12.5px]">${esc(user)} 的当前推送 <span class="text-[10.5px] text-slate-400 font-normal ml-1">${(assign.slots || []).length} 槽 · pinned=${p.effective.pinned.length} blocked=${p.effective.blocked.length}</span></h3>
+      <h3 class="font-medium text-[12.5px]">${tr('ui.p0_current_push', { p0: (esc(user)) })} <span class="text-[10.5px] text-slate-400 font-normal ml-1">${tr('ui.p1_slots_pinned_p2_blocked_p3', { p1: ((assign.slots || []).length), p2: (p.effective.pinned.length), p3: (p.effective.blocked.length) })}</span></h3>
       <div class="flex items-center gap-2">
-        <button class="adm-history-toggle text-[11px] text-teal-700 hover:bg-teal-50 px-1.5 rounded" data-user="${esc(user)}" aria-expanded="false">历史曝光</button>
-        <button id="adm-drawer-x" class="text-[11px] text-slate-400 hover:bg-slate-100 px-1.5 rounded">收起</button>
+        <button class="adm-history-toggle text-[11px] text-teal-700 hover:bg-teal-50 px-1.5 rounded" data-user="${esc(user)}" aria-expanded="false">${tr('ui.impression_history')}</button>
+        <button id="adm-drawer-x" class="text-[11px] text-slate-400 hover:bg-slate-100 px-1.5 rounded">${tr('ui.collapse')}</button>
       </div></div>
     <div class="mt-2 space-y-1.5 max-h-72 overflow-y-auto">${slotRows}</div>
     <div id="adm-history-panel" data-user="${esc(user)}" class="hidden mt-3 pt-3 border-t border-slate-200"></div>
     <div class="mt-3 pt-3 border-t border-slate-200">
-      <div class="text-[11px] text-slate-400 mb-1.5">偏好（pin / 屏蔽）</div>
+      <div class="text-[11px] text-slate-400 mb-1.5">${tr('ui.preferences_pin_block')}</div>
       <div class="flex flex-wrap gap-1.5">${p.prefs.map(r => `
       <span class="inline-flex items-center gap-1 text-[10.5px] px-2 py-1 rounded-lg ${r.pref === 'pinned' ? 'bg-violet-100 text-violet-700' : 'bg-rose-50 text-rose-700'} ring-1 ring-slate-200">
         ${esc(r.skill_name)} <span class="opacity-60">${esc(r.pref)}·${esc(r.set_by)}</span>
-        <button class="adm-pref font-bold" data-user="${esc(user)}" data-skill="${esc(r.skill_name)}" data-act="clear">✕</button></span>`).join('') || '<span class="text-[11px] text-slate-400">无</span>'}</div>
+        <button class="adm-pref font-bold" data-user="${esc(user)}" data-skill="${esc(r.skill_name)}" data-act="clear">✕</button></span>`).join('') || `<span class="text-[11px] text-slate-400">${tr('ui.none')}</span>`}</div>
       <div class="mt-3 flex gap-2">
-        <input id="adm-skill-in" class="ring-1 ring-slate-200 rounded-lg px-2 py-1 outline-none focus:ring-teal-500 font-mono text-[11px] w-36" placeholder="skill 名">
-        <button class="adm-pref px-2 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-[11px]" data-user="${esc(user)}" data-act="pin">代 pin</button>
-        <button class="adm-pref px-2 py-1 rounded-lg ring-1 ring-rose-200 text-rose-700 hover:bg-rose-50 text-[11px]" data-user="${esc(user)}" data-act="block">代屏蔽</button>
+        <input id="adm-skill-in" class="ring-1 ring-slate-200 rounded-lg px-2 py-1 outline-none focus:ring-teal-500 font-mono text-[11px] w-36" placeholder="${esc(tr('ui.skill_name'))}">
+        <button class="adm-pref px-2 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-[11px]" data-user="${esc(user)}" data-act="pin">${tr('ui.pin_for_user')}</button>
+        <button class="adm-pref px-2 py-1 rounded-lg ring-1 ring-rose-200 text-rose-700 hover:bg-rose-50 text-[11px]" data-user="${esc(user)}" data-act="block">${tr('ui.block_for_user')}</button>
       </div>
     </div>`;
 }
@@ -2763,7 +2770,7 @@ async function loadAdminRecommendationHistory(user, offset = 0) {
   if (!panel || panel.dataset.user !== user) return;
   const limit = 20;
   panel.classList.remove('hidden');
-  panel.innerHTML = '<span class="text-[11px] text-slate-400">历史曝光加载中…</span>';
+  panel.innerHTML = `<span class="text-[11px] text-slate-400">${tr('ui.loading_impression_history')}</span>`;
   const history = await j(
     '/api/v1/dashboard/admin/user/' + encodeURIComponent(user)
       + '/recommendations?offset=' + offset + '&limit=' + limit,
@@ -2780,15 +2787,15 @@ async function loadAdminRecommendationHistory(user, offset = 0) {
         </div>
       </div>
       <time class="shrink-0 text-[10px] text-slate-400" title="${esc(row.ts)} UTC">${fdate(row.ts)}</time>
-    </div>`).join('') || '<span class="text-[11px] text-slate-400">暂无历史曝光</span>';
+    </div>`).join('') || `<span class="text-[11px] text-slate-400">${tr('ui.no_impression_history')}</span>`;
   const exposureCount = (history.exposures || []).length;
   const start = exposureCount ? history.offset + 1 : 0;
   const end = exposureCount ? history.offset + exposureCount : 0;
   panel.innerHTML = `<div class="flex items-baseline justify-between gap-2">
-      <div><span class="text-[11px] text-slate-500">历史曝光</span><span class="text-[10px] text-slate-400 ml-1">按首次曝光时间倒序 · ${start}-${end}/${history.total}</span></div>
+      <div><span class="text-[11px] text-slate-500">${tr('ui.impression_history')}</span><span class="text-[10px] text-slate-400 ml-1">${tr('ui.newest_first_impression_first_p0_p1_p2', { p0: (start), p1: (end), p2: (history.total) })}</span></div>
       <div class="flex gap-1">
-        <button class="adm-history-page text-[10px] px-1.5 py-0.5 rounded ring-1 ring-slate-200 ${history.offset > 0 ? 'hover:bg-slate-50' : 'text-slate-300 cursor-not-allowed'}" data-user="${esc(user)}" data-offset="${Math.max(0, history.offset - history.limit)}" ${history.offset > 0 ? '' : 'disabled'}>上一页</button>
-        <button class="adm-history-page text-[10px] px-1.5 py-0.5 rounded ring-1 ring-slate-200 ${history.has_more ? 'hover:bg-slate-50' : 'text-slate-300 cursor-not-allowed'}" data-user="${esc(user)}" data-offset="${history.offset + history.limit}" ${history.has_more ? '' : 'disabled'}>下一页</button>
+        <button class="adm-history-page text-[10px] px-1.5 py-0.5 rounded ring-1 ring-slate-200 ${history.offset > 0 ? 'hover:bg-slate-50' : 'text-slate-300 cursor-not-allowed'}" data-user="${esc(user)}" data-offset="${Math.max(0, history.offset - history.limit)}" ${history.offset > 0 ? '' : 'disabled'}>${tr('ui.previous_page')}</button>
+        <button class="adm-history-page text-[10px] px-1.5 py-0.5 rounded ring-1 ring-slate-200 ${history.has_more ? 'hover:bg-slate-50' : 'text-slate-300 cursor-not-allowed'}" data-user="${esc(user)}" data-offset="${history.offset + history.limit}" ${history.has_more ? '' : 'disabled'}>${tr('ui.next_page')}</button>
       </div>
     </div>
     <div class="mt-2 space-y-1.5 max-h-72 overflow-y-auto">${exposureRows}</div>`;
@@ -2800,10 +2807,10 @@ document.addEventListener('click', async e => {
     const nextPaused = !paused;
     let reason = '';
     if (nextPaused) {
-      const entered = prompt('暂停后仍会接收并保存轨迹，恢复后自动补处理。可填写暂停原因：', '');
+      const entered = prompt(tr('ui.trajectories_will_still_be_received_and_saved_while_paused_then_processe'), '');
       if (entered === null) return;
       reason = entered.trim();
-    } else if (!confirm('恢复该用户的轨迹处理？暂停期间积压的轨迹将在下一轮自动处理。')) {
+    } else if (!confirm(tr('ui.resume_trajectory_processing_for_this_user_trajectories_queued_while_pau'))) {
       return;
     }
     try {
@@ -2825,7 +2832,7 @@ document.addEventListener('click', async e => {
     if (!panel) return;
     const opening = panel.classList.contains('hidden');
     historyToggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
-    historyToggle.textContent = opening ? '收起历史' : '历史曝光';
+    historyToggle.textContent = opening ? tr('ui.collapse_history') : tr('ui.impression_history');
     if (opening) loadAdminRecommendationHistory(historyToggle.dataset.user).catch(err => alert(err.message));
     else panel.classList.add('hidden');
     return;
@@ -2888,7 +2895,7 @@ document.addEventListener('click', async e => {
     const name = lf.dataset.skill, act = lf.dataset.act;
     try {
       if (act === 'delete') {
-        const typed = prompt(`删除不可逆：skill 目录与 git 历史将被移除。\n请输入 skill 名确认: ${name}`);
+        const typed = prompt(tr('ui.delete_skill_prompt', { skill: name }));
         if (typed === null) return;
         await jpost('/api/v1/dashboard/admin/skill/' + encodeURIComponent(name), { confirm_name: typed }, 'DELETE');
       } else {
@@ -2917,11 +2924,11 @@ async function cfgAction(endpoint) {
   res.className = 'text-[12.5px] text-slate-500'; res.textContent = '…';
   try {
     const r = await jpost('/api/v1/dashboard/admin/config/' + endpoint, { raw: document.getElementById('cfg-editor').value });
-    if (endpoint === 'validate') { res.className = 'text-[12.5px] text-emerald-700'; res.textContent = '✓ 校验通过'; }
+    if (endpoint === 'validate') { res.className = 'text-[12.5px] text-emerald-700'; res.textContent = tr('ui.validation_passed'); }
     else {
       res.className = 'text-[12.5px] text-emerald-700';
-      res.textContent = `✓ 已生效 ${r.hot_reloaded.join('/') || '无变更'}` +
-        (r.needs_restart.length ? `;⚠ ${r.needs_restart.join('/')} 段需重启 serve` : '');
+      res.textContent = tr('ui.config_applied', { sections: r.hot_reloaded.join('/') || tr('ui.no_changes') }) +
+        (r.needs_restart.length ? tr('ui.config_restart_required', { sections: r.needs_restart.join('/') }) : '');
       if (r.needs_restart.length) res.className = 'text-[12.5px] text-amber-700';
     }
   } catch (err) { res.className = 'text-[12.5px] text-rose-600'; res.textContent = '✗ ' + err.message; }
@@ -2936,32 +2943,32 @@ initIdent().catch(console.error);
 // ── 事件语义渲染:铃铛/toast/世界消息共用同一措辞口径 ──────────────
 const BAND_CLS = { '好评': 'bg-emerald-100 text-emerald-700', '差劲': 'bg-rose-100 text-rose-700', '一般': 'bg-slate-100 text-slate-600' };
 const CANARY_TXT = {
-  promoted: ['晋升', 'bg-emerald-100 text-emerald-700'],
-  rejected: ['回滚', 'bg-rose-100 text-rose-700'],
-  timeout_discarded: ['超时丢弃', 'bg-amber-100 text-amber-700'],
+  promoted: [tr('ui.promoted'), 'bg-emerald-100 text-emerald-700'],
+  rejected: [tr('ui.rolled_back'), 'bg-rose-100 text-rose-700'],
+  timeout_discarded: [tr('ui.timed_out'), 'bg-amber-100 text-amber-700'],
 };
 function evParts(ev) {
   const p = ev.payload || {};
   const chip = `<span class="skill-jump px-1.5 py-0.5 rounded bg-teal-50 text-teal-700 text-[11px] font-medium cursor-pointer" data-skill="${esc(ev.skill)}">${esc(ev.skill)}</span>`;
   if (ev.kind === 'feedback') {
     const badge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-medium ${BAND_CLS[p.band] || BAND_CLS['一般']}">${esc(p.band || '')}</span>`;
-    return { html: `${esc(ev.actor || '匿名')} 触发了 ${chip} ${badge} <span class="text-slate-400">均分 ${esc(p.score_avg)} · ${esc(p.n_atoms)} 原子</span>`,
-             plain: `${ev.actor || '匿名'} 触发了 ${ev.skill}:${p.band}(均分 ${p.score_avg})` };
+    return { html: `${esc(ev.actor || tr('ui.anonymous'))} ${tr('ui.triggered_verb')} ${chip} ${badge} <span class="text-slate-400">${tr('ui.average_atoms', { average: esc(p.score_avg), atoms: esc(p.n_atoms) })}</span>`,
+             plain: `${ev.actor || tr('ui.anonymous')} ${tr('ui.triggered_verb')} ${ev.skill}:${p.band} (${tr('ui.average')} ${p.score_avg})` };
   }
   if (ev.kind === 'push_edit') {
-    const diff = p.ref_sha ? ` <a href="javascript:void(0)" class="ev-diff text-teal-700 underline decoration-teal-200 underline-offset-2" data-skill="${esc(ev.skill)}" data-sha="${esc(p.ref_sha)}">看 diff</a>` : '';
-    return { html: `${esc(ev.actor)} 手改了 ${chip} <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700">修改意见</span> <span class="text-slate-400">${esc(p.branch || '')}</span>${diff}`,
-             plain: `${ev.actor} 对 ${ev.skill} 提交了修改意见` };
+    const diff = p.ref_sha ? ` <a href="javascript:void(0)" class="ev-diff text-teal-700 underline decoration-teal-200 underline-offset-2" data-skill="${esc(ev.skill)}" data-sha="${esc(p.ref_sha)}">${tr('ui.view_diff')}</a>` : '';
+    return { html: `${esc(ev.actor)} ${tr('ui.edited_verb')} ${chip} <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700">${tr('ui.edit_suggestion')}</span> <span class="text-slate-400">${esc(p.branch || '')}</span>${diff}`,
+             plain: tr('ui.edit_submitted_plain', { actor: ev.actor, skill: ev.skill }) };
   }
   if (ev.kind === 'canary') {
     const [t, cls] = CANARY_TXT[p.action] || [p.action, 'bg-slate-100 text-slate-600'];
-    return { html: `${chip} 灰度裁决 <span class="px-1.5 py-0.5 rounded text-[10px] font-medium ${cls}">${esc(t)}</span> <span class="text-slate-400">staging ${esc(p.staging_avg)} vs main ${esc(p.main_avg)}</span>`,
-             plain: `${ev.skill} 灰度${t}` };
+    return { html: `${chip} ${tr('ui.canary_decision')} <span class="px-1.5 py-0.5 rounded text-[10px] font-medium ${cls}">${esc(t)}</span> <span class="text-slate-400">staging ${esc(p.staging_avg)} vs main ${esc(p.main_avg)}</span>`,
+             plain: tr('ui.canary_result_plain', { skill: ev.skill, result: t }) };
   }
   if (ev.kind === 'pin') {
-    const tgt = p.scope === 'global' ? '全局' : (p.target_user && p.target_user !== ev.actor ? `给 ${p.target_user}` : '');
-    return { html: `${esc(ev.actor)} pin 了 ${chip} <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-100 text-violet-700">pin${tgt ? '·' + esc(tgt) : ''}</span>`,
-             plain: `${ev.actor} pin 了 ${ev.skill}${tgt ? '(' + tgt + ')' : ''}` };
+    const tgt = p.scope === 'global' ? tr('ui.global') : (p.target_user && p.target_user !== ev.actor ? `${tr('ui.for_p0', { p0: (p.target_user) })}` : '');
+    return { html: `${esc(ev.actor)} ${tr('ui.pinned_verb')} ${chip} <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-100 text-violet-700">pin${tgt ? '·' + esc(tgt) : ''}</span>`,
+             plain: `${ev.actor} ${tr('ui.pinned_verb')} ${ev.skill}${tgt ? '(' + tgt + ')' : ''}` };
   }
   return { html: esc(ev.kind), plain: ev.kind };
 }
@@ -2969,9 +2976,9 @@ function evParts(ev) {
 const evDate = ev => new Date(String(ev.ts || '').replace(' ', 'T') + 'Z');
 function relTime(ev) {
   const m = Math.max(0, (Date.now() - evDate(ev).getTime()) / 60000);
-  if (m < 1) return '刚刚';
-  if (m < 60) return Math.floor(m) + ' 分钟前';
-  if (m < 1440) return Math.floor(m / 60) + ' 小时前';
+  if (m < 1) return tr('ui.just_now');
+  if (m < 60) return tr('ui.minutes_ago', { count: Math.floor(m) });
+  if (m < 1440) return tr('ui.hours_ago', { count: Math.floor(m / 60) });
   return fdate(evDate(ev).toISOString());
 }
 
@@ -3020,18 +3027,18 @@ function toast(ev) {
 function sysNotify(ev) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   if (!document.hidden) return; // 页面在前台时 toast 已足够,不重复打扰
-  const n = new Notification('xskill 控制台', { body: evParts(ev).plain, tag: 'xskill-ev-' + ev.id });
+  const n = new Notification(tr('ui.xskill_console'), { body: evParts(ev).plain, tag: 'xskill-ev-' + ev.id });
   n.onclick = () => { window.focus(); if (ev.skill) location.hash = 'skill/' + encodeURIComponent(ev.skill); n.close(); };
 }
 function updateSysNotifBtn() {
   const b = document.getElementById('bell-sysnotif');
   if (!b) return;
   b.classList.remove('hidden');
-  if (!('Notification' in window)) { b.textContent = '系统通知需 HTTPS 部署'; b.disabled = true; return; }
-  if (Notification.permission === 'granted') { b.textContent = '✓ 系统通知已开启'; b.disabled = true; }
-  else if (Notification.permission === 'denied') { b.textContent = '系统通知被浏览器拒绝'; b.disabled = true; }
+  if (!('Notification' in window)) { b.textContent = tr('ui.system_notifications_require_https'); b.disabled = true; return; }
+  if (Notification.permission === 'granted') { b.textContent = tr('ui.notifications_enabled'); b.disabled = true; }
+  else if (Notification.permission === 'denied') { b.textContent = tr('ui.system_notifications_blocked_by_the_browser'); b.disabled = true; }
   else {
-    b.textContent = '开启系统通知'; b.disabled = false;
+    b.textContent = tr('ui.enable_system_notifications'); b.disabled = false;
     b.onclick = () => Notification.requestPermission().then(updateSysNotifBtn);
   }
 }
@@ -3049,7 +3056,7 @@ async function openBell() {
       ${avatar(ev.actor || 'xs', 'sm')}
       <div class="min-w-0 flex-1">${evParts(ev).html}
         <div class="text-[10.5px] text-slate-400 mt-0.5">${relTime(ev)}</div></div>
-    </div>`).join('') || '<div class="text-[11px] text-slate-400 px-1 py-2">还没有通知</div>';
+    </div>`).join('') || `<div class="text-[11px] text-slate-400 px-1 py-2">${tr('ui.no_notifications_yet')}</div>`;
   const maxId = Math.max(0, ...(d.events || []).map(ev => ev.id));
   if (maxId) {
     await jpost('/api/v1/dashboard/events/read', { last_id: maxId }).catch(() => {});
@@ -3076,7 +3083,7 @@ document.addEventListener('click', async e => {
     await new Promise(r => setTimeout(r, 250));
     const pv = document.getElementById('skill-preview');
     if (pv) {
-      pv.innerHTML = '<span class="text-slate-400 text-xs">加载修改意见 diff…</span>';
+      pv.innerHTML = `<span class="text-slate-400 text-xs">${tr('ui.loading_edit_suggestion_diff')}</span>`;
       try {
         const r = await j('api/v1/dashboard/skill/' + encodeURIComponent(ed.dataset.skill) + '/diff?sha=' + encodeURIComponent(ed.dataset.sha));
         pv.innerHTML = renderDiff(r.diff);
@@ -3092,7 +3099,7 @@ function dayLabel(d) {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const day = new Date(d); day.setHours(0, 0, 0, 0);
   const diff = Math.round((today - day) / 86400000);
-  return diff <= 0 ? '今天' : diff === 1 ? '昨天' : `${day.getMonth() + 1}-${String(day.getDate()).padStart(2, '0')}`;
+  return diff <= 0 ? tr('ui.date_today') : diff === 1 ? tr('ui.date_yesterday') : `${day.getMonth() + 1}-${String(day.getDate()).padStart(2, '0')}`;
 }
 function paintFeedPage() {
   const el = document.getElementById('world-feed');
@@ -3103,7 +3110,7 @@ function paintFeedPage() {
   const up = document.getElementById('feed-up');
   const down = document.getElementById('feed-down');
   if (!pages) {
-    el.innerHTML = '<span class="text-slate-400 text-xs">还没有团队动态</span>';
+    el.innerHTML = `<span class="text-slate-400 text-xs">${tr('ui.no_team_activity')}</span>`;
     if (sum) sum.textContent = '';
     if (lab) lab.textContent = '0/0';
     if (up) up.disabled = true;
@@ -3208,7 +3215,7 @@ async function openUserProfile(uid, isRetry) {
   _lastProfileUid = uid;
   const box = document.getElementById('user-profile');
   if (!box) return;
-  box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400">加载 ${esc(uid)} 的画像…</div>`;
+  box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400">${tr('ui.loading_p0_profile', { p0: (esc(uid)) })}</div>`;
   let d;
   try { d = await j('api/v1/dashboard/user/' + encodeURIComponent(uid) + '/scatter?method=' + SCATTER_METHOD); }
   catch (e) {
@@ -3217,14 +3224,14 @@ async function openUserProfile(uid, isRetry) {
   }
   // #106 端点只读:未物化时返回 pending,显示占位并在 5s 后自动重试一次(不做复杂轮询)。
   if (d && d.status === 'pending') {
-    box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400 text-xs">${esc(uid)} 的画像散点计算中…${isRetry ? '' : '（约几秒后自动刷新）'}</div>`;
+    box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400 text-xs">${tr('ui.profile_computing', { user: esc(uid) })}${isRetry ? '' : tr('ui.refreshing_automatically_in_a_few_seconds')}</div>`;
     if (!isRetry) setTimeout(() => { if (_lastProfileUid === uid) openUserProfile(uid, true).catch(console.error); }, 5000);
     return;
   }
   if (!(d.points || []).length) {
     box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5">
-      <h2 class="font-semibold text-sm">${esc(uid)} 的兴趣画像</h2>
-      <div class="mt-2 text-xs text-slate-400">${esc(d.note || '暂无可投影的原子')}</div></div>`;
+      <h2 class="font-semibold text-sm">${tr('ui.p0_interest_profile', { p0: (esc(uid)) })}</h2>
+      <div class="mt-2 text-xs text-slate-400">${esc(d.note || tr('ui.no_atoms_available_for_projection'))}</div></div>`;
     return;
   }
   const W = 680, H = 400, pad = 34;
@@ -3257,19 +3264,19 @@ async function openUserProfile(uid, isRetry) {
   const labByCluster = Object.fromEntries((d.clusters || []).map(cl => [cl.cluster, cl.label]));
   const ctEls = (d.centers || []).map(ct => {
     const c = sc(ct), col = CLUSTER_COLORS[ct.cluster % CLUSTER_COLORS.length];
-    const lab = labByCluster[ct.cluster] || `簇 ${ct.cluster}`;
+    const lab = labByCluster[ct.cluster] || `${tr('ui.cluster_p0', { p0: (ct.cluster) })}`;
     return `<g class="sc-center">
       <circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="11" fill="${col}" fill-opacity="0.14" stroke="${col}" stroke-width="1.5"/>
       <text x="${c.x.toFixed(1)}" y="${(c.y + 4.5).toFixed(1)}" font-size="12" text-anchor="middle">💡</text>
       <text x="${c.x.toFixed(1)}" y="${(c.y + 26).toFixed(1)}" font-size="10.5" font-weight="700" fill="${col}" text-anchor="middle">${esc(lab)}</text>
-      <title>兴趣点 · ${esc(lab)}</title></g>`;
+      <title>${esc(tr('ui.interest_center_title', { label: lab }))}</title></g>`;
   }).join('');
   const skEls = (d.skills || []).map(s => {
     const c = sc(s);
     const short = s.name.length > 14 ? s.name.slice(0, 13) + '…' : s.name;
     const hub = s.source === 'skillhub';         // 三方 skill 区分:琥珀色 ▲ + tooltip 标"第三方"
     const fill = hub ? '#d97706' : '#0f172a';
-    const tip = `${hub ? '第三方 ' : ''}SKILL:${esc(s.name)} · 触发 ${esc(s.use_count)} 次`;
+    const tip = `${hub ? tr('ui.third_party_prefix') : ''}SKILL:${esc(s.name)} · ${tr('ui.triggered')} ${esc(s.use_count)} ${tr('ui.times')}`;
     return `<g class="skill-jump cursor-pointer" data-skill="${esc(s.name)}">
       <path d="M${c.x.toFixed(1)} ${(c.y - 7).toFixed(1)} l6.2 11 h-12.4 z" fill="${fill}"><title>${tip}</title></path>
       <text x="${c.x.toFixed(1)}" y="${(c.y + 17).toFixed(1)}" font-size="9.5" font-weight="600" fill="#334155" text-anchor="middle">SKILL:${esc(short)}</text></g>`;
@@ -3281,18 +3288,24 @@ async function openUserProfile(uid, isRetry) {
     `<button class="scatter-method px-2 py-0.5 rounded-md text-[11px] font-medium ${m === cur ? 'bg-teal-600 text-white' : 'text-slate-500 hover:bg-slate-50'}" data-method="${m}">${METHOD_LABEL[m]}</button>`).join('');
   box.innerHTML = `<div class="bg-white rounded-2xl ring-1 ring-slate-200 p-5">
     <div class="flex items-baseline justify-between flex-wrap gap-2">
-      <h2 class="font-semibold text-sm flex items-center gap-2">${avatar(uid)} ${esc(uid)} 的兴趣画像
-        <span class="font-normal text-[11px] text-slate-400">${METHOD_LABEL[cur]} 2D 投影 · 悬停原子预览,点击跳详情</span></h2>
+      <h2 class="font-semibold text-sm flex items-center gap-2">${tr('ui.p0_p1_interest_profile', { p0: (avatar(uid)), p1: (esc(uid)) })}
+        <span class="font-normal text-[11px] text-slate-400">${METHOD_LABEL[cur]} ${tr('ui.profile_projection_hint')}</span></h2>
       <div class="flex gap-3 flex-wrap items-center">
         <span class="inline-flex items-center gap-1 ring-1 ring-slate-200 rounded-lg px-1 py-0.5">${seg}</span>
         ${legend}
-        <span class="inline-flex items-center gap-1.5 text-[11px] text-slate-600"><svg width="11" height="11"><path d="M5.5 1 l4.5 8 h-9 z" fill="#0f172a"/></svg>SKILL:技能名</span></div>
+        <span class="inline-flex items-center gap-1.5 text-[11px] text-slate-600"><svg width="11" height="11"><path d="M5.5 1 l4.5 8 h-9 z" fill="#0f172a"/></svg>${tr('ui.skill_name_2')}</span></div>
     </div>
     <svg viewBox="0 0 ${W} ${H}" class="w-full mt-2" style="max-height:440px" id="scatter-svg">
       <rect x="0" y="0" width="${W}" height="${H}" rx="14" fill="#f8fafc"/>
       ${hullEls}${ptEls}${ctEls}${skEls}
     </svg>
-    <div class="text-[10.5px] text-slate-400 mt-1.5">画像更新于 ${fdate(d.updated_at)} · ${d.sampled ? `显示 ${d.shown}/${d.total} 个原子（按兴趣中心分层抽样）` : `${d.points.length} 个原子点`}${(d.skills || []).length ? '' : ' · skill 向量索引缺失,不显示 ▲(不现算)'}</div>
+    <div class="text-[10.5px] text-slate-400 mt-1.5">${tr('ui.profile_updated_at', {
+      date: fdate(d.updated_at),
+      summary: d.sampled
+        ? tr('ui.profile_sampled_summary', { shown: d.shown, total: d.total })
+        : tr('ui.profile_points_summary', { count: d.points.length }),
+      suffix: (d.skills || []).length ? '' : tr('ui.skill_vector_index_missing_hidden_not_computed_on_demand'),
+    })}</div>
   </div>`;
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -3364,14 +3377,14 @@ async function loadClusterGraph() {
   let g;
   try { g = await j('/api/v1/dashboard/admin/cluster-graph'); }
   catch (e) { el.innerHTML = `<span class="text-slate-400 text-xs">${esc(e.message)}</span>`; return; }
-  if (!(g.nodes || []).length) { el.innerHTML = '<span class="text-slate-400 text-xs">还没有任何用户画像</span>'; return; }
+  if (!(g.nodes || []).length) { el.innerHTML = `<span class="text-slate-400 text-xs">${tr('ui.no_user_profiles_yet')}</span>`; return; }
   const W = 680, H = 380;
   forceLayout(g.nodes, g.edges || [], W, H);
   const at = Object.fromEntries(g.nodes.map(nd => [nd.user, nd]));
   const edgeEls = (g.edges || []).map(e2 => {
     const a = at[e2.source], b = at[e2.target];
     const wpx = 1.5 + (e2.sim - g.threshold) / Math.max(0.001, 1 - g.threshold) * 6;
-    const tipTxt = `相似度 ${e2.sim}${e2.common_tags.length ? ' · 共同标签:' + e2.common_tags.join('/') : ''}${e2.common_skills.length ? ' · 共同 skill:' + e2.common_skills.join('/') : ''}`;
+    const tipTxt = `${tr('ui.similarity')} ${e2.sim}${e2.common_tags.length ? tr('ui.shared_tags_suffix', { tags: e2.common_tags.join('/') }) : ''}${e2.common_skills.length ? tr('ui.shared_skills_suffix', { skills: e2.common_skills.join('/') }) : ''}`;
     return `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}"
       stroke="#5eead4" stroke-width="${wpx.toFixed(1)}" stroke-linecap="round" class="cursor-help"><title>${esc(tipTxt)}</title></line>`;
   }).join('');
@@ -3379,16 +3392,21 @@ async function loadClusterGraph() {
   const nodeEls = g.nodes.map(nd => {
     const r = 10 + Math.sqrt(nd.atoms / maxAtoms) * 14;
     const fill = nd.isolated ? '#cbd5e1' : '#0d9488';
-    const tipTxt = `${nd.user} · ${nd.atoms} 原子${nd.top_tags.length ? ' · ' + nd.top_tags.join('/') : ''}${nd.isolated ? ' · 冷启动(无相似用户)' : ''}`;
+    const tipTxt = tr('ui.profile_node_tip', {
+      user: nd.user,
+      atoms: nd.atoms,
+      tags: nd.top_tags.length ? ' · ' + nd.top_tags.join('/') : '',
+      cold: nd.isolated ? tr('ui.cold_start_suffix') : '',
+    });
     return `<g class="cg-node cursor-pointer" data-user="${esc(nd.user)}">
       <circle cx="${nd.x.toFixed(1)}" cy="${nd.y.toFixed(1)}" r="${r.toFixed(1)}" fill="${fill}" fill-opacity="0.88"><title>${esc(tipTxt)}</title></circle>
       <text x="${nd.x.toFixed(1)}" y="${(nd.y + 4).toFixed(1)}" font-size="10" fill="#fff" text-anchor="middle" font-weight="600">${esc(String(nd.user).slice(0, 2))}</text>
-      <text x="${nd.x.toFixed(1)}" y="${(nd.y + r + 12).toFixed(1)}" font-size="9.5" fill="${nd.isolated ? '#94a3b8' : '#475569'}" text-anchor="middle">${esc(nd.user)}${nd.isolated ? ' · 冷启动' : ''}</text>
+      <text x="${nd.x.toFixed(1)}" y="${(nd.y + r + 12).toFixed(1)}" font-size="9.5" fill="${nd.isolated ? '#94a3b8' : '#475569'}" text-anchor="middle">${esc(nd.user)}${nd.isolated ? tr('ui.cold_start_short') : ''}</text>
     </g>`;
   }).join('');
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" class="w-full" style="max-height:420px">
     <rect x="0" y="0" width="${W}" height="${H}" rx="14" fill="#f8fafc"/>${edgeEls}${nodeEls}</svg>
-    <div class="text-[10.5px] text-slate-400 mt-1.5">点节点看该用户画像散点 · 边阈值 ${g.threshold}</div>`;
+    <div class="text-[10.5px] text-slate-400 mt-1.5">${tr('ui.select_a_node_to_view_the_user_profile_projection_edge_threshold_p6', { p6: (g.threshold) })}</div>`;
 }
 document.addEventListener('click', e => {
   const nd = e.target.closest('.cg-node');

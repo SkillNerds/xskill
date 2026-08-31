@@ -107,6 +107,20 @@ def test_paused_user_backlog_is_hidden_until_resume(tmp_path):
 def test_serves_index_html(tmp_path):
     r = _client(tmp_path).get("/")
     assert r.status_code == 200 and "text/html" in r.headers["content-type"]
+    assert r.headers["cache-control"] == "no-cache"
+
+
+def test_serves_local_i18n_script(tmp_path):
+    client = _client(tmp_path)
+    r = client.get("/i18n.js")
+    assert r.status_code == 200
+    assert "application/javascript" in r.headers["content-type"]
+    assert r.headers["cache-control"] == "no-cache"
+    assert "xskill.dashboard.language" in r.text
+
+    app = client.get("/app.js")
+    assert app.status_code == 200
+    assert app.headers["cache-control"] == "no-cache"
 
 
 def test_skill_dir_for_respects_config_yaml(tmp_path):

@@ -18,11 +18,157 @@ def test_index_references_appjs_and_sections():
         assert f'id="{pg}"' in html
 
 
+def test_language_switch_loads_local_i18n_before_app():
+    """语言开关常驻侧栏，翻译层先于动态渲染脚本启动。"""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+
+    assert 'data-language="en"' in html
+    assert 'data-language="zh"' in html
+    assert "English" in html and "中文" in html
+    assert html.index('src="i18n.js') < html.index('src="app.js')
+    assert 'src="i18n.js"' in html
+    assert 'src="app.js"' in html
+    assert 'i18n.js?v=' not in html and 'app.js?v=' not in html
+    assert 'data-i18n="ui.overview"' in html
+
+
+def test_i18n_uses_stable_keys_and_interpolates_opaque_parameters():
+    """UI keys translate, while values supplied by the API remain untouched."""
+    script = f"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync({json.dumps(str(STATIC / "i18n.js"))}, 'utf8');
+const context = vm.createContext({{ window: {{}} }});
+vm.runInContext(source, context);
+const i18n = context.window.XSkillI18n;
+process.stdout.write(JSON.stringify([
+  i18n.tr('ui.overview', null, 'en'),
+  i18n.tr('ui.overview', null, 'zh'),
+  i18n.tr('ui.delete_skill_prompt', {{ skill: '状态' }}, 'en'),
+  i18n.tr('ui.profile_node_tip', {{
+    user: '错误', atoms: '完成', tags: ' · 加载 foo …', cold: '失败'
+  }}, 'en'),
+  i18n.tr('ui.missing_key', null, 'en'),
+]));
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    overview_en, overview_zh, prompt, profile, missing = json.loads(result.stdout)
+    assert overview_en == "Overview"
+    assert overview_zh == "总览"
+    assert "状态" in prompt
+    assert "错误" in profile
+    assert "完成" in profile
+    assert "加载 foo …" in profile
+    assert "失败" in profile
+    assert missing == "ui.missing_key"
+
+
+def test_i18n_key_parity_and_references_are_complete():
+    """Every referenced stable key exists in both locales."""
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    referenced = set(re.findall(r"['\"](ui\.[\w.]+)['\"]", app))
+    referenced.update(re.findall(r'data-i18n(?:-[\w-]+)?="(ui\.[\w.]+)"', html))
+
+    script = f"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync({json.dumps(str(STATIC / "i18n.js"))}, 'utf8');
+const context = vm.createContext({{ window: {{}} }});
+vm.runInContext(source, context);
+process.stdout.write(JSON.stringify(context.window.XSkillI18n.translations));
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    translations = json.loads(result.stdout)
+    assert set(translations) == {"zh", "en"}
+    assert set(translations["zh"]) == set(translations["en"])
+    assert referenced <= set(translations["zh"])
+    assert all(value != "" for value in translations["en"].values())
+
+
+def test_i18n_is_explicit_and_has_no_dom_wide_translation():
+    js = (STATIC / "i18n.js").read_text(encoding="utf-8")
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert "xskill.dashboard.language" in js
+    assert "localStorage.setItem(STORAGE_KEY, next)" in js
+    assert "querySelectorAll('[data-i18n]')" in js
+    assert "MutationObserver" not in js
+    assert "translateText" not in js
+    assert "translateText" not in app
+    assert "PATTERNS" not in js
+    assert "xskill:languagechange" in app
+    assert "window.location.reload()" in app
+
+
+def test_i18n_persists_language_and_updates_only_marked_elements():
+    script = f"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync({json.dumps(str(STATIC / "i18n.js"))}, 'utf8');
+const marked = {{ dataset: {{ i18n: 'ui.overview' }}, textContent: '总览' }};
+const userData = {{ textContent: '状态 · 错误 · 完成 · 失败 · 加载 foo …' }};
+const button = {{
+  dataset: {{ language: 'en' }},
+  setAttribute() {{}},
+  classList: {{ toggle() {{}} }},
+}};
+const document = {{
+  body: {{}},
+  documentElement: {{}},
+  title: 'xskill 控制台',
+  querySelectorAll(selector) {{
+    if (selector === '[data-i18n]') return [marked];
+    if (selector === '[data-language]') return [button];
+    return [];
+  }},
+  addEventListener() {{}},
+  dispatchEvent() {{}},
+}};
+const writes = [];
+const window = {{
+  document,
+  localStorage: {{ getItem() {{ return null; }}, setItem(key, value) {{ writes.push([key, value]); }} }},
+  CustomEvent: class {{}},
+}};
+const context = vm.createContext({{ window }});
+vm.runInContext(source, context);
+window.XSkillI18n.setLanguage('en');
+process.stdout.write(JSON.stringify([marked.textContent, userData.textContent, writes]));
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    marked, user_data, writes = json.loads(result.stdout)
+    assert marked == "Overview"
+    assert user_data == "状态 · 错误 · 完成 · 失败 · 加载 foo …"
+    assert writes[-1] == ["xskill.dashboard.language", "en"]
+
+
 def test_index_is_fully_vendored():
     """零外联：内网 headless 环境不允许任何会发起网络请求的外部引用。
 
-    Tailwind 用构建期编译产物内联进 <style id="twcss">（后端只服务 / 与
-    /app.js 两个路径，单独的 css 文件会 404，见 static/BUILD.md）。
+    Tailwind 用构建期编译产物内联进 <style id="twcss">（后端只服务 /、
+    /app.js 与 /i18n.js，单独的 css 文件会 404，见 static/BUILD.md）。
     minified CSS 里的 MIT license 注释含 URL，不算外部引用。
     """
     html = (STATIC / "index.html").read_text(encoding="utf-8")
@@ -133,7 +279,7 @@ def test_avg_atoms_tooltip_describes_matching_split_scope():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     adjacent_hint = re.search(
         r'data-m="overview\.avg_atoms_per_traj"[^>]*>[^<]*</span>\s*'
-        r'<span class="hint" title="([^"]+)">ⓘ</span>',
+        r'<span class="hint"[^>]*?\stitle="([^"]+)"[^>]*>ⓘ</span>',
         html,
     )
 
@@ -166,8 +312,12 @@ def test_admin_drawer_separates_current_push_from_history():
     assert "adm-history-toggle" in js
     assert "async function loadAdminRecommendationHistory(" in js
     assert "/recommendations?offset=" in js
-    assert "按首次曝光时间倒序" in js
+    assert "tr('ui.newest_first_impression_first_p0_p1_p2'" in js
     assert "adm-history-page" in js
+    assert 'data-client-id="${esc(u.client_id)}"' in js
+    assert 'data-paused="${u.ingest_paused ? \'1\' : \'0\'}"' in js
+    assert "tr(u.ingest_paused ? 'ui.resume_trajectories' : 'ui.pause_trajectories')" in js
+    assert 'data-user="${esc(u.user)}"' in js
 
 
 def test_pipeline_log_scroll_is_sticky_not_forced():
@@ -182,7 +332,7 @@ def test_pipeline_log_scroll_is_sticky_not_forced():
         re.S,
     ) is None
     assert "pmLogKey.kind === kind && pmLogKey.name === name" in js
-    assert "回流受阻" in js
+    assert "tr('ui.reverse_sync_blocked')" in js
     assert "reverse_sync" in js
     # 抽屉重渲染后恢复滚动
     assert "stickBottom ? newLog.scrollHeight : savedScroll" in js
