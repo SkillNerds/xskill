@@ -514,33 +514,34 @@ def _percentile(sorted_values: list[float], quantile: float) -> float:
 def _task_deltas(
     observations: list[dict[str, Any]],
     value: Callable[[dict[str, Any]], float],
-) -> list[float]:
+) -> dict[str, float]:
     by_task: dict[str, list[float]] = {}
     for observation in observations:
         delta = value(observation["new"]) - value(observation["old"])
         by_task.setdefault(observation["task_fingerprint"], []).append(delta)
-    return [_mean(by_task[key]) for key in sorted(by_task)]
+    return {key: _mean(by_task[key]) for key in sorted(by_task)}
 
 
 def _effect_from_task_deltas(
-    task_deltas: list[float],
+    task_deltas: dict[str, float],
     *,
     pair_count: int,
     metric_config: dict[str, Any],
     label: str,
     family_size: int,
 ) -> dict[str, Any]:
-    point = _mean(task_deltas)
+    deltas = list(task_deltas.values())
+    point = _mean(deltas)
     interval: list[float] | None
-    if len(task_deltas) < 2:
+    if len(deltas) < 2:
         interval = None
     else:
         alpha = 1.0 - metric_config["confidence_level"]
         adjusted_alpha = alpha / max(1, family_size)
         rng = random.Random(_stable_seed(metric_config["bootstrap_seed"], label))
-        size = len(task_deltas)
+        size = len(deltas)
         means = [
-            _mean([task_deltas[rng.randrange(size)] for _ in range(size)])
+            _mean([deltas[rng.randrange(size)] for _ in range(size)])
             for _ in range(metric_config["bootstrap_samples"])
         ]
         means.sort()
@@ -550,12 +551,12 @@ def _effect_from_task_deltas(
         ]
     return {
         "n": pair_count,
-        "tasks": len(task_deltas),
+        "tasks": len(deltas),
         "mean": _round(point),
         "confidence_interval": interval,
-        "wins": sum(delta > 0 for delta in task_deltas),
-        "ties": sum(delta == 0 for delta in task_deltas),
-        "losses": sum(delta < 0 for delta in task_deltas),
+        "wins": sum(delta > 0 for delta in deltas),
+        "ties": sum(delta == 0 for delta in deltas),
+        "losses": sum(delta < 0 for delta in deltas),
     }
 
 
@@ -566,7 +567,7 @@ def _effect(
     metric_config: dict[str, Any],
     label: str,
     family_size: int,
-) -> tuple[dict[str, Any], list[float]]:
+) -> tuple[dict[str, Any], dict[str, float]]:
     deltas = _task_deltas(observations, value)
     return (
         _effect_from_task_deltas(
@@ -581,7 +582,7 @@ def _effect(
 
 
 def _global_effect(
-    task_deltas_by_cohort: dict[str, list[float]],
+    task_deltas_by_cohort: dict[str, dict[str, float]],
     weights: dict[str, float],
     *,
     pair_count: int,
@@ -589,21 +590,28 @@ def _global_effect(
     label: str,
     family_size: int,
 ) -> dict[str, Any]:
-    point = sum(
-        weights[cohort_id] * _mean(task_deltas)
-        for cohort_id, task_deltas in task_deltas_by_cohort.items()
-    )
+    task_sets = {frozenset(deltas) for deltas in task_deltas_by_cohort.values()}
+    if len(task_sets) != 1:
+        raise CohortReplayValidationError(
+            "global effect requires the same Task set in every cohort"
+        )
+    task_ids = sorted(next(iter(task_sets)))
+    weighted_task_deltas = [
+        sum(
+            weights[cohort_id] * task_deltas_by_cohort[cohort_id][task_id]
+            for cohort_id in sorted(task_deltas_by_cohort)
+        )
+        for task_id in task_ids
+    ]
+    point = _mean(weighted_task_deltas)
     rng = random.Random(_stable_seed(metric_config["bootstrap_seed"], label))
-    means: list[float] = []
-    for _ in range(metric_config["bootstrap_samples"]):
-        aggregate = 0.0
-        for cohort_id, task_deltas in sorted(task_deltas_by_cohort.items()):
-            size = len(task_deltas)
-            sample_mean = _mean(
-                [task_deltas[rng.randrange(size)] for _ in range(size)]
-            )
-            aggregate += weights[cohort_id] * sample_mean
-        means.append(aggregate)
+    size = len(weighted_task_deltas)
+    means = [
+        _mean(
+            [weighted_task_deltas[rng.randrange(size)] for _ in range(size)]
+        )
+        for _ in range(metric_config["bootstrap_samples"])
+    ]
     means.sort()
     alpha = (1.0 - metric_config["confidence_level"]) / max(1, family_size)
     interval = [
@@ -612,7 +620,7 @@ def _global_effect(
     ]
     return {
         "n": pair_count,
-        "tasks": sum(len(values) for values in task_deltas_by_cohort.values()),
+        "tasks": len(task_ids),
         "mean": _round(point),
         "confidence_interval": interval,
     }
@@ -673,8 +681,8 @@ def evaluate_suite(suite: dict[str, Any]) -> dict[str, Any]:
             for cohort_id in cohort_ids
             for role in sorted(_OBSERVATION_ROLES)
         }
-        decision_task_deltas_by_cohort: dict[str, list[float]] = {}
-        evaluation_task_deltas_by_cohort: dict[str, list[float]] = {}
+        decision_task_deltas_by_cohort: dict[str, dict[str, float]] = {}
+        evaluation_task_deltas_by_cohort: dict[str, dict[str, float]] = {}
         cohort_reports: list[dict[str, Any]] = []
         for cohort_id in cohort_ids:
             decision_observations = by_cohort_role[(cohort_id, "decision")]

@@ -188,6 +188,33 @@ def test_repeated_seeds_are_clustered_by_task_not_counted_as_new_tasks():
     assert effect["wins"] == 2
 
 
+def test_global_bootstrap_preserves_cross_cohort_task_pairing():
+    suite = _suite()
+    for cohort in suite["cohorts"]:
+        cohort["traffic_weight"] = 0.5
+    update = suite["updates"][0]
+    decision_tasks = sorted(
+        {
+            observation["task_fingerprint"]
+            for observation in update["observations"]
+            if observation["role"] == "decision"
+        }
+    )
+    for observation in update["observations"]:
+        if observation["role"] != "decision":
+            continue
+        observation["old"]["score"] = 0.5
+        task_sign = 1 if observation["task_fingerprint"] == decision_tasks[0] else -1
+        cohort_sign = 1 if observation["cohort_id"] == "cohort-a" else -1
+        observation["new"]["score"] = 0.5 + 0.2 * task_sign * cohort_sign
+
+    effect = evaluate_suite(suite)["updates"][0]["global"]["decision_effect"]
+
+    assert effect["mean"] == 0.0
+    assert effect["confidence_interval"] == [0.0, 0.0]
+    assert effect["tasks"] == 2
+
+
 def test_opposite_point_estimates_without_corrected_intervals_do_not_reverse():
     suite = _suite()
     observations = [

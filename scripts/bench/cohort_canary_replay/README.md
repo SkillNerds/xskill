@@ -28,6 +28,8 @@ python -m scripts.bench.cohort_canary_replay.evaluate scripts/bench/cohort_canar
 
 每个 Task 先平均自己的多个 seed，再对 Task 做 paired clustered bootstrap，避免把重复 seed 当成独立样本。
 
+全局效应先按 Task 对齐各 cohort 的 delta 并应用流量权重，再联合重采样同一批 Task，避免独立重采样各 cohort 后破坏配对关系。
+
 同一个 update 的 cohort 区间使用 Bonferroni family-wise 修正，只有修正区间完全高于正 practical margin 时才是 `supported_positive`，完全低于负 margin 时才是 `supported_negative`，其余情况均为 `unresolved`。
 
 只有一个 update 同时具有至少一个可靠正 cohort 和一个可靠负 cohort 时才记录 supported sign reversal，点估计方向不同不足以成立。

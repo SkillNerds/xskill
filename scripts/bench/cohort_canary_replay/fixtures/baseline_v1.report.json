@@ -227,7 +227,7 @@
           ],
           "mean": 0.1,
           "n": 4,
-          "tasks": 4
+          "tasks": 2
         },
         "decision_evidence_status": "supported_positive",
         "evaluation_effect": {
@@ -237,7 +237,7 @@
           ],
           "mean": 0.1,
           "n": 4,
-          "tasks": 4
+          "tasks": 2
         },
         "harmful_promoted_cohorts": [
           "cohort-b"
@@ -460,7 +460,7 @@
           ],
           "mean": 0.1,
           "n": 4,
-          "tasks": 4
+          "tasks": 2
         },
         "decision_evidence_status": "supported_positive",
         "evaluation_effect": {
@@ -470,7 +470,7 @@
           ],
           "mean": 0.1,
           "n": 4,
-          "tasks": 4
+          "tasks": 2
         },
         "harmful_promoted_cohorts": [],
         "harmful_traffic_weight": 0.0,
