@@ -359,10 +359,18 @@ def wiki_log(entry: str) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     line = f"## [{stamp}] {text}\n"
     log = root / "log.md"
-    prev = log.read_text(encoding="utf-8") if log.is_file() else "# log\n\n"
-    if not prev.endswith("\n"):
-        prev += "\n"
-    log.write_text(prev + line, encoding="utf-8")
+    if not log.is_file():
+        log.write_text("# log\n\n", encoding="utf-8")
+    with log.open("rb") as handle:
+        handle.seek(0, 2)
+        size = handle.tell()
+        if size:
+            handle.seek(-1, 2)
+            prefix = "" if handle.read(1) == b"\n" else "\n"
+        else:
+            prefix = "\n"
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write(prefix + line)
     return f"ok appended log.md chars={len(line)}"
 
 
