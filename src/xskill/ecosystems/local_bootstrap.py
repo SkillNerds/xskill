@@ -154,6 +154,8 @@ def _bridge_index_empty(bridge: Path) -> bool:
 
 
 def _jsonl_needs_ingest(eco: str, home_root: Path, bridge: Path) -> bool:
+    from xskill.ecosystems._shared import _glob_session_paths
+
     spec = _jsonl_spec_for(eco)
     if spec is None:
         # OpenCode / ngagent / Trae 不是 JSONL。空库也会被探测到，
@@ -164,7 +166,7 @@ def _jsonl_needs_ingest(eco: str, home_root: Path, bridge: Path) -> bool:
     if not glob or not root.is_dir():
         return False
     source_ids: set[str] = set()
-    for path in root.glob(glob):
+    for path in _glob_session_paths(root, glob):
         sid = spec.session_id_from_path(path)
         if not sid:
             continue

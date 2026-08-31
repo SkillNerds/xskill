@@ -94,7 +94,7 @@ metadata:
 - 默认：`~/.codex/`
 - env 覆盖：`CODEX_HOME`
 
-archived sessions 路径：`{codex_home}/archived_sessions/`（`codex-rs/rollout/src/lib.rs:23`）。xskill 摄取可选 *include* archived（决策上：archived 默认 ignore，避免重复消费陈旧数据，与 OpenCode `time_archived` 处理对齐）。
+archived sessions 路径是 `{codex_home}/archived_sessions/`（`codex-rs/rollout/src/lib.rs:23`），xskill 默认同时摄取活跃与已归档轨迹，同一 session id 只选 mtime 最新的来源。
 
 ### 3.2 JSONL 行结构
 
@@ -176,22 +176,21 @@ src/xskill/adapters.py
 
 ```python
 {
-    "id": "codex_cli",
+    "id": "codex",
     "source_kind": "jsonl",
-    "source_subpath": ".codex/sessions",   # 递归扫 YYYY/MM/DD/rollout-*.jsonl
-    "home_env_override": "CODEX_HOME",     # daemon 启动时优先读 env
+    "source_subpath": ".codex",
     "bridge": "codex_rollout_jsonl",
 }
 ```
 
-`detect_known_ecosystems()` 加 codex 探测；存在 `<home>/.codex/sessions/` 目录或 `$CODEX_HOME/sessions/` 即注册。
+`detect_known_ecosystems()` 在 `<home>/.codex/` 存在时注册 Codex，因此只剩归档轨迹的环境也不会漏掉。
 
 ### 4.4 watcher 配置
 
-- 根：`<codex_home>/sessions/`
-- glob：`*/*/*/rollout-*.jsonl`（深度恒定 3：year/month/day/file）
-- 写入特性是 append-only，与 CC 一致，可直接复用 mtime + offset cursor。
-- **不扫** `archived_sessions/`（默认）。
+- 根：`<codex_home>/`。
+- 活跃 glob：`sessions/*/*/*/rollout-*.jsonl`。
+- 归档 glob：`archived_sessions/rollout-*.jsonl`。
+- 轨迹按 settle 屏障读取稳定快照，大文件通过路径流式 adapter 处理，不会把整份 UTF-8 历史加载到内存。
 
 ### 4.5 不需要做的
 
