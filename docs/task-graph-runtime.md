@@ -2,7 +2,7 @@
 
 ## 状态
 
-本实现把 #326 定义的 Logical Task 与 Task Attempt 模型落成可运行代码，但在 #326 与 #325 评审完成前通过 `task_graph.enabled: false` 默认关闭。
+本实现把 Logical Task 与 Task Attempt 模型落成为默认开启的独立读模型分支，可通过 `task_graph.enabled: false` 显式暂停投影。
 
 关闭时，现有 `Session → Atom → candidate → Skill` 生产路径、Atom 多 Skill 语义、`ux_score` 和 `weightscore` 均保持不变。
 
@@ -117,7 +117,7 @@ Task 与 Attempt relation 在写入 override log 前完成唯一 parent、同 Ta
 
 ## 启用与回退
 
-完成 #326 模型评审和 #325 离线回放门禁后，可在配置中设置 `task_graph.enabled: true`。
+Task Graph 默认开启，首次启动会在后台分批回填；资源受限或排查期可显式设置 `task_graph.enabled: false`。
 
 首次启用会把已有 `split_done`、`indexed` 和 `done` 轨迹加入持久回填队列，并按 `max_scopes_per_run` 分批处理。
 

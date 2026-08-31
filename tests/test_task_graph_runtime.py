@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ from xskill.pipeline.registry import (
 )
 from xskill.tasks.models import stable_ref_key
 from xskill.tasks.projection import (
+    enqueue_untracked_sources,
     get_logical_task,
     list_dirty_task_scopes,
     list_dirty_sources,
@@ -128,6 +130,107 @@ def test_reading_missing_tenant_identity_has_no_filesystem_side_effect(tmp_path)
     resolver = ScopeResolver(tmp_path, db_path=tmp_path / "registry.db")
     assert resolver.existing_tenant_id is None
     assert not (tmp_path / "task_graph").exists()
+
+
+def test_task_graph_is_enabled_by_default_and_explicit_false_still_wins(tmp_path):
+    default_service = TaskGraphService(
+        state_root=tmp_path,
+        db_path=tmp_path / "registry.db",
+        config={},
+    )
+    disabled_service = TaskGraphService(
+        state_root=tmp_path,
+        db_path=tmp_path / "registry.db",
+        config={"task_graph": {"enabled": False}},
+    )
+
+    assert default_service.enabled is True
+    assert disabled_service.enabled is False
+
+
+def test_initial_backfill_enqueues_in_committed_bounded_batches(
+    tmp_path, monkeypatch,
+):
+    db_path = tmp_path / "registry.db"
+    for index in range(5):
+        _add_source(
+            tmp_path,
+            db_path,
+            source_name=f"backfill-{index}",
+            atoms=[{"intent": f"回填任务 {index}", "summary": "加入持久队列"}],
+        )
+    connection = get_connection(db_path)
+    connection.execute("DELETE FROM task_graph_dirty_sources")
+    connection.commit()
+
+    class CountingConnection:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+            self.commits = 0
+
+        def __getattr__(self, name):
+            return getattr(self.wrapped, name)
+
+        def commit(self):
+            self.commits += 1
+            self.wrapped.commit()
+
+    counted = CountingConnection(connection)
+
+    @contextmanager
+    def counted_pool(_db_path):
+        yield counted
+
+    monkeypatch.setattr(
+        "xskill.tasks.projection.pooled_connection",
+        counted_pool,
+    )
+
+    assert enqueue_untracked_sources(batch_size=2, db_path=db_path) == 5
+    assert counted.commits == 3
+    assert enqueue_untracked_sources(batch_size=2, db_path=db_path) == 0
+    assert counted.commits == 3
+    assert connection.execute(
+        "SELECT COUNT(*) FROM task_graph_dirty_sources",
+    ).fetchone()[0] == 5
+    tracked = connection.execute(
+        "SELECT t.watch_dir_id,t.filename,w.source_scope_id"
+        " FROM trajectories t JOIN watch_dirs w ON w.id=t.watch_dir_id"
+        " ORDER BY t.id LIMIT 1",
+    ).fetchone()
+    connection.execute(
+        "DELETE FROM task_graph_dirty_sources WHERE watch_dir_id=? AND filename=?",
+        (tracked["watch_dir_id"], tracked["filename"]),
+    )
+    connection.execute(
+        "INSERT INTO task_graph_source_state("
+        "tenant_id,task_scope_id,source_scope_id,watch_dir_id,traj_id,"
+        "source_revision,generation_id) VALUES(?,?,?,?,?,?,?)",
+        (
+            "ten_test",
+            "tsc_test",
+            tracked["source_scope_id"],
+            tracked["watch_dir_id"],
+            tracked["filename"].removesuffix(".md"),
+            "rev_test",
+            "gen_test",
+        ),
+    )
+    connection.commit()
+    assert enqueue_untracked_sources(batch_size=2, db_path=db_path) == 0
+    assert connection.execute(
+        "SELECT COUNT(*) FROM task_graph_dirty_sources",
+    ).fetchone()[0] == 4
+    connection.close()
+
+
+@pytest.mark.parametrize("batch_size", [True, 0, -1, 1.5])
+def test_initial_backfill_rejects_invalid_batch_size(tmp_path, batch_size):
+    with pytest.raises(ValueError, match="batch_size"):
+        enqueue_untracked_sources(
+            batch_size=batch_size,
+            db_path=tmp_path / "registry.db",
+        )
 
 
 def test_runtime_projects_task_attempt_evidence_and_conserved_usage(tmp_path):

@@ -228,7 +228,7 @@ watcher:
 # ===== Logical Task Graph =====
 # Deterministic semantic branch above Session/Atom; it never changes Atom→Skill routing, and uncertain links remain proposed without consuming LLM tokens.
 task_graph:
-  enabled: false                 # enable after ADR/replay-baseline review
+  enabled: true                  # default-on; set false to pause projection while retaining dirty fences
   top_k: 8                      # hard bound on classified candidates per Atom
   recent_k: 6                   # same-Session recent Task candidates
   posting_cap: 64               # bounded inverted-index posting list
@@ -377,7 +377,7 @@ def normalize_runtime_config(config_data: dict) -> dict:
     if not isinstance(task_graph, dict):
         raise ValueError("task_graph 必须是 mapping")
     task_graph = dict(task_graph)
-    enabled = task_graph.get("enabled", False)
+    enabled = task_graph.get("enabled", True)
     if not isinstance(enabled, bool):
         raise ValueError("task_graph.enabled 必须是布尔")
     task_graph["enabled"] = enabled

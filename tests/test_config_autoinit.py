@@ -53,7 +53,7 @@ def test_template_is_valid_yaml_with_required_sections():
     # llm / embedding 带 api_key 占位符（用户要填）
     assert parsed["llm"]["api_key"] == "PUT_YOUR_LLM_API_KEY_HERE"
     assert parsed["embedding"]["api_key"] == "PUT_YOUR_EMBEDDING_API_KEY_HERE"
-    assert parsed["task_graph"]["enabled"] is False
+    assert parsed["task_graph"]["enabled"] is True
 
 
 def test_template_top_level_keys_are_exactly_live_set():

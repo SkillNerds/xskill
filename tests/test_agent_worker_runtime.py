@@ -128,7 +128,6 @@ def test_seats_are_fixed_completion_clears_only_own_index():
             gate.set()
         pool.shutdown(wait=True)
 
-
 def test_new_task_takes_lowest_free_seat_and_task_factory_overrides():
     """新任务补最低空席；task_factory 在工作线程起跑时求值并覆盖静态 task。"""
     pool = BoundedExecutor("edit", 2)
@@ -405,6 +404,7 @@ def test_missing_new_sections_use_release_defaults():
     assert effective["embedding"]["rate_limit"] == {"max_inflight": 4}
     assert effective["agent_worker"]["pools"]["cluster"]["batch_size"] == 8
     assert effective["agent_worker"]["pools"]["edit"]["batch_size"] == 5
+    assert effective["task_graph"]["enabled"] is True
 
 
 def test_edit_batch_size_must_be_a_positive_integer():
@@ -806,4 +806,3 @@ def test_set_workers_shrink_keeps_inflight_then_trims():
         for gate in gates:
             gate.set()
         pool.shutdown(wait=True)
-
