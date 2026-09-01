@@ -757,6 +757,6 @@ TOOL RESULT  look
 2. `kind: codex` 且 PATH 里没有 `codex` 时，拆分任务显式失败，不退回 Agno。
 3. 拆分代理在 Codex 路径上：用的是 `packs/task_agent/task.yaml` 这份模板；工作目录不另写任务定义；日志出现在 `logs/agents/task_agents/<轨迹id>.log`，格式仍能被看板尾巴识别（有 ROUND 或 THINK 或 TOOL 行）。
 4. 同一次运行不在 `~/.codex/sessions` 下留下 rollout。
-5. `submit_atom` 的非法行号仍返回 error 字符串，合法提交仍能通过 EOF 校验。
+5. `submit_atom` 的非法行号仍返回 error 字符串，合法提交仍能通过 EOF 校验。MCP `tools/list` 只包含这次 `enabled_tools`。
 6. 生成代理接到 Codex 之后：客户端阻塞期间能看到增量日志，结束帧仍带技能名与是否提交主干。这一条属于第三期，第一期不必做。
 7. 没有把 Agno 从依赖里删掉，没有改 jam 或 canary 门槛。
