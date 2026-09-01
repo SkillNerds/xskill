@@ -1,0 +1,508 @@
+{
+  "aggregate": {
+    "cohorts": 2,
+    "evaluation_calls": 32,
+    "evaluation_cost_usd": 0.032,
+    "evaluation_latency_ms_sum": 3200.0,
+    "global_harmful_promotion_rate": 0.25,
+    "global_harmful_promotions": 1,
+    "global_mean_harmful_traffic_weight": 0.125,
+    "global_mean_policy_gain": 0.1,
+    "scoped_harmful_promotion_rate": 0.0,
+    "scoped_harmful_promotions": 0,
+    "scoped_mean_harmful_traffic_weight": 0.0,
+    "scoped_mean_policy_gain": 0.125,
+    "scoped_mean_retained_versions": 1.5,
+    "supported_sign_reversal_rate": 0.5,
+    "supported_sign_reversals": 1,
+    "updates": 2
+  },
+  "method": {
+    "bootstrap_samples": 1000,
+    "bootstrap_seed": 42,
+    "cohort_family_size": 4,
+    "cohort_key": "scenario×model×runtime",
+    "confidence_level": 0.95,
+    "decision_metric": "score",
+    "familywise_method": "bonferroni",
+    "global_family_size": 2,
+    "held_out_evaluation_role": "evaluation",
+    "practical_margin": 0.05,
+    "selection_role": "decision"
+  },
+  "run_manifest": {
+    "candidate_stream_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "cohort_definition_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "evaluation_protocol_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "generated_at": "2026-08-30T00:00:00Z",
+    "repository_revision": "synthetic-recorded-fixture",
+    "task_set_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "schema_version": 1,
+  "suite_id": "synthetic-cohort-canary-v1",
+  "updates": [
+    {
+      "activation_control": "matched",
+      "cohorts": [
+        {
+          "cohort_id": "cohort-a",
+          "decision_effect": {
+            "confidence_interval": [
+              0.2,
+              0.2
+            ],
+            "losses": 0,
+            "mean": 0.2,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "decision_evidence_status": "supported_positive",
+          "decision_metric": "score",
+          "decision_non_evaluable_errors": {},
+          "decision_pass_rate_effect": {
+            "confidence_interval": [
+              1.0,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 1.0,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "decision_score_effect": {
+            "confidence_interval": [
+              0.2,
+              0.2
+            ],
+            "losses": 0,
+            "mean": 0.2,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "evaluation_effect": {
+            "confidence_interval": [
+              0.2,
+              0.2
+            ],
+            "losses": 0,
+            "mean": 0.2,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "evaluation_evidence_status": "supported_positive",
+          "evaluation_non_evaluable_errors": {},
+          "evaluation_pass_rate_effect": {
+            "confidence_interval": [
+              1.0,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 1.0,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "evaluation_score_effect": {
+            "confidence_interval": [
+              0.2,
+              0.2
+            ],
+            "losses": 0,
+            "mean": 0.2,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "model": "model-a",
+          "runtime": "runtime-a",
+          "scenario": "scenario-a",
+          "traffic_weight": 0.75
+        },
+        {
+          "cohort_id": "cohort-b",
+          "decision_effect": {
+            "confidence_interval": [
+              -0.2,
+              -0.2
+            ],
+            "losses": 2,
+            "mean": -0.2,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 0
+          },
+          "decision_evidence_status": "supported_negative",
+          "decision_metric": "score",
+          "decision_non_evaluable_errors": {},
+          "decision_pass_rate_effect": {
+            "confidence_interval": [
+              -1.0,
+              -1.0
+            ],
+            "losses": 2,
+            "mean": -1.0,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 0
+          },
+          "decision_score_effect": {
+            "confidence_interval": [
+              -0.2,
+              -0.2
+            ],
+            "losses": 2,
+            "mean": -0.2,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 0
+          },
+          "evaluation_effect": {
+            "confidence_interval": [
+              -0.2,
+              -0.2
+            ],
+            "losses": 2,
+            "mean": -0.2,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 0
+          },
+          "evaluation_evidence_status": "supported_negative",
+          "evaluation_non_evaluable_errors": {},
+          "evaluation_pass_rate_effect": {
+            "confidence_interval": [
+              -1.0,
+              -1.0
+            ],
+            "losses": 2,
+            "mean": -1.0,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 0
+          },
+          "evaluation_score_effect": {
+            "confidence_interval": [
+              -0.2,
+              -0.2
+            ],
+            "losses": 2,
+            "mean": -0.2,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 0
+          },
+          "model": "model-b",
+          "runtime": "runtime-b",
+          "scenario": "scenario-b",
+          "traffic_weight": 0.25
+        }
+      ],
+      "epoch": 1,
+      "evaluation_resources": {
+        "calls": 16,
+        "cost_usd": 0.016,
+        "latency_ms_sum": 1600.0
+      },
+      "global": {
+        "decision_effect": {
+          "confidence_interval": [
+            0.1,
+            0.1
+          ],
+          "mean": 0.1,
+          "n": 4,
+          "tasks": 2
+        },
+        "decision_evidence_status": "supported_positive",
+        "evaluation_effect": {
+          "confidence_interval": [
+            0.1,
+            0.1
+          ],
+          "mean": 0.1,
+          "n": 4,
+          "tasks": 2
+        },
+        "harmful_promoted_cohorts": [
+          "cohort-b"
+        ],
+        "harmful_traffic_weight": 0.25,
+        "oracle_value": 0.1,
+        "policy_gain": 0.1,
+        "retained_version_count": 1,
+        "selection": "new"
+      },
+      "new_skill_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "old_skill_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "scoped": {
+        "harmful_promoted_cohorts": [],
+        "harmful_traffic_weight": 0.0,
+        "oracle_value": 0.15,
+        "oracle_value_gap_over_global": 0.05,
+        "policy_gain": 0.15,
+        "retained_version_count": 2,
+        "selection_by_cohort": {
+          "cohort-a": "new",
+          "cohort-b": "old"
+        },
+        "unresolved_cohort_rate": 0.0,
+        "unresolved_traffic_weight": 0.0
+      },
+      "supported_negative_cohorts": [
+        "cohort-b"
+      ],
+      "supported_positive_cohorts": [
+        "cohort-a"
+      ],
+      "supported_sign_reversal": true,
+      "unresolved_cohorts": [],
+      "update_id": "update-1"
+    },
+    {
+      "activation_control": "forced",
+      "cohorts": [
+        {
+          "cohort_id": "cohort-a",
+          "decision_effect": {
+            "confidence_interval": [
+              0.1,
+              0.1
+            ],
+            "losses": 0,
+            "mean": 0.1,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "decision_evidence_status": "supported_positive",
+          "decision_metric": "score",
+          "decision_non_evaluable_errors": {},
+          "decision_pass_rate_effect": {
+            "confidence_interval": [
+              0.0,
+              0.0
+            ],
+            "losses": 0,
+            "mean": 0.0,
+            "n": 2,
+            "tasks": 2,
+            "ties": 2,
+            "wins": 0
+          },
+          "decision_score_effect": {
+            "confidence_interval": [
+              0.1,
+              0.1
+            ],
+            "losses": 0,
+            "mean": 0.1,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "evaluation_effect": {
+            "confidence_interval": [
+              0.1,
+              0.1
+            ],
+            "losses": 0,
+            "mean": 0.1,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "evaluation_evidence_status": "supported_positive",
+          "evaluation_non_evaluable_errors": {},
+          "evaluation_pass_rate_effect": {
+            "confidence_interval": [
+              0.0,
+              0.0
+            ],
+            "losses": 0,
+            "mean": 0.0,
+            "n": 2,
+            "tasks": 2,
+            "ties": 2,
+            "wins": 0
+          },
+          "evaluation_score_effect": {
+            "confidence_interval": [
+              0.1,
+              0.1
+            ],
+            "losses": 0,
+            "mean": 0.1,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "model": "model-a",
+          "runtime": "runtime-a",
+          "scenario": "scenario-a",
+          "traffic_weight": 0.75
+        },
+        {
+          "cohort_id": "cohort-b",
+          "decision_effect": {
+            "confidence_interval": [
+              0.1,
+              0.1
+            ],
+            "losses": 0,
+            "mean": 0.1,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "decision_evidence_status": "supported_positive",
+          "decision_metric": "score",
+          "decision_non_evaluable_errors": {},
+          "decision_pass_rate_effect": {
+            "confidence_interval": [
+              1.0,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 1.0,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "decision_score_effect": {
+            "confidence_interval": [
+              0.1,
+              0.1
+            ],
+            "losses": 0,
+            "mean": 0.1,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "evaluation_effect": {
+            "confidence_interval": [
+              0.1,
+              0.1
+            ],
+            "losses": 0,
+            "mean": 0.1,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "evaluation_evidence_status": "supported_positive",
+          "evaluation_non_evaluable_errors": {},
+          "evaluation_pass_rate_effect": {
+            "confidence_interval": [
+              1.0,
+              1.0
+            ],
+            "losses": 0,
+            "mean": 1.0,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "evaluation_score_effect": {
+            "confidence_interval": [
+              0.1,
+              0.1
+            ],
+            "losses": 0,
+            "mean": 0.1,
+            "n": 2,
+            "tasks": 2,
+            "ties": 0,
+            "wins": 2
+          },
+          "model": "model-b",
+          "runtime": "runtime-b",
+          "scenario": "scenario-b",
+          "traffic_weight": 0.25
+        }
+      ],
+      "epoch": 2,
+      "evaluation_resources": {
+        "calls": 16,
+        "cost_usd": 0.016,
+        "latency_ms_sum": 1600.0
+      },
+      "global": {
+        "decision_effect": {
+          "confidence_interval": [
+            0.1,
+            0.1
+          ],
+          "mean": 0.1,
+          "n": 4,
+          "tasks": 2
+        },
+        "decision_evidence_status": "supported_positive",
+        "evaluation_effect": {
+          "confidence_interval": [
+            0.1,
+            0.1
+          ],
+          "mean": 0.1,
+          "n": 4,
+          "tasks": 2
+        },
+        "harmful_promoted_cohorts": [],
+        "harmful_traffic_weight": 0.0,
+        "oracle_value": 0.1,
+        "policy_gain": 0.1,
+        "retained_version_count": 1,
+        "selection": "new"
+      },
+      "new_skill_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "old_skill_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "scoped": {
+        "harmful_promoted_cohorts": [],
+        "harmful_traffic_weight": 0.0,
+        "oracle_value": 0.1,
+        "oracle_value_gap_over_global": 0.0,
+        "policy_gain": 0.1,
+        "retained_version_count": 1,
+        "selection_by_cohort": {
+          "cohort-a": "new",
+          "cohort-b": "new"
+        },
+        "unresolved_cohort_rate": 0.0,
+        "unresolved_traffic_weight": 0.0
+      },
+      "supported_negative_cohorts": [],
+      "supported_positive_cohorts": [
+        "cohort-a",
+        "cohort-b"
+      ],
+      "supported_sign_reversal": false,
+      "unresolved_cohorts": [],
+      "update_id": "update-2"
+    }
+  ]
+}
