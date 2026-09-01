@@ -188,6 +188,12 @@ xskill upload ./my-skill       # package & upload a skill folder (with SKILL.md)
 
 `search` combines BM25 keyword and semantic-vector ranking, independently of the recommendation profile. If embeddings are unavailable it falls back to BM25. By default it returns compact metadata, ranks, and IDs without changing the local machine. `search --download` preserves the original `~/.xskill/search_skills/` **10-slot** rolling LRU behavior. `download` persistently downloads one ID: humans can interactively select harnesses, while agents and scripts should repeat `--agent` and add `-y`; `-y` alone selects all detected harnesses. `upload` lands under `skillhub/user_skill_hub/<your-username>/` on the server. Semantic search for local trajectories/skills has been removed from the CLI (no more `xskill search traj|skill <query>`); use the dashboard or the API (`POST /api/v1/skills/search`) instead.
 
+#### Optional: switch the algorithm kernel
+
+xskill ships with a built-in native kernel (split, cluster, edit agents) that drives skill evolution. In team mode, the admin can change `kernel_id` on the settings page to a third-party kernel such as OpenEarth. The external kernel takes over "generate Skills from ready atoms" while everything else stays the same. This is entirely optional — leave out the `kernel` block and nothing changes.
+
+See [Algorithm kernel guide](docs/openearth-kernel.md) for setup steps and details.
+
 * * *
 
 ## 🔌 Works with your agents

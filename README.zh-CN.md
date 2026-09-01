@@ -131,6 +131,10 @@ xskill upload ./my-skill            # 打包上传一个 skill 目录(含 SKILL.
 
 `search` 使用 BM25 关键词+语义向量混合检索、与推荐画像无关；语义服务不可用时自动退化为 BM25。默认只输出精简元信息、排名和 ID，不修改本机；`search --download` 保留原来的 **10 个槽位**滚动淘汰逻辑。`download` 按 ID 持久下载，人类可交互多选 harness，agent/脚本应重复传 `--agent` 并加 `-y`。`upload` 在 server 端落到 `skillhub/user_skill_hub/<你的用户名>/` 下。本机轨迹/技能的语义搜索已从 CLI 移除（不再有 `xskill search traj|skill <query>`），改用 dashboard 或 API（`POST /api/v1/skills/search`）。
 
+### 可选：切换算法内核
+
+默认使用内置 native 内核驱动技能进化。管理员可在设置页把 `kernel_id` 切换为第三方内核（如 OpenEarth），让外部算法接管 Skill 生成环节，其余流程不变。不写 `kernel` 段时一切照旧。操作步骤见 [算法内核使用指南](docs/openearth-kernel.md)。
+
 ## 架构图
 
 <p align="center">
