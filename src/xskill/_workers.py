@@ -298,6 +298,11 @@ def run_kernel_host(
             if first_run or previous_snapshot.get(resource_id) != fingerprint
         ))
 
+        if not first_run and not changed:
+            # No trajectory changes since last run; skip this cycle.
+            time.sleep(interval)
+            continue
+
         try:
             runtime.run_active(
                 trigger="scheduled",

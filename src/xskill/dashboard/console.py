@@ -664,8 +664,22 @@ def _validate_config_text(raw: str) -> dict:
         raise ValueError("config.yaml 顶层必须是 mapping")
     from xskill.config import dashboard_config
     dashboard_config(cfg)  # admins 类型等
-    from xskill.config import kernel_config
-    kernel_config(cfg)
+    from xskill.config import kernel_config, XSKILL_HOME
+    kconf = kernel_config(cfg, xskill_home=XSKILL_HOME)
+    if kconf["active"] != "native":
+        from xskill.kernels.catalog import KernelCatalog
+        catalog = KernelCatalog(
+            plugin_dir=Path(kconf["plugin_dir"]),
+            xskill_home=XSKILL_HOME,
+        )
+        try:
+            catalog.get(kconf["active"])
+        except KeyError:
+            raise ValueError(f"kernel not found: {kconf['active']}")
+        except Exception as exc:
+            raise ValueError(
+                f"kernel {kconf['active']} is unavailable: {exc}"
+            ) from exc
     from xskill.canary import CanaryConfig
     CanaryConfig.from_dict(cfg.get("canary", {}) or {})
     from xskill.config import team_server_slots_config
@@ -1667,8 +1681,13 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
         resume_from = parse_resume_offset(
             request.headers.get("last-event-id") or after
         )
+        from xskill.utils.shutdown import SHUTTING_DOWN
         return StreamingResponse(
-            iter_kernel_console_sse(path, after=resume_from),
+            iter_kernel_console_sse(
+                path,
+                after=resume_from,
+                stop=lambda: SHUTTING_DOWN.is_set(),
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

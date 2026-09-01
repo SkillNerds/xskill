@@ -521,7 +521,8 @@ class DirectoryWatcher:
             self._scan_dir(wd, consumed_index, **kw)
 
         if self._round_new_atoms:
-            self.pending_atoms.extendleft(reversed(self._round_new_atoms))
+            if self.native_distill:
+                self.pending_atoms.extendleft(reversed(self._round_new_atoms))
             self._round_new_atoms.clear()
         # 全部 watch_dir 共用一个 pending/claimed 队列；持续提交到 cluster 池满。
         # 最后不足 batch_size 的尾批也立即提交。
@@ -529,7 +530,7 @@ class DirectoryWatcher:
         # do not let the native classifier create baby skills.
         if self.native_distill:
             self._submit_cluster_batches()
-        self._submit_task_graph()
+            self._submit_task_graph()
 
         # ── Step 5a: 用户点名的 generate 入队到 SkillEdit 同一线程池 ──
         # 先于自动 SkillEdit 提交，避免后台整理把用户任务挤到池外。

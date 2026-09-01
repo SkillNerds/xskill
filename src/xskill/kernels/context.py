@@ -844,6 +844,7 @@ class SkillPublisher:
         from xskill.skill.git import (
             commit_to_staging_branch,
             current_branch,
+            ensure_head_on_main,
             has_changes,
             run_git,
             skill_repo_lock,
@@ -857,7 +858,11 @@ class SkillPublisher:
                     f"{base_commit_sha}, current {previous_commit}"
                 )
             if current_branch(str(skill_path)) != "main":
-                raise RuntimeError(f"skill {name} is not on main")
+                # Canary may have temporarily checked the skill out to staging.
+                # Switch back before publishing; only fail if checkout fails.
+                ensure_head_on_main(skill_path)
+                if current_branch(str(skill_path)) != "main":
+                    raise RuntimeError(f"skill {name} is not on main")
             if has_staging(skill_path):
                 raise RuntimeError(f"skill {name} already has an active staging")
             if has_changes(str(skill_path)):
