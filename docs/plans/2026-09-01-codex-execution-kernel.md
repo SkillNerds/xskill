@@ -8,7 +8,7 @@
 
 XSkill 平时从编码轨迹里自动蒸馏技能。蒸馏时会起好几类「蒸馏代理」：它们不是用户手里的 Claude Code 或 Codex，而是 XSkill 自己在后台跑的大模型循环。今天这些循环的执行框架是 Agno（一个 Python agent 库：它管模型调用、工具循环、重试）。本需求把这条执行框架换成 Codex CLI 的非交互运行（`codex exec`）。
 
-换成 Codex 之后，每一个蒸馏任务不再是「在进程里 new 一个 Agno Agent 再 `agent.run()`」，而是套用该代理种类的一份任务模板（folder 加 yaml 加工具描述），再拉起一次 `codex exec`。`task.yaml` 是模板，按种类各一份，检入仓库；不是每条轨迹、每个 atom、每个技能再写一份。一次运行只另写本次的用户消息和状态文件。
+换成 Codex 之后，每一个蒸馏任务不再是「在进程里 new 一个 Agno Agent 再 `agent.run()`」，而是套用该代理种类的一份任务模板（目录加 `task.yaml`），再拉起一次 `codex exec`。工具不靠 yaml 文件注入，靠我们起一个 MCP 进程，把现有 Python 工具报给 Codex。`task.yaml` 是模板，按种类各一份，检入仓库；不是每条轨迹、每个 atom、每个技能再写一份。一次运行只另写本次的用户消息和状态文件。
 
 蒸馏代理仍然是原来那几类，职责不变：
 
@@ -84,9 +84,9 @@ Python 代理类还在。它们继续负责：什么时候触发、提示词怎�
 
 一次运行改成：
 
-1. 运行器按代理种类取出仓库里那一份任务模板（`task.yaml`、`AGENTS.md`、`tools/*.yaml`）。模板是种类级的，检入 `src/xskill/agents/runtime/packs/<kind>/`，人改模板，代码不要每次运行现写一份。
+1. 运行器按代理种类取出仓库里那一份任务模板（至少 `task.yaml` 和 `AGENTS.md`）。模板是种类级的，检入 `src/xskill/agents/runtime/packs/<kind>/`，人改模板，代码不要每次运行现写一份。`tools/*.yaml` 不是 Codex 的加载格式，见下文。
 2. 为这一次运行准备一个工作目录：把模板原样放进去（复制或只读挂上），再只写本次的 `prompt.md` 和 `state/`。轨迹 id、日志落点、可读根这些一次一变的值放进 `state/bindings.yaml`，不要为此改模板正文。
-3. 工具的真实实现仍是现在的 Python 函数。模板只放描述。Codex 通过一个 XSkill 自己起的 MCP 服务调用这些函数。MCP 是 Model Context Protocol：让外部程序把工具挂到 Codex 上。MCP 按模板里的工具名单挂载，再用 bindings 填这一次的根目录。
+3. 工具的真实实现仍是现在的 Python 函数。Codex 不会去扫某个 `tools/*.yaml` 目录。它只认 MCP：启动时读隔离 `CODEX_HOME` 里的 `config.toml`，拉起我们写的 MCP 进程，用协议里的 `tools/list` 拿到名字、说明和 JSON schema，再用 `tools/call` 调进来。`task.yaml` 里的 `tools` 名单只是告诉运行器这次允许挂哪些，写成 MCP 配置的 `enabled_tools`。
 4. 运行器在工作目录里设置隔离的 `CODEX_HOME`（不在 `~/.codex`），带 `--ignore-user-config --skip-git-repo-check --sandbox read-only --json`，以工作目录为 cwd 执行 `codex exec`。
 5. 运行器读 Codex 打到标准输出的 JSON 事件，边收边写成上面那些现有日志文件。看板和 `xskill generate` 的流式输出继续读这些文件，不改协议。
 6. 进程退出后，代理读工具留下的副作用（拆分读 `state/submitted.jsonl`，归类读 cluster 写入记录，编辑读 git 是否提交），再跑原来的硬校验。
@@ -198,7 +198,7 @@ classDiagram
         +每种代理一份
         +检入 packs/kind/task.yaml
         +AGENTS.md
-        +tools/*.yaml
+        +task.yaml 只写工具名单
     }
     class RunWorkspace {
         <<新增>>
@@ -214,7 +214,9 @@ classDiagram
     }
     class CodexMcp {
         <<新增>>
-        +按种类模板的名单暴露工具
+        +stdio MCP 进程
+        +tools/list 来自 Python ToolSpec
+        +enabled_tools 来自模板名单
     }
     class TraceAdapter {
         <<新增>>
@@ -361,14 +363,9 @@ src/xskill/agents/runtime/packs/
   task_agent/
     task.yaml
     AGENTS.md
-    tools/
-      look.yaml
-      submit_atom.yaml
-      context_budget.yaml
-      my_atoms.yaml
-      mark_not_fit.yaml
   task_cluster_agent/
-    ...
+    task.yaml
+    AGENTS.md
   skill_edit_agent/
     ...
   generate_agent/
@@ -404,22 +401,27 @@ write_roots: []
 
 编辑代理同一份模板，`logs.append` 为 true。baby 强制重写那一轮没有 commit 工具：用模板里的 `tool_profiles`（例如 `stub_rewrite` 与 `normal`）从同一份名单里少挂几个，不要为这一轮另写一份 `task.yaml`。生成代理的 on hold 目录、团队轨迹根写进本次 `state/bindings.yaml`，不要写进模板。
 
-`tools/*.yaml` 也是模板的一部分，只描述契约，不放实现。拆分的 `look` 可以是：
+本机 Codex CLI（当前是 0.144）没有「读 `tools/*.yaml` 当工具」这条路。自定义工具只有 MCP。`tools/*.yaml` 若还留在模板目录里，只给人看、给单测对账用，Codex 进程不会打开它们。实现时也可以不建这个目录，只保留 `task.yaml` 里的名字名单，避免让人以为那是注入口。
 
-```yaml
-name: look
-description: >
-  读轨迹某行附近的原文（含向前看，用来判断新意图还是追问）。
-parameters:
-  type: object
-  required: [line]
-  properties:
-    line: {type: integer, description: 中心行号，从 1 起}
-    before: {type: integer, default: 40}
-    after: {type: integer, default: 20}
+真正注入的步骤：
+
+1. 从现有 `agent_tools.py` 抽出 `ToolSpec`：名字、说明、JSON schema、handler。说明和 schema 以 Python 为准（今天 `@tool` 的 docstring 和参数类型已经有了），不要再手写一份 yaml 当第二真源。
+2. 新进程 `python -m xskill.agents.runtime.mcp_server`，标准输入输出讲 MCP。它在 `tools/list` 里只报这次 `enabled_tools` 里的那些 spec，在 `tools/call` 里调对应 handler。`state/bindings.yaml` 用环境变量或参数传给这个进程，用来恢复 `AgentToolContext`。
+3. 运行器往这次隔离 `CODEX_HOME/config.toml` 写一段，不要写用户家目录那份：
+
+```toml
+[mcp_servers.xskill]
+command = "python"
+args = ["-m", "xskill.agents.runtime.mcp_server", "--kind", "task_agent", "--bindings", "state/bindings.yaml"]
+enabled_tools = ["look", "submit_atom", "context_budget", "my_atoms"]
+required = true
 ```
 
-这些 yaml 是给人对账和 Codex 挂载用的。真正执行仍走 Python。参数校验失败时，工具返回 error 字符串让 Codex 自改，不要抛到进程外把整次运行打死（与现在 `submit_atom` 一致）。
+`enabled_tools` 的值从种类模板 `task.yaml` 的 `tools`（加上本次启用的 `optional_tools`）抄过来。Codex 启动后只看得到这些名字。
+
+4. `codex exec` 用这份隔离 home。模型要 `look` 时，Codex 把参数交给 MCP，我们的 `look` 函数跑完把字符串返回去。参数不合法时仍返回 error 字符串让它自改，不要把进程打死（与现在 `submit_atom` 一致）。
+
+拆分代理今天的 `look`、`submit_atom` 是闭包，状态在内存里。MCP 在子进程，闭包过不去，所以提交记录改写到工作目录的 `state/submitted.jsonl`，合法行号等写进 `state/`。这是实现细节，不是又一份工具 yaml。
 
 一次运行的工作目录由 `agent_runtime.codex.task_root` 决定，缺省 `~/.xskill/runtime/codex_tasks`。这里只放本次的东西，跑完按 `keep_packs` 决定删不删：
 
@@ -427,7 +429,6 @@ parameters:
 <task_root>/<kind>/<run_id>/
   task.yaml                  # 从模板复制过来，或只读指向模板；运行器不改内容
   AGENTS.md                  # 模板原文；代理类拼出的系统提示词由运行器追加在末尾，或另写 generated_instructions.md
-  tools/                     # 同模板
   prompt.md                  # 只有这次：用户消息
   state/
     bindings.yaml            # 只有这次：run_id、logs_dir、traj_root、skill_dir
@@ -456,7 +457,7 @@ parameters:
 
 手改吸收代理：继续只给 `absorb_user_edit_to_main`。
 
-不要给 Codex 内置 Shell 当「方便的后备」。现有代理明确禁止通用 bash。`sandbox: read-only` 是底线；若某版 Codex 仍暴露 Shell，提示词和 task.yaml 都要写禁止，测试要断言任务目录外没有被这个进程写过。
+不要给 Codex 内置 Shell 当「方便的后备」。现有代理明确禁止通用 bash。`sandbox: read-only` 是底线；若某版 Codex 仍暴露 Shell，提示词和种类模板都要写禁止，测试要断言工作目录外没有被这个进程写过。
 
 `src/xskill/skill/candidates.py` 里还有一条旧的 `_run_skill_edit_agent`，自己 `from agno.agent import Agent`。那是编辑代理的旧路径，不要在这条路上接 Codex，也不要再往里面加功能。新运行时只接 `SkillEditAgent`。
 
@@ -555,17 +556,19 @@ TOOL RESULT  look
 - 不要为了「先跑通」把 `sandbox` 设成 `danger-full-access`，也不要加载用户家目录里那份 `~/.codex/config.toml`（本机开发者的 sandbox 经常是全开的）。
 - 不要按轨迹、atom、技能现写一份具体的 `task.yaml`。一次一变的值只进 `state/bindings.yaml` 和 `prompt.md`。
 - 不要把 `llm.model`、某台机器的绝对路径写进种类模板。
+- 不要把 `tools/*.yaml` 当成 Codex 会加载的格式。注入口是 MCP 的 `tools/list`，契约真源是 Python 里的 `ToolSpec`。
+- 不要把 MCP 配进用户的 `~/.codex/config.toml`。只写这次隔离 home，避免蒸馏工具漏到用户日常 Codex 会话里。
 
 ## 建议的改动面（给实现的人找文件用）
 
 - 配置：`src/xskill/config.py` 的 `CONFIG_TEMPLATE` 与 `normalize_runtime_config`，新增 `agent_runtime` 段。
-- 运行时接口：建议新包 `src/xskill/agents/runtime/`。`base.py` 放 `AgentRuntime` 与 `TaskSpec`；`agno_runtime.py` 包现有工厂；`codex_runtime.py` 套用模板并拉起进程；`packs/<kind>/` 放种类模板（`task.yaml`、`AGENTS.md`、`tools/*.yaml`）；`trace_adapter.py` 翻译 JSON 事件；`mcp_server.py` 按模板名单暴露工具。
+- 运行时接口：建议新包 `src/xskill/agents/runtime/`。`base.py` 放 `AgentRuntime` 与 `TaskSpec`；`agno_runtime.py` 包现有工厂；`codex_runtime.py` 套用模板、写隔离 `config.toml` 并拉起进程；`packs/<kind>/` 放种类模板（`task.yaml`、`AGENTS.md`）；`mcp_server.py` 把 Python `ToolSpec` 讲成 MCP；`trace_adapter.py` 翻译 JSON 事件。
 - 工具脱 Agno：`agent_tools.py` 里的业务函数留下，`@tool` 变成可选的一层薄包装。先抽出 `ToolSpec`（名字、说明、JSON schema、handler），Agno 工厂从 spec 再包一层，MCP 从同一份 spec 挂载。
 - 代理类：`task_agent.py`、`task_cluster_agent.py`、`skill_edit_agent.py`、`generate_agent.py`、`user_edit_absorb_agent.py` 只改「谁来 `run`」，提示词与校验不动。
 - 监听器：`pipeline/runner.py` 的 `_factory()`，以及 `process_atom_task`、`process_atom_batch` 的工厂参数。
 - 生成任务：`team/server/generate_jobs.py` 里构造工厂的地方。
 - 探针与描述优化：`skill/trigger_probe.py`、`skill/description_opt.py`，放到拆分、归类、编辑都稳定之后的第二期。
-- 单测：种类模板 schema、占位符解析进 bindings、TraceAdapter 用一段固定的 Codex JSON 事件回放成现有日志文本、MCP 工具名单过滤、隔离 `CODEX_HOME` 不出现在 `~/.codex/sessions`。Codex 进程用夹具可执行文件冒充，不要在普通 PR CI 里真拉模型。
+- 单测：种类模板 schema、占位符解析进 bindings、bindings 不回写模板、工作目录里的 `task.yaml` 与仓库模板一致、TraceAdapter 用一段固定的 Codex JSON 事件回放成现有日志文本、MCP 工具名单过滤、隔离 `CODEX_HOME` 不出现在 `~/.codex/sessions`。Codex 进程用夹具可执行文件冒充，不要在普通 PR CI 里真拉模型。
 - 文档：本文；`docs/agent.md` 只在实现落地后补一句「执行框架可换」，不要在设计阶段改用户手册口气。
 
 ## 怎么分步落地
