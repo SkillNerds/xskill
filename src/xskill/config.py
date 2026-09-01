@@ -62,6 +62,14 @@ skill_dir: ~/.xskill/skill            # the single global skill repo
 interests: []                         # optional top-level interest filter;
                                       # non-empty list enables TaskAgent filtering
 
+# ===== Trajectory-to-Skill algorithm kernel =====
+# XSkill only selects/discovers the kernel.  Every non-native kernel owns its
+# own ~/.xskill/kernels/<id>/config.yaml and workspace; XSkill never parses or
+# rewrites that private config.
+kernel:
+  kernel_id: native
+  kernels_path: ~/.xskill/kernels     # <id>/kernel.py local bridge scripts
+
 # ===== LLM (generation / scoring / chat) =====
 # Any OpenAI-compatible chat-completions endpoint works (DeepSeek, OpenAI,
 # Qwen/DashScope, OpenRouter, a local Ollama, ...).
@@ -957,6 +965,65 @@ def skillhub_config(cfg: Optional[dict] = None) -> dict:
     }
 
 
+def kernel_config(
+    cfg: Optional[dict] = None,
+    *,
+    xskill_home: Optional[Path] = None,
+) -> dict:
+    """Read the XSkill-owned kernel selector and discovery directory.
+
+    Kernel-private settings deliberately do not appear here.  They live at
+    ``<plugin_dir>/<active>/config.yaml`` and are read only by that kernel.
+    """
+    from xskill.kernels.base import validate_kernel_id
+
+    section = (cfg or {}).get("kernel") or {}
+    if not isinstance(section, dict):
+        raise ValueError(
+            f"kernel 必须是 mapping，got {type(section).__name__}"
+        )
+    configured_id = section.get("kernel_id")
+    legacy_active = section.get("active")
+    if (
+        configured_id is not None
+        and legacy_active is not None
+        and str(configured_id).strip() != str(legacy_active).strip()
+    ):
+        raise ValueError(
+            "kernel.kernel_id 与兼容字段 kernel.active 不能冲突"
+        )
+    active = validate_kernel_id(
+        configured_id if configured_id is not None else legacy_active or "native"
+    )
+    state_root = (
+        Path(xskill_home) if xskill_home is not None else XSKILL_HOME
+    ).expanduser().resolve()
+    configured_path = section.get("kernels_path")
+    legacy_plugin_dir = section.get("plugin_dir")
+    if (
+        configured_path is not None
+        and legacy_plugin_dir is not None
+        and str(configured_path).strip() != str(legacy_plugin_dir).strip()
+    ):
+        raise ValueError(
+            "kernel.kernels_path 与兼容字段 kernel.plugin_dir 不能冲突"
+        )
+    raw_plugin_dir = (
+        configured_path
+        if configured_path is not None
+        else legacy_plugin_dir or str(state_root / "kernels")
+    )
+    if not isinstance(raw_plugin_dir, str) or not raw_plugin_dir.strip():
+        raise ValueError("kernel.kernels_path 必须是非空字符串路径")
+    plugin_dir = Path(raw_plugin_dir).expanduser()
+    if not plugin_dir.is_absolute():
+        plugin_dir = state_root / plugin_dir
+    return {
+        "active": active,
+        "plugin_dir": plugin_dir.resolve(),
+    }
+
+
 def embedding_search_config(cfg: Optional[dict] = None) -> dict:
     """读 config 的 ``embedding`` 段中 skill_hub/search 语义通道的护栏参数。
 
@@ -1163,6 +1230,11 @@ def get_logs_dir() -> Path:
     return LOGS_DIR
 
 
+def get_kernel_console_log_path() -> Path:
+    """kernel-host 子进程 stdout/stderr 落盘路径，供算法内核页实时串流。"""
+    return get_logs_dir() / "xskill.kernel.log"
+
+
 def get_traj_dir() -> Path:
     """默认轨迹目录 = 第一个已注册的 watch dir。
 
@@ -1202,6 +1274,15 @@ def get_registry_db_path(
         Path(xskill_home) if xskill_home is not None else XSKILL_HOME
     ).expanduser().resolve()
     return state_root / "registry.db"
+
+
+def get_kernel_evaluation_db_path(
+    *, xskill_home: Optional[Path] = None,
+) -> Path:
+    state_root = (
+        Path(xskill_home) if xskill_home is not None else XSKILL_HOME
+    ).expanduser().resolve()
+    return state_root / "kernel_runs.db"
 
 
 # ─── team (C/S 模式) 路径 ───────────────────────────────────────

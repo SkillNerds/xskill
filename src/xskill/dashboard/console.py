@@ -13,7 +13,8 @@ import operator
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from xskill.dashboard.auth import require_admin, require_user
@@ -643,7 +644,8 @@ class PipelinePoolPatch(BaseModel):
 # llm/embedding/agent_worker/watcher 涉及进程级资源，改动需重启 serve。
 HOT_RELOAD_SECTIONS = ("dashboard", "canary", "recommend", "skillhub")
 RESTART_SECTIONS = (
-    "llm", "llm_skill", "llm_agents", "embedding", "watcher", "agent_worker", "team",
+    "llm", "llm_skill", "llm_agents", "embedding", "watcher",
+    "agent_worker", "team", "kernel",
 )
 # team 段整体是重启域(join_token/路径/registry 接线),但这几个子键是纯调优数字,
 # 由 api.live_manifest_tuning() 每请求现取 → 改它们不需要重启。只有改到 team
@@ -662,6 +664,8 @@ def _validate_config_text(raw: str) -> dict:
         raise ValueError("config.yaml 顶层必须是 mapping")
     from xskill.config import dashboard_config
     dashboard_config(cfg)  # admins 类型等
+    from xskill.config import kernel_config
+    kernel_config(cfg)
     from xskill.canary import CanaryConfig
     CanaryConfig.from_dict(cfg.get("canary", {}) or {})
     from xskill.config import team_server_slots_config
@@ -1645,6 +1649,33 @@ def build_console_router(db_path: Optional[Path] = None) -> APIRouter:
         return {"ok": True}
 
     # ── 设置页（admin,2.9） ─────────────────────────────────────────
+
+    @router.get("/admin/kernels/logs")
+    def admin_kernel_logs(
+        request: Request,
+        after: str | None = None,
+        _=Depends(require_admin),
+    ):
+        """SSE tail of kernel-host stdout/stderr (print + logging)."""
+        from xskill.config import get_kernel_console_log_path
+        from xskill.kernels.console_log import (
+            iter_kernel_console_sse,
+            parse_resume_offset,
+        )
+
+        path = get_kernel_console_log_path()
+        resume_from = parse_resume_offset(
+            request.headers.get("last-event-id") or after
+        )
+        return StreamingResponse(
+            iter_kernel_console_sse(path, after=resume_from),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @router.get("/admin/config")
     def admin_config(_=Depends(require_admin)):

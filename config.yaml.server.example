@@ -1,5 +1,13 @@
 skill_dir: ~/.xskill/skill
 
+# ===== Trajectory-to-Skill algorithm kernel =====
+# XSkill only selects/discovers the kernel. Every non-native kernel owns its
+# own ~/.xskill/kernels/<id>/config.yaml and workspace; XSkill never parses
+# or rewrites that private config.
+kernel:
+  kernel_id: native
+  kernels_path: ~/.xskill/kernels     # <id>/kernel.py local bridge scripts
+
 llm:
   base_url: https://api.deepseek.com   # 任何兼容 OpenAI chat-completions 的端点均可
                                         # 例：DeepSeek / OpenAI / 阿里百炼 / 本地 Ollama
