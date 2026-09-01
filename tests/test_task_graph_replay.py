@@ -331,13 +331,36 @@ def test_privacy_safe_codex_history_pilot_contains_no_raw_local_identifiers():
 
     for forbidden in (
         "/home/",
+        "/Users/",
         ".codex/",
         "github.com",
         "tiammomo",
         "api_key",
         "Bearer ",
+        "DESKTOP-",
+        "password",
     ):
         assert forbidden not in payload
+    assert re.search(r"\b[A-Za-z]:\\", payload) is None
+    assert re.search(r"[\w.%+-]+@[\w.-]+\.[A-Za-z]{2,}", payload) is None
+    assert re.search(r"\bc\d{7,}\b", payload, re.IGNORECASE) is None
+    assert (
+        re.search(
+            r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+            r"|192\.168\.\d{1,3}\.\d{1,3}"
+            r"|172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})\b",
+            payload,
+        )
+        is None
+    )
+    assert (
+        re.search(
+            r"\bclient(?:_id)?\s*[`:=\s]+\s*`?[a-f0-9]{16,}`?",
+            payload,
+            re.IGNORECASE,
+        )
+        is None
+    )
     assert re.search(r"\bsk-[A-Za-z0-9_-]{8,}", payload) is None
 
 
