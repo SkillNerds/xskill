@@ -267,6 +267,8 @@ class BoundedTaskLinker:
         model_confirmed_count = 0
         model_proposed_count = 0
         model_needs_review_count = 0
+        model_abstain_count = 0
+        model_adjudications: list[dict] = []
         adjudicator_available = self.adjudicator is not None
         affected_task_ids: set[str] = set()
         atoms_by_key = {stable_ref_key(atom.atom_ref): atom for atom in atoms}
@@ -334,22 +336,39 @@ class BoundedTaskLinker:
                 )
             ):
                 model_judgement_count += 1
+                model_question: TaskLinkQuestion | None = None
                 try:
-                    model_judgement = self._adjudicate(
+                    model_question = self._adjudication_question(
                         atom=atom,
                         candidates=candidates,
                         tasks=tasks,
                         recent_by_session=recent_by_session,
                         marker=marker,
                     )
+                    model_judgement = self._adjudicate(model_question)
                 except Exception as error:
                     model_judgement_failure_count += 1
                     adjudicator_available = False
+                    if model_question is not None:
+                        model_adjudications.append(
+                            self._adjudication_audit(
+                                model_question,
+                                error=error,
+                            )
+                        )
                     logger.warning(
                         "Task link adjudication failed; using rules-only fallback: %s",
                         type(error).__name__,
                     )
                 else:
+                    model_adjudications.append(
+                        self._adjudication_audit(
+                            model_question,
+                            judgement=model_judgement,
+                        )
+                    )
+                    if model_judgement.decision == "abstain":
+                        model_abstain_count += 1
                     if (
                         model_judgement.decision == "same_task"
                         and self.auto_confirm_model_links
@@ -387,7 +406,7 @@ class BoundedTaskLinker:
                 model_candidate_id = (
                     model_judgement.task_id
                     if model_judgement is not None
-                    and model_judgement.decision in ("same_task", "needs_review")
+                    and model_judgement.decision in ("same_task", "abstain")
                     else None
                 )
                 for candidate_id, score in candidates:
@@ -397,7 +416,7 @@ class BoundedTaskLinker:
                     membership_decision = (
                         "needs_review"
                         if is_model_candidate
-                        and model_judgement.decision == "needs_review"
+                        and model_judgement.decision == "abstain"
                         else "proposed"
                     )
                     if membership_decision == "proposed":
@@ -582,6 +601,8 @@ class BoundedTaskLinker:
                 "model_confirmed_membership_count": model_confirmed_count,
                 "model_proposed_membership_count": model_proposed_count,
                 "model_needs_review_membership_count": model_needs_review_count,
+                "model_abstain_judgement_count": model_abstain_count,
+                "model_adjudications": model_adjudications,
                 "proposed_membership_count": proposed_count,
                 "reused_membership_count": confirmed_reuse_count,
                 "max_candidates_per_atom": self.top_k,
@@ -677,7 +698,7 @@ class BoundedTaskLinker:
             for task_id, score in candidates
         )
 
-    def _adjudicate(
+    def _adjudication_question(
         self,
         *,
         atom: ScopedAtomEvidence,
@@ -685,9 +706,7 @@ class BoundedTaskLinker:
         tasks: dict[str, LogicalTask],
         recent_by_session: dict[tuple[str, str], deque[str]],
         marker: str,
-    ) -> TaskLinkJudgement:
-        if self.adjudicator is None:
-            raise RuntimeError("Task link adjudicator is not configured")
+    ) -> TaskLinkQuestion:
         session_key = (
             atom.atom_ref.source_scope_id,
             atom.atom_ref.traj_id,
@@ -706,7 +725,7 @@ class BoundedTaskLinker:
         )
         if not bounded_candidates:
             raise RuntimeError("Task link candidates disappeared before adjudication")
-        judgement = self.adjudicator.judge(TaskLinkQuestion(
+        return TaskLinkQuestion(
             tenant_id=atom.atom_ref.tenant_id,
             task_scope_id=atom.atom_ref.task_scope_id,
             source_scope_id=atom.atom_ref.source_scope_id,
@@ -716,16 +735,50 @@ class BoundedTaskLinker:
             summary=atom.atom.summary,
             explicit_marker=marker,
             candidates=bounded_candidates,
-        ))
+        )
+
+    def _adjudicate(
+        self,
+        question: TaskLinkQuestion,
+    ) -> TaskLinkJudgement:
+        if self.adjudicator is None:
+            raise RuntimeError("Task link adjudicator is not configured")
+        judgement = self.adjudicator.judge(question)
         if not isinstance(judgement, TaskLinkJudgement):
             raise TypeError("Task link adjudicator returned an invalid judgement")
-        candidate_ids = {candidate.task_id for candidate in bounded_candidates}
+        candidate_ids = {candidate.task_id for candidate in question.candidates}
         if (
             judgement.task_id is not None
             and judgement.task_id not in candidate_ids
         ):
             raise ValueError("Task link adjudicator selected an unbounded candidate")
         return judgement
+
+    def _adjudication_audit(
+        self,
+        question: TaskLinkQuestion,
+        *,
+        judgement: TaskLinkJudgement | None = None,
+        error: Exception | None = None,
+    ) -> dict:
+        if self.adjudicator is None:
+            raise RuntimeError("Task link adjudicator is not configured")
+        descriptor = self.adjudicator.descriptor()
+        record = {
+            **question.to_audit_dict(),
+            "status": "succeeded" if judgement is not None else "failed",
+            "usage_step": "task_link",
+            "adjudicator": {
+                key: descriptor[key]
+                for key in ("name", "version", "model", "prompt_fingerprint")
+                if descriptor.get(key) not in (None, "")
+            },
+        }
+        if judgement is not None:
+            record.update(judgement.to_audit_dict())
+        elif error is not None:
+            record["error_type"] = type(error).__name__
+        return record
 
     def _model_decided_by(self, decision: str) -> str:
         if self.adjudicator is None:

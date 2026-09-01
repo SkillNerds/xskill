@@ -21,6 +21,7 @@ from xskill.tasks.linker import BoundedTaskLinker
 from xskill.tasks.models import AtomRef, SessionRef
 from xskill.tasks.scopes import ScopeIdentity
 from xskill.tasks.service import TaskGraphService
+from xskill.tasks.store import TaskGraphStore
 
 
 def _sha(value: str) -> str:
@@ -107,10 +108,12 @@ class _FakeAdjudicator:
         *,
         auto_confirm: bool = True,
         fail: bool = False,
+        select_candidate: bool = True,
     ):
         self.decision = decision
         self.auto_confirm = auto_confirm
         self.fail = fail
+        self.select_candidate = select_candidate
         self.questions: list[TaskLinkQuestion] = []
 
     def descriptor(self):
@@ -125,10 +128,17 @@ class _FakeAdjudicator:
         self.questions.append(question)
         if self.fail:
             raise RuntimeError("offline")
-        task_id = (
-            question.candidates[0].task_id if self.decision != "new_task" else None
-        )
-        return TaskLinkJudgement(self.decision, task_id, "bounded test")
+        task_id = None
+        if self.decision == "same_task" or (
+            self.decision == "abstain" and self.select_candidate
+        ):
+            task_id = question.candidates[0].task_id
+        reason_code = {
+            "same_task": "same_objective",
+            "new_task": "separate_objective",
+            "abstain": "insufficient_evidence",
+        }[self.decision]
+        return TaskLinkJudgement(self.decision, task_id, reason_code)
 
 
 def _live_task_count(generation) -> int:
@@ -181,10 +191,54 @@ def test_model_same_task_stays_proposed_without_explicit_auto_confirm():
         and membership.decided_by == "model:test-v1:same_task"
         for membership in generation.memberships
     )
+    audit = generation.metrics["model_adjudications"][0]
+    assert audit == {
+        "tenant_id": "tenant-test",
+        "task_scope_id": "task-scope-test",
+        "source_scope_id": "source-test",
+        "traj_id": "traj-test",
+        "atom_id": "atom-2",
+        "candidates": [
+            {
+                "task_id": adjudicator.questions[0].candidates[0].task_id,
+                "lexical_score": 0.0,
+                "same_session_recent": True,
+            }
+        ],
+        "status": "succeeded",
+        "usage_step": "task_link",
+        "adjudicator": {
+            "name": "test-adjudicator",
+            "version": "test-v1",
+            "model": "test-model",
+        },
+        "decision": "same_task",
+        "selected_task_id": adjudicator.questions[0].candidates[0].task_id,
+        "reason_code": "same_objective",
+    }
+    assert "阅读" not in json.dumps(audit, ensure_ascii=False)
 
 
-def test_model_can_leave_a_bounded_candidate_for_human_review():
-    adjudicator = _FakeAdjudicator("needs_review", auto_confirm=True)
+def test_model_adjudication_audit_survives_generation_store_round_trip(tmp_path):
+    generation = _build(
+        BoundedTaskLinker(adjudicator=_FakeAdjudicator(auto_confirm=False)),
+        "阅读项目",
+        "阅读并理解项目",
+    )
+    store = TaskGraphStore(tmp_path / "scope")
+
+    store.publish(generation)
+    loaded = TaskGraphStore(tmp_path / "scope").load_current()
+
+    assert loaded is not None
+    assert (
+        loaded.metrics["model_adjudications"]
+        == (generation.metrics["model_adjudications"])
+    )
+
+
+def test_model_can_abstain_to_a_bounded_candidate_for_human_review():
+    adjudicator = _FakeAdjudicator("abstain", auto_confirm=True)
     generation = _build(
         BoundedTaskLinker(adjudicator=adjudicator),
         "阅读项目",
@@ -192,12 +246,31 @@ def test_model_can_leave_a_bounded_candidate_for_human_review():
     )
 
     assert _live_task_count(generation) == 2
+    assert generation.metrics["model_abstain_judgement_count"] == 1
     assert generation.metrics["model_needs_review_membership_count"] == 1
     assert any(
         membership.decision == "needs_review"
-        and membership.decided_by == "model:test-v1:needs_review"
+        and membership.decided_by == "model:test-v1:abstain"
         for membership in generation.memberships
     )
+
+
+def test_model_can_abstain_without_selecting_a_candidate():
+    adjudicator = _FakeAdjudicator(
+        "abstain",
+        auto_confirm=True,
+        select_candidate=False,
+    )
+    generation = _build(
+        BoundedTaskLinker(adjudicator=adjudicator),
+        "阅读项目",
+        "阅读并理解项目",
+    )
+
+    assert _live_task_count(generation) == 2
+    assert generation.metrics["model_abstain_judgement_count"] == 1
+    assert generation.metrics["model_needs_review_membership_count"] == 0
+    assert generation.metrics["model_adjudications"][0]["selected_task_id"] is None
 
 
 def test_explicit_high_precision_rule_skips_model_call():
@@ -226,6 +299,10 @@ def test_first_model_failure_opens_build_local_circuit_and_falls_back():
     assert len(adjudicator.questions) == 1
     assert generation.metrics["model_judgement_count"] == 1
     assert generation.metrics["model_judgement_failure_count"] == 1
+    audit = generation.metrics["model_adjudications"][0]
+    assert audit["status"] == "failed"
+    assert audit["error_type"] == "RuntimeError"
+    assert "offline" not in json.dumps(audit)
 
 
 def test_model_judgements_have_a_hard_per_build_bound():
@@ -249,7 +326,11 @@ def test_model_judgements_have_a_hard_per_build_bound():
 class _EscapingAdjudicator(_FakeAdjudicator):
     def judge(self, question: TaskLinkQuestion) -> TaskLinkJudgement:
         self.questions.append(question)
-        return TaskLinkJudgement("same_task", "task-outside-candidates", "invalid")
+        return TaskLinkJudgement(
+            "same_task",
+            "task-outside-candidates",
+            "same_objective",
+        )
 
 
 def test_linker_rejects_candidate_escape_from_any_adjudicator():
@@ -308,7 +389,7 @@ def test_llm_adjudicator_accepts_only_bounded_structured_output():
             {
                 "decision": "same_task",
                 "task_id": "task-allowed",
-                "reason": "目标与完成条件保持一致",
+                "reason_code": "same_objective",
             }
         )
     )
@@ -318,9 +399,30 @@ def test_llm_adjudicator_accepts_only_bounded_structured_output():
 
     assert judgement.decision == "same_task"
     assert judgement.task_id == "task-allowed"
+    assert judgement.reason_code == "same_objective"
     prompt, system = llm.calls[0]
     assert json.loads(prompt)["candidates"][0]["task_id"] == "task-allowed"
     assert "untrusted evidence" in system
+
+
+def test_llm_adjudicator_accepts_abstain_without_a_candidate():
+    llm = _FakeLLM(
+        json.dumps(
+            {
+                "decision": "abstain",
+                "task_id": None,
+                "reason_code": "insufficient_evidence",
+            }
+        )
+    )
+
+    judgement = LLMTaskLinkAdjudicator(llm).judge(_question())
+
+    assert judgement == TaskLinkJudgement(
+        "abstain",
+        None,
+        "insufficient_evidence",
+    )
 
 
 def test_adjudicator_descriptor_tracks_output_config_without_exposing_secrets():
@@ -353,7 +455,7 @@ def test_llm_adjudicator_rejects_candidate_escape():
             {
                 "decision": "same_task",
                 "task_id": "task-outside-scope",
-                "reason": "invalid",
+                "reason_code": "same_objective",
             }
         )
     )
@@ -365,13 +467,18 @@ def test_llm_adjudicator_rejects_candidate_escape():
 @pytest.mark.parametrize(
     "response",
     [
-        {"decision": "needs_review", "task_id": None, "reason": "ambiguous"},
+        {"decision": "same_task", "task_id": None, "reason_code": "same_objective"},
         {"decision": "new_task", "task_id": None},
         {
             "decision": "new_task",
             "task_id": None,
-            "reason": "separate objective",
+            "reason_code": "separate_objective",
             "confidence": 0.9,
+        },
+        {
+            "decision": "abstain",
+            "task_id": None,
+            "reason_code": "free_text_is_not_allowed",
         },
     ],
 )
