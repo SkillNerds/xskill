@@ -168,10 +168,12 @@ Publisher 只写 skill_dir 和 git。投影由现有 skill_dir_sync 下一轮补
 
 切核：继续用现有 yaml 编辑器。看失败：`~/.xskill/logs/xskill.log`。核自己 print 的内容第一期看不到，scheduler 把常驻子进程的 stdout 送了 DEVNULL。
 
+设置页、400、成功提示和 `xskill.log` 长什么样，见 [第一期用户说明书](2026-08-27-openearth-first-user-guide.md)。当前主干的 `config.yaml.server.example` 还没有 `kernel` 段。
+
 ## 两块怎么合
 
 1. 平台契约接线。搬 `src/xskill/kernels/` 六个文件：`__init__.py`、`base.py`、`builtin.py`、`catalog.py`、`context.py`、`runtime.py`。不搬 `distillation.py`。改 7 个文件，全是加法：`config.py`（kernel 段）、`api/app.py`（多一条 supervisor）、`_workers.py`（`run_kernel_host`，构造 watcher 时读一次 kernel_id）、`watcher_factory.py`（透传 `native_distill`）、`runner.py`（停 cluster 与自动 SkillEdit 的唯一落点）、`dashboard/console.py`（`RESTART_SECTIONS` 加 `kernel`，校验坏 kernel_id）、`skill/git.py`（只加 `read_bundle_on_ref`）。
-2. OpenEarth 目录。`kernel.py`、README、wheel、`config.yaml.example`。从 #155 单独摘 full_rebuild 三分支、staging 排队、多 atom oracle，不 rebase 整支。
+2. OpenEarth 目录。`kernel.py`、README、wheel、`config.yaml.example`。从 #155 单独摘 full_rebuild 三分支、staging 排队、多 atom oracle，不 rebase 整支。README 按第一期用户说明书重写，不要原样搬 #155 里算法内核页、`xskill.kernel.log` 和 SSE 那一节。
 
 ## 不要做
 
