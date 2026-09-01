@@ -262,6 +262,7 @@ def test_worker_passes_ecosystem_home_separately_from_xskill_home(
                 "home_root": expected_home,
                 "server_mode": False,
                 "on_poll_hook": captured_arguments[0][2]["on_poll_hook"],
+                "native_distill": True,
             },
         ),
         (

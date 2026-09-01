@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from pathlib import Path
 
 logger = logging.getLogger("xskill._workers")
@@ -64,6 +65,7 @@ def run_agent_worker_forever(
         XSKILL_HOME,
         get_registry_db_path,
         get_skill_dir,
+        kernel_config,
         load_config,
     )
     from xskill.pipeline.watcher_factory import (
@@ -114,6 +116,7 @@ def run_agent_worker_forever(
 
             on_poll_hook = ingest_on_poll
 
+        selected = kernel_config(config, xskill_home=XSKILL_HOME)
         watcher = build_watcher(
             config,
             xskill_home=XSKILL_HOME,
@@ -123,6 +126,7 @@ def run_agent_worker_forever(
             home_root=home_root,
             server_mode=server,
             on_poll_hook=on_poll_hook,
+            native_distill=(selected["active"] == "native"),
         )
         watcher.start()
         write_status_file(status_path, watcher.stats, ok=True)
@@ -171,6 +175,159 @@ def run_agent_worker_forever(
             error=error,
         )
         _restore_signal_handlers(previous_handlers)
+
+
+def _trajectory_snapshot(reader) -> dict[str, tuple[int, int, tuple[str, ...]]]:
+    """Return feed fingerprints for trajectories whose atom split view is ready."""
+    snapshot: dict[str, tuple[int, int, tuple[str, ...]]] = {}
+    for resource in reader.iter():
+        if resource.atom_split_status != "ready":
+            continue
+        try:
+            stat = resource.path.stat()
+        except OSError:
+            continue
+        snapshot[resource.id] = (
+            stat.st_mtime_ns,
+            stat.st_size,
+            tuple(atom.atom_id for atom in resource.atoms),
+        )
+    return snapshot
+
+
+def run_kernel_host(
+    *,
+    server: bool = False,
+    stop_event=None,
+    max_cycles: int | None = None,
+) -> int:
+    """Keep the selected external kernel alive and invoke it periodically."""
+    from xskill.config import (
+        CONFIG_PATH,
+        XSKILL_HOME,
+        get_kernel_evaluation_db_path,
+        get_registry_db_path,
+        get_skill_dir,
+        get_team_trajectories_dir,
+        kernel_config,
+        load_config,
+    )
+    from xskill.kernels.base import KernelRunResult
+    from xskill.kernels.catalog import KernelCatalog
+    from xskill.kernels.context import TrajectoryReader
+    from xskill.kernels.runtime import (
+        KernelEvaluationStore,
+        KernelRuntime,
+        kernel_environment,
+    )
+    from xskill.utils.shutdown import SHUTTING_DOWN
+
+    kernel_log = logging.getLogger("xskill.kernel.host")
+    stop = stop_event or SHUTTING_DOWN
+    runtime = None
+    runtime_key: tuple[str, Path] | None = None
+    previous_snapshot: dict[str, tuple[int, int, tuple[str, ...]]] = {}
+    first_run = True
+    next_run_at = time.monotonic()
+    completed_cycles = 0
+    interval = 1.0
+
+    while not stop.is_set():
+        config = load_config()
+        selected = kernel_config(config, xskill_home=XSKILL_HOME)
+        active = selected["active"]
+        if active == "native":
+            runtime = None
+            runtime_key = None
+            previous_snapshot = {}
+            first_run = True
+            if stop.wait(1.0):
+                break
+            continue
+
+        selected_key = (active, selected["plugin_dir"])
+        if runtime is None or selected_key != runtime_key:
+            with kernel_environment(config):
+                catalog = KernelCatalog(
+                    plugin_dir=selected["plugin_dir"],
+                    xskill_home=XSKILL_HOME,
+                )
+            runtime = KernelRuntime(
+                active_kernel=active,
+                catalog=catalog,
+                skill_dir=get_skill_dir(
+                    config, xskill_home=XSKILL_HOME,
+                ).expanduser().resolve(),
+                registry_db_path=get_registry_db_path(
+                    xskill_home=XSKILL_HOME,
+                ).expanduser().resolve(),
+                evaluation_store=KernelEvaluationStore(
+                    get_kernel_evaluation_db_path(xskill_home=XSKILL_HOME)
+                ),
+                trajectory_root=(get_team_trajectories_dir() / "clients"),
+                xskill_config=config,
+                xskill_config_path=CONFIG_PATH,
+            )
+            interval = runtime.external_run_interval()
+            runtime_key = selected_key
+            previous_snapshot = {}
+            first_run = True
+            next_run_at = time.monotonic()
+            kernel_log.info(
+                "external kernel host selected %s (interval %.1fs, server=%s)",
+                active,
+                interval,
+                server,
+            )
+
+        remaining = next_run_at - time.monotonic()
+        if remaining > 0:
+            if stop.wait(min(remaining, 1.0)):
+                break
+            continue
+
+        assert runtime is not None
+        reader = TrajectoryReader(
+            runtime.registry_db_path,
+            root=runtime.trajectory_root,
+        )
+        current_snapshot = _trajectory_snapshot(reader)
+        changed = tuple(sorted(
+            resource_id
+            for resource_id, fingerprint in current_snapshot.items()
+            if first_run or previous_snapshot.get(resource_id) != fingerprint
+        ))
+
+        if not first_run and not changed:
+            # No trajectory changes since last run; skip this cycle.
+            time.sleep(interval)
+            continue
+
+        try:
+            runtime.run_active(
+                trigger="scheduled",
+                dataset_id="live",
+                changed_trajectory_ids=changed,
+                full_rebuild=first_run,
+                native_runner=lambda _invocation: KernelRunResult(),
+            )
+        except Exception:  # noqa: BLE001 - persistent process run boundary
+            kernel_log.exception("external kernel %s run failed", active)
+        else:
+            kernel_log.info(
+                "external kernel %s run finished (changed=%d, full_rebuild=%s)",
+                active,
+                len(changed),
+                first_run,
+            )
+            previous_snapshot = current_snapshot
+            first_run = False
+        completed_cycles += 1
+        if max_cycles is not None and completed_cycles >= max_cycles:
+            return 0
+        next_run_at = time.monotonic() + interval
+
+    return 0
 
 
 def _build_claude_code_ingester(*, home: str | None = None):
@@ -481,6 +638,8 @@ def main(argv: list[str] | None = None) -> int:
     p_worker = sub.add_parser("agent-worker")
     p_worker.add_argument("--server", action="store_true")
     p_worker.add_argument("--home", default=None)
+    p_kernel = sub.add_parser("kernel-host")
+    p_kernel.add_argument("--server", action="store_true")
     p_ingest = sub.add_parser("ecosystem-ingest")
     p_ingest.add_argument("--home", default=None)
     p_ingest.add_argument("--loop", action="store_true")
@@ -490,7 +649,23 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("ux-scores-sync")
     args = parser.parse_args(argv)
 
-    configure_logging(get_logs_dir(), debug=False, quiet=False, stdout=True)
+    configure_logging(
+        get_logs_dir(),
+        debug=False,
+        quiet=False,
+        # kernel-host 的 stdout 已被调度器追加进 xskill.kernel.log；再开
+        # StreamHandler 会让 xskill.kernel.openearth 进度日志写两遍。
+        stdout=args.kind != "kernel-host",
+    )
+    if args.kind == "kernel-host":
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is not None:
+                try:
+                    reconfigure(line_buffering=True)
+                except (OSError, ValueError):
+                    pass
+        return run_kernel_host(server=args.server)
     if args.kind == "agent-worker":
         return run_agent_worker_forever(server=args.server, home=args.home)
     if args.kind == "ecosystem-ingest":

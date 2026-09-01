@@ -207,6 +207,12 @@ xskill atom read <atom_id>                                     # read transcript
 
 Standalone readiness: `xskill traj search` works out of the box after `pip install xskill` without requiring a server connection. The first search automatically scans local harnesses and builds an index, or you can run `xskill init` for guided setup. When connected to a team server, searches query the team catalog by default; pass `--local` to search this machine only.
 
+#### Optional: switch the algorithm kernel
+
+xskill ships with a built-in native kernel (split, cluster, edit agents) that drives skill evolution. In team mode, the admin can change `kernel_id` on the settings page to a third-party kernel such as OpenEarth. The external kernel takes over "generate Skills from ready atoms" while everything else stays the same. This is entirely optional — leave out the `kernel` block and nothing changes.
+
+See [Algorithm kernel guide](docs/openearth-kernel.md) for setup steps and details.
+
 * * *
 
 ## 🔌 Works with your agents

@@ -1,0 +1,30 @@
+# Private OpenEarth SDK configuration. XSkill treats this file as opaque.
+reflect:
+  # OpenEarth currently invokes the configured model through OpenCode.
+  base_url: opencode
+  model: YOUR_OPENEARTH_MODEL
+  binary: opencode
+  timeout: 600
+  # Optional custom reflection strategy Markdown:
+  # strategy: /absolute/path/to/strategy.md
+
+# Optional OpenEarth-internal benchmark producer. It runs only on a
+# full_rebuild invocation. Empty/disabled configuration keeps live-data-only
+# training behavior.
+benchmark:
+  enabled: false
+  # dataset_dir: /absolute/path/to/officeqa
+  env: officeqa  # officeqa | spreadsheet | livemath
+  split: train
+  model: YOUR_TARGET_AGENT_MODEL
+  binary: opencode
+  agent_timeout: 900
+  parallel: 1
+  # Stable cases already registered in the workspace are not rerun.
+  # n_cases: 10
+  # Change this value to intentionally produce a fresh rollout for each case.
+  # sample_id: default
+  planning_route_k: 2
+  functional_route_k: 2
+  # OfficeQA optional document roots:
+  # officeqa_docs_dirs: /absolute/path/to/parsed/docs

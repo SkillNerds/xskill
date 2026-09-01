@@ -94,6 +94,7 @@ _BUILTIN_ONLY_OPERATIONS = {
     ("get", "/api/v1/dashboard/admin/config"),
     ("post", "/api/v1/dashboard/admin/config/validate"),
     ("post", "/api/v1/dashboard/admin/config/reload"),
+    ("get", "/api/v1/dashboard/admin/kernels/logs"),
     # 技能推送对象 / 路由（#193）
     ("get", "/api/v1/dashboard/skill/{name}/routing"),
     ("get", "/api/v1/dashboard/skill/{name}/routing/users"),
