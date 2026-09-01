@@ -212,11 +212,23 @@ classDiagram
         +name description schema
         +handler 仍是现有 Python
     }
+    class ToolRegistry {
+        <<新增>>
+        +按名字登记 ToolSpec
+        +Agno 与 MCP 共用
+    }
+    class IsolatedCodexHome {
+        <<新增>>
+        +本次 config.toml
+        +只含 xskill 这一台 MCP
+    }
     class CodexMcp {
         <<新增>>
         +stdio MCP 进程
-        +tools/list 来自 Python ToolSpec
+        +由 codex exec 拉起
+        +tools/list 来自 ToolRegistry
         +enabled_tools 来自模板名单
+        +用 bindings 恢复 AgentToolContext
     }
     class TraceAdapter {
         <<新增>>
@@ -241,11 +253,14 @@ classDiagram
     CodexRuntime --> TaskTemplate : 只读套用
     CodexRuntime --> RunWorkspace : 本次工作目录
     RunWorkspace --> TaskTemplate : 复制或只读挂上
-    CodexRuntime --> CodexMcp
+    CodexRuntime --> IsolatedCodexHome : 写 config.toml
     CodexRuntime --> TraceAdapter
+    IsolatedCodexHome --> CodexMcp : Codex 按 command 拉起
+    CodexMcp --> ToolRegistry
+    ToolRegistry --> ToolSpec
+    AgnoRuntime --> ToolRegistry
     AgnoRuntime --> AgentTrace
     TraceAdapter --> AgentTrace
-    CodexMcp --> ToolSpec
     AgentTrace --> Dashboard
 ```
 
@@ -298,11 +313,15 @@ sequenceDiagram
     TA->>R: run(TaskSpec)
     R->>Tpl: 读取种类模板（不改）
     R->>P: 放入模板，只写 prompt.md 与 bindings
-    R->>M: 按模板名单挂 look submit_atom
+    R->>P: 写隔离 home 的 config.toml（MCP 段）
     R->>C: exec --json --cd 工作目录
+    C->>M: 按 command 拉起 stdio MCP
+    C->>M: tools/list
+    M-->>C: look submit_atom 等 schema
     loop Codex 事件
-        C->>M: look 或 submit_atom
+        C->>M: tools/call look 或 submit_atom
         M->>P: 校验并写入 submitted.jsonl
+        M-->>C: 工具返回字符串
         C->>R: stdout JSON 一行
         R->>L: 追加 THINK SAY TOOL
     end
@@ -350,6 +369,37 @@ sequenceDiagram
     AW->>RT: kind=agno 或 kind=codex
     Note over KH: kernel_id 不是 native 时，外核自己跑蒸馏
     Note over KH,RT: 外核不要复用 agent_runtime
+```
+
+### 5. 现有工具经 MCP 挂到 Codex
+
+```mermaid
+sequenceDiagram
+    participant R as CodexRuntime
+    participant H as 隔离 CODEX_HOME
+    participant C as codex exec
+    participant M as mcp_server
+    participant Reg as ToolRegistry
+    participant Fn as agent_tools 函数
+    participant S as state/
+
+    R->>H: 写 config.toml 的 mcp_servers.xskill
+    R->>C: CODEX_HOME=隔离目录 exec
+    C->>M: 子进程 python -m ...mcp_server
+    M->>S: 读 bindings.yaml
+    M->>M: 恢复 AgentToolContext
+    C->>M: initialize
+    M-->>C: 能力声明
+    C->>M: tools/list
+    M->>Reg: 按 enabled_tools 取 spec
+    M-->>C: 名字、说明、JSON schema
+    C->>M: tools/call name=look arguments
+    M->>Fn: look(line=42)
+    Fn-->>M: 带行号的原文
+    M-->>C: content 文本
+    C->>M: tools/call name=submit_atom
+    M->>S: 校验后追加 submitted.jsonl
+    M-->>C: ok 或 error 字符串
 ```
 
 ## 任务模板和一次运行的工作目录
@@ -401,27 +451,7 @@ write_roots: []
 
 编辑代理同一份模板，`logs.append` 为 true。baby 强制重写那一轮没有 commit 工具：用模板里的 `tool_profiles`（例如 `stub_rewrite` 与 `normal`）从同一份名单里少挂几个，不要为这一轮另写一份 `task.yaml`。生成代理的 on hold 目录、团队轨迹根写进本次 `state/bindings.yaml`，不要写进模板。
 
-本机 Codex CLI（当前是 0.144）没有「读 `tools/*.yaml` 当工具」这条路。自定义工具只有 MCP。`tools/*.yaml` 若还留在模板目录里，只给人看、给单测对账用，Codex 进程不会打开它们。实现时也可以不建这个目录，只保留 `task.yaml` 里的名字名单，避免让人以为那是注入口。
-
-真正注入的步骤：
-
-1. 从现有 `agent_tools.py` 抽出 `ToolSpec`：名字、说明、JSON schema、handler。说明和 schema 以 Python 为准（今天 `@tool` 的 docstring 和参数类型已经有了），不要再手写一份 yaml 当第二真源。
-2. 新进程 `python -m xskill.agents.runtime.mcp_server`，标准输入输出讲 MCP。它在 `tools/list` 里只报这次 `enabled_tools` 里的那些 spec，在 `tools/call` 里调对应 handler。`state/bindings.yaml` 用环境变量或参数传给这个进程，用来恢复 `AgentToolContext`。
-3. 运行器往这次隔离 `CODEX_HOME/config.toml` 写一段，不要写用户家目录那份：
-
-```toml
-[mcp_servers.xskill]
-command = "python"
-args = ["-m", "xskill.agents.runtime.mcp_server", "--kind", "task_agent", "--bindings", "state/bindings.yaml"]
-enabled_tools = ["look", "submit_atom", "context_budget", "my_atoms"]
-required = true
-```
-
-`enabled_tools` 的值从种类模板 `task.yaml` 的 `tools`（加上本次启用的 `optional_tools`）抄过来。Codex 启动后只看得到这些名字。
-
-4. `codex exec` 用这份隔离 home。模型要 `look` 时，Codex 把参数交给 MCP，我们的 `look` 函数跑完把字符串返回去。参数不合法时仍返回 error 字符串让它自改，不要把进程打死（与现在 `submit_atom` 一致）。
-
-拆分代理今天的 `look`、`submit_atom` 是闭包，状态在内存里。MCP 在子进程，闭包过不去，所以提交记录改写到工作目录的 `state/submitted.jsonl`，合法行号等写进 `state/`。这是实现细节，不是又一份工具 yaml。
+工具怎么挂到 Codex 上，见下一节 MCP。模板里不要建 `tools/*.yaml` 目录，避免让人以为那是注入口。
 
 一次运行的工作目录由 `agent_runtime.codex.task_root` 决定，缺省 `~/.xskill/runtime/codex_tasks`。这里只放本次的东西，跑完按 `keep_packs` 决定删不删：
 
@@ -442,6 +472,127 @@ required = true
 `prompt.md` 由现有代理类生成。`AGENTS.md` 的固定段来自模板；各代理自己的系统提示词仍由代理类拼，不要在运行器里另写一套。
 
 隔离 `CODEX_HOME` 是硬约束。用户机器上的 `~/.codex/sessions` 已经被 XSkill 当编码轨迹来源。如果蒸馏运行把会话写进那里，监听器会把一次拆分再收成一条新轨迹，再拆再收。工作目录和 `~/.xskill/runtime/` 都不要登记成 watch 目录。
+
+## 工具怎么经 MCP 注入
+
+MCP 是 Model Context Protocol：外部程序用标准输入输出跟 Codex 说话，声明自己有哪些工具、接收调用、返回结果。本机 Codex CLI（当前 0.144）自定义工具只认这一条。它不读 `tools/*.yaml`，也不读 Agno 的 `@tool`。
+
+一次蒸馏运行里有三个进程，不要合成一个：
+
+1. agent-worker 里的运行器：写工作目录和隔离 `config.toml`，然后 `codex exec`。
+2. `codex exec`：读隔离 home，自己再拉起 MCP 子进程，跟模型说话，把事件打到标准输出。
+3. `python -m xskill.agents.runtime.mcp_server`：被 Codex 按 `command` 拉起，不是运行器先挂着等。
+
+不要做一台常驻、所有拆分共用的 MCP 服务。每一次 `codex exec` 对应自己的 MCP 子进程，bindings 互不看见。拆分池里同时跑多条轨迹时，就是多对「Codex 加 MCP」，靠现有 split 池限并发。
+
+### 契约真源是 Python
+
+今天工具写在 `src/xskill/agents/agent_tools.py`，用 Agno 的 `@tool(name=...)` 包着。换内核之后，业务函数留下，装饰器变成薄包装。先抽出：
+
+```text
+ToolSpec
+  name          如 look、submit_atom
+  description   今天写在 docstring 里的那段
+  parameters    JSON schema，从函数签名和类型来
+  handler       原来的 Python 函数
+```
+
+所有 spec 进 `ToolRegistry`，按名字取。Agno 运行时从同一份 registry 再包成 `@tool`，MCP 从同一份 registry 做 `tools/list`。不要为 Codex 再手写一份 yaml schema。`task.yaml` 的 `tools` 只是允许挂哪些名字，不是契约正文。
+
+名单里出现了 registry 没有的名字，启动就失败，不要 silently 跳过。registry 有、名单没有的，MCP 不报给 Codex。
+
+### 隔离 home 里怎么写 MCP
+
+运行器只往这次工作目录的 `codex_home/config.toml` 写，不碰用户的 `~/.codex/config.toml`。最少要有：
+
+```toml
+approval_policy = "never"
+
+[mcp_servers.xskill]
+command = "python"
+args = [
+  "-m", "xskill.agents.runtime.mcp_server",
+  "--kind", "task_agent",
+  "--bindings", "/abs/path/to/run/state/bindings.yaml",
+]
+enabled_tools = ["look", "submit_atom", "context_budget", "my_atoms"]
+required = true
+startup_timeout_sec = 15
+tool_timeout_sec = 120
+```
+
+`enabled_tools` 从种类模板的 `tools` 抄，再加上这次启用的 `optional_tools`（例如配了 interests 才有 `mark_not_fit`）。编辑代理按 `tool_profiles` 少挂几个，也是改这一列，不另写模板。
+
+`command` 用当前解释器的绝对路径，不要依赖 Codex 子进程的 PATH 里碰巧有 `python`。`bindings` 用绝对路径，因为 Codex 给 MCP 设的 cwd 不一定是工作目录。
+
+`codex exec` 必须带 `--ignore-user-config`，`CODEX_HOME` 指到这次的 `codex_home/`。这样用户日常装的其它 MCP、全开 sandbox 都进不来。
+
+走 stdio，不走 HTTP MCP。蒸馏工具能写技能仓库，不要开一个网上能打到的端口。
+
+### MCP 进程启动后做什么
+
+1. 读 `--bindings`。没有这份文件或缺必填键，立刻以非零退出，让 Codex 因 `required = true` 启动失败。
+2. 用 bindings 调现有的 `create_agent_tool_context` 和 `use_agent_tool_context`。归类、编辑、生成依赖的技能目录、轨迹根、registry、on hold 根，都从这里恢复。不要在 MCP 里另做一份全局单例。
+3. 按 `--kind` 和 `enabled_tools` 从 `ToolRegistry` 取出 spec。
+4. 进入 MCP 循环：`initialize` → `tools/list` → 反复 `tools/call`。
+5. `tools/call` 对上 handler。返回值就是今天工具返回的字符串（`ok: ...` 或 `error: ...`）。Codex 把这段当工具结果再喂给模型。校验失败仍返回 error 字符串，不要把 MCP 进程打死。
+6. Codex 退出时会停掉这个子进程。运行器不要自己去杀，除非 `codex exec` 已经超时。
+
+`tools/list` 报给 Codex 的形状与 MCP 工具描述一致：`name`、`description`、`inputSchema`。`inputSchema` 来自 ToolSpec.parameters。拆分的 `look` 大约是：
+
+```json
+{
+  "name": "look",
+  "description": "读轨迹某行附近的原文（含向前看，用来判断新意图还是追问）。",
+  "inputSchema": {
+    "type": "object",
+    "required": ["line"],
+    "properties": {
+      "line": {"type": "integer", "description": "中心行号，从 1 起"},
+      "before": {"type": "integer", "default": 40},
+      "after": {"type": "integer", "default": 20}
+    }
+  }
+}
+```
+
+这段 JSON 由 Python 生成，不要检入仓库当第二真源。单测可以冻结一份快照，防止改 docstring 时无意改掉模型看见的契约。
+
+### 闭包工具怎么过到子进程
+
+拆分代理今天的 `submit_atom`、`look`、`mark_not_fit` 是 `make_task_agent_tools` 里的闭包，抓住 `submitted` 列表、合法行号、轨迹原文。MCP 是另一进程，闭包过不去。
+
+运行器在拉起 Codex 之前，把这些闭包状态写进 `state/`：
+
+- `valid_lines.json`、`resume_line`、`user_blocks`、`source_language`
+- 空的 `submitted.jsonl`
+
+MCP 这边的 `look`、`submit_atom` 读这些文件，合法提交追加一行到 `submitted.jsonl`。TaskAgent 等 `codex exec` 退出后再读这份文件，后面的区间推导和 EOF 校验不用改。
+
+归类、编辑、生成的工具本来就走 `AgentToolContext`，不是闭包。MCP 启动时恢复上下文即可，不必为每个工具再做一份 jsonl。cluster 的写入记录、编辑的 git 提交，副作用仍落在技能仓库里，和今天一样。
+
+### 和 Codex 自带工具的边界
+
+Codex 自己还有 Read、Write、Shell 一类内置工具。蒸馏代理不允许用它们改技能、跑 bash。约束三层一起上：
+
+- `sandbox: read-only`，cwd 是工作目录，技能仓库和轨迹目录不要 `--add-dir` 成可写。
+- 提示词写明：读轨迹、写技能、提交 git，只用 MCP 报出来的工具。
+- 单测断言：一次夹具运行之后，技能仓库里没有出现未经 `write_file` 或提交工具的改动。
+
+不要指望只靠提示词。也不要为了图省事把 MCP 做成「再包一层 bash」。
+
+### MCP 这一节的单测
+
+不必真拉 `codex exec` 也能测：
+
+- 给定一份 registry 和 `enabled_tools`，`tools/list` 只包含名单里的名字，schema 与函数签名一致。
+- 名单里有未知名字 → 启动失败。
+- `tools/call` 打到 `look`，读的是 `state/` 里的轨迹行，越界返回 error 字符串，进程还在。
+- `submit_atom` 非法行号写 error，合法行追加 `submitted.jsonl`。
+- 隔离 `config.toml` 里有 `mcp_servers.xskill`，用户家目录的 `~/.codex/config.toml` 没有被改。
+- 不监听 TCP 端口。
+
+第一期用夹具冒充 `codex exec` 时，夹具要真的按 MCP stdio 跟 `mcp_server` 握手并调用一次 `look`，不要只检查目录形状。
 
 ## 给每个代理哪些工具
 
@@ -568,7 +719,7 @@ TOOL RESULT  look
 - 监听器：`pipeline/runner.py` 的 `_factory()`，以及 `process_atom_task`、`process_atom_batch` 的工厂参数。
 - 生成任务：`team/server/generate_jobs.py` 里构造工厂的地方。
 - 探针与描述优化：`skill/trigger_probe.py`、`skill/description_opt.py`，放到拆分、归类、编辑都稳定之后的第二期。
-- 单测：种类模板 schema、占位符解析进 bindings、bindings 不回写模板、工作目录里的 `task.yaml` 与仓库模板一致、TraceAdapter 用一段固定的 Codex JSON 事件回放成现有日志文本、MCP 工具名单过滤、隔离 `CODEX_HOME` 不出现在 `~/.codex/sessions`。Codex 进程用夹具可执行文件冒充，不要在普通 PR CI 里真拉模型。
+- 单测：种类模板 schema、占位符解析进 bindings、bindings 不回写模板、工作目录里的 `task.yaml` 与仓库模板一致、MCP `tools/list` 过滤与 `tools/call` 回放、TraceAdapter 用一段固定的 Codex JSON 事件回放成现有日志文本、隔离 `CODEX_HOME` 不出现在 `~/.codex/sessions`。Codex 进程用夹具可执行文件冒充，夹具要真讲 MCP stdio，不要在普通 PR CI 里真拉模型。
 - 文档：本文；`docs/agent.md` 只在实现落地后补一句「执行框架可换」，不要在设计阶段改用户手册口气。
 
 ## 怎么分步落地
@@ -577,9 +728,10 @@ TOOL RESULT  look
 
 1. `agent_runtime` 配置与 `AgentRuntime` 接口。
 2. 种类模板 schema 与 bindings 解析单测。工作目录只出现 `prompt.md` 与 `state/`，不生成一份新的任务定义。
-3. TraceAdapter 回放单测。
-4. 只把拆分代理接到 Codex 路径。归类、编辑、生成仍走 Agno。
-5. 用夹具 `codex` 脚本证明：套用的是仓库里那份拆分模板、日志增量写到 `task_agents/<轨迹id>.log`、`submitted.jsonl` 能被 EOF 校验消费、用户 `~/.codex/sessions` 无新文件。
+3. `ToolRegistry` 加 `mcp_server`：`tools/list` 与 `tools/call` 的单测，不必起 Codex。
+4. TraceAdapter 回放单测。
+5. 只把拆分代理接到 Codex 路径。归类、编辑、生成仍走 Agno。
+6. 用夹具冒充 `codex exec`：按 MCP stdio 握手、调用一次 `look`、把提交写入 `submitted.jsonl`；日志增量写到 `task_agents/<轨迹id>.log`；用户 `~/.codex/sessions` 与 `~/.codex/config.toml` 无新内容。
 
 第二期：归类代理、编辑代理。编辑代理的多轮追加日志和「某一轮没有 commit 工具」必须先有单测。
 
@@ -595,8 +747,9 @@ TOOL RESULT  look
 
 1. 第三方只读本文，能分清「执行内核」「算法内核」「Codex 生态适配」三件事。
 2. 能看出 `task.yaml` 是每种代理一份模板，不是每次运行现写的实例。
-3. Before 与 After 类图能对上现在的类名和将要新增的模块。
-4. 时序图能对上日志路径和「谁写、谁读」。
+3. 能说出工具经 MCP 注入：三个进程、契约在 Python、`config.toml` 只写隔离 home。
+4. Before 与 After 类图能对上现在的类名和将要新增的模块。
+5. 时序图能对上日志路径、MCP `tools/list` 与 `tools/call`。
 
 实现（后续 PR，不要和设计混成一个「做完」）：
 
