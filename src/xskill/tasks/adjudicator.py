@@ -170,7 +170,12 @@ class TaskLinkAdjudicator(Protocol):
 
     def descriptor(self) -> dict[str, Any]: ...
 
-    def judge(self, question: TaskLinkQuestion) -> TaskLinkJudgement: ...
+    def judge(
+        self,
+        question: TaskLinkQuestion,
+        *,
+        timeout_seconds: float = 60.0,
+    ) -> TaskLinkJudgement: ...
 
 
 def _json_object(raw: str) -> dict[str, Any]:
@@ -218,7 +223,18 @@ class LLMTaskLinkAdjudicator:
             "auto_confirm": self.auto_confirm,
         }
 
-    def judge(self, question: TaskLinkQuestion) -> TaskLinkJudgement:
+    def judge(
+        self,
+        question: TaskLinkQuestion,
+        *,
+        timeout_seconds: float = 60.0,
+    ) -> TaskLinkJudgement:
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or timeout_seconds <= 0
+        ):
+            raise TaskAdjudicationError("timeout_seconds must be positive")
         candidate_count = len(question.candidates)
         if not candidate_count:
             raise TaskAdjudicationError("bounded adjudication requires candidates")
@@ -247,7 +263,11 @@ class LLMTaskLinkAdjudicator:
                 allocation_mode="direct",
             ),
         ):
-            raw = self.llm_client.chat(prompt, system=SYSTEM_PROMPT)
+            raw = self.llm_client.chat(
+                prompt,
+                system=SYSTEM_PROMPT,
+                timeout_seconds=float(timeout_seconds),
+            )
         value = _json_object(raw)
         allowed_keys = {"decision", "task_id", "reason_code"}
         if set(value) != allowed_keys:

@@ -5,10 +5,11 @@ import hashlib
 import logging
 import math
 import re
+import time
 import unicodedata
 import uuid
 from collections import defaultdict, deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from functools import partial
 from operator import attrgetter
@@ -176,7 +177,9 @@ class BoundedTaskLinker:
     def __init__(self, *, top_k: int = 8, recent_k: int = 6,
                  posting_cap: int = 64,
                  adjudicator: TaskLinkAdjudicator | None = None,
-                 max_model_judgements_per_build: int = 64):
+                 max_model_judgements_per_build: int = 64,
+                 max_model_wall_time_seconds: float = 30.0,
+                 _clock: Callable[[], float] = time.monotonic):
         for name, value in (
             ("top_k", top_k),
             ("recent_k", recent_k),
@@ -190,6 +193,15 @@ class BoundedTaskLinker:
         self.posting_cap = posting_cap
         self.adjudicator = adjudicator
         self.max_model_judgements_per_build = max_model_judgements_per_build
+        if (
+            isinstance(max_model_wall_time_seconds, bool)
+            or not isinstance(max_model_wall_time_seconds, (int, float))
+            or not math.isfinite(max_model_wall_time_seconds)
+            or max_model_wall_time_seconds <= 0
+        ):
+            raise ValueError("max_model_wall_time_seconds must be a positive number")
+        self.max_model_wall_time_seconds = float(max_model_wall_time_seconds)
+        self._clock = _clock
         self.auto_confirm_model_links = bool(
             adjudicator is not None
             and adjudicator.descriptor().get("auto_confirm", False)
@@ -208,6 +220,7 @@ class BoundedTaskLinker:
             descriptor["adjudicator"] = {
                 **self.adjudicator.descriptor(),
                 "max_judgements_per_build": self.max_model_judgements_per_build,
+                "max_wall_time_seconds": self.max_model_wall_time_seconds,
             }
         return descriptor
 
@@ -265,12 +278,19 @@ class BoundedTaskLinker:
         changed_atom_count = 0
         model_judgement_count = 0
         model_judgement_failure_count = 0
+        model_judgement_timeout_count = 0
+        model_judgement_budget_exhausted_count = 0
         model_confirmed_count = 0
         model_proposed_count = 0
         model_needs_review_count = 0
         model_abstain_count = 0
         model_adjudications: list[dict] = []
         adjudicator_available = self.adjudicator is not None
+        adjudication_deadline = (
+            self._clock() + self.max_model_wall_time_seconds
+            if adjudicator_available
+            else 0.0
+        )
         affected_task_ids: set[str] = set()
         atoms_by_key = {stable_ref_key(atom.atom_ref): atom for atom in atoms}
 
@@ -327,6 +347,9 @@ class BoundedTaskLinker:
             )
             model_judgement: TaskLinkJudgement | None = None
             model_confirmed = False
+            if adjudicator_available and self._clock() >= adjudication_deadline:
+                adjudicator_available = False
+                model_judgement_budget_exhausted_count = 1
             if (
                 confirmed_task_id is None
                 and previous_membership is None
@@ -344,9 +367,20 @@ class BoundedTaskLinker:
                         recent_by_session=recent_by_session,
                         marker=marker,
                     )
-                    model_judgement = self._adjudicate(model_question)
+                    remaining_seconds = adjudication_deadline - self._clock()
+                    if remaining_seconds <= 0:
+                        raise TimeoutError("Task link adjudication budget exhausted")
+                    model_judgement = self._adjudicate(
+                        model_question,
+                        timeout_seconds=remaining_seconds,
+                    )
                 except Exception as error:
                     model_judgement_failure_count += 1
+                    if (
+                        isinstance(error, TimeoutError)
+                        or "timeout" in type(error).__name__.lower()
+                    ):
+                        model_judgement_timeout_count += 1
                     adjudicator_available = False
                     if model_question is not None:
                         model_adjudications.append(
@@ -594,6 +628,10 @@ class BoundedTaskLinker:
                 "candidate_count": candidate_count,
                 "model_judgement_count": model_judgement_count,
                 "model_judgement_failure_count": model_judgement_failure_count,
+                "model_judgement_timeout_count": model_judgement_timeout_count,
+                "model_judgement_budget_exhausted_count": (
+                    model_judgement_budget_exhausted_count
+                ),
                 "model_confirmed_membership_count": model_confirmed_count,
                 "model_proposed_membership_count": model_proposed_count,
                 "model_needs_review_membership_count": model_needs_review_count,
@@ -736,10 +774,15 @@ class BoundedTaskLinker:
     def _adjudicate(
         self,
         question: TaskLinkQuestion,
+        *,
+        timeout_seconds: float,
     ) -> TaskLinkJudgement:
         if self.adjudicator is None:
             raise RuntimeError("Task link adjudicator is not configured")
-        judgement = self.adjudicator.judge(question)
+        judgement = self.adjudicator.judge(
+            question,
+            timeout_seconds=timeout_seconds,
+        )
         if not isinstance(judgement, TaskLinkJudgement):
             raise TypeError("Task link adjudicator returned an invalid judgement")
         candidate_ids = {candidate.task_id for candidate in question.candidates}

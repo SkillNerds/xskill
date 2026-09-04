@@ -108,7 +108,13 @@ class _FakeAdjudicator:
             "auto_confirm": self.auto_confirm,
         }
 
-    def judge(self, question: TaskLinkQuestion) -> TaskLinkJudgement:
+    def judge(
+        self,
+        question: TaskLinkQuestion,
+        *,
+        timeout_seconds: float,
+    ) -> TaskLinkJudgement:
+        assert timeout_seconds > 0
         self.questions.append(question)
         if self.fail:
             raise RuntimeError("offline detail must not enter audit")
@@ -257,7 +263,13 @@ def test_linker_caps_candidates_before_calling_the_adjudicator():
 
 
 class _EscapingAdjudicator(_FakeAdjudicator):
-    def judge(self, question: TaskLinkQuestion) -> TaskLinkJudgement:
+    def judge(
+        self,
+        question: TaskLinkQuestion,
+        *,
+        timeout_seconds: float,
+    ) -> TaskLinkJudgement:
+        assert timeout_seconds > 0
         self.questions.append(question)
         return TaskLinkJudgement(
             "same_task", "task-outside-candidates", "same_objective"
@@ -278,3 +290,33 @@ def test_linker_rejects_candidate_escape_from_any_adjudicator():
         membership.task_id == "task-outside-candidates"
         for membership in generation.memberships
     )
+
+
+def test_model_judgements_stop_at_the_build_wall_clock_budget():
+    now = [0.0]
+
+    class _BudgetAdjudicator(_FakeAdjudicator):
+        def judge(self, question, *, timeout_seconds):
+            judgement = super().judge(
+                question,
+                timeout_seconds=timeout_seconds,
+            )
+            now[0] += timeout_seconds
+            return judgement
+
+    adjudicator = _BudgetAdjudicator("new_task")
+    generation = _build(
+        BoundedTaskLinker(
+            adjudicator=adjudicator,
+            max_model_judgements_per_build=8,
+            max_model_wall_time_seconds=1.0,
+            _clock=lambda: now[0],
+        ),
+        "目标一",
+        "目标二",
+        "目标三",
+        "目标四",
+    )
+
+    assert len(adjudicator.questions) == 1
+    assert generation.metrics["model_judgement_budget_exhausted_count"] == 1

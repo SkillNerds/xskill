@@ -246,6 +246,8 @@ task_graph:
     enabled: false               # opt-in; raw Atom/Task text may be sent to llm
     auto_confirm: false          # false keeps same-task judgements as proposed
     max_judgements_per_build: 64 # hard cost bound; one failure opens a build-local circuit
+    request_timeout_seconds: 10  # hard timeout for one adjudication request
+    max_wall_time_seconds: 30    # total adjudication wall-clock budget per build
     # llm:                       # optional partial override; otherwise uses top-level llm
     #   model: task-link-model
     #   max_tokens: 800          # hard-capped at 800 even when configured higher
@@ -422,6 +424,21 @@ def normalize_runtime_config(config_data: dict) -> dict:
         "task_graph.llm_adjudication.max_judgements_per_build",
         64,
     )
+    for field_name, default in (
+        ("request_timeout_seconds", 10.0),
+        ("max_wall_time_seconds", 30.0),
+    ):
+        value = llm_adjudication.get(field_name, default)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError(
+                f"task_graph.llm_adjudication.{field_name} 必须是正数"
+            )
+        llm_adjudication[field_name] = float(value)
     adjudication_llm = llm_adjudication.get("llm")
     if adjudication_llm is not None and not isinstance(adjudication_llm, dict):
         raise ValueError("task_graph.llm_adjudication.llm 必须是 mapping")

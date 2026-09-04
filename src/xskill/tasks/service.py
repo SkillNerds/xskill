@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import uuid
 from collections import OrderedDict, deque
 from operator import attrgetter
@@ -160,6 +161,23 @@ class TaskGraphService:
                 "task_graph.llm_adjudication.max_judgements_per_build "
                 "must be a positive integer"
             )
+        def positive_number(name: str, default: float) -> float:
+            value = adjudication_config.get(name, default)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(
+                    f"task_graph.llm_adjudication.{name} must be a positive number"
+                )
+            return float(value)
+
+        adjudication_request_timeout = positive_number(
+            "request_timeout_seconds", 10.0
+        )
+        adjudication_wall_time = positive_number("max_wall_time_seconds", 30.0)
         llm_override = adjudication_config.get("llm")
         if llm_override is None:
             llm_override = {}
@@ -186,6 +204,10 @@ class TaskGraphService:
                     "a positive integer"
                 )
             llm_config["max_tokens"] = min(requested_max_tokens, 800)
+            llm_config["request_timeout"] = min(
+                adjudication_request_timeout,
+                adjudication_wall_time,
+            )
             if "temperature" not in llm_override:
                 llm_config["temperature"] = 0.0
             adjudicator = LLMTaskLinkAdjudicator(
@@ -211,6 +233,7 @@ class TaskGraphService:
             posting_cap=positive_integer("posting_cap", 64),
             adjudicator=adjudicator,
             max_model_judgements_per_build=max_model_judgements,
+            max_model_wall_time_seconds=adjudication_wall_time,
         )
 
     def store_for_scope(self, task_scope_id: str) -> TaskGraphStore:

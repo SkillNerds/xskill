@@ -23,7 +23,14 @@ class _FakeLLM:
         self.response = response
         self.calls = []
 
-    def chat(self, prompt: str, system: str = "") -> str:
+    def chat(
+        self,
+        prompt: str,
+        system: str = "",
+        *,
+        timeout_seconds: float,
+    ) -> str:
+        assert timeout_seconds > 0
         self.calls.append((prompt, system))
         return self.response
 

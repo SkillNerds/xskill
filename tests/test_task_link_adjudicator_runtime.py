@@ -15,6 +15,7 @@ from xskill.usage import PriceTable, UsageLedger
 class _FakeCompletions:
     def create(self, **request):
         assert request["max_tokens"] == 800
+        assert 0 < request["timeout"] <= 5.0
         return SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -71,6 +72,8 @@ def test_service_builds_opt_in_adjudicator_with_a_separate_bounded_budget(
                 "enabled": True,
                 "auto_confirm": False,
                 "max_judgements_per_build": 7,
+                "request_timeout_seconds": 5,
+                "max_wall_time_seconds": 12,
             },
         },
     }
@@ -85,6 +88,8 @@ def test_service_builds_opt_in_adjudicator_with_a_separate_bounded_budget(
     assert service.linker.adjudicator is not None
     assert service.linker.max_model_judgements_per_build == 7
     assert service.linker.adjudicator.llm_client.max_tokens == 800
+    assert service.linker.adjudicator.llm_client.request_timeout == 5.0
+    assert service.linker.max_model_wall_time_seconds == 12.0
     assert service.linker.adjudicator.llm_client.usage_ledger is usage_ledger
     assert config["llm"]["max_tokens"] == 10000
 
@@ -155,7 +160,8 @@ def test_adjudication_usage_is_persisted_with_task_and_atom_scope(tmp_path):
                     same_session_recent=True,
                 ),
             ),
-        )
+        ),
+        timeout_seconds=5.0,
     )
 
     with sqlite3.connect(db_path) as connection:
@@ -216,6 +222,27 @@ def test_service_rejects_invalid_adjudication_output_budgets(tmp_path, value):
                     "llm_adjudication": {
                         "enabled": True,
                         "llm": {"max_tokens": value},
+                    },
+                },
+            },
+        )
+
+
+@pytest.mark.parametrize("field", ["request_timeout_seconds", "max_wall_time_seconds"])
+@pytest.mark.parametrize("value", [True, 0, -1, float("inf"), "10"])
+def test_service_rejects_invalid_adjudication_time_budgets(tmp_path, field, value):
+    with pytest.raises(ValueError, match=f"{field} must be a positive number"):
+        TaskGraphService(
+            state_root=tmp_path,
+            config={
+                "llm": {
+                    "base_url": "https://example.test/v1",
+                    "model": "base-model",
+                },
+                "task_graph": {
+                    "llm_adjudication": {
+                        "enabled": True,
+                        field: value,
                     },
                 },
             },
