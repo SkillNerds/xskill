@@ -73,7 +73,7 @@ def test_upsert_replaces_stable_identity_in_one_scan_without_double_counting():
     flags, total = upsert_evidence_candidates(data, (changed,))
 
     assert flags == [False]
-    assert total == 9
+    assert total == 0
     assert len(buffer) == 1
     assert buffer[0]["weightscore"] == 9
     assert buffer.iterations == 1
@@ -83,7 +83,7 @@ def test_upsert_keeps_legacy_entries_and_rejects_duplicate_input():
     candidate = _fallback()
     data = {"candidates": [{"atom_id": "legacy", "weightscore": 3}]}
 
-    assert upsert_evidence_candidates(data, (candidate,)) == ([True], 8)
+    assert upsert_evidence_candidates(data, (candidate,)) == ([True], 3)
     assert data["candidates"][0]["atom_id"] == "legacy"
     with pytest.raises(EvidenceCandidateError, match="duplicate stable identities"):
         upsert_evidence_candidates(data, (candidate, candidate))
@@ -121,3 +121,28 @@ def test_buffer_migration_rejects_cross_skill_versioned_candidates():
         migrate_legacy_candidate_buffer(
             {"candidates": [candidate]}, skill_name="safe-skill"
         )
+
+
+def test_upsert_rejects_malformed_versioned_entry_without_candidate_id():
+    malformed = _fallback().to_dict()
+    malformed.pop("candidate_id")
+
+    with pytest.raises(EvidenceCandidateError, match="missing"):
+        upsert_evidence_candidates(
+            {"candidates": [malformed]},
+            (_fallback(weightscore=6),),
+        )
+
+
+def test_only_compatibility_fallback_contributes_to_promotion():
+    unresolved = _fallback(weightscore=10)
+    disabled = TaskSkillCandidate.from_atom_fallback(
+        atom_id="atom-a",
+        skill_name="safe-skill",
+        weightscore=10,
+        fallback_reason="task_graph_disabled",
+    )
+    data = {"candidates": []}
+
+    assert upsert_evidence_candidates(data, (unresolved,)) == ([True], 0)
+    assert upsert_evidence_candidates(data, (disabled,)) == ([False], 10)

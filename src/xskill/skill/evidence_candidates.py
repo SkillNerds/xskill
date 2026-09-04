@@ -8,6 +8,7 @@ references and fingerprints, never copied trajectory or Task prompt text.
 from __future__ import annotations
 
 import copy
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -47,6 +48,11 @@ FALLBACK_REASONS = frozenset(
 MAX_CANDIDATE_ATOM_REFS = 256
 MAX_CANDIDATE_ATTEMPT_REFS = 128
 MAX_CANDIDATE_NOTE_CHARS = 500
+MAX_CANDIDATE_REASON_CODE_CHARS = 100
+PROMOTION_ELIGIBLE_FALLBACK_REASONS = frozenset(
+    ("task_graph_disabled", "legacy_atom_candidate")
+)
+_REASON_CODE_RE = re.compile(r"[a-z][a-z0-9_:-]*\Z")
 
 
 @dataclass(frozen=True)
@@ -99,6 +105,12 @@ class TaskSkillCandidate:
             len(self.note) <= MAX_CANDIDATE_NOTE_CHARS,
             f"note exceeds {MAX_CANDIDATE_NOTE_CHARS} characters",
         )
+        if self.note and self.fallback_reason != "legacy_atom_candidate":
+            _ensure(
+                len(self.note) <= MAX_CANDIDATE_REASON_CODE_CHARS
+                and _REASON_CODE_RE.fullmatch(self.note) is not None,
+                "note must be a bounded reason code, not free-form Task text",
+            )
         _ensure(
             isinstance(self.atom_refs, tuple)
             and all(isinstance(item, CandidateAtomRef) for item in self.atom_refs),
@@ -156,6 +168,12 @@ class TaskSkillCandidate:
             self.candidate_id == self._expected_candidate_id(),
             "candidate_id does not match stable evidence identity",
         )
+
+    @property
+    def contributes_to_promotion(self) -> bool:
+        if self.evidence_unit == "logical_task":
+            return self.learning_eligibility == "eligible"
+        return self.fallback_reason in PROMOTION_ELIGIBLE_FALLBACK_REASONS
 
     def _validate_evidence_shape(self) -> None:
         fingerprint_fields = (
@@ -229,6 +247,18 @@ class TaskSkillCandidate:
                 ),
                 "Task Atom reference crosses scope",
             )
+            if self.learning_eligibility == "eligible":
+                _ensure(
+                    self.task_lifecycle == "closed"
+                    and self.task_outcome not in {"unknown", "cancelled", "abandoned"}
+                    and self.task_verification in {"verified", "not_applicable"}
+                    and bool(self.attempt_refs)
+                    and all(
+                        attempt.lifecycle == "finished"
+                        for attempt in self.attempt_refs
+                    ),
+                    "eligible Task candidate requires verified terminal evidence",
+                )
             return
         _ensure(
             all(value is None for value in task_fields),
@@ -522,11 +552,13 @@ def upsert_evidence_candidates(
         )
         total += weightscore
         candidate_id = value.get("candidate_id")
-        if candidate_id is not None:
+        if "schema_version" in value or candidate_id is not None:
             parsed = TaskSkillCandidate.from_dict(value)
             _ensure(parsed.skill_name == skill_name, "candidate belongs to another Skill")
             _ensure(parsed.candidate_id not in positions, "duplicate candidate_id in buffer")
             positions[parsed.candidate_id] = index
+            if not parsed.contributes_to_promotion:
+                total -= weightscore
     new_flags: list[bool] = []
     for candidate in incoming:
         serialized = candidate.to_dict()
@@ -534,11 +566,15 @@ def upsert_evidence_candidates(
         if position is None:
             positions[candidate.candidate_id] = len(buffer)
             buffer.append(serialized)
-            total += candidate.weightscore
+            if candidate.contributes_to_promotion:
+                total += candidate.weightscore
             new_flags.append(True)
         else:
-            total -= int(buffer[position]["weightscore"])
+            previous = TaskSkillCandidate.from_dict(buffer[position])
+            if previous.contributes_to_promotion:
+                total -= previous.weightscore
             buffer[position] = serialized
-            total += candidate.weightscore
+            if candidate.contributes_to_promotion:
+                total += candidate.weightscore
             new_flags.append(False)
     return new_flags, total

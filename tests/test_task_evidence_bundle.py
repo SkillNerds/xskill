@@ -6,6 +6,7 @@ import pytest
 
 from xskill.pipeline.registry import get_connection
 from xskill.tasks.evidence_bundle import (
+    MAX_TASK_EVIDENCE_BUNDLE_BYTES,
     TaskEvidenceBundle,
     TaskEvidenceBundleError,
     TaskEvidenceBundleIndex,
@@ -178,6 +179,24 @@ def test_published_generation_reload_preserves_bundle_fingerprint(tmp_path):
     )
 
 
+def test_task_evidence_fingerprint_ignores_generation_metadata():
+    generation = _generation()
+    first = build_task_evidence_bundle(generation, "task-a")
+    rebuilt = build_task_evidence_bundle(
+        replace(
+            generation,
+            generation_id="generation-b",
+            source_revision="source-revision-b",
+            created_at="2026-09-02T00:00:00Z",
+            generator={"name": "linker", "version": "v2"},
+        ),
+        "task-a",
+    )
+
+    assert rebuilt.bundle_fingerprint != first.bundle_fingerprint
+    assert rebuilt.task_evidence_fingerprint == first.task_evidence_fingerprint
+
+
 def test_bundle_rejects_unknown_fields_and_fingerprint_drift():
     payload = build_task_evidence_bundle(_generation(), "task-a").to_dict()
     payload["unknown"] = True
@@ -187,6 +206,14 @@ def test_bundle_rejects_unknown_fields_and_fingerprint_drift():
     payload = build_task_evidence_bundle(_generation(), "task-a").to_dict()
     payload["task"]["summary"] = "changed"
     with pytest.raises(TaskEvidenceBundleError, match="fingerprint"):
+        TaskEvidenceBundle.from_dict(payload)
+
+
+def test_bundle_normalizes_nested_parse_errors():
+    payload = build_task_evidence_bundle(_generation(), "task-a").to_dict()
+    payload["task"] = []
+
+    with pytest.raises(TaskEvidenceBundleError, match="invalid nested"):
         TaskEvidenceBundle.from_dict(payload)
 
 
@@ -304,6 +331,20 @@ def test_bundle_cardinality_is_bounded(limits, message):
         build_task_evidence_bundle(_generation(), "task-a", limits=limits)
 
 
+def test_bundle_serialized_size_is_bounded():
+    generation = _generation()
+    oversized_task = replace(
+        generation.tasks[0],
+        summary="x" * MAX_TASK_EVIDENCE_BUNDLE_BYTES,
+    )
+
+    with pytest.raises(TaskEvidenceBundleError, match="serialized_bytes"):
+        build_task_evidence_bundle(
+            replace(generation, tasks=(oversized_task,)),
+            "task-a",
+        )
+
+
 def test_generation_index_builds_many_tasks_without_per_task_rescans():
     class CountingTuple(tuple):
         iterations = 0
@@ -397,18 +438,32 @@ def test_projection_emits_changed_task_bundle_once_and_fences_stale_ack(tmp_path
     assert list_pending_task_evidence(db_path=db_path) == []
     assert task_evidence_feed_counts(db_path=db_path)["processed"] == 1
 
-    changed = replace(
+    metadata_only = replace(
         generation,
         generation_id="generation-b",
         source_revision="source-revision-b",
         created_at="2026-09-01T00:04:00Z",
+    )
+    project_generation(metadata_only, sources=(), db_path=db_path)
+    assert list_pending_task_evidence(db_path=db_path) == []
+    with get_connection(db_path) as connection:
+        unchanged = connection.execute(
+            "SELECT task_generation_id,generation FROM task_evidence_feed"
+        ).fetchone()
+    assert tuple(unchanged) == ("generation-b", 1)
+
+    changed = replace(
+        metadata_only,
+        generation_id="generation-c",
         tasks=(replace(generation.tasks[0], summary="changed summary"),),
     )
     project_generation(changed, sources=(), db_path=db_path)
     current = list_pending_task_evidence(db_path=db_path)
     assert len(current) == 1
     assert current[0]["generation"] == 2
-    assert current[0]["bundle_fingerprint"] != first[0]["bundle_fingerprint"]
+    assert current[0]["task_evidence_fingerprint"] != first[0][
+        "task_evidence_fingerprint"
+    ]
 
     assert acknowledge_task_evidence(first, db_path=db_path) == 0
     assert len(list_pending_task_evidence(db_path=db_path)) == 1
@@ -421,16 +476,77 @@ def test_projection_emits_changed_task_bundle_once_and_fences_stale_ack(tmp_path
     }
 
 
-def test_projection_rejects_incomplete_task_from_learning_feed(tmp_path):
+def test_projection_queues_incomplete_task_for_reconciliation(tmp_path):
     db_path = tmp_path / "registry.db"
     get_connection(db_path).close()
 
     project_generation(_generation(verified=False), sources=(), db_path=db_path)
 
-    assert list_pending_task_evidence(db_path=db_path) == []
+    rows = list_pending_task_evidence(db_path=db_path)
+    assert len(rows) == 1
+    assert rows[0]["learning_eligibility"] == "needs_review"
     assert task_evidence_feed_counts(db_path=db_path) == {
-        "pending": 0,
+        "pending": 1,
         "processed": 0,
         "fallback": 0,
-        "rejected": 1,
+        "rejected": 0,
     }
+
+
+def test_projection_cleanup_is_not_limited_by_sql_parameter_count(tmp_path):
+    db_path = tmp_path / "registry.db"
+    get_connection(db_path).close()
+    generation = _generation()
+    tasks = []
+    memberships = []
+    for number in range(1200):
+        task_id = f"task-{number:04d}"
+        tasks.append(
+            replace(
+                generation.tasks[0],
+                task_id=task_id,
+                summary=f"summary {number}",
+            )
+        )
+        memberships.append(
+            replace(
+                generation.memberships[0],
+                membership_id=f"membership-{number:04d}",
+                task_id=task_id,
+                atom_ref=replace(
+                    generation.memberships[0].atom_ref,
+                    atom_id=f"atom-{number:04d}",
+                ),
+            )
+        )
+    large = replace(
+        generation,
+        tasks=tuple(tasks),
+        memberships=tuple(memberships),
+        attempts=(),
+        attempt_relations=(),
+        usage_allocations=(),
+    )
+
+    project_generation(large, sources=(), db_path=db_path)
+    with get_connection(db_path) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM task_evidence_feed"
+        ).fetchone()[0]
+    assert count == 1200
+
+    project_generation(
+        replace(
+            large,
+            generation_id="generation-small",
+            tasks=(large.tasks[0],),
+            memberships=(large.memberships[0],),
+        ),
+        sources=(),
+        db_path=db_path,
+    )
+    with get_connection(db_path) as connection:
+        remaining = connection.execute(
+            "SELECT task_id FROM task_evidence_feed"
+        ).fetchall()
+    assert [row[0] for row in remaining] == ["task-0000"]

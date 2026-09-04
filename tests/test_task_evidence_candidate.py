@@ -9,7 +9,9 @@ from xskill.skill.evidence_candidates import (
     MAX_CANDIDATE_ATOM_REFS,
     EvidenceCandidateError,
     TaskSkillCandidate,
+    upsert_evidence_candidates,
 )
+from xskill.skill.candidates import ready_for_promotion_v2
 from xskill.tasks.evidence_bundle import build_task_evidence_bundle
 from xskill.tasks.models import (
     AtomRef,
@@ -94,7 +96,7 @@ def test_task_candidate_is_versioned_bounded_private_and_round_trips():
         _bundle(),
         skill_name="safe-skill",
         weightscore=8,
-        note="bounded routing support",
+        note="bounded_routing_support",
     )
 
     payload = candidate.to_dict()
@@ -153,6 +155,35 @@ def test_unverified_task_cannot_silently_become_eligible():
 
     assert candidate.learning_eligibility == "needs_review"
     assert "task_outcome_not_verified" in candidate.eligibility_reasons
+
+
+def test_ineligible_task_never_promotes_and_revokes_prior_support():
+    eligible = TaskSkillCandidate.from_task_bundle(
+        _bundle(),
+        skill_name="safe-skill",
+        weightscore=10,
+    )
+    needs_review = TaskSkillCandidate.from_task_bundle(
+        _bundle(verified=False),
+        skill_name="safe-skill",
+        weightscore=10,
+    )
+    data = {"candidates": []}
+
+    assert upsert_evidence_candidates(data, (eligible,)) == ([True], 10)
+    assert ready_for_promotion_v2(data, threshold=10)
+    assert upsert_evidence_candidates(data, (needs_review,)) == ([False], 0)
+    assert ready_for_promotion_v2(data, threshold=10) == []
+
+
+def test_logical_task_note_rejects_free_form_private_text():
+    with pytest.raises(EvidenceCandidateError, match="reason code"):
+        TaskSkillCandidate.from_task_bundle(
+            _bundle(),
+            skill_name="safe-skill",
+            weightscore=8,
+            note="private Task summary /home/user/secret",
+        )
 
 
 def test_atom_fallback_is_explicit_and_never_claims_task_provenance():
@@ -214,6 +245,17 @@ def test_new_schema_rejects_inconsistent_task_state():
     payload["task_lifecycle"] = "open"
 
     with pytest.raises(EvidenceCandidateError, match="outcome must be unknown"):
+        TaskSkillCandidate.from_dict(payload)
+
+
+def test_new_schema_rejects_forged_eligibility():
+    payload = TaskSkillCandidate.from_task_bundle(
+        _bundle(verified=False), skill_name="safe-skill", weightscore=8
+    ).to_dict()
+    payload["learning_eligibility"] = "eligible"
+    payload["eligibility_reasons"] = ["verified_terminal_task"]
+
+    with pytest.raises(EvidenceCandidateError, match="verified terminal evidence"):
         TaskSkillCandidate.from_dict(payload)
 
 

@@ -368,10 +368,20 @@ def ready_for_promotion_v2(
 
     返回 buffer 中所有 candidates iff 总分 ≥ threshold；否则空列表。
     """
+    from xskill.skill.evidence_candidates import TaskSkillCandidate
+
     cands = data.get("candidates", []) or []
-    total = sum(int(c.get("weightscore", 0)) for c in cands)
+    promotable = []
+    total = 0
+    for candidate in cands:
+        if "schema_version" in candidate or "candidate_id" in candidate:
+            parsed = TaskSkillCandidate.from_dict(candidate)
+            if not parsed.contributes_to_promotion:
+                continue
+        promotable.append(candidate)
+        total += int(candidate.get("weightscore", 0))
     if total >= threshold:
-        return list(cands)
+        return promotable
     return []
 
 

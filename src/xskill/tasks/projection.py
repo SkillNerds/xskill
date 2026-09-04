@@ -381,7 +381,8 @@ def _task_evidence_feed_rows(generation: TaskGraphGeneration) -> list[tuple]:
         except TaskEvidenceBundleError as exc:
             rejection = str(exc)
             payload = {
-                "generation_id": generation.generation_id,
+                "tenant_id": generation.tenant_id,
+                "task_scope_id": generation.task_scope_id,
                 "task": task.to_dict(),
                 "rejection": rejection,
             }
@@ -399,10 +400,10 @@ def _task_evidence_feed_rows(generation: TaskGraphGeneration) -> list[tuple]:
             reasons = (rejection,)
             status = "rejected"
         else:
-            fingerprint = bundle.bundle_fingerprint
+            fingerprint = bundle.task_evidence_fingerprint
             eligibility = bundle.learning_eligibility
             reasons = bundle.eligibility_reasons
-            status = "pending" if eligibility == "eligible" else "rejected"
+            status = "pending"
         rows.append(
             (
                 generation.tenant_id,
@@ -663,34 +664,36 @@ def project_generation(
             connection.executemany(
                 "INSERT INTO task_evidence_feed("
                 "tenant_id,task_scope_id,task_id,task_generation_id,"
-                "bundle_fingerprint,learning_eligibility,"
+                "task_evidence_fingerprint,learning_eligibility,"
                 "eligibility_reasons_json,status) VALUES(?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(tenant_id,task_scope_id,task_id) DO UPDATE SET"
                 " task_generation_id=excluded.task_generation_id,"
-                " bundle_fingerprint=excluded.bundle_fingerprint,"
+                " task_evidence_fingerprint=excluded.task_evidence_fingerprint,"
                 " learning_eligibility=excluded.learning_eligibility,"
                 " eligibility_reasons_json=excluded.eligibility_reasons_json,"
-                " status=excluded.status,generation=task_evidence_feed.generation+1,"
-                " marked_at=datetime('now'),processed_at=NULL"
-                " WHERE task_evidence_feed.bundle_fingerprint"
-                "<>excluded.bundle_fingerprint",
+                " status=CASE WHEN task_evidence_feed.task_evidence_fingerprint"
+                "<>excluded.task_evidence_fingerprint THEN excluded.status"
+                " ELSE task_evidence_feed.status END,"
+                " generation=task_evidence_feed.generation+CASE WHEN"
+                " task_evidence_feed.task_evidence_fingerprint"
+                "<>excluded.task_evidence_fingerprint THEN 1 ELSE 0 END,"
+                " marked_at=CASE WHEN task_evidence_feed.task_evidence_fingerprint"
+                "<>excluded.task_evidence_fingerprint THEN datetime('now')"
+                " ELSE task_evidence_feed.marked_at END,"
+                " processed_at=CASE WHEN task_evidence_feed.task_evidence_fingerprint"
+                "<>excluded.task_evidence_fingerprint THEN NULL"
+                " ELSE task_evidence_feed.processed_at END",
                 evidence_feed_rows,
             )
-            if evidence_feed_rows:
-                task_ids = [row[2] for row in evidence_feed_rows]
-                placeholders = ",".join("?" for _ in task_ids)
-                connection.execute(
-                    "DELETE FROM task_evidence_feed"
-                    " WHERE tenant_id=? AND task_scope_id=?"
-                    f" AND task_id NOT IN ({placeholders})",
-                    [tenant_id, task_scope_id, *task_ids],
-                )
-            else:
-                connection.execute(
-                    "DELETE FROM task_evidence_feed"
-                    " WHERE tenant_id=? AND task_scope_id=?",
-                    (tenant_id, task_scope_id),
-                )
+            connection.execute(
+                "DELETE FROM task_evidence_feed"
+                " WHERE tenant_id=? AND task_scope_id=?"
+                " AND NOT EXISTS (SELECT 1 FROM logical_tasks"
+                " WHERE logical_tasks.tenant_id=task_evidence_feed.tenant_id"
+                " AND logical_tasks.task_scope_id=task_evidence_feed.task_scope_id"
+                " AND logical_tasks.task_id=task_evidence_feed.task_id)",
+                (tenant_id, task_scope_id),
+            )
             connection.commit()
         except Exception:
             connection.rollback()

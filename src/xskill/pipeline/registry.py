@@ -716,7 +716,7 @@ CREATE TABLE IF NOT EXISTS task_evidence_feed (
     task_scope_id          TEXT NOT NULL,
     task_id                TEXT NOT NULL,
     task_generation_id     TEXT NOT NULL,
-    bundle_fingerprint     TEXT NOT NULL,
+    task_evidence_fingerprint TEXT NOT NULL,
     learning_eligibility   TEXT NOT NULL,
     eligibility_reasons_json TEXT NOT NULL DEFAULT '[]',
     status                 TEXT NOT NULL
