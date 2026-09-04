@@ -234,7 +234,7 @@ watcher:
                                 # periodic full scan catches in-place rewrites
 
 # ===== Logical Task Graph =====
-# Deterministic semantic branch above Session/Atom; it never changes Atom→Skill routing, and uncertain links remain proposed without consuming LLM tokens.
+# Semantic branch above Session/Atom; it never changes Atom→Skill routing.
 task_graph:
   enabled: true                  # default-on; set false to pause projection while retaining dirty fences
   top_k: 8                      # hard bound on classified candidates per Atom
@@ -242,6 +242,13 @@ task_graph:
   posting_cap: 64               # bounded inverted-index posting list
   max_scopes_per_run: 4         # fairness bound for one background pass
   source_cache_size: 128        # bounded in-memory cache for unchanged source evidence
+  llm_adjudication:
+    enabled: false               # opt-in; raw Atom/Task text may be sent to llm
+    auto_confirm: false          # false keeps same-task judgements as proposed
+    max_judgements_per_build: 64 # hard cost bound; one failure opens a build-local circuit
+    # llm:                       # optional partial override; otherwise uses top-level llm
+    #   model: task-link-model
+    #   max_tokens: 800          # hard-capped at 800 even when configured higher
 
 # ===== Persistent agent worker =====
 # Every pool has an automatic waiting capacity of workers * 2. Running plus
@@ -397,6 +404,28 @@ def normalize_runtime_config(config_data: dict) -> dict:
         task_graph[field_name] = _positive_int_or_default(
             task_graph.get(field_name), f"task_graph.{field_name}", default,
         )
+    llm_adjudication = task_graph.get("llm_adjudication")
+    if llm_adjudication is None:
+        llm_adjudication = {}
+    if not isinstance(llm_adjudication, dict):
+        raise ValueError("task_graph.llm_adjudication 必须是 mapping")
+    llm_adjudication = dict(llm_adjudication)
+    for field_name, default in (("enabled", False), ("auto_confirm", False)):
+        value = llm_adjudication.get(field_name, default)
+        if not isinstance(value, bool):
+            raise ValueError(
+                f"task_graph.llm_adjudication.{field_name} 必须是布尔"
+            )
+        llm_adjudication[field_name] = value
+    llm_adjudication["max_judgements_per_build"] = _positive_int_or_default(
+        llm_adjudication.get("max_judgements_per_build"),
+        "task_graph.llm_adjudication.max_judgements_per_build",
+        64,
+    )
+    adjudication_llm = llm_adjudication.get("llm")
+    if adjudication_llm is not None and not isinstance(adjudication_llm, dict):
+        raise ValueError("task_graph.llm_adjudication.llm 必须是 mapping")
+    task_graph["llm_adjudication"] = llm_adjudication
     runtime_config["task_graph"] = task_graph
 
     worker = runtime_config.get("agent_worker")

@@ -9,6 +9,7 @@ from collections import OrderedDict, deque
 from operator import attrgetter
 from pathlib import Path
 
+from xskill.tasks.adjudicator import LLMTaskLinkAdjudicator
 from xskill.tasks.evidence import (
     ScopedTrajectoryEvidence,
     collect_trajectory_evidence,
@@ -42,6 +43,7 @@ from xskill.tasks.projection import (
 )
 from xskill.tasks.scopes import ScopeResolver
 from xskill.tasks.store import OverrideEvent, TaskGraphStore
+from xskill.utils.llm import LLMClient
 
 logger = logging.getLogger("xskill.task_graph")
 
@@ -106,10 +108,12 @@ class TaskGraphService:
         db_path: Path | None = None,
         server_mode: bool = False,
         config: dict | None = None,
+        usage_ledger=None,
     ):
         self.state_root = Path(state_root).expanduser().resolve()
         self.db_path = Path(db_path) if db_path is not None else None
         self.server_mode = bool(server_mode)
+        self.usage_ledger = usage_ledger
         if config is not None and not isinstance(config, dict):
             raise ValueError("Task Graph config must be a mapping")
         self.config = config or {}
@@ -129,6 +133,68 @@ class TaskGraphService:
 
         self.max_scopes_per_run = positive_integer("max_scopes_per_run", 4)
         self.source_cache_size = positive_integer("source_cache_size", 128)
+        adjudication_config = task_config.get("llm_adjudication")
+        if adjudication_config is None:
+            adjudication_config = {}
+        if not isinstance(adjudication_config, dict):
+            raise ValueError("task_graph.llm_adjudication must be a mapping")
+        adjudication_enabled = adjudication_config.get("enabled", False)
+        auto_confirm = adjudication_config.get("auto_confirm", False)
+        for name, value in (
+            ("enabled", adjudication_enabled),
+            ("auto_confirm", auto_confirm),
+        ):
+            if not isinstance(value, bool):
+                raise ValueError(
+                    f"task_graph.llm_adjudication.{name} must be a boolean"
+                )
+        max_model_judgements = adjudication_config.get(
+            "max_judgements_per_build", 64,
+        )
+        if (
+            isinstance(max_model_judgements, bool)
+            or not isinstance(max_model_judgements, int)
+            or max_model_judgements <= 0
+        ):
+            raise ValueError(
+                "task_graph.llm_adjudication.max_judgements_per_build "
+                "must be a positive integer"
+            )
+        llm_override = adjudication_config.get("llm")
+        if llm_override is None:
+            llm_override = {}
+        if not isinstance(llm_override, dict):
+            raise ValueError(
+                "task_graph.llm_adjudication.llm must be a mapping"
+            )
+        adjudicator = None
+        if adjudication_enabled:
+            base_llm = self.config.get("llm")
+            if base_llm is None:
+                base_llm = {}
+            if not isinstance(base_llm, dict):
+                raise ValueError("llm config must be a mapping")
+            llm_config = {**base_llm, **llm_override}
+            requested_max_tokens = llm_config.get("max_tokens", 800)
+            if (
+                isinstance(requested_max_tokens, bool)
+                or not isinstance(requested_max_tokens, int)
+                or requested_max_tokens <= 0
+            ):
+                raise ValueError(
+                    "task_graph.llm_adjudication.llm.max_tokens must be "
+                    "a positive integer"
+                )
+            llm_config["max_tokens"] = min(requested_max_tokens, 800)
+            if "temperature" not in llm_override:
+                llm_config["temperature"] = 0.0
+            adjudicator = LLMTaskLinkAdjudicator(
+                LLMClient.from_config(
+                    llm_config,
+                    usage_ledger=self.usage_ledger,
+                ),
+                auto_confirm=auto_confirm,
+            )
         self._backfill_enqueued = False
         self._evidence_cache: OrderedDict[
             tuple[str, str], ScopedTrajectoryEvidence
@@ -143,6 +209,8 @@ class TaskGraphService:
             top_k=positive_integer("top_k", 8),
             recent_k=positive_integer("recent_k", 6),
             posting_cap=positive_integer("posting_cap", 64),
+            adjudicator=adjudicator,
+            max_model_judgements_per_build=max_model_judgements,
         )
 
     def store_for_scope(self, task_scope_id: str) -> TaskGraphStore:
