@@ -7,8 +7,9 @@ references and fingerprints, never copied trajectory or Task prompt text.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 from xskill.skill.evidence_candidate_refs import (
     CandidateAtomRef,
@@ -426,3 +427,118 @@ class TaskSkillCandidate:
             eligibility_reasons=(f"atom_fallback:{fallback_reason}",),
             fallback_reason=fallback_reason,
         )
+
+
+def migrate_legacy_atom_candidate(
+    value: Any,
+    *,
+    skill_name: str,
+) -> TaskSkillCandidate:
+    """Deterministically wrap one current v2.1 Atom candidate as fallback."""
+    if not isinstance(value, dict):
+        raise EvidenceCandidateError("legacy Atom candidate must be an object")
+    allowed = {"atom_id", "weightscore", "note"}
+    unknown = set(value) - allowed
+    _ensure(not unknown, f"unsupported legacy Atom candidate fields: {sorted(unknown)}")
+    _ensure("atom_id" in value and "weightscore" in value, "legacy Atom fields missing")
+    return TaskSkillCandidate.from_atom_fallback(
+        atom_id=value["atom_id"],
+        skill_name=skill_name,
+        weightscore=value["weightscore"],
+        note=value.get("note", ""),
+        fallback_reason="legacy_atom_candidate",
+    )
+
+
+def migrate_legacy_candidate_buffer(
+    data: dict[str, Any],
+    *,
+    skill_name: str,
+) -> tuple[dict[str, Any], int]:
+    """Return a migrated copy; legacy pattern candidates stay byte-for-byte data."""
+    if not isinstance(data, dict):
+        raise EvidenceCandidateError("candidate buffer must be an object")
+    buffer = data.get("candidates", [])
+    _ensure(isinstance(buffer, list), "candidates must be a list")
+    migrated: list[dict[str, Any]] = []
+    migrated_count = 0
+    for value in buffer:
+        if not isinstance(value, dict):
+            raise EvidenceCandidateError("candidate buffer entries must be objects")
+        if "schema_version" in value or "candidate_id" in value:
+            parsed = TaskSkillCandidate.from_dict(value)
+            _ensure(parsed.skill_name == skill_name, "candidate belongs to another Skill")
+            migrated.append(parsed.to_dict())
+        elif "atom_id" in value:
+            migrated.append(
+                migrate_legacy_atom_candidate(value, skill_name=skill_name).to_dict()
+            )
+            migrated_count += 1
+        else:
+            migrated.append(copy.deepcopy(value))
+    result = copy.deepcopy(data)
+    result["candidates"] = migrated
+    return result, migrated_count
+
+
+def upsert_evidence_candidates(
+    data: dict[str, Any],
+    candidates: Iterable[TaskSkillCandidate],
+) -> tuple[list[bool], int]:
+    """Upsert a bounded batch with one O(existing + incoming) buffer scan."""
+    if not isinstance(data, dict):
+        raise EvidenceCandidateError("candidate buffer must be an object")
+    incoming = tuple(candidates)
+    _ensure(bool(incoming), "candidate batch must not be empty")
+    _ensure(
+        all(isinstance(item, TaskSkillCandidate) for item in incoming),
+        "candidate batch must contain TaskSkillCandidate values",
+    )
+    skill_name = incoming[0].skill_name
+    _ensure(
+        all(item.skill_name == skill_name for item in incoming),
+        "candidate batch cannot cross Skills",
+    )
+    incoming_ids = [item.candidate_id for item in incoming]
+    _ensure(
+        len(incoming_ids) == len(set(incoming_ids)),
+        "candidate batch contains duplicate stable identities",
+    )
+    buffer = data.setdefault("candidates", [])
+    _ensure(isinstance(buffer, list), "candidates must be a list")
+    positions: dict[str, int] = {}
+    total = 0
+    for index, value in enumerate(buffer):
+        if not isinstance(value, dict):
+            raise EvidenceCandidateError("candidate buffer entries must be objects")
+        weightscore = value.get("weightscore", 0)
+        _ensure(
+            not isinstance(weightscore, bool) and isinstance(weightscore, int),
+            "candidate weightscore must be an integer",
+        )
+        _ensure(
+            "weightscore" not in value or 1 <= weightscore <= 10,
+            "candidate weightscore must be from 1 through 10",
+        )
+        total += weightscore
+        candidate_id = value.get("candidate_id")
+        if candidate_id is not None:
+            parsed = TaskSkillCandidate.from_dict(value)
+            _ensure(parsed.skill_name == skill_name, "candidate belongs to another Skill")
+            _ensure(parsed.candidate_id not in positions, "duplicate candidate_id in buffer")
+            positions[parsed.candidate_id] = index
+    new_flags: list[bool] = []
+    for candidate in incoming:
+        serialized = candidate.to_dict()
+        position = positions.get(candidate.candidate_id)
+        if position is None:
+            positions[candidate.candidate_id] = len(buffer)
+            buffer.append(serialized)
+            total += candidate.weightscore
+            new_flags.append(True)
+        else:
+            total -= int(buffer[position]["weightscore"])
+            buffer[position] = serialized
+            total += candidate.weightscore
+            new_flags.append(False)
+    return new_flags, total
