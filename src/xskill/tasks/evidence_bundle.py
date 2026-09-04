@@ -26,6 +26,7 @@ from xskill.tasks.models import (
 BUNDLE_SCHEMA_VERSION = 1
 ELIGIBILITY_POLICY_VERSION = "task-outcome-v1"
 LEARNING_ELIGIBILITIES = frozenset(("eligible", "ineligible", "needs_review"))
+MAX_TASK_EVIDENCE_BUNDLE_BYTES = 1024 * 1024
 _T = TypeVar("_T")
 
 
@@ -47,11 +48,16 @@ class TaskEvidenceLimits:
     attempt_relations: int = 256
     evidence_ranges: int = 512
     usage_allocations: int = 512
+    serialized_bytes: int = MAX_TASK_EVIDENCE_BUNDLE_BYTES
 
     def __post_init__(self) -> None:
         for field_name, value in vars(self).items():
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{field_name} limit must be a positive integer")
+        if self.serialized_bytes > MAX_TASK_EVIDENCE_BUNDLE_BYTES:
+            raise ValueError(
+                "serialized_bytes cannot exceed the Task evidence hard bound"
+            )
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -70,6 +76,23 @@ def _fingerprint(value: Any) -> str:
 
 def _ordered(values: Iterable[_T], key: Callable[[_T], Any]) -> tuple[_T, ...]:
     return tuple(sorted(values, key=key))
+
+
+def _bounded_ordered(
+    values: Iterable[_T],
+    *,
+    key: Callable[[_T], Any],
+    maximum: int,
+    field_name: str,
+) -> tuple[_T, ...]:
+    bounded: list[_T] = []
+    for value in values:
+        bounded.append(value)
+        if len(bounded) > maximum:
+            raise TaskEvidenceBundleError(
+                f"Task evidence {field_name} exceeds bound: {len(bounded)}>{maximum}"
+            )
+    return tuple(sorted(bounded, key=key))
 
 
 def _strict_object(value: dict[str, Any], expected: set[str]) -> None:
@@ -247,52 +270,96 @@ class TaskEvidenceBundle:
             "eligibility_policy_version": self.eligibility_policy_version,
         }
 
+    def _task_evidence_payload(self) -> dict[str, Any]:
+        """Return generation-independent Task evidence for dirty detection."""
+        payload = self._payload()
+        for field_name in (
+            "generation_id",
+            "source_revision",
+            "created_at",
+            "generator_fingerprint",
+        ):
+            payload.pop(field_name)
+        return payload
+
     @property
     def bundle_fingerprint(self) -> str:
         return _fingerprint(self._payload())
 
+    @property
+    def task_evidence_fingerprint(self) -> str:
+        return _fingerprint(self._task_evidence_payload())
+
     def to_dict(self) -> dict[str, Any]:
-        return {**self._payload(), "bundle_fingerprint": self.bundle_fingerprint}
+        return {
+            **self._payload(),
+            "bundle_fingerprint": self.bundle_fingerprint,
+            "task_evidence_fingerprint": self.task_evidence_fingerprint,
+        }
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> TaskEvidenceBundle:
         if not isinstance(value, dict):
             raise TaskEvidenceBundleError("TaskEvidenceBundle must be an object")
-        expected = set(cls.__dataclass_fields__) | {"bundle_fingerprint"}
+        expected = set(cls.__dataclass_fields__) | {
+            "bundle_fingerprint",
+            "task_evidence_fingerprint",
+        }
         _strict_object(value, expected)
-        bundle = cls(
-            schema_version=value["schema_version"],
-            generation_id=value["generation_id"],
-            tenant_id=value["tenant_id"],
-            task_scope_id=value["task_scope_id"],
-            source_revision=value["source_revision"],
-            created_at=value["created_at"],
-            generator_fingerprint=value["generator_fingerprint"],
-            task=LogicalTask.from_dict(value["task"]),
-            confirmed_memberships=tuple(
-                TaskAtomMembership.from_dict(item)
-                for item in value["confirmed_memberships"]
-            ),
-            review_memberships=tuple(
-                TaskAtomMembership.from_dict(item)
-                for item in value["review_memberships"]
-            ),
-            task_relations=tuple(
-                TaskRelation.from_dict(item) for item in value["task_relations"]
-            ),
-            attempts=tuple(TaskAttempt.from_dict(item) for item in value["attempts"]),
-            attempt_relations=tuple(
-                AttemptRelation.from_dict(item) for item in value["attempt_relations"]
-            ),
-            usage_allocations=tuple(
-                UsageAllocation.from_dict(item) for item in value["usage_allocations"]
-            ),
-            learning_eligibility=value["learning_eligibility"],
-            eligibility_reasons=tuple(value["eligibility_reasons"]),
-            eligibility_policy_version=value["eligibility_policy_version"],
-        )
+        try:
+            serialized_size = len(_canonical_json(value))
+            _ensure(
+                serialized_size <= MAX_TASK_EVIDENCE_BUNDLE_BYTES,
+                "Task evidence serialized_bytes exceeds hard bound: "
+                f"{serialized_size}>{MAX_TASK_EVIDENCE_BUNDLE_BYTES}",
+            )
+            bundle = cls(
+                schema_version=value["schema_version"],
+                generation_id=value["generation_id"],
+                tenant_id=value["tenant_id"],
+                task_scope_id=value["task_scope_id"],
+                source_revision=value["source_revision"],
+                created_at=value["created_at"],
+                generator_fingerprint=value["generator_fingerprint"],
+                task=LogicalTask.from_dict(value["task"]),
+                confirmed_memberships=tuple(
+                    TaskAtomMembership.from_dict(item)
+                    for item in value["confirmed_memberships"]
+                ),
+                review_memberships=tuple(
+                    TaskAtomMembership.from_dict(item)
+                    for item in value["review_memberships"]
+                ),
+                task_relations=tuple(
+                    TaskRelation.from_dict(item) for item in value["task_relations"]
+                ),
+                attempts=tuple(
+                    TaskAttempt.from_dict(item) for item in value["attempts"]
+                ),
+                attempt_relations=tuple(
+                    AttemptRelation.from_dict(item)
+                    for item in value["attempt_relations"]
+                ),
+                usage_allocations=tuple(
+                    UsageAllocation.from_dict(item)
+                    for item in value["usage_allocations"]
+                ),
+                learning_eligibility=value["learning_eligibility"],
+                eligibility_reasons=tuple(value["eligibility_reasons"]),
+                eligibility_policy_version=value["eligibility_policy_version"],
+            )
+        except TaskEvidenceBundleError:
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TaskEvidenceBundleError(
+                f"invalid nested TaskEvidenceBundle value: {exc}"
+            ) from exc
         if value["bundle_fingerprint"] != bundle.bundle_fingerprint:
             raise TaskEvidenceBundleError("TaskEvidenceBundle fingerprint mismatch")
+        if value["task_evidence_fingerprint"] != bundle.task_evidence_fingerprint:
+            raise TaskEvidenceBundleError(
+                "TaskEvidenceBundle task evidence fingerprint mismatch"
+            )
         return bundle
 
 
@@ -312,7 +379,7 @@ def build_task_evidence_bundle(
     if task.tombstoned:
         raise TaskEvidenceBundleError("tombstoned Task cannot become learning evidence")
 
-    confirmed = _ordered(
+    confirmed = _bounded_ordered(
         (
             item
             for item in generation.memberships
@@ -321,9 +388,11 @@ def build_task_evidence_bundle(
             and item.decision == "confirmed"
             and not item.stale
         ),
-        lambda item: item.atom_ref.key,
+        key=lambda item: item.atom_ref.key,
+        maximum=limit.memberships,
+        field_name="memberships",
     )
-    review = _ordered(
+    review = _bounded_ordered(
         (
             item
             for item in generation.memberships
@@ -331,18 +400,36 @@ def build_task_evidence_bundle(
             and item.decision in {"proposed", "needs_review"}
             and not item.stale
         ),
-        lambda item: (item.atom_ref.key, item.membership_id),
+        key=lambda item: (item.atom_ref.key, item.membership_id),
+        maximum=limit.review_memberships,
+        field_name="review_memberships",
     )
-    task_relations = _ordered(
+    task_relations = _bounded_ordered(
         (
             item
             for item in generation.relations
             if task_id in {item.from_task_id, item.to_task_id} and not item.stale
         ),
-        lambda item: item.relation_id,
+        key=lambda item: item.relation_id,
+        maximum=limit.task_relations,
+        field_name="task_relations",
     )
-    attempts = _ordered(
-        (
+    raw_attempts = _bounded_ordered(
+        (item for item in generation.attempts if item.task_id == task_id),
+        key=lambda item: (item.started_at, item.attempt_id),
+        maximum=limit.attempts,
+        field_name="attempts",
+    )
+    evidence_range_count = 0
+    attempts_list: list[TaskAttempt] = []
+    for item in raw_attempts:
+        evidence_range_count += len(item.evidence_ranges)
+        if evidence_range_count > limit.evidence_ranges:
+            raise TaskEvidenceBundleError(
+                "Task evidence evidence_ranges exceeds bound: "
+                f"{evidence_range_count}>{limit.evidence_ranges}"
+            )
+        attempts_list.append(
             replace(
                 item,
                 evidence_ranges=_ordered(
@@ -350,41 +437,27 @@ def build_task_evidence_bundle(
                     lambda evidence: evidence.evidence_id,
                 ),
             )
-            for item in generation.attempts
-            if item.task_id == task_id
-        ),
-        lambda item: (item.started_at, item.attempt_id),
-    )
+        )
+    attempts = tuple(attempts_list)
     attempt_ids = {item.attempt_id for item in attempts}
-    attempt_relations = _ordered(
+    attempt_relations = _bounded_ordered(
         (
             item
             for item in generation.attempt_relations
             if item.from_attempt_id in attempt_ids and item.to_attempt_id in attempt_ids
         ),
-        lambda item: item.relation_id,
+        key=lambda item: item.relation_id,
+        maximum=limit.attempt_relations,
+        field_name="attempt_relations",
     )
-    usage = _ordered(
+    usage = _bounded_ordered(
         (item for item in generation.usage_allocations if item.task_id == task_id),
-        lambda item: item.allocation_id,
+        key=lambda item: item.allocation_id,
+        maximum=limit.usage_allocations,
+        field_name="usage_allocations",
     )
-    counts = {
-        "memberships": len(confirmed),
-        "review_memberships": len(review),
-        "task_relations": len(task_relations),
-        "attempts": len(attempts),
-        "attempt_relations": len(attempt_relations),
-        "evidence_ranges": sum(len(item.evidence_ranges) for item in attempts),
-        "usage_allocations": len(usage),
-    }
-    for field_name, count in counts.items():
-        maximum = getattr(limit, field_name)
-        if count > maximum:
-            raise TaskEvidenceBundleError(
-                f"Task evidence {field_name} exceeds bound: {count}>{maximum}"
-            )
     eligibility, reasons = _learning_eligibility(task, attempts, review)
-    return TaskEvidenceBundle(
+    bundle = TaskEvidenceBundle(
         generation_id=generation.generation_id,
         tenant_id=generation.tenant_id,
         task_scope_id=generation.task_scope_id,
@@ -401,3 +474,10 @@ def build_task_evidence_bundle(
         learning_eligibility=eligibility,
         eligibility_reasons=reasons,
     )
+    serialized_size = len(_canonical_json(bundle.to_dict()))
+    if serialized_size > limit.serialized_bytes:
+        raise TaskEvidenceBundleError(
+            "Task evidence serialized_bytes exceeds bound: "
+            f"{serialized_size}>{limit.serialized_bytes}"
+        )
+    return bundle

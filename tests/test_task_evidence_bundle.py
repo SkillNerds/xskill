@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from xskill.tasks.evidence_bundle import (
+    MAX_TASK_EVIDENCE_BUNDLE_BYTES,
     TaskEvidenceBundle,
     TaskEvidenceBundleError,
     TaskEvidenceLimits,
@@ -170,6 +171,24 @@ def test_published_generation_reload_preserves_bundle_fingerprint(tmp_path):
     )
 
 
+def test_task_evidence_fingerprint_ignores_generation_metadata():
+    generation = _generation()
+    first = build_task_evidence_bundle(generation, "task-a")
+    rebuilt = build_task_evidence_bundle(
+        replace(
+            generation,
+            generation_id="generation-b",
+            source_revision="source-revision-b",
+            created_at="2026-09-02T00:00:00Z",
+            generator={"name": "linker", "version": "v2"},
+        ),
+        "task-a",
+    )
+
+    assert rebuilt.bundle_fingerprint != first.bundle_fingerprint
+    assert rebuilt.task_evidence_fingerprint == first.task_evidence_fingerprint
+
+
 def test_bundle_rejects_unknown_fields_and_fingerprint_drift():
     payload = build_task_evidence_bundle(_generation(), "task-a").to_dict()
     payload["unknown"] = True
@@ -179,6 +198,14 @@ def test_bundle_rejects_unknown_fields_and_fingerprint_drift():
     payload = build_task_evidence_bundle(_generation(), "task-a").to_dict()
     payload["task"]["summary"] = "changed"
     with pytest.raises(TaskEvidenceBundleError, match="fingerprint"):
+        TaskEvidenceBundle.from_dict(payload)
+
+
+def test_bundle_normalizes_nested_parse_errors():
+    payload = build_task_evidence_bundle(_generation(), "task-a").to_dict()
+    payload["task"] = []
+
+    with pytest.raises(TaskEvidenceBundleError, match="invalid nested"):
         TaskEvidenceBundle.from_dict(payload)
 
 
@@ -294,3 +321,17 @@ def test_bundle_rejects_cross_scope_membership_defensively():
 def test_bundle_cardinality_is_bounded(limits, message):
     with pytest.raises(TaskEvidenceBundleError, match=message):
         build_task_evidence_bundle(_generation(), "task-a", limits=limits)
+
+
+def test_bundle_serialized_size_is_bounded():
+    generation = _generation()
+    oversized_task = replace(
+        generation.tasks[0],
+        summary="x" * MAX_TASK_EVIDENCE_BUNDLE_BYTES,
+    )
+
+    with pytest.raises(TaskEvidenceBundleError, match="serialized_bytes"):
+        build_task_evidence_bundle(
+            replace(generation, tasks=(oversized_task,)),
+            "task-a",
+        )
