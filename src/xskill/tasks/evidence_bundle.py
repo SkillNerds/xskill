@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import Any, TypeVar
@@ -296,6 +297,121 @@ class TaskEvidenceBundle:
         return bundle
 
 
+class TaskEvidenceBundleIndex:
+    """Index one generation once, then build Task bundles without rescanning it."""
+
+    def __init__(
+        self,
+        generation: TaskGraphGeneration,
+        *,
+        limits: TaskEvidenceLimits | None = None,
+    ) -> None:
+        self._generation = generation
+        self._generator_fingerprint = _fingerprint(generation.generator)
+        self._limits = limits or TaskEvidenceLimits()
+        self._tasks = {item.task_id: item for item in generation.tasks}
+        self._confirmed: dict[str, list[TaskAtomMembership]] = defaultdict(list)
+        self._review: dict[str, list[TaskAtomMembership]] = defaultdict(list)
+        self._relations: dict[str, list[TaskRelation]] = defaultdict(list)
+        self._attempts: dict[str, list[TaskAttempt]] = defaultdict(list)
+        self._attempt_relations: dict[str, list[AttemptRelation]] = defaultdict(list)
+        self._usage: dict[str, list[UsageAllocation]] = defaultdict(list)
+
+        for item in generation.memberships:
+            if item.stale:
+                continue
+            if item.role == "primary" and item.decision == "confirmed":
+                self._confirmed[item.task_id].append(item)
+            elif item.decision in {"proposed", "needs_review"}:
+                self._review[item.task_id].append(item)
+        for item in generation.relations:
+            if item.stale:
+                continue
+            self._relations[item.from_task_id].append(item)
+            if item.to_task_id != item.from_task_id:
+                self._relations[item.to_task_id].append(item)
+        attempt_tasks: dict[str, str] = {}
+        for item in generation.attempts:
+            attempt_tasks[item.attempt_id] = item.task_id
+            self._attempts[item.task_id].append(
+                replace(
+                    item,
+                    evidence_ranges=_ordered(
+                        item.evidence_ranges,
+                        lambda evidence: evidence.evidence_id,
+                    ),
+                )
+            )
+        for item in generation.attempt_relations:
+            task_id = attempt_tasks.get(item.from_attempt_id)
+            if task_id and attempt_tasks.get(item.to_attempt_id) == task_id:
+                self._attempt_relations[task_id].append(item)
+        for item in generation.usage_allocations:
+            if item.task_id:
+                self._usage[item.task_id].append(item)
+
+    def build(self, task_id: str) -> TaskEvidenceBundle:
+        if not isinstance(task_id, str) or not task_id.strip():
+            raise TaskEvidenceBundleError("task_id must be non-empty")
+        task = self._tasks.get(task_id)
+        if task is None:
+            raise TaskEvidenceBundleError(f"Task not found in generation: {task_id}")
+        if task.tombstoned:
+            raise TaskEvidenceBundleError(
+                "tombstoned Task cannot become learning evidence"
+            )
+
+        confirmed = _ordered(self._confirmed[task_id], lambda item: item.atom_ref.key)
+        review = _ordered(
+            self._review[task_id],
+            lambda item: (item.atom_ref.key, item.membership_id),
+        )
+        task_relations = _ordered(
+            self._relations[task_id], lambda item: item.relation_id
+        )
+        attempts = _ordered(
+            self._attempts[task_id], lambda item: (item.started_at, item.attempt_id)
+        )
+        attempt_relations = _ordered(
+            self._attempt_relations[task_id], lambda item: item.relation_id
+        )
+        usage = _ordered(self._usage[task_id], lambda item: item.allocation_id)
+        counts = {
+            "memberships": len(confirmed),
+            "review_memberships": len(review),
+            "task_relations": len(task_relations),
+            "attempts": len(attempts),
+            "attempt_relations": len(attempt_relations),
+            "evidence_ranges": sum(len(item.evidence_ranges) for item in attempts),
+            "usage_allocations": len(usage),
+        }
+        for field_name, count in counts.items():
+            maximum = getattr(self._limits, field_name)
+            if count > maximum:
+                raise TaskEvidenceBundleError(
+                    f"Task evidence {field_name} exceeds bound: {count}>{maximum}"
+                )
+        eligibility, reasons = _learning_eligibility(task, attempts, review)
+        generation = self._generation
+        return TaskEvidenceBundle(
+            generation_id=generation.generation_id,
+            tenant_id=generation.tenant_id,
+            task_scope_id=generation.task_scope_id,
+            source_revision=generation.source_revision,
+            created_at=generation.created_at,
+            generator_fingerprint=self._generator_fingerprint,
+            task=task,
+            confirmed_memberships=confirmed,
+            review_memberships=review,
+            task_relations=task_relations,
+            attempts=attempts,
+            attempt_relations=attempt_relations,
+            usage_allocations=usage,
+            learning_eligibility=eligibility,
+            eligibility_reasons=reasons,
+        )
+
+
 def build_task_evidence_bundle(
     generation: TaskGraphGeneration,
     task_id: str,
@@ -303,101 +419,4 @@ def build_task_evidence_bundle(
     limits: TaskEvidenceLimits | None = None,
 ) -> TaskEvidenceBundle:
     """Build one safe learning bundle from an immutable generation."""
-    if not isinstance(task_id, str) or not task_id.strip():
-        raise TaskEvidenceBundleError("task_id must be non-empty")
-    limit = limits or TaskEvidenceLimits()
-    task = next((item for item in generation.tasks if item.task_id == task_id), None)
-    if task is None:
-        raise TaskEvidenceBundleError(f"Task not found in generation: {task_id}")
-    if task.tombstoned:
-        raise TaskEvidenceBundleError("tombstoned Task cannot become learning evidence")
-
-    confirmed = _ordered(
-        (
-            item
-            for item in generation.memberships
-            if item.task_id == task_id
-            and item.role == "primary"
-            and item.decision == "confirmed"
-            and not item.stale
-        ),
-        lambda item: item.atom_ref.key,
-    )
-    review = _ordered(
-        (
-            item
-            for item in generation.memberships
-            if item.task_id == task_id
-            and item.decision in {"proposed", "needs_review"}
-            and not item.stale
-        ),
-        lambda item: (item.atom_ref.key, item.membership_id),
-    )
-    task_relations = _ordered(
-        (
-            item
-            for item in generation.relations
-            if task_id in {item.from_task_id, item.to_task_id} and not item.stale
-        ),
-        lambda item: item.relation_id,
-    )
-    attempts = _ordered(
-        (
-            replace(
-                item,
-                evidence_ranges=_ordered(
-                    item.evidence_ranges,
-                    lambda evidence: evidence.evidence_id,
-                ),
-            )
-            for item in generation.attempts
-            if item.task_id == task_id
-        ),
-        lambda item: (item.started_at, item.attempt_id),
-    )
-    attempt_ids = {item.attempt_id for item in attempts}
-    attempt_relations = _ordered(
-        (
-            item
-            for item in generation.attempt_relations
-            if item.from_attempt_id in attempt_ids and item.to_attempt_id in attempt_ids
-        ),
-        lambda item: item.relation_id,
-    )
-    usage = _ordered(
-        (item for item in generation.usage_allocations if item.task_id == task_id),
-        lambda item: item.allocation_id,
-    )
-    counts = {
-        "memberships": len(confirmed),
-        "review_memberships": len(review),
-        "task_relations": len(task_relations),
-        "attempts": len(attempts),
-        "attempt_relations": len(attempt_relations),
-        "evidence_ranges": sum(len(item.evidence_ranges) for item in attempts),
-        "usage_allocations": len(usage),
-    }
-    for field_name, count in counts.items():
-        maximum = getattr(limit, field_name)
-        if count > maximum:
-            raise TaskEvidenceBundleError(
-                f"Task evidence {field_name} exceeds bound: {count}>{maximum}"
-            )
-    eligibility, reasons = _learning_eligibility(task, attempts, review)
-    return TaskEvidenceBundle(
-        generation_id=generation.generation_id,
-        tenant_id=generation.tenant_id,
-        task_scope_id=generation.task_scope_id,
-        source_revision=generation.source_revision,
-        created_at=generation.created_at,
-        generator_fingerprint=_fingerprint(generation.generator),
-        task=task,
-        confirmed_memberships=confirmed,
-        review_memberships=review,
-        task_relations=task_relations,
-        attempts=attempts,
-        attempt_relations=attempt_relations,
-        usage_allocations=usage,
-        learning_eligibility=eligibility,
-        eligibility_reasons=reasons,
-    )
+    return TaskEvidenceBundleIndex(generation, limits=limits).build(task_id)

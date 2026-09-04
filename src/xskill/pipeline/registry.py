@@ -707,6 +707,29 @@ CREATE TABLE IF NOT EXISTS task_graph_dirty_scopes (
 );
 CREATE INDEX IF NOT EXISTS idx_task_dirty_scope_marked
     ON task_graph_dirty_scopes(marked_at, tenant_id, task_scope_id);
+
+-- Task-grounded learning feed. Rows are a durable, coalesced projection of the
+-- latest TaskEvidenceBundle for each Task; bundle content remains rebuildable
+-- from the immutable Task Graph generation rather than being copied here.
+CREATE TABLE IF NOT EXISTS task_evidence_feed (
+    tenant_id              TEXT NOT NULL,
+    task_scope_id          TEXT NOT NULL,
+    task_id                TEXT NOT NULL,
+    task_generation_id     TEXT NOT NULL,
+    bundle_fingerprint     TEXT NOT NULL,
+    learning_eligibility   TEXT NOT NULL,
+    eligibility_reasons_json TEXT NOT NULL DEFAULT '[]',
+    status                 TEXT NOT NULL
+        CHECK(status IN ('pending','processed','fallback','rejected')),
+    generation             INTEGER NOT NULL DEFAULT 1,
+    marked_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    processed_at           TEXT,
+    PRIMARY KEY (tenant_id, task_scope_id, task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_evidence_feed_status
+    ON task_evidence_feed(
+        status, marked_at, tenant_id, task_scope_id, task_id
+    );
 """
 
 _WATCH_STATUS_INDEX_SQL = """
@@ -2237,6 +2260,7 @@ def clear_rebuild_derived_state(
         cursor = connection.execute("DELETE FROM skill_trigger_eval")
         deleted_counts["skill_trigger_eval"] = cursor.rowcount
         for table_name in (
+            "task_evidence_feed",
             "task_usage_allocations", "task_attempt_relations",
             "task_evidence_ranges", "task_attempts", "task_relations",
             "task_atom_memberships", "logical_tasks", "task_graph_generations",
