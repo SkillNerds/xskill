@@ -124,8 +124,7 @@ class TaskSkillCandidate:
         _ensure(
             isinstance(self.attempt_refs, tuple)
             and all(
-                isinstance(item, CandidateAttemptRef)
-                for item in self.attempt_refs
+                isinstance(item, CandidateAttemptRef) for item in self.attempt_refs
             ),
             "attempt_refs must contain CandidateAttemptRef values",
         )
@@ -135,7 +134,9 @@ class TaskSkillCandidate:
         )
         atom_keys = tuple(item.key for item in self.atom_refs)
         _ensure(len(atom_keys) == len(set(atom_keys)), "Atom references must be unique")
-        _ensure(atom_keys == tuple(sorted(atom_keys)), "Atom references must be ordered")
+        _ensure(
+            atom_keys == tuple(sorted(atom_keys)), "Atom references must be ordered"
+        )
         attempt_keys = tuple(
             (item.started_at, item.attempt_id) for item in self.attempt_refs
         )
@@ -238,7 +239,9 @@ class TaskSkillCandidate:
                     "closed Task requires a terminal outcome",
                 )
             _ensure(self.fallback_reason is None, "logical_task cannot be a fallback")
-            _ensure(all(item.scoped for item in self.atom_refs), "Task Atom refs need scope")
+            _ensure(
+                all(item.scoped for item in self.atom_refs), "Task Atom refs need scope"
+            )
             _ensure(
                 all(
                     item.tenant_id == self.tenant_id
@@ -254,8 +257,7 @@ class TaskSkillCandidate:
                     and self.task_verification in {"verified", "not_applicable"}
                     and bool(self.attempt_refs)
                     and all(
-                        attempt.lifecycle == "finished"
-                        for attempt in self.attempt_refs
+                        attempt.lifecycle == "finished" for attempt in self.attempt_refs
                     ),
                     "eligible Task candidate requires verified terminal evidence",
                 )
@@ -337,7 +339,9 @@ class TaskSkillCandidate:
             isinstance(eligibility_reasons, list),
             "eligibility_reasons must be a list",
         )
-        data["atom_refs"] = tuple(CandidateAtomRef.from_dict(item) for item in atom_refs)
+        data["atom_refs"] = tuple(
+            CandidateAtomRef.from_dict(item) for item in atom_refs
+        )
         data["attempt_refs"] = tuple(
             CandidateAttemptRef.from_dict(item) for item in attempt_refs
         )
@@ -497,7 +501,9 @@ def migrate_legacy_candidate_buffer(
             raise EvidenceCandidateError("candidate buffer entries must be objects")
         if "schema_version" in value or "candidate_id" in value:
             parsed = TaskSkillCandidate.from_dict(value)
-            _ensure(parsed.skill_name == skill_name, "candidate belongs to another Skill")
+            _ensure(
+                parsed.skill_name == skill_name, "candidate belongs to another Skill"
+            )
             migrated.append(parsed.to_dict())
         elif "atom_id" in value:
             migrated.append(
@@ -554,8 +560,12 @@ def upsert_evidence_candidates(
         candidate_id = value.get("candidate_id")
         if "schema_version" in value or candidate_id is not None:
             parsed = TaskSkillCandidate.from_dict(value)
-            _ensure(parsed.skill_name == skill_name, "candidate belongs to another Skill")
-            _ensure(parsed.candidate_id not in positions, "duplicate candidate_id in buffer")
+            _ensure(
+                parsed.skill_name == skill_name, "candidate belongs to another Skill"
+            )
+            _ensure(
+                parsed.candidate_id not in positions, "duplicate candidate_id in buffer"
+            )
             positions[parsed.candidate_id] = index
             if not parsed.contributes_to_promotion:
                 total -= weightscore

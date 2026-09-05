@@ -750,16 +750,28 @@ def acknowledge_task_evidence(
             raise
 
 
-def task_evidence_feed_counts(*, db_path: Path | None = None) -> dict[str, int]:
-    """Return zero-filled operational counts for the durable feed."""
+def _task_evidence_feed_counts(connection, tenant_id: str | None) -> dict[str, int]:
     counts = {status: 0 for status in ("pending", "processed", "fallback", "rejected")}
-    with pooled_connection(db_path) as connection:
-        rows = connection.execute(
-            "SELECT status,COUNT(*) AS count FROM task_evidence_feed"
-            " GROUP BY status"
-        ).fetchall()
+    query = "SELECT status,COUNT(*) AS count FROM task_evidence_feed"
+    parameters = ()
+    if tenant_id is not None:
+        query += " WHERE tenant_id=?"
+        parameters = (tenant_id,)
+    rows = connection.execute(query + " GROUP BY status", parameters).fetchall()
     counts.update({row["status"]: row["count"] for row in rows})
     return counts
+
+
+def task_evidence_feed_counts(
+    *, tenant_id: str | None = None, db_path: Path | None = None,
+) -> dict[str, int]:
+    """Return zero-filled feed counts, optionally restricted to one tenant.
+
+    Workers may omit the tenant for an operational total. Business reads must
+    pass their resolved tenant, including an empty identity before first ingest.
+    """
+    with pooled_connection(db_path) as connection:
+        return _task_evidence_feed_counts(connection, tenant_id)
 
 
 def _decode_json_fields(row: dict, fields: Iterable[str]) -> dict:
@@ -1008,6 +1020,7 @@ def task_graph_overview(
             "SELECT COUNT(*) FROM task_graph_generations WHERE tenant_id=?",
             (tenant_id,),
         ).fetchone()[0]
+        evidence_feed = _task_evidence_feed_counts(connection, tenant_id)
     return {
         "scopes": scopes,
         "tasks": task_row["tasks"] or 0,
@@ -1017,4 +1030,5 @@ def task_graph_overview(
         "uncertain_memberships": uncertain,
         "execution_tokens": task_row["execution_tokens"],
         "execution_cost_usd": task_row["execution_cost_usd"],
+        "evidence_feed": evidence_feed,
     }
