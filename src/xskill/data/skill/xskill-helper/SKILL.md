@@ -119,7 +119,8 @@ The default entry is the trajectory, not Atom.
 `xskill traj search` is full-text over `traj_*.md`, not the first-user-query
 index. Default listing is one block per hit: `traj_id`, then the first
 match with three lines before and after (the hit line is marked `*`).
-Same-name prefixes are spread. A page shows at most 30 hits. `--page N`
+Hits rank by matching-line count (descending), first matching line (ascending),
+modification time (newest first), then trajectory ID. A page shows at most 30 hits. `--page N`
 turns the page. `--cards` returns index cards (source, line count, user
 turns, tools, then `L 问` / `L 答`), at most 8 per page; cards are not
 close reading. Close-read with
