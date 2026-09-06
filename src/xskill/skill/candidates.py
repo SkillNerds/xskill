@@ -330,6 +330,36 @@ def add_atom_contributions(
         return new_flags, buffer_total
 
 
+def add_evidence_candidates(
+    skill_dir: Path,
+    contributions: Iterable,
+) -> tuple[list[bool], int]:
+    """Atomically upsert versioned Task/Atom evidence into one Skill buffer."""
+    from xskill.skill.evidence_candidate_refs import EvidenceCandidateError
+    from xskill.skill.evidence_candidates import (
+        TaskSkillCandidate,
+        upsert_evidence_candidates,
+    )
+
+    candidate_list = tuple(contributions)
+    if not candidate_list:
+        raise EvidenceCandidateError("candidate batch must not be empty")
+    expected_skill = Path(skill_dir).name
+    if not all(
+        isinstance(candidate, TaskSkillCandidate)
+        and candidate.skill_name == expected_skill
+        for candidate in candidate_list
+    ):
+        raise EvidenceCandidateError(
+            "evidence candidates must target the containing Skill"
+        )
+    with skill_repo_lock(skill_dir, use_git_write_limit=False):
+        data = _load_candidates_unlocked(skill_dir)
+        new_flags, total = upsert_evidence_candidates(data, candidate_list)
+        _atomic_save_candidates_unlocked(skill_dir, data)
+        return new_flags, total
+
+
 def ready_for_promotion_v2(
     data: dict, threshold: int = ATOM_PROMOTION_THRESHOLD,
 ) -> list[dict]:
@@ -338,10 +368,20 @@ def ready_for_promotion_v2(
 
     返回 buffer 中所有 candidates iff 总分 ≥ threshold；否则空列表。
     """
+    from xskill.skill.evidence_candidates import TaskSkillCandidate
+
     cands = data.get("candidates", []) or []
-    total = sum(int(c.get("weightscore", 0)) for c in cands)
+    promotable = []
+    total = 0
+    for candidate in cands:
+        if "schema_version" in candidate or "candidate_id" in candidate:
+            parsed = TaskSkillCandidate.from_dict(candidate)
+            if not parsed.contributes_to_promotion:
+                continue
+        promotable.append(candidate)
+        total += int(candidate.get("weightscore", 0))
     if total >= threshold:
-        return list(cands)
+        return promotable
     return []
 
 
