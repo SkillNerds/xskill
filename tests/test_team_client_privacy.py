@@ -580,13 +580,14 @@ def test_python_module_entrypoint_runs_privacy_status(tmp_path):
     env = os.environ.copy()
     env["HOME"] = str(tmp_path)
     env["USERPROFILE"] = str(tmp_path)
+    env["PYTHONIOENCODING"] = "cp1252"
     completed = subprocess.run(
-        [sys.executable, "-m", "xskill.cli", "privacy", "status"],
+        [sys.executable, "-m", "xskill.cli", "privacy", "status"],  # cp1252 模拟 Windows 控制台
         capture_output=True, text=True, env=env, timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
     assert "mode: denylist" in completed.stdout
-    assert "(本机尚未发现任何轨迹)" in completed.stdout
+    assert "PROJECT" not in completed.stdout, "空 HOME 不应打印项目表"
 
 
 # ── review 修补：损坏规则不拖垮整轮 tick、status 文本可见、热重载校验 ───

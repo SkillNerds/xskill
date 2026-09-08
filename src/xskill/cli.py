@@ -2882,17 +2882,17 @@ def cmd_privacy(args) -> int:
         policy_path = default_privacy_path()
         policy = load_policy(policy_path)
     except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _write_search_output(f"error: {exc}", to_stderr=True)
         return 2
     server_mode = state.server_privacy_mode if state else None
     action = args.privacy_action
 
     def emit(payload: dict, lines: list[str]) -> None:
         if as_json:
-            print(_json.dumps(payload, ensure_ascii=False, indent=2))
+            _write_search_output(_json.dumps(payload, ensure_ascii=False, indent=2))
             return
         for line in lines:
-            print(line)
+            _write_search_output(line)
 
     if action == "mode":
         if not args.target:
@@ -2906,7 +2906,7 @@ def cmd_privacy(args) -> int:
                   + f"  生效: {effective}"])
             return 0
         if args.target not in LOCAL_MODES:
-            print(f"error: mode 只能是 {' / '.join(LOCAL_MODES)}", file=sys.stderr)
+            _write_search_output(f"error: mode 只能是 {' / '.join(LOCAL_MODES)}", to_stderr=True)
             return 2
         policy.local_mode = args.target
         save_policy(policy, policy_path)
@@ -2932,12 +2932,12 @@ def cmd_privacy(args) -> int:
     if action == "status":
         report = _privacy_report(state, policy)
         if as_json:
-            print(_json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+            _write_search_output(_json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
             return 0
         server_text = report.server_mode or ("(未连接)" if state is None else "未下发")
-        print(f"mode: {report.mode}（{_PRIVACY_ORIGIN_LABEL[report.origin]}；server {server_text}）"
+        _write_search_output(f"mode: {report.mode}（{_PRIVACY_ORIGIN_LABEL[report.origin]}；server {server_text}）"
               f"  {_PRIVACY_MODE_MEANING[report.mode]}")
-        print()
+        _write_search_output("")
         rows = [(summary.path, summary.traj, ", ".join(summary.harnesses),
                  summary.rule or ("默认·上传" if summary.effective == "upload" else "默认·不上传"))
                 for summary in report.projects]
@@ -2946,7 +2946,7 @@ def cmd_privacy(args) -> int:
                 rows.append((extra.path, extra.traj, ", ".join(extra.harnesses),
                              "默认·上传" if extra.effective == "upload" else "默认·不上传"))
         if not rows:
-            print("(本机尚未发现任何轨迹)")
+            _write_search_output("(本机尚未发现任何轨迹)")
             return 0
         import unicodedata
 
@@ -2956,32 +2956,31 @@ def cmd_privacy(args) -> int:
 
         path_width = max(len("PROJECT"), *(len(row[0]) for row in rows))
         harness_width = max(len("SOURCES"), *(len(row[2]) for row in rows))
-        print(f"{padded('PROJECT', path_width)}  {'TRAJ':>5}  {padded('SOURCES', harness_width)}  DECISION")
+        _write_search_output(f"{padded('PROJECT', path_width)}  {'TRAJ':>5}  {padded('SOURCES', harness_width)}  DECISION")
         for path, traj, harnesses, decision in rows:
-            print(f"{padded(path, path_width)}  {traj:>5}  {padded(harnesses, harness_width)}  {decision}")
-        print()
-        print(f"上传 {report.upload} 条，不上传 {report.skip} 条。")
+            _write_search_output(f"{padded(path, path_width)}  {traj:>5}  {padded(harnesses, harness_width)}  {decision}")
+        _write_search_output("")
+        _write_search_output(f"上传 {report.upload} 条，不上传 {report.skip} 条。")
         if report.no_cwd.traj:
-            print(f"提示：{report.no_cwd.traj} 条轨迹的 sidecar 未记录工作目录（Cursor / Trae 等），无法按项目放行。")
+            _write_search_output(f"提示：{report.no_cwd.traj} 条轨迹的 sidecar 未记录工作目录（Cursor / Trae 等），无法按项目放行。")
         if report.broken_sidecar.traj:
-            print(f"提示：{report.broken_sidecar.traj} 条轨迹的 sidecar 缺失或损坏，无法归属项目。")
+            _write_search_output(f"提示：{report.broken_sidecar.traj} 条轨迹的 sidecar 缺失或损坏，无法归属项目。")
         if not report.complete:
-            print("提示：本机轨迹较多，清单在时间预算内未统计完整。")
+            _write_search_output("提示：本机轨迹较多，清单在时间预算内未统计完整。")
         return 0
 
     if action == "review":
         if not sys.stdin.isatty() or not sys.stdout.isatty():
-            print("error: review 需要交互式终端。脚本里请用 xskill privacy allow <path> / deny <path>。",
-                  file=sys.stderr)
+            _write_search_output("error: review 需要交互式终端。脚本里请用 xskill privacy allow <path> / deny <path>。", to_stderr=True)
             return 2
         report = _privacy_report(state, policy)
-        print(f"mode: {report.mode}  本机发现 {len(report.projects)} 个项目。"
+        _write_search_output(f"mode: {report.mode}  本机发现 {len(report.projects)} 个项目。"
               "每项输入 a=放行 d=排除 回车=保持不变 q=退出")
-        print()
+        _write_search_output("")
         allowed = denied = kept = 0
         for index, summary in enumerate(report.projects, start=1):
             current = summary.rule or ("默认·上传" if summary.effective == "upload" else "默认·不上传")
-            print(f"[{index}/{len(report.projects)}] {summary.path}   {summary.traj} 条  "
+            _write_search_output(f"[{index}/{len(report.projects)}] {summary.path}   {summary.traj} 条  "
                   f"{', '.join(summary.harnesses)}   当前: {current}")
             choice = input("  > ").strip().lower()
             if choice == "q":
@@ -2989,21 +2988,21 @@ def cmd_privacy(args) -> int:
             if choice == "a":
                 policy.set_project(summary.path, "allow")
                 allowed += 1
-                print("  Allowed.")
+                _write_search_output("  Allowed.")
             elif choice == "d":
                 policy.set_project(summary.path, "deny")
                 denied += 1
-                print("  Denied.")
+                _write_search_output("  Denied.")
             else:
                 kept += 1
         save_policy(policy, policy_path)
         final_report = _privacy_report(state, policy)
-        print()
-        print(f"完成：放行 {allowed} 个，排除 {denied} 个，保持不变 {kept} 个。"
+        _write_search_output("")
+        _write_search_output(f"完成：放行 {allowed} 个，排除 {denied} 个，保持不变 {kept} 个。"
               f"上传 {final_report.upload} 条，不上传 {final_report.skip} 条。")
         if final_report.no_cwd.traj:
             default_text = "上传" if final_report.no_cwd.effective == "upload" else "不上传"
-            print(f"另有 {final_report.no_cwd.traj} 条轨迹未记录工作目录（Cursor / Trae 等），按模式默认处理（{default_text}）。")
+            _write_search_output(f"另有 {final_report.no_cwd.traj} 条轨迹未记录工作目录（Cursor / Trae 等），按模式默认处理（{default_text}）。")
         return 0
 
     target_path = Path(args.target) if args.target else Path.cwd()
