@@ -65,6 +65,17 @@ Each item: **symptom → cause → command/fix → expected**.
 - **Fix:** get the token from whoever ran `xskill serve --server` and pass
   `--token <t>` once.
 
+## My trajectories never show up on the server
+
+- **Cause:** the effective privacy mode is `allowlist` (set by the server, or
+  by `xskill privacy mode allowlist` on this machine) and the project has no
+  `allow` rule; or the project was explicitly denied. Cursor / Trae
+  trajectories carry no working directory and follow the mode default.
+- **Fix:** run `xskill privacy status` — it prints the effective mode, where it
+  comes from, and the decision for every discovered project. Then
+  `cd <project> && xskill privacy allow`, or `xskill privacy clear <path>` to
+  drop a deny rule. The next scan uploads them; nothing needs a reconnect.
+
 ## Daemon isn't running after reboot / seems dead
 
 ```bash

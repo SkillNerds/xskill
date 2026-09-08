@@ -47,6 +47,8 @@ class RegisterResponse(BaseModel):
     # P2-2.2(Q2a):--name 注册时发放的 dashboard 登录 token,client 侧打印一次。
     # 匿名注册为 None(dashboard 登录依赖 user_name 身份)。
     dashboard_token: str | None = None
+    # server 的轨迹上传模式（allowlist / denylist），client 与本机设置取更严者。
+    privacy_mode: str | None = None
 
 
 class UploadTrajectory(BaseModel):
@@ -92,6 +94,8 @@ class SyncResponse(BaseModel):
     # client 截取安装：对 slots 取前 take_n；None=装全部（兼容旧 client）
     take_n: int | None = None
     server_slots: int | None = None
+    # 每轮 sync 带回，server 改模式后 client 下一轮生效，无需重新 connect。
+    privacy_mode: str | None = None
 
 
 class PushEditResponse(BaseModel):

@@ -14,9 +14,10 @@ description: >-
 
 xskill is a thin client + background daemon that (1) mounts your team's shared
 Skills into every AI-agent tool you use (Claude Code, Codex, OpenCode, Cursor,
-Trae, DeepSeek Harness) and (2) quietly collects your agent trajectories and
-syncs them to a team server. You join a server once, then it keeps skills in
-sync and auto-updates itself.
+Trae, DeepSeek Harness) and (2) collects your agent trajectories and syncs
+them to a team server; you choose which projects are uploaded (see
+"Controlling which trajectories are uploaded"). You join a server once, then
+it keeps skills in sync and auto-updates itself.
 
 `xskill init` can install this guide into chosen harnesses on this machine.
 `xskill connect` also installs it after a team join. Invoke it as
@@ -28,7 +29,8 @@ All state lives under `~/.xskill/`:
 | File | What |
 |---|---|
 | `~/.xskill/local_init.json` | local harness scan marker (no team server required) |
-| `~/.xskill/team_client.json` | connection identity (server_url, client_id, join_token) — survives restarts |
+| `~/.xskill/team_client.json` | connection identity (server_url, client_id, join_token, server privacy mode) — survives restarts |
+| `~/.xskill/privacy.json` | local upload rules: mode + per-project allow/deny — never sent to the server |
 | `~/.xskill/connect_daemon.json` | current background daemon (pid / host task) — used by `status`/`stop` |
 | `~/.xskill/logs/xskill.*.log` | split logs (one file per component) |
 | `~/.xskill/skill/` | the local skill repo everything is mounted from |
@@ -75,6 +77,31 @@ background daemon. Later reconnects can omit the address and token; they
 reuse `~/.xskill/team_client.json`.
 
 In the agent, invoke this guide as `/xskill-helper`.
+
+## Controlling which trajectories are uploaded
+
+Rules live only on this machine. A *mode* decides what happens to projects
+without a rule; the server and this machine each have one, and the stricter
+wins (`allowlist` is stricter than `denylist`):
+
+- `allowlist` — nothing is uploaded except projects you `allow`.
+- `denylist` — everything is uploaded except projects you `deny` (server default).
+
+```bash
+xskill privacy status                 # effective mode + every discovered project and its decision
+xskill privacy mode allowlist         # this machine: only upload allowed projects (server cannot loosen it)
+cd ~/code/my-service && xskill privacy allow   # allow this project (and subdirectories)
+xskill privacy deny ~/code/secret     # never read or upload this project
+xskill privacy clear ~/code/secret    # drop the rule, back to the mode default
+xskill privacy review                 # interactive walk through discovered projects
+xskill connect <host:port> --token <t> --privacy allowlist   # set the mode before the first upload
+```
+
+A skipped trajectory is never read, never uploaded and never marked as
+uploaded, so allowing it later uploads it on the next scan. Cursor and Trae
+do not record a working directory, so their trajectories cannot be matched to
+a project: they follow the mode default and `status` lists them separately.
+Rules never delete what was already uploaded.
 
 ## Generate or rewrite a Skill
 
@@ -238,6 +265,7 @@ xskill connect --foreground --debug  # + verbose logging
 | Symptom | Command | Expected |
 |---|---|---|
 | Is it running / connected? | `xskill status` | prints background task + pid, or "not running" |
+| My trajectories never reach the server | `xskill privacy status` | shows the effective mode and the decision per project; `allow` the project or switch mode |
 | Skills not updating | `xskill connect --foreground` | watch the reconcile loop; look for `copy-mode` / `fell back to copy` warnings |
 | Stop it | `xskill stop` | tears down the Scheduled Task / systemd unit |
 | Restart clean | `xskill stop` then `xskill connect` | re-handshakes and re-daemonizes |

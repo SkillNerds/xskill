@@ -18,6 +18,8 @@ class ClientState:
     server_url: str          # 形如 http://1.2.3.4:8000
     client_id: str
     join_token: str
+    # server 下发的上传模式（allowlist / denylist）；旧 server 不下发为 None。
+    server_privacy_mode: str | None = None
 
 
 def save_client_state(state: ClientState, path: Path | str) -> None:
@@ -40,4 +42,5 @@ def load_client_state(path: Path | str) -> ClientState:
         server_url=data["server_url"],
         client_id=data["client_id"],
         join_token=data["join_token"],
+        server_privacy_mode=data.get("server_privacy_mode"),
     )

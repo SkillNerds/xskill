@@ -197,9 +197,17 @@ class XSkill:
             from xskill.team.server.state import ensure_join_token
             from xskill.config import get_team_server_state_path
             token = ensure_join_token(get_team_server_state_path())
+            from xskill.config import get_config, team_privacy_mode
+            privacy_mode = team_privacy_mode(get_config())
             print(f"xskill team server at http://{host}:{port}/")
             print(f"  clients join with:")
             print(f"    xskill connect <THIS_HOST>:{port} --token {token}")
+            if privacy_mode == "allowlist":
+                print("  privacy mode: allowlist  (client 只上传各自放行的项目；"
+                      "config team.server.privacy_mode 可改为 denylist)")
+            else:
+                print("  privacy mode: denylist  (默认上传，用户可 deny 项目或本机改为 allowlist；"
+                      "config team.server.privacy_mode=allowlist 可全员强制白名单)")
         elif home_root:
             print(f"xskill serve at http://{host}:{port}/  [debug home: {home_root}]")
         else:

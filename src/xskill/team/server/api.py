@@ -659,7 +659,7 @@ async def team_register(req: RegisterRequest) -> RegisterResponse:
     # serve（同 live_manifest_tuning 的理由——admin_config_reload 原地 mutate
     # app._config）。函数内 import：app 模块 import 本模块，模块级会循环。
     from xskill.api import app as app_mod
-    from xskill.config import allow_anonymous_user
+    from xskill.config import allow_anonymous_user, team_privacy_mode
     if not user_name and not allow_anonymous_user(app_mod._config or {}):  # pylint: disable=protected-access
         raise HTTPException(
             status_code=403, detail="anonymous users not allowed"
@@ -679,7 +679,10 @@ async def team_register(req: RegisterRequest) -> RegisterResponse:
         _ctx.client_registry.ensure_dashboard_token(client_id)
         if user_name else None
     )
-    return RegisterResponse(client_id=client_id, dashboard_token=dashboard_token)
+    return RegisterResponse(
+        client_id=client_id, dashboard_token=dashboard_token,
+        privacy_mode=team_privacy_mode(app_mod._config or {}),  # pylint: disable=protected-access
+    )
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -858,6 +861,9 @@ def team_sync(
         except Exception:  # pylint: disable=broad-exception-caught
             logger.warning("profile refresh request failed for %s", client_id,
                            exc_info=True)
+    from xskill.api import app as app_mod
+    from xskill.config import team_privacy_mode
+    resp.privacy_mode = team_privacy_mode(app_mod._config or {})  # pylint: disable=protected-access
     return resp.model_dump()
 
 

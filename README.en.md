@@ -134,6 +134,8 @@ xskill serve --server                          # prints a join token
 xskill connect <host:port> --token <token> --name <user-id>
 ```
 
+Everything is uploaded by default. To upload only some projects, run `xskill privacy mode allowlist`, then `xskill privacy allow` inside each project; `xskill privacy status` shows the decision per project. Server operators can force the allowlist for everyone with `team.server.privacy_mode: allowlist`.
+
 After connect succeeds, type `/xskill-helper` in Claude Code, Codex, Cursor, or another detected agent to see generate, search, and upgrade. If you do not have a host and token yet, treat the command above as the example and ask your own server operator. Do not connect to a public instance.
 
 - **Silently distill your top performers** — one person's solution reaches the whole team automatically.

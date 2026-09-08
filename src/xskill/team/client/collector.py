@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import time
 from dataclasses import dataclass
@@ -26,8 +25,7 @@ from typing import Callable
 
 from xskill.team.client.upload_state import TrajectoryUploadStateStore
 from xskill.team.client.privacy import (
-    PrivacyPolicy, load_policy, read_trajectory_cwd,
-    read_trajectory_source, source_lacks_cwd,
+    ACTION_SKIP, effective_mode, load_policy, read_sidecar_metadata,
 )
 from xskill.team.client.redact import redact_text
 
@@ -58,30 +56,10 @@ _HARNESS_BY_BRIDGE = {
 }
 
 
-def _harness_for(md_path: Path) -> str:
+def harness_for_bridge(md_path: Path) -> str:
     """从 traj_*.md 所在 bridge 目录名推断 harness（coding agent）。"""
     bridge = md_path.parent.name
     return _HARNESS_BY_BRIDGE.get(bridge, bridge.replace("_sessions", ""))
-
-
-def _sidecar_model(md_path: Path) -> str:
-    """读 ``<traj>.md`` 同目录同名 ``.json`` sidecar 里的 ``model``；
-    无 sidecar / 无该键 / 解析失败 → 空串（保持 unknown，不抛错不影响上传）。
-
-    ``errors="replace"``：sidecar 可能由 Windows 工具以 GBK(cp936) 写入，严格
-    utf-8 解码会抛 UnicodeDecodeError。它是 ValueError 的子类而**不是**
-    JSONDecodeError，下面的 except 拦不住，会穿透本函数炸掉整个 pending()
-    轮询——一个坏 sidecar 就停掉这台机器的全部上传。
-    """
-    jp = md_path.with_suffix(".json")
-    if not jp.is_file():
-        return ""
-    try:
-        return str(json.loads(
-            jp.read_text(encoding="utf-8", errors="replace")).get("model") or "")
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("读 sidecar 失败,model 记 unknown: %s (%s)", jp, exc)
-        return ""
 
 
 class TeamCollector:
@@ -126,17 +104,12 @@ class TeamCollector:
             home_root=self.home_root,
             time_fn=self._now,
         )
-        # 本机上传排除规则（issue #244）：默认 <home>/.xskill/privacy.json，
-        # 全局、跨 server；每轮 pending() 重新加载，规则改动下一轮即生效。
+        # 规则文件每轮 pending() 重读，改动下一轮即生效；server 下发的模式由 TeamClient 写入。
         self.privacy_path = (
             Path(privacy_path) if privacy_path
             else self._bridge_root / "privacy.json"
         )
-
-    def _load_privacy_policy(self) -> "PrivacyPolicy":
-        """每轮扫描重读一次规则文件（很小）。文件损坏时抛错而不是当作
-        「无规则」——静默放行会让用户以为受保护的项目其实在上传。"""
-        return load_policy(self.privacy_path)
+        self.server_privacy_mode: str | None = None
 
     def mark_uploaded(self, traj_id: str, sha256: str) -> None:
         """记录某 traj 的某版本已上传。同时清掉它的去抖状态（该版本已落地）。"""
@@ -200,30 +173,22 @@ class TeamCollector:
         now = self._now()
         out: list[PendingTrajectory] = []
         seen_ids: set[str] = set()
-        policy = self._load_privacy_policy()
+        policy = load_policy(self.privacy_path)
+        privacy_mode = effective_mode(self.server_privacy_mode, policy.local_mode)
         for md in sorted(self._bridge_root.glob("*_sessions/traj_*.md")):
             if not md.is_file():
                 continue
             traj_id = md.stem
             seen_ids.add(traj_id)
-            # 隐私闸门（issue #244）：在读正文、算摘要、写状态之前判定。
-            # 命中即跳过，且**不**记录任何上传状态——删掉规则后它会像新
-            # 轨迹一样正常进入上传流程。cwd 来自旁边的元数据小文件。
-            if not policy.is_empty:
-                cwd = read_trajectory_cwd(md)
-                rule = policy.denied_by(traj_id, cwd)
-                if rule is not None:
-                    logger.debug("privacy: skip %s (%s)", traj_id, rule)
-                    continue
-                if policy.projects and cwd is None:
-                    source = read_trajectory_source(md)
-                    if not source_lacks_cwd(source):
-                        logger.warning(
-                            "privacy: skip %s because project rules are active "
-                            "but its cwd metadata is missing or unreadable",
-                            traj_id,
-                        )
-                        continue
+            harness_name = harness_for_bridge(md)
+            sidecar = read_sidecar_metadata(md)
+            if sidecar.present and not sidecar.readable:
+                logger.warning("读 sidecar 失败,model 记 unknown、cwd 视为缺失: %s", md.with_suffix(".json"))
+            # 隐私闸门在读正文、写状态之前；被跳过的轨迹不留任何状态，规则放开后即正常上传。
+            decision = policy.decide(sidecar.cwd, harness_name, privacy_mode)
+            if decision.action == ACTION_SKIP:
+                logger.debug("privacy: skip %s (%s)", traj_id, decision.reason)
+                continue
             try:
                 stat = md.stat()
             except OSError:
@@ -231,8 +196,7 @@ class TeamCollector:
             # 闸 1：mtime 静默窗口
             if (now - stat.st_mtime) < self.quiet_seconds:
                 continue
-            model_name = _sidecar_model(md)
-            harness_name = _harness_for(md)
+            model_name = sidecar.model
             state = self._state_store.get(traj_id)
             metadata_same = (
                 state is not None
