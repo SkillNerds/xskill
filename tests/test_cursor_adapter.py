@@ -380,7 +380,13 @@ class TestJsonlIngesterIsolation:
 # ──────────────────────────────────────────────────────────────────
 
 def _slug_for(path: Path) -> str:
-    return str(path.resolve()).strip("/").replace("/", "-").lower()
+    """按 Cursor 的编码方式把真实路径变成目录名：去掉根（Windows 保留盘符）、分隔符换连字符、小写。"""
+    parts = list(path.resolve().parts)
+    root = parts.pop(0)
+    drive = root.rstrip("\\/").rstrip(":")
+    if drive:
+        parts.insert(0, drive)
+    return "-".join(parts).lower()
 
 
 class TestCursorProjectDir:
