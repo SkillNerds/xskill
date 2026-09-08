@@ -190,7 +190,11 @@ class TeamClient:
     # ── ① 采集 + 上传 ────────────────────────────────────────────
     def collect_and_upload(self) -> int:
         """扫 outbox 静默轨迹，脱敏后上传 server。返回成功上传条数。"""
-        pending = self.collector.pending()
+        try:
+            pending = self.collector.pending()
+        except ValueError as rules_error:
+            logger.error("privacy rules unreadable, uploads paused until fixed: %s", rules_error)
+            return 0
         if not pending:
             return 0
         req = UploadRequest(trajectories=[
@@ -219,7 +223,10 @@ class TeamClient:
         manifest = SyncResponse.model_validate(resp.json())
         if (manifest.privacy_mode in SERVER_MODES
                 and manifest.privacy_mode != self.state.server_privacy_mode):
-            local_mode = load_policy(self.collector.privacy_path).local_mode
+            try:
+                local_mode = load_policy(self.collector.privacy_path).local_mode
+            except ValueError:
+                local_mode = "auto"
             before = effective_mode(self.state.server_privacy_mode, local_mode)
             after = effective_mode(manifest.privacy_mode, local_mode)
             self.state.server_privacy_mode = manifest.privacy_mode

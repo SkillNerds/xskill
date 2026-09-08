@@ -180,6 +180,13 @@ class TeamCollector:
                 continue
             traj_id = md.stem
             seen_ids.add(traj_id)
+            try:
+                stat = md.stat()
+            except OSError:
+                continue
+            # 闸 1：mtime 静默窗口
+            if (now - stat.st_mtime) < self.quiet_seconds:
+                continue
             harness_name = harness_for_bridge(md)
             sidecar = read_sidecar_metadata(md)
             if sidecar.present and not sidecar.readable:
@@ -188,13 +195,6 @@ class TeamCollector:
             decision = policy.decide(sidecar.cwd, harness_name, privacy_mode)
             if decision.action == ACTION_SKIP:
                 logger.debug("privacy: skip %s (%s)", traj_id, decision.reason)
-                continue
-            try:
-                stat = md.stat()
-            except OSError:
-                continue
-            # 闸 1：mtime 静默窗口
-            if (now - stat.st_mtime) < self.quiet_seconds:
                 continue
             model_name = sidecar.model
             state = self._state_store.get(traj_id)

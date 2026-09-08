@@ -584,6 +584,8 @@ def _print_connect_status(st: dict, as_json: bool) -> None:
               f"; server {server_text})  "
               f"allow {rules['allow']}, deny {rules['deny']}; "
               f"上传 {privacy['upload']} 条 / 不上传 {privacy['skip']} 条")
+    if st.get("privacy_error"):
+        print(f"  privacy  : 规则文件损坏，采集已停止：{st['privacy_error']}")
     if st.get("warning"):
         print(f"  warning  : {st['warning']}")
 
@@ -2850,12 +2852,10 @@ def _privacy_report(state, policy, *, time_budget_seconds=None):
     rows, complete = scan_local_trajectories(
         XSKILL_HOME, time_budget_seconds=time_budget_seconds,
     )
-    report = build_report(
-        policy, state.server_privacy_mode if state else None, rows, complete=complete,
+    return build_report(
+        policy, state.server_privacy_mode if state else None, rows,
+        complete=complete, connected=state is not None,
     )
-    if state is None:
-        report.origin = "disconnected" if policy.local_mode == "auto" else "local"
-    return report
 
 
 def cmd_privacy(args) -> int:
@@ -2894,8 +2894,7 @@ def cmd_privacy(args) -> int:
             emit({"local_mode": policy.local_mode, "server_mode": server_mode,
                   "mode": effective,
                   "mode_origin": _PRIVACY_ORIGIN_LABEL[
-                      ("local" if policy.local_mode != "auto" else "disconnected")
-                      if state is None else mode_origin(server_mode, policy.local_mode)]},
+                      mode_origin(server_mode, policy.local_mode, connected=state is not None)]},
                  [f"mode: {policy.local_mode}"
                   + ("（跟随 server）" if policy.local_mode == "auto" else "（本机设置）")
                   + f"  server: {server_mode or '(未连接)' if state is None else server_mode or '未下发'}"

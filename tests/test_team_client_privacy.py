@@ -530,3 +530,51 @@ def test_python_module_entrypoint_runs_privacy_status(tmp_path):
     assert completed.returncode == 0, completed.stderr
     assert "mode: denylist" in completed.stdout
     assert "(本机尚未发现任何轨迹)" in completed.stdout
+
+
+# ── review 修补：损坏规则不拖垮整轮 tick、status 文本可见、热重载校验 ───
+
+def test_corrupt_rules_pause_uploads_but_not_the_rest_of_the_tick(team_app, tmp_path, monkeypatch, caplog):
+    import logging
+    _set_server_config(monkeypatch, {"team": {"server": {}}})
+    http = TestClient(team_app)
+    reg = register_with_server_full(http, token="tok", label="a", hostname="h")
+    client_home = tmp_path / "client_home"
+    _write_traj(client_home / ".xskill", "cc_sessions", "traj_cc_a", cwd="/w/a")
+    (client_home / ".xskill" / "privacy.json").write_text("{oops", encoding="utf-8")
+    team_client = TeamClient(
+        state=ClientState(server_url="http://testserver", client_id=reg["client_id"], join_token="tok"),
+        http=http, skill_dir=client_home / ".xskill" / "skill",
+        cursor_path=tmp_path / "cursor.json", history_path=tmp_path / "history.jsonl",
+        home_root=client_home, min_change_interval=0,
+    )
+    with caplog.at_level(logging.ERROR):
+        assert team_client.collect_and_upload() == 0
+    assert any("privacy rules unreadable" in record.message for record in caplog.records)
+    assert team_client.sync().privacy_mode == "denylist"
+
+
+def test_status_text_reports_corrupt_rules(cli_home, capsys, monkeypatch):
+    from xskill import cli
+    from xskill.team.client import service
+
+    class FakeBackend:
+        def status(self):
+            return {"running": False, "installed": False, "backend": "fake"}
+
+    monkeypatch.setattr(service, "get_backend", lambda: FakeBackend())
+    (cli_home / ".xskill" / "privacy.json").write_text("{oops", encoding="utf-8")
+    assert cli.cmd_status(cli.build_parser().parse_args(["status"])) == 0
+    out = capsys.readouterr().out
+    assert "privacy  : 规则文件损坏" in out
+    (cli_home / ".xskill" / "privacy.json").unlink()
+    assert cli.cmd_status(cli.build_parser().parse_args(["status"])) == 0
+    out = capsys.readouterr().out
+    assert "privacy  : denylist (未连接 server; server (未连接))" in out
+
+
+def test_dashboard_config_reload_rejects_bad_privacy_mode():
+    from xskill.dashboard.console import _validate_config_text
+    with pytest.raises(ValueError, match="privacy_mode"):
+        _validate_config_text("team:\n  server:\n    privacy_mode: whitelist\n")
+    assert _validate_config_text("team:\n  server:\n    privacy_mode: allowlist\n")["team"]["server"]["privacy_mode"] == "allowlist"

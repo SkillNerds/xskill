@@ -38,12 +38,14 @@ def effective_mode(server_mode: Optional[str], local_mode: str) -> str:
     return MODE_DENYLIST
 
 
-def mode_origin(server_mode: Optional[str], local_mode: str) -> str:
-    """生效模式来自哪里：server_forced / local / server_default / server_missing。"""
+def mode_origin(server_mode: Optional[str], local_mode: str, *, connected: bool = True) -> str:
+    """生效模式来自哪里：server_forced / local / server_default / server_missing / disconnected。"""
     if server_mode == MODE_ALLOWLIST:
         return "server_forced"
     if local_mode != MODE_AUTO:
         return "local"
+    if not connected:
+        return "disconnected"
     return "server_default" if server_mode in SERVER_MODES else "server_missing"
 
 
@@ -58,15 +60,20 @@ def canonical_project_path(path: Path | str) -> str:
     """展示用绝对路径：展开 ``~``、解析符号链接，保留原始大小写。"""
     expanded = Path(os.path.expanduser(str(path)))
     try:
-        expanded = expanded.resolve()
+        resolved = str(expanded.resolve())
     except (OSError, RuntimeError):
-        expanded = expanded.absolute()
-    return str(expanded)
+        resolved = str(expanded.absolute())
+    if os.name == "nt":
+        if resolved.startswith("\\\\?\\UNC\\"):
+            resolved = "\\\\" + resolved[8:]
+        elif resolved.startswith("\\\\?\\"):
+            resolved = resolved[4:]
+    return resolved
 
 
 def normalize_project_path(path: Path | str) -> str:
-    """比较用键：在展示路径之上，大小写不敏感的平台统一小写。"""
-    canonical = canonical_project_path(path)
+    """比较用键：展示路径经 normcase（Windows 折叠大小写与分隔符），macOS 再统一小写。"""
+    canonical = os.path.normcase(canonical_project_path(path))
     return canonical.lower() if _CASE_INSENSITIVE_FS else canonical
 
 
@@ -281,7 +288,7 @@ class PrivacyReport:
 
 def build_report(
     policy: PrivacyPolicy, server_mode: Optional[str], rows: list[LocalTrajectory],
-    *, complete: bool = True,
+    *, complete: bool = True, connected: bool = True,
 ) -> PrivacyReport:
     """把本机轨迹按项目归组，每组给出规则与生效判定；无轨迹的规则也列出（traj=0）。"""
     mode = effective_mode(server_mode, policy.local_mode)
@@ -316,7 +323,7 @@ def build_report(
     upload = sum(summary.traj for summary in everything if summary.effective == ACTION_UPLOAD)
     skip = sum(summary.traj for summary in everything if summary.effective == ACTION_SKIP)
     return PrivacyReport(
-        mode=mode, origin=mode_origin(server_mode, policy.local_mode),
+        mode=mode, origin=mode_origin(server_mode, policy.local_mode, connected=connected),
         server_mode=server_mode, local_mode=policy.local_mode, projects=projects,
         no_cwd=no_cwd, broken_sidecar=broken, upload=upload, skip=skip, complete=complete,
     )
