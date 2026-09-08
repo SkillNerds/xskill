@@ -627,7 +627,44 @@ def test_status_text_reports_corrupt_rules(cli_home, capsys, monkeypatch):
     (cli_home / ".xskill" / "privacy.json").unlink()
     assert cli.cmd_status(cli.build_parser().parse_args(["status"])) == 0
     out = capsys.readouterr().out
-    assert "privacy  : denylist (未连接 server; server (未连接))" in out
+    assert "privacy" not in out, "无规则且生效 denylist 的用户，status 输出应与升级前一致"
+    assert cli.cmd_status(cli.build_parser().parse_args(["status", "--json"])) == 0
+    assert json.loads(capsys.readouterr().out)["privacy"]["mode"] == "denylist"
+    _run_privacy(capsys, "mode", "allowlist")
+    assert cli.cmd_status(cli.build_parser().parse_args(["status"])) == 0
+    assert "privacy  : allowlist (本机设置; server (未连接))" in capsys.readouterr().out
+
+
+def test_connect_privacy_flag_sets_local_mode_and_prints_summary(cli_home, capsys, monkeypatch):
+    from xskill import cli
+    from xskill.team.client import service
+
+    class FakeBackend:
+        supported = True
+
+        def install_and_start(self):
+            return {"task_name": "fake", "pid": 1}
+
+    monkeypatch.setattr(service, "get_backend", lambda: FakeBackend())
+    monkeypatch.setattr(cli, "_connect_handshake", lambda args, state_path: ClientState(
+        server_url="http://s", client_id="c", join_token="t", server_privacy_mode="denylist"))
+    args = cli.build_parser().parse_args(
+        ["connect", "127.0.0.1:1", "--token", "t", "--no-skill", "--privacy", "allowlist"])
+    assert cli.cmd_connect(args) == 0
+    out = capsys.readouterr().out
+    assert "privacy: allowlist（本机设置；默认不上传，只上传你放行的项目）" in out
+    assert "共 3 条轨迹，当前全部不会上传" in out
+    assert "background task started: fake" in out
+    assert pv.load_policy(cli_home / ".xskill" / "privacy.json").local_mode == "allowlist"
+
+
+def test_register_and_sync_fall_back_to_denylist_on_bad_config(team_app, monkeypatch):
+    _set_server_config(monkeypatch, {"team": {"server": {"privacy_mode": "whitelist"}}})
+    http = TestClient(team_app)
+    reg = register_with_server_full(http, token="tok", label="a", hostname="h")
+    assert reg["privacy_mode"] == "denylist"
+    headers = {"X-Xskill-Token": "tok", "X-Xskill-Client": reg["client_id"]}
+    assert http.get("/api/v1/team/sync", headers=headers).json()["privacy_mode"] == "denylist"
 
 
 def test_dashboard_config_reload_rejects_bad_privacy_mode():

@@ -97,6 +97,17 @@ def team_context() -> _Ctx:
     return _ctx
 
 
+def _live_privacy_mode() -> str:
+    """现取 team.server.privacy_mode；手改 config 写坏时退回 denylist 并告警，不让 register / sync 500。"""
+    from xskill.api import app as app_mod
+    from xskill.config import team_privacy_mode
+    try:
+        return team_privacy_mode(app_mod._config or {})  # pylint: disable=protected-access
+    except ValueError as config_error:
+        logger.warning("team.server.privacy_mode invalid, serving denylist: %s", config_error)
+        return "denylist"
+
+
 def live_manifest_tuning() -> tuple[int, int, float]:
     """现取 ``(total_slots, ranked_slots, probability)``——热生效的唯一来源。
 
@@ -659,7 +670,7 @@ async def team_register(req: RegisterRequest) -> RegisterResponse:
     # serve（同 live_manifest_tuning 的理由——admin_config_reload 原地 mutate
     # app._config）。函数内 import：app 模块 import 本模块，模块级会循环。
     from xskill.api import app as app_mod
-    from xskill.config import allow_anonymous_user, team_privacy_mode
+    from xskill.config import allow_anonymous_user
     if not user_name and not allow_anonymous_user(app_mod._config or {}):  # pylint: disable=protected-access
         raise HTTPException(
             status_code=403, detail="anonymous users not allowed"
@@ -681,7 +692,7 @@ async def team_register(req: RegisterRequest) -> RegisterResponse:
     )
     return RegisterResponse(
         client_id=client_id, dashboard_token=dashboard_token,
-        privacy_mode=team_privacy_mode(app_mod._config or {}),  # pylint: disable=protected-access
+        privacy_mode=_live_privacy_mode(),
     )
 
 
@@ -861,9 +872,7 @@ def team_sync(
         except Exception:  # pylint: disable=broad-exception-caught
             logger.warning("profile refresh request failed for %s", client_id,
                            exc_info=True)
-    from xskill.api import app as app_mod
-    from xskill.config import team_privacy_mode
-    resp.privacy_mode = team_privacy_mode(app_mod._config or {})  # pylint: disable=protected-access
+    resp.privacy_mode = _live_privacy_mode()
     return resp.model_dump()
 
 

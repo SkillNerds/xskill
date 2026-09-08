@@ -8,6 +8,7 @@ xskill.py — XSkill 顶层门面
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -198,7 +199,11 @@ class XSkill:
             from xskill.config import get_team_server_state_path
             token = ensure_join_token(get_team_server_state_path())
             from xskill.config import get_config, team_privacy_mode
-            privacy_mode = team_privacy_mode(get_config())
+            try:
+                privacy_mode = team_privacy_mode(get_config())
+            except ValueError as config_error:
+                print(f"error: {config_error}", file=sys.stderr)
+                return
             print(f"xskill team server at http://{host}:{port}/")
             print(f"  clients join with:")
             print(f"    xskill connect <THIS_HOST>:{port} --token {token}")

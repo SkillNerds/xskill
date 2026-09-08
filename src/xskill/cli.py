@@ -582,7 +582,8 @@ def _print_connect_status(st: dict, as_json: bool) -> None:
     if st.get("client_id"):
         print(f"  client_id: {st['client_id']}")
     privacy = st.get("privacy")
-    if privacy:
+    # 纯升级用户（无规则、生效 denylist）status 输出保持原样，不多这一行。
+    if privacy and (privacy["mode"] == "allowlist" or privacy["rules"]["allow"] or privacy["rules"]["deny"]):
         rules = privacy["rules"]
         server_text = privacy["server_mode"] or ("未下发" if privacy["connected"] else "(未连接)")
         print(f"  privacy  : {privacy['mode']} ({_PRIVACY_ORIGIN_LABEL[privacy['mode_origin']]}"
@@ -2996,13 +2997,13 @@ def cmd_privacy(args) -> int:
             else:
                 kept += 1
         save_policy(policy, policy_path)
-        final = _privacy_report(state, policy)
+        final_report = _privacy_report(state, policy)
         print()
         print(f"完成：放行 {allowed} 个，排除 {denied} 个，保持不变 {kept} 个。"
-              f"上传 {final.upload} 条，不上传 {final.skip} 条。")
-        if final.no_cwd.traj:
-            default_text = "上传" if final.no_cwd.effective == "upload" else "不上传"
-            print(f"另有 {final.no_cwd.traj} 条轨迹未记录工作目录（Cursor / Trae 等），按模式默认处理（{default_text}）。")
+              f"上传 {final_report.upload} 条，不上传 {final_report.skip} 条。")
+        if final_report.no_cwd.traj:
+            default_text = "上传" if final_report.no_cwd.effective == "upload" else "不上传"
+            print(f"另有 {final_report.no_cwd.traj} 条轨迹未记录工作目录（Cursor / Trae 等），按模式默认处理（{default_text}）。")
         return 0
 
     target_path = Path(args.target) if args.target else Path.cwd()
