@@ -293,6 +293,10 @@ team:
                                  # true（缺省）允许匿名，沿用既有 uuid/hashid 逻辑
     allow_read_others: false     # false（缺省）时 traj/atom read 只能读自己工号目录；
                                  # true 时允许读他人已上传轨迹
+    privacy_mode: denylist       # 客户端轨迹上传模式。denylist（缺省）默认上传、用户
+                                 # 可 deny 项目；allowlist 要求全员只上传各自放行的项目
+                                 # （旧版客户端不识别此字段）。本机可设 allowlist 收紧，
+                                 # 不能放宽 server 的 allowlist
 
 # ===== Skill recommend engine =====
 # 用户画像 + skill 特征 + 推荐引擎参数。仅 team server 端生效。
@@ -1204,6 +1208,17 @@ def allow_anonymous_user(cfg: Optional[dict] = None) -> bool:
         raise ValueError(
             "team.server.allow_anonymous_user 必须是布尔，"
             f"got {type(val).__name__}"
+        )
+    return val
+
+
+def team_privacy_mode(cfg: Optional[dict] = None) -> str:
+    """读 ``team.server.privacy_mode``，缺省 ``denylist``（与未配置时的旧行为一致）。"""
+    section = _team_server_section(cfg)
+    val = section.get("privacy_mode", "denylist")
+    if val not in ("allowlist", "denylist"):
+        raise ValueError(
+            f"team.server.privacy_mode 必须是 allowlist 或 denylist，got {val!r}"
         )
     return val
 

@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import time
 from dataclasses import dataclass
@@ -25,6 +24,9 @@ from pathlib import Path
 from typing import Callable
 
 from xskill.team.client.upload_state import TrajectoryUploadStateStore
+from xskill.team.client.privacy import (
+    ACTION_SKIP, effective_mode, load_policy, read_sidecar_metadata,
+)
 from xskill.team.client.redact import redact_text
 
 logger = logging.getLogger("xskill.team.client.collector")
@@ -54,30 +56,10 @@ _HARNESS_BY_BRIDGE = {
 }
 
 
-def _harness_for(md_path: Path) -> str:
+def harness_for_bridge(md_path: Path) -> str:
     """从 traj_*.md 所在 bridge 目录名推断 harness（coding agent）。"""
     bridge = md_path.parent.name
     return _HARNESS_BY_BRIDGE.get(bridge, bridge.replace("_sessions", ""))
-
-
-def _sidecar_model(md_path: Path) -> str:
-    """读 ``<traj>.md`` 同目录同名 ``.json`` sidecar 里的 ``model``；
-    无 sidecar / 无该键 / 解析失败 → 空串（保持 unknown，不抛错不影响上传）。
-
-    ``errors="replace"``：sidecar 可能由 Windows 工具以 GBK(cp936) 写入，严格
-    utf-8 解码会抛 UnicodeDecodeError。它是 ValueError 的子类而**不是**
-    JSONDecodeError，下面的 except 拦不住，会穿透本函数炸掉整个 pending()
-    轮询——一个坏 sidecar 就停掉这台机器的全部上传。
-    """
-    jp = md_path.with_suffix(".json")
-    if not jp.is_file():
-        return ""
-    try:
-        return str(json.loads(
-            jp.read_text(encoding="utf-8", errors="replace")).get("model") or "")
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("读 sidecar 失败,model 记 unknown: %s (%s)", jp, exc)
-        return ""
 
 
 class TeamCollector:
@@ -93,6 +75,7 @@ class TeamCollector:
         poll_interval: float = 10.0,
         time_fn: Callable[[], float] = time.time,
         state_db_path: Path | None = None,
+        privacy_path: Path | None = None,
     ):
         self.cursor_path = Path(cursor_path)
         self.quiet_seconds = quiet_seconds
@@ -121,6 +104,12 @@ class TeamCollector:
             home_root=self.home_root,
             time_fn=self._now,
         )
+        # 规则文件每轮 pending() 重读，改动下一轮即生效；server 下发的模式由 TeamClient 写入。
+        self.privacy_path = (
+            Path(privacy_path) if privacy_path
+            else self._bridge_root / "privacy.json"
+        )
+        self.server_privacy_mode: str | None = None
 
     def mark_uploaded(self, traj_id: str, sha256: str) -> None:
         """记录某 traj 的某版本已上传。同时清掉它的去抖状态（该版本已落地）。"""
@@ -184,6 +173,8 @@ class TeamCollector:
         now = self._now()
         out: list[PendingTrajectory] = []
         seen_ids: set[str] = set()
+        policy = load_policy(self.privacy_path)
+        privacy_mode = effective_mode(self.server_privacy_mode, policy.local_mode)
         for md in sorted(self._bridge_root.glob("*_sessions/traj_*.md")):
             if not md.is_file():
                 continue
@@ -196,8 +187,16 @@ class TeamCollector:
             # 闸 1：mtime 静默窗口
             if (now - stat.st_mtime) < self.quiet_seconds:
                 continue
-            model_name = _sidecar_model(md)
-            harness_name = _harness_for(md)
+            harness_name = harness_for_bridge(md)
+            sidecar = read_sidecar_metadata(md)
+            if sidecar.present and not sidecar.readable:
+                logger.warning("读 sidecar 失败,model 记 unknown、cwd 视为缺失: %s", md.with_suffix(".json"))
+            # 隐私闸门在读正文、写状态之前；被跳过的轨迹不留任何状态，规则放开后即正常上传。
+            decision = policy.decide(sidecar.cwd, sidecar.readable, privacy_mode)
+            if decision.action == ACTION_SKIP:
+                logger.debug("privacy: skip %s (%s)", traj_id, decision.reason)
+                continue
+            model_name = sidecar.model
             state = self._state_store.get(traj_id)
             metadata_same = (
                 state is not None

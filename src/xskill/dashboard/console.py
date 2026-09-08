@@ -682,8 +682,9 @@ def _validate_config_text(raw: str) -> dict:
             ) from exc
     from xskill.canary import CanaryConfig
     CanaryConfig.from_dict(cfg.get("canary", {}) or {})
-    from xskill.config import team_server_slots_config
+    from xskill.config import team_privacy_mode, team_server_slots_config
     team_server_slots_config(cfg)  # 槽位是热生效的,非法值必须落盘前就拒
+    team_privacy_mode(cfg)  # 同样热生效:register / sync 每请求现取
     llm = cfg.get("llm", {}) or {}
     if llm and not llm.get("base_url"):
         raise ValueError("llm.base_url 不能为空")

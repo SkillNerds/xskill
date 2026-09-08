@@ -97,6 +97,17 @@ def team_context() -> _Ctx:
     return _ctx
 
 
+def _live_privacy_mode() -> str:
+    """现取 team.server.privacy_mode；手改 config 写坏时退回 denylist 并告警，不让 register / sync 500。"""
+    from xskill.api import app as app_mod
+    from xskill.config import team_privacy_mode
+    try:
+        return team_privacy_mode(app_mod._config or {})  # pylint: disable=protected-access
+    except ValueError as config_error:
+        logger.warning("team.server.privacy_mode invalid, serving denylist: %s", config_error)
+        return "denylist"
+
+
 def live_manifest_tuning() -> tuple[int, int, float]:
     """现取 ``(total_slots, ranked_slots, probability)``——热生效的唯一来源。
 
@@ -679,7 +690,10 @@ async def team_register(req: RegisterRequest) -> RegisterResponse:
         _ctx.client_registry.ensure_dashboard_token(client_id)
         if user_name else None
     )
-    return RegisterResponse(client_id=client_id, dashboard_token=dashboard_token)
+    return RegisterResponse(
+        client_id=client_id, dashboard_token=dashboard_token,
+        privacy_mode=_live_privacy_mode(),
+    )
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -858,6 +872,7 @@ def team_sync(
         except Exception:  # pylint: disable=broad-exception-caught
             logger.warning("profile refresh request failed for %s", client_id,
                            exc_info=True)
+    resp.privacy_mode = _live_privacy_mode()
     return resp.model_dump()
 
 

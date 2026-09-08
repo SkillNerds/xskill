@@ -217,6 +217,8 @@ xskill serve --server  # 会打印connect join命令，复制给组内同事便�
 xskill connect <host:port> --token <token>  --name <工号/姓名>
 ```
 
+默认全部上传；只想上传部分项目时 `xskill privacy mode allowlist`，再到项目目录里 `xskill privacy allow`，`xskill privacy status` 查看每个项目的判定。server 端 `team.server.privacy_mode: allowlist` 可要求全员白名单（客户端需本版本及以上）。
+
 connect 成功后，指南会装进本机已探测到的 Claude Code、Codex、Cursor 等 agent。在对应 agent 里输入 `/xskill-helper`，就可以查 generate、search、升级这些用法。没有地址和 token 时，把上面这条命令当示例，向你们自己的 server 管理员要 host、token 和工号，不要连外网公开实例。
 
 #### 额外功能：管控面板

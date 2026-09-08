@@ -118,6 +118,7 @@ Windows 下 `connect` 会自动把自己装成「计划任务」后台常驻（�
 xskill connect <host:port> --token <token>   # 首次:握手 + 自动拉起后台常驻
 xskill status                                  # 查看常驻状态
 xskill stop / xskill start                     # 停止 / 重新拉起(需先 connect 过)
+xskill privacy status                          # 每个项目的上传判定；mode allowlist 后只传 allow 过的项目
 ```
 
 macOS / Linux 的原生常驻（launchd / systemd --user）仍在路上，当前用自己的 init 系统托管 `xskill connect --foreground` 即可。
