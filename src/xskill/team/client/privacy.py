@@ -25,9 +25,6 @@ RULE_DENY = "deny"
 ACTION_UPLOAD = "upload"
 ACTION_SKIP = "skip"
 
-# 这两个 harness 的轨迹 sidecar 不记录工作目录，无法归属到项目。
-HARNESSES_WITHOUT_CWD = frozenset({"cursor", "trae"})
-
 _CASE_INSENSITIVE_FS = sys.platform in ("darwin", "win32")
 
 
@@ -39,9 +36,11 @@ def effective_mode(server_mode: Optional[str], local_mode: str) -> str:
 
 
 def mode_origin(server_mode: Optional[str], local_mode: str, *, connected: bool = True) -> str:
-    """生效模式来自哪里：server_forced / local / server_default / server_missing / disconnected。"""
+    """生效模式来自哪里：local / server_required / server_default / server_missing / disconnected。"""
+    if local_mode == MODE_ALLOWLIST:
+        return "local"
     if server_mode == MODE_ALLOWLIST:
-        return "server_forced"
+        return "server_required"
     if local_mode != MODE_AUTO:
         return "local"
     if not connected:
@@ -112,7 +111,7 @@ class PrivacyPolicy:
                 best = (key, project_rule)
         return best
 
-    def decide(self, cwd: Optional[str], harness: str, mode: str) -> Decision:
+    def decide(self, cwd: Optional[str], sidecar_readable: bool, mode: str) -> Decision:
         if cwd:
             matched = self.rule_for(cwd)
             if matched is not None:
@@ -121,7 +120,7 @@ class PrivacyPolicy:
                 return Decision(action, project_rule.rule, key)
             reason = "default"
         else:
-            reason = "no_cwd" if harness in HARNESSES_WITHOUT_CWD else "broken_sidecar"
+            reason = "no_cwd" if sidecar_readable else "broken_sidecar"
         action = ACTION_UPLOAD if mode == MODE_DENYLIST else ACTION_SKIP
         return Decision(action, reason)
 
@@ -227,6 +226,7 @@ class LocalTrajectory:
     traj_id: str
     path: Path
     cwd: Optional[str]
+    sidecar_readable: bool
     harness: str
 
 
@@ -242,9 +242,10 @@ def scan_local_trajectories(
             continue
         if time_budget_seconds is not None and time.monotonic() - started > time_budget_seconds:
             return rows, False
+        sidecar = read_sidecar_metadata(md_path)
         rows.append(LocalTrajectory(
-            traj_id=md_path.stem, path=md_path,
-            cwd=read_sidecar_metadata(md_path).cwd, harness=harness_for_bridge(md_path),
+            traj_id=md_path.stem, path=md_path, cwd=sidecar.cwd,
+            sidecar_readable=sidecar.readable, harness=harness_for_bridge(md_path),
         ))
     return rows, True
 
@@ -299,10 +300,10 @@ def build_report(
             effective=ACTION_UPLOAD if project_rule.rule == RULE_ALLOW else ACTION_SKIP,
         )
     default_action = ACTION_UPLOAD if mode == MODE_DENYLIST else ACTION_SKIP
-    no_cwd = ProjectSummary("(无法归属项目)", "", 0, [], None, default_action)
+    no_cwd = ProjectSummary("(sidecar 未记录工作目录)", "", 0, [], None, default_action)
     broken = ProjectSummary("(sidecar 缺失或损坏)", "", 0, [], None, default_action)
     for row in rows:
-        decision = policy.decide(row.cwd, row.harness, mode)
+        decision = policy.decide(row.cwd, row.sidecar_readable, mode)
         if decision.reason == "no_cwd":
             target = no_cwd
         elif decision.reason == "broken_sidecar":

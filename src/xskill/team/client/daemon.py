@@ -781,6 +781,11 @@ class TeamClient:
         if updater:
             updater.start()
         self.collector.start_ingesters()
+        # 先同步一次拿最新模式，避免离线期间 server 收紧后首轮按旧模式上传。
+        try:
+            self.sync()
+        except Exception as sync_error:
+            logger.warning("initial sync failed error_type=%s", type(sync_error).__name__)
         logger.info(
             "team client running server_hash=%s client_id_hash=%s",
             hashlib.sha256(

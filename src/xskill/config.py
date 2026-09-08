@@ -294,8 +294,9 @@ team:
     allow_read_others: false     # false（缺省）时 traj/atom read 只能读自己工号目录；
                                  # true 时允许读他人已上传轨迹
     privacy_mode: denylist       # 客户端轨迹上传模式。denylist（缺省）默认上传、用户
-                                 # 可 deny 项目；allowlist 全员只上传各自放行的项目。
-                                 # 客户端本机可设 allowlist 收紧，不能放宽 server 的 allowlist
+                                 # 可 deny 项目；allowlist 要求全员只上传各自放行的项目
+                                 # （旧版客户端不识别此字段）。本机可设 allowlist 收紧，
+                                 # 不能放宽 server 的 allowlist
 
 # ===== Skill recommend engine =====
 # 用户画像 + skill 特征 + 推荐引擎参数。仅 team server 端生效。

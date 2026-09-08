@@ -9,6 +9,7 @@ server_url / client_id / join_token，落 ~/.xskill/team_client.json。
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -25,8 +26,10 @@ class ClientState:
 def save_client_state(state: ClientState, path: Path | str) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(state), indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(asdict(state), indent=2), encoding="utf-8")
+    temp_path.chmod(0o600)
+    os.replace(temp_path, path)
 
 
 def load_client_state(path: Path | str) -> ClientState:

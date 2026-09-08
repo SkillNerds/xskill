@@ -92,10 +92,13 @@ def test_effective_mode_is_the_stricter_side(server_mode, local_mode, expected):
 
 
 def test_mode_origin_labels():
-    assert pv.mode_origin("allowlist", "denylist") == "server_forced"
+    assert pv.mode_origin("allowlist", "denylist") == "server_required"
+    assert pv.mode_origin("allowlist", "auto") == "server_required"
+    assert pv.mode_origin("allowlist", "allowlist") == "local"
     assert pv.mode_origin("denylist", "allowlist") == "local"
     assert pv.mode_origin("denylist", "auto") == "server_default"
     assert pv.mode_origin(None, "auto") == "server_missing"
+    assert pv.mode_origin(None, "auto", connected=False) == "disconnected"
 
 
 # ── 默认行为不变 ─────────────────────────────────────────────────
@@ -210,11 +213,21 @@ def test_no_cwd_and_broken_sidecar_follow_mode_default(tmp_path):
     assert _pending_ids(_collector(tmp_path, server_mode="allowlist")) == []
 
 
-def test_decide_reasons():
+def test_decide_reasons_follow_sidecar_facts_not_harness_name():
     policy = pv.PrivacyPolicy()
-    assert policy.decide(None, "cursor", "allowlist").reason == "no_cwd"
-    assert policy.decide(None, "claude_code", "allowlist").reason == "broken_sidecar"
-    assert policy.decide("/w/x", "claude_code", "denylist") == pv.Decision("upload", "default")
+    assert policy.decide(None, True, "allowlist").reason == "no_cwd"
+    assert policy.decide(None, False, "allowlist").reason == "broken_sidecar"
+    assert policy.decide("/w/x", True, "denylist") == pv.Decision("upload", "default")
+
+
+def test_readable_sidecar_with_empty_cwd_is_unattributed_not_broken(tmp_path):
+    bridge = tmp_path / ".xskill"
+    md_path = _write_traj(bridge, "dsh_sessions", "traj_dsh_a", cwd="")
+    assert json.loads(md_path.with_suffix(".json").read_text())["cwd"] == ""
+    rows, _complete = pv.scan_local_trajectories(bridge)
+    report = pv.build_report(pv.PrivacyPolicy(), "allowlist", rows)
+    assert report.no_cwd.traj == 1 and report.broken_sidecar.traj == 0
+    assert report.no_cwd.harnesses == ["deepseek_harness"]
 
 
 # ── 路径规范化 ───────────────────────────────────────────────────
@@ -294,7 +307,7 @@ def test_build_report_groups_by_rule_and_lists_unattributed(tmp_path):
     assert by_path[pv.canonical_project_path("/w/future")].traj == 0
     assert report.no_cwd.traj == 1 and report.no_cwd.effective == "skip"
     assert (report.upload, report.skip) == (2, 2)
-    assert report.to_dict()["mode_origin"] == "server_forced"
+    assert report.to_dict()["mode_origin"] == "server_required"
 
 
 def test_scan_respects_time_budget(tmp_path, monkeypatch):
@@ -373,6 +386,47 @@ def test_client_sync_adopts_server_mode_and_persists_it(team_app, tmp_path, monk
     assert load_client_state(state_path).server_privacy_mode == "denylist"
 
 
+def test_initial_sync_adopts_server_mode_before_first_upload(team_app, tmp_path, monkeypatch):
+    _set_server_config(monkeypatch, {"team": {"server": {"privacy_mode": "allowlist"}}})
+    http = TestClient(team_app)
+    reg = register_with_server_full(http, token="tok", label="a", hostname="h")
+    client_home = tmp_path / "client_home"
+    _write_traj(client_home / ".xskill", "cc_sessions", "traj_cc_a", cwd="/w/a")
+    team_client = TeamClient(
+        state=ClientState(server_url="http://testserver", client_id=reg["client_id"], join_token="tok"),
+        http=http, skill_dir=client_home / ".xskill" / "skill",
+        cursor_path=tmp_path / "cursor.json", history_path=tmp_path / "history.jsonl",
+        home_root=client_home, min_change_interval=0, auto_update=False,
+    )
+    uploads: list[int] = []
+    monkeypatch.setattr(team_client, "_tick", lambda: uploads.append(team_client.collect_and_upload()))
+    monkeypatch.setattr(team_client.collector, "start_ingesters", lambda: None)
+    monkeypatch.setattr(team_client.collector, "stop_ingesters", lambda: None)
+    original_wait = team_client._stop.wait
+    monkeypatch.setattr(team_client._stop, "wait", lambda timeout=None: team_client._stop.set() or original_wait(0))
+    team_client.run_forever()
+    assert team_client.collector.server_privacy_mode == "allowlist"
+    assert uploads == [0]
+
+
+def test_handshake_ignores_unknown_server_mode(tmp_path, monkeypatch):
+    import argparse
+    from xskill import cli
+    from xskill.team.client import daemon as daemon_module
+    monkeypatch.setattr(daemon_module, "register_with_server_full",
+                        lambda http, **kwargs: {"client_id": "c1", "privacy_mode": "whitelist"})
+    args = argparse.Namespace(address="127.0.0.1:1", token="t", label="", name=None, use_proxy=False)
+    state = cli._connect_handshake(args, tmp_path / "team_client.json")
+    assert state is not None and state.server_privacy_mode is None
+    assert load_client_state(tmp_path / "team_client.json").server_privacy_mode is None
+
+
+def test_collector_default_rules_path_matches_cli_default(tmp_path):
+    collector = TeamCollector(cursor_path=tmp_path / ".xskill" / "clients" / "s" / "cursor.json",
+                              home_root=tmp_path)
+    assert collector.privacy_path == pv.default_privacy_path(tmp_path / ".xskill")
+
+
 def test_old_state_file_without_mode_loads_as_none(tmp_path):
     state_path = tmp_path / "team_client.json"
     state_path.write_text(json.dumps({"server_url": "http://s", "client_id": "c", "join_token": "t"}))
@@ -415,6 +469,9 @@ def test_cli_status_and_mode_before_connect(cli_home, capsys):
 
     return_code, captured = _run_privacy(capsys, "mode")
     assert return_code == 0 and "生效: allowlist" in captured.out
+
+    return_code, captured = _run_privacy(capsys, "mode", "--json")
+    assert json.loads(captured.out)["mode_origin"] == "local"
 
     return_code, captured = _run_privacy(capsys, "status", "--json")
     payload = json.loads(captured.out)

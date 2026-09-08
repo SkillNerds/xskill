@@ -192,7 +192,7 @@ class TeamCollector:
             if sidecar.present and not sidecar.readable:
                 logger.warning("读 sidecar 失败,model 记 unknown、cwd 视为缺失: %s", md.with_suffix(".json"))
             # 隐私闸门在读正文、写状态之前；被跳过的轨迹不留任何状态，规则放开后即正常上传。
-            decision = policy.decide(sidecar.cwd, harness_name, privacy_mode)
+            decision = policy.decide(sidecar.cwd, sidecar.readable, privacy_mode)
             if decision.action == ACTION_SKIP:
                 logger.debug("privacy: skip %s (%s)", traj_id, decision.reason)
                 continue

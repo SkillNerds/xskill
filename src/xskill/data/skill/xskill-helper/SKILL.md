@@ -87,6 +87,9 @@ wins (`allowlist` is stricter than `denylist`):
 - `allowlist` — nothing is uploaded except projects you `allow`.
 - `denylist` — everything is uploaded except projects you `deny` (server default).
 
+A server set to `allowlist` requires it from every client on this version or
+newer; older clients do not know the field.
+
 ```bash
 xskill privacy status                 # effective mode + every discovered project and its decision
 xskill privacy mode allowlist         # this machine: only upload allowed projects (server cannot loosen it)
@@ -98,9 +101,10 @@ xskill connect <host:port> --token <t> --privacy allowlist   # set the mode befo
 ```
 
 A skipped trajectory is never read, never uploaded and never marked as
-uploaded, so allowing it later uploads it on the next scan. Cursor and Trae
-do not record a working directory, so their trajectories cannot be matched to
-a project: they follow the mode default and `status` lists them separately.
+uploaded, so allowing it later uploads it on the next scan. A trajectory whose
+sidecar records no working directory (Cursor and Trae never do) cannot be
+matched to a project: it follows the mode default and `status` lists it
+separately.
 Rules never delete what was already uploaded.
 
 ## Generate or rewrite a Skill

@@ -203,11 +203,11 @@ class XSkill:
             print(f"  clients join with:")
             print(f"    xskill connect <THIS_HOST>:{port} --token {token}")
             if privacy_mode == "allowlist":
-                print("  privacy mode: allowlist  (client 只上传各自放行的项目；"
+                print("  privacy mode: allowlist  (要求客户端只上传各自放行的项目，旧版客户端不识别；"
                       "config team.server.privacy_mode 可改为 denylist)")
             else:
                 print("  privacy mode: denylist  (默认上传，用户可 deny 项目或本机改为 allowlist；"
-                      "config team.server.privacy_mode=allowlist 可全员强制白名单)")
+                      "config team.server.privacy_mode=allowlist 可要求全员白名单)")
         elif home_root:
             print(f"xskill serve at http://{host}:{port}/  [debug home: {home_root}]")
         else:

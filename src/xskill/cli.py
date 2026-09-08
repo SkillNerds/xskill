@@ -411,6 +411,9 @@ def cmd_connect(args) -> int:
     except ValueError as exc:
         report = None
         print(f"privacy: 规则文件损坏，采集已停止：{exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 摘要只是展示，不能挡住 connect
+        report = None
+        print(f"privacy: 本机轨迹清单统计失败，稍后用 xskill privacy status 查看：{exc}", file=sys.stderr)
     if report is not None:
         print(f"privacy: {report.mode}（{_PRIVACY_ORIGIN_LABEL[report.origin]}；"
               f"{_PRIVACY_MODE_MEANING[report.mode]}）")
@@ -510,7 +513,9 @@ def _connect_handshake(args, state_path):
         return None
     state = ClientState(server_url=server_url, client_id=client_id,
                         join_token=args.token,
-                        server_privacy_mode=reg.get("privacy_mode"))
+                        server_privacy_mode=(reg.get("privacy_mode")
+                                             if reg.get("privacy_mode") in ("allowlist", "denylist")
+                                             else None))
     save_client_state(state, state_path)
     name_hint = f"  (--name={args.name})" if args.name else ""
     print(f"connected: client_id={client_id}  server={server_url}{name_hint}")
@@ -777,7 +782,7 @@ def cmd_status(args) -> int:
                 "deny": sum(1 for rule in policy.projects.values() if rule.rule == "deny"),
             },
         }
-    except ValueError as exc:
+    except Exception as exc:  # noqa: BLE001 隐私行只是展示，不能挡住 status
         st["privacy_error"] = str(exc)
     _print_connect_status(st, as_json=getattr(args, "json", False))
     return 0
@@ -2822,7 +2827,7 @@ _PRIVACY_HELP_EPILOG = """\
     子目录规则优先于父目录规则。
   · 不上传的轨迹不会被读取、不会上传，也不会记为已上传；之后放行会在
     下一轮扫描中正常上传。
-  · Cursor 与 Trae 的轨迹目前不记录工作目录，无法归属到项目：
+  · 轨迹 sidecar 没记录工作目录时（目前 Cursor 与 Trae 都不记）无法归属到项目：
     allowlist 模式下不上传，denylist 模式下上传。status 会单独列出。
 
 examples:
@@ -2833,8 +2838,8 @@ examples:
 """
 
 _PRIVACY_ORIGIN_LABEL = {
-    "server_forced": "server 强制",
     "local": "本机设置",
+    "server_required": "server 要求",
     "server_default": "server 默认",
     "server_missing": "server 未下发，按 denylist",
     "disconnected": "未连接 server",
@@ -2893,8 +2898,7 @@ def cmd_privacy(args) -> int:
             effective = effective_mode(server_mode, policy.local_mode)
             emit({"local_mode": policy.local_mode, "server_mode": server_mode,
                   "mode": effective,
-                  "mode_origin": _PRIVACY_ORIGIN_LABEL[
-                      mode_origin(server_mode, policy.local_mode, connected=state is not None)]},
+                  "mode_origin": mode_origin(server_mode, policy.local_mode, connected=state is not None)},
                  [f"mode: {policy.local_mode}"
                   + ("（跟随 server）" if policy.local_mode == "auto" else "（本机设置）")
                   + f"  server: {server_mode or '(未连接)' if state is None else server_mode or '未下发'}"
@@ -2908,7 +2912,7 @@ def cmd_privacy(args) -> int:
         effective = effective_mode(server_mode, policy.local_mode)
         server_text = server_mode or ("(未连接)" if state is None else "未下发")
         head = (f"Mode: {policy.local_mode}（本机设置；server 当前 {server_text}，生效 {effective}"
-                + ("，server 强制" if server_mode == "allowlist" and policy.local_mode != "allowlist" else "")
+                + ("，server 要求" if server_mode == "allowlist" and policy.local_mode != "allowlist" else "")
                 + "）")
         if policy.local_mode == "auto":
             head = f"Mode: auto（跟随 server；server 当前 {server_text}，生效 {effective}）"
@@ -2957,7 +2961,7 @@ def cmd_privacy(args) -> int:
         print()
         print(f"上传 {report.upload} 条，不上传 {report.skip} 条。")
         if report.no_cwd.traj:
-            print(f"提示：{report.no_cwd.traj} 条来自 Cursor / Trae，这两个来源不记录工作目录，无法按项目放行。")
+            print(f"提示：{report.no_cwd.traj} 条轨迹的 sidecar 未记录工作目录（Cursor / Trae 等），无法按项目放行。")
         if report.broken_sidecar.traj:
             print(f"提示：{report.broken_sidecar.traj} 条轨迹的 sidecar 缺失或损坏，无法归属项目。")
         if not report.complete:
@@ -2998,7 +3002,7 @@ def cmd_privacy(args) -> int:
               f"上传 {final.upload} 条，不上传 {final.skip} 条。")
         if final.no_cwd.traj:
             default_text = "上传" if final.no_cwd.effective == "upload" else "不上传"
-            print(f"另有 {final.no_cwd.traj} 条来自 Cursor / Trae，无法归属项目，按模式默认处理（{default_text}）。")
+            print(f"另有 {final.no_cwd.traj} 条轨迹未记录工作目录（Cursor / Trae 等），按模式默认处理（{default_text}）。")
         return 0
 
     target_path = Path(args.target) if args.target else Path.cwd()
@@ -3025,7 +3029,7 @@ def cmd_privacy(args) -> int:
     save_policy(policy, policy_path)
     rows, _complete = scan_local_trajectories(XSKILL_HOME)
     matched = [row for row in rows if row.cwd and path_is_within(normalize_project_path(row.cwd), key)]
-    no_cwd_count = sum(1 for row in rows if row.cwd is None and row.harness in ("cursor", "trae"))
+    no_cwd_count = sum(1 for row in rows if row.cwd is None and row.sidecar_readable)
     effective = effective_mode(server_mode, policy.local_mode)
     payload = {"status": f"{rule}ed", "path": shown, "matched": len(matched),
                "unattributed": no_cwd_count, "mode": effective}
@@ -3035,7 +3039,7 @@ def cmd_privacy(args) -> int:
         if not Path(shown).exists():
             lines[1] = "  提示：该目录当前不存在，规则已保存，将对之后在此目录下产生的轨迹生效。"
         if no_cwd_count:
-            lines.append(f"  注意：本机另有 {no_cwd_count} 条 Cursor / Trae 轨迹不记录工作目录，本规则对它们不生效。")
+            lines.append(f"  注意：本机另有 {no_cwd_count} 条轨迹未记录工作目录（Cursor / Trae 等），本规则对它们不生效。")
         lines.append("  取消：xskill privacy deny  或  xskill privacy clear")
         emit(payload, lines)
         return 0
@@ -3043,16 +3047,20 @@ def cmd_privacy(args) -> int:
              f"  该目录及子目录下的轨迹不会读取、不会上传（含已有的 {len(matched)} 条）。"]
     if not Path(shown).exists():
         lines[1] = "  提示：该目录当前不存在，规则已保存，将对之后在此目录下产生的轨迹生效。"
-    from xskill.team.client.upload_state import TrajectoryUploadStateStore
+    import sqlite3
     previously_uploaded: set[str] = set()
     for db_path in sorted((XSKILL_HOME / "clients").glob("*/client_state.db")):
         try:
-            store = TrajectoryUploadStateStore(db_path=db_path)
-            for row in matched:
-                uploaded_row = store.get(row.traj_id)
-                if uploaded_row is not None and uploaded_row["uploaded_cleaned_content_hash"]:
-                    previously_uploaded.add(row.traj_id)
-        except Exception:  # noqa: BLE001 只读探测，旧库损坏不阻塞 CLI
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as readonly_db:
+                for row in matched:
+                    found = readonly_db.execute(
+                        "SELECT 1 FROM trajectory_upload_state "
+                        "WHERE trajectory_id=? AND uploaded_cleaned_content_hash IS NOT NULL",
+                        (row.traj_id,),
+                    ).fetchone()
+                    if found:
+                        previously_uploaded.add(row.traj_id)
+        except sqlite3.Error:
             continue
     uploaded_count = len(previously_uploaded)
     payload["previously_uploaded"] = uploaded_count
