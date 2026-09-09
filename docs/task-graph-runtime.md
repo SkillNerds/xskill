@@ -8,6 +8,19 @@
 
 开启后，Task Graph 使用独立 worker 消费持久脏队列，不阻塞 Atom 到 Skill 的拆分、路由和编辑流水线。
 
+### Task 学习队列状态
+
+管理员接口 `GET /api/v1/dashboard/task-graph/overview` 的 `evidence_feed`
+包含 `pending`、`processed`、`fallback`、`rejected` 四类数量，空状态返回 0。
+这些数量只读取当前实例数据库中已解析 tenant 的持久队列；尚无 tenant 时返回
+全零，不会退回全局统计，也不会扫描 Task Graph 文件重建状态。
+
+`pending` 表示等待消费或重新核对的 Task，包含尚不具备学习资格的 Task；
+`processed` 只表示对应队列版本已被确认处理，不能单凭它认定 Skill 已编辑或发布。
+`fallback` 和 `rejected` 分别统计已记录的回退和拒绝状态。
+当前阶段已提供持久队列、候选存储和状态接口，TaskCluster/SkillEdit 的生产消费
+尚未接通，因此这些统计不代表 Task-grounded 学习闭环已上线。
+
 ## 数据流
 
 1. Harness 适配器从 Codex、DeepSeek Harness 和 OpenClaw 轨迹中保留模型、Harness、run id、结构化终态和 execution usage event。

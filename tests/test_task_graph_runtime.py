@@ -311,9 +311,13 @@ def test_task_graph_dashboard_routes_require_admin_and_apply_override(
         json={"user_name": "reviewer", "secret": "secret"},
     )
     assert login.status_code == 200
-    assert admin.get(
+    overview = admin.get(
         "/api/v1/dashboard/task-graph/overview",
-    ).json()["tasks"] == 1
+    ).json()
+    assert overview["tasks"] == 1
+    assert overview["evidence_feed"] == {
+        "pending": 1, "processed": 0, "fallback": 0, "rejected": 0,
+    }
     response = admin.post(
         "/api/v1/dashboard/task-graph/override",
         json={
