@@ -1,0 +1,427 @@
+{
+  "schema_version": 1,
+  "suite_id": "synthetic-cohort-canary-v1",
+  "metric_config": {
+    "bootstrap_samples": 1000,
+    "bootstrap_seed": 42,
+    "confidence_level": 0.95,
+    "familywise_method": "bonferroni",
+    "practical_margin": 0.05,
+    "decision_metric": "score",
+    "non_evaluable_error_types": [
+      "infrastructure_failure"
+    ]
+  },
+  "run_manifest": {
+    "repository_revision": "synthetic-recorded-fixture",
+    "generated_at": "2026-08-30T00:00:00Z",
+    "candidate_stream_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "task_set_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "evaluation_protocol_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "cohort_definition_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "cohorts": [
+    {
+      "cohort_id": "cohort-a",
+      "scenario": "scenario-a",
+      "model": "model-a",
+      "runtime": "runtime-a",
+      "traffic_weight": 0.75
+    },
+    {
+      "cohort_id": "cohort-b",
+      "scenario": "scenario-b",
+      "model": "model-b",
+      "runtime": "runtime-b",
+      "traffic_weight": 0.25
+    }
+  ],
+  "updates": [
+    {
+      "update_id": "update-1",
+      "epoch": 1,
+      "old_skill_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "new_skill_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "activation_control": "matched",
+      "observations": [
+        {
+          "case_id": "u1-a-task-1-seed-7",
+          "task_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "seed": 7,
+          "cohort_id": "cohort-a",
+          "old": {
+            "run_id": "u1-a-t1-old",
+            "score": 0.4,
+            "passed": false,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u1-a-t1-new",
+            "score": 0.6,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "decision"
+        },
+        {
+          "case_id": "u1-a-task-2-seed-7",
+          "task_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "seed": 7,
+          "cohort_id": "cohort-a",
+          "old": {
+            "run_id": "u1-a-t2-old",
+            "score": 0.5,
+            "passed": false,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u1-a-t2-new",
+            "score": 0.7,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "decision"
+        },
+        {
+          "case_id": "u1-b-task-1-seed-7",
+          "task_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "seed": 7,
+          "cohort_id": "cohort-b",
+          "old": {
+            "run_id": "u1-b-t1-old",
+            "score": 0.7,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u1-b-t1-new",
+            "score": 0.5,
+            "passed": false,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "decision"
+        },
+        {
+          "case_id": "u1-b-task-2-seed-7",
+          "task_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "seed": 7,
+          "cohort_id": "cohort-b",
+          "old": {
+            "run_id": "u1-b-t2-old",
+            "score": 0.8,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u1-b-t2-new",
+            "score": 0.6,
+            "passed": false,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "decision"
+        },
+        {
+          "case_id": "u1-a-task-1-seed-7-eval",
+          "task_fingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "seed": 7,
+          "cohort_id": "cohort-a",
+          "old": {
+            "run_id": "u1-a-t1-old-eval",
+            "score": 0.4,
+            "passed": false,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u1-a-t1-new-eval",
+            "score": 0.6,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "evaluation"
+        },
+        {
+          "case_id": "u1-a-task-2-seed-7-eval",
+          "task_fingerprint": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "seed": 7,
+          "cohort_id": "cohort-a",
+          "old": {
+            "run_id": "u1-a-t2-old-eval",
+            "score": 0.5,
+            "passed": false,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u1-a-t2-new-eval",
+            "score": 0.7,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "evaluation"
+        },
+        {
+          "case_id": "u1-b-task-1-seed-7-eval",
+          "task_fingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "seed": 7,
+          "cohort_id": "cohort-b",
+          "old": {
+            "run_id": "u1-b-t1-old-eval",
+            "score": 0.7,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u1-b-t1-new-eval",
+            "score": 0.5,
+            "passed": false,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "evaluation"
+        },
+        {
+          "case_id": "u1-b-task-2-seed-7-eval",
+          "task_fingerprint": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "seed": 7,
+          "cohort_id": "cohort-b",
+          "old": {
+            "run_id": "u1-b-t2-old-eval",
+            "score": 0.8,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u1-b-t2-new-eval",
+            "score": 0.6,
+            "passed": false,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "evaluation"
+        }
+      ]
+    },
+    {
+      "update_id": "update-2",
+      "epoch": 2,
+      "old_skill_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "new_skill_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "activation_control": "forced",
+      "observations": [
+        {
+          "case_id": "u2-a-task-1-seed-7",
+          "task_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "seed": 7,
+          "cohort_id": "cohort-a",
+          "old": {
+            "run_id": "u2-a-t1-old",
+            "score": 0.6,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u2-a-t1-new",
+            "score": 0.7,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "decision"
+        },
+        {
+          "case_id": "u2-a-task-2-seed-7",
+          "task_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "seed": 7,
+          "cohort_id": "cohort-a",
+          "old": {
+            "run_id": "u2-a-t2-old",
+            "score": 0.7,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u2-a-t2-new",
+            "score": 0.8,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "decision"
+        },
+        {
+          "case_id": "u2-b-task-1-seed-7",
+          "task_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "seed": 7,
+          "cohort_id": "cohort-b",
+          "old": {
+            "run_id": "u2-b-t1-old",
+            "score": 0.5,
+            "passed": false,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u2-b-t1-new",
+            "score": 0.6,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "decision"
+        },
+        {
+          "case_id": "u2-b-task-2-seed-7",
+          "task_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "seed": 7,
+          "cohort_id": "cohort-b",
+          "old": {
+            "run_id": "u2-b-t2-old",
+            "score": 0.6,
+            "passed": false,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u2-b-t2-new",
+            "score": 0.7,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "decision"
+        },
+        {
+          "case_id": "u2-a-task-1-seed-7-eval",
+          "task_fingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "seed": 7,
+          "cohort_id": "cohort-a",
+          "old": {
+            "run_id": "u2-a-t1-old-eval",
+            "score": 0.6,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u2-a-t1-new-eval",
+            "score": 0.7,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "evaluation"
+        },
+        {
+          "case_id": "u2-a-task-2-seed-7-eval",
+          "task_fingerprint": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "seed": 7,
+          "cohort_id": "cohort-a",
+          "old": {
+            "run_id": "u2-a-t2-old-eval",
+            "score": 0.7,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u2-a-t2-new-eval",
+            "score": 0.8,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "evaluation"
+        },
+        {
+          "case_id": "u2-b-task-1-seed-7-eval",
+          "task_fingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "seed": 7,
+          "cohort_id": "cohort-b",
+          "old": {
+            "run_id": "u2-b-t1-old-eval",
+            "score": 0.5,
+            "passed": false,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u2-b-t1-new-eval",
+            "score": 0.6,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "evaluation"
+        },
+        {
+          "case_id": "u2-b-task-2-seed-7-eval",
+          "task_fingerprint": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "seed": 7,
+          "cohort_id": "cohort-b",
+          "old": {
+            "run_id": "u2-b-t2-old-eval",
+            "score": 0.6,
+            "passed": false,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "new": {
+            "run_id": "u2-b-t2-new-eval",
+            "score": 0.7,
+            "passed": true,
+            "cost_usd": 0.001,
+            "latency_ms": 100,
+            "error_type": null
+          },
+          "role": "evaluation"
+        }
+      ]
+    }
+  ]
+}
