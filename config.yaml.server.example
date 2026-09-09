@@ -1,5 +1,13 @@
 skill_dir: ~/.xskill/skill
 
+# ===== Trajectory-to-Skill algorithm kernel =====
+# XSkill only selects/discovers the kernel. Every non-native kernel owns its
+# own ~/.xskill/kernels/<id>/config.yaml and workspace; XSkill never parses
+# or rewrites that private config.
+kernel:
+  kernel_id: native
+  kernels_path: ~/.xskill/kernels     # <id>/kernel.py local bridge scripts
+
 llm:
   base_url: https://api.deepseek.com   # 任何兼容 OpenAI chat-completions 的端点均可
                                         # 例：DeepSeek / OpenAI / 阿里百炼 / 本地 Ollama
@@ -82,3 +90,5 @@ team:
                          # 剩余 20 个（100-80）留给向量推荐引擎
     allow_anonymous: false  # 强制要求客户端 connect 时带 --name <工号>
                             # 设 true 则兼容不带工号的旧客户端（默认）
+    privacy_mode: denylist  # 客户端轨迹上传模式：denylist（默认）全部上传、用户可 deny 项目；
+                            # allowlist 要求只上传各自放行的项目（旧版客户端不识别）

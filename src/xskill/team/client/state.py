@@ -9,6 +9,7 @@ server_url / client_id / join_token，落 ~/.xskill/team_client.json。
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -18,13 +19,17 @@ class ClientState:
     server_url: str          # 形如 http://1.2.3.4:8000
     client_id: str
     join_token: str
+    # server 下发的上传模式（allowlist / denylist）；旧 server 不下发为 None。
+    server_privacy_mode: str | None = None
 
 
 def save_client_state(state: ClientState, path: Path | str) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(state), indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(asdict(state), indent=2), encoding="utf-8")
+    temp_path.chmod(0o600)
+    os.replace(temp_path, path)
 
 
 def load_client_state(path: Path | str) -> ClientState:
@@ -40,4 +45,5 @@ def load_client_state(path: Path | str) -> ClientState:
         server_url=data["server_url"],
         client_id=data["client_id"],
         join_token=data["join_token"],
+        server_privacy_mode=data.get("server_privacy_mode"),
     )

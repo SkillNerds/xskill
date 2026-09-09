@@ -34,6 +34,7 @@ namespace 单独开一份 RotatingFileHandler，写到 ~/.xskill/logs/<name>.log
   xskill.ux_score.log         — LLM 评分员每条 traj 给的分 + reasons
   xskill.ecosystems.log       — CCSessionIngester / 翻牌子 / install
   xskill.registry.log         — watch_dirs / trajectories 表 CRUD
+  xskill.kernel.log           — xskill.kernel.*（含 OpenEarth stage 进度）
   agno.log                    — agno 内部（reasoning_content 流式输出多）
   httpx.log                   — HTTP 请求记录（debug 用）
 
@@ -84,7 +85,7 @@ class StreamLog:
 #     名下；ux_score / registry 也只在解析失败时打 WARNING，平时无 INFO。给它们
 #     单开文件 = 一堆 0 字节空 .log。故**不给它们单开文件**，让其冒泡进 xskill.log。
 #   - 真会写 INFO 的才单开：流水线(watcher) / server / 灰度(canary) / 生态
-#     (ecosystems) / SkillEdit(只在真出 edit 时写,事件型) 。
+#     (ecosystems) / SkillEdit(只在真出 edit 时写,事件型) / 算法内核(kernel) 。
 #   - 非 xskill 命名空间的第三方（agno / httpx）单独隔离免污染。
 _PER_LOGGER_FILES: dict[str, str] = {
     "xskill":                    "xskill.log",        # 全 xskill.* 合并视图（兜底）
@@ -94,6 +95,7 @@ _PER_LOGGER_FILES: dict[str, str] = {
     "xskill.canary":             "xskill.canary.log",
     "xskill.ecosystems":         "xskill.ecosystems.log",
     "xskill.skill_edit_agent":   "xskill.skill_edit_agent.log",  # 事件型,出 edit 才写
+    "xskill.kernel":             "xskill.kernel.log",  # OpenEarth 等插件进度 logger
     "agno":                      "agno.log",          # agno 内部，单独隔离免污染
     "httpx":                     "httpx.log",
     "httpcore":                  "httpx.log",

@@ -1231,6 +1231,26 @@ def create_app(home_root: Path | str | None = None,
             team_server,
             poll_interval,
         )
+        kernel_host_command = [
+            _sys.executable,
+            "-m",
+            "xskill._workers",
+            "kernel-host",
+        ]
+        if team_server:
+            kernel_host_command.append("--server")
+        from xskill.config import get_kernel_console_log_path
+        kernel_host_scheduler = _WorkerSched(
+            "kernel-host",
+            kernel_host_command,
+            interval=1.0,
+            timeout=5.0,
+            persistent=True,
+            log_path=get_kernel_console_log_path(),
+        )
+        kernel_host_scheduler.start()
+        _schedulers.append(kernel_host_scheduler)
+        logger.info("external kernel host supervisor started")
         from xskill.config import ux_scores_sync_config
         ux_sync_cfg = ux_scores_sync_config(_config)
         ux_sync_scheduler = _WorkerSched(

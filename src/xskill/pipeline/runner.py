@@ -129,7 +129,7 @@ class DirectoryWatcher:
                  spill_root=None,
                  usage_ledger=None,
                  server_mode=False, install_history_path=None,
-                 on_poll_hook=None):
+                 on_poll_hook=None, native_distill=True):
         self.llm = llm
         self.embed_client = embed_client
         self.usage_ledger = usage_ledger
@@ -144,6 +144,13 @@ class DirectoryWatcher:
         # push-edit → user-staging/<client_id> 分支）。只跑 agent 流水线
         # （split/cluster/SkillEdit/canary 判定）+ CS 归因打分。
         self.server_mode = bool(server_mode)
+        # When an external algorithm kernel is selected, the platform must
+        # still discover and split trajectories. Native SkillEdit is the
+        # part that must stay off so OpenEarth (or another kernel) owns
+        # Skill production. Cluster submission is gated the same way so
+        # the native classifier does not create baby skills that occupy
+        # names the external kernel would publish.
+        self.native_distill = bool(native_distill)
         # XSkill 自身状态根与 Agent 生态 home_root 是两类路径，不能混用。
         from xskill.config import XSKILL_HOME
         xskill_state_root = (
@@ -514,12 +521,16 @@ class DirectoryWatcher:
             self._scan_dir(wd, consumed_index, **kw)
 
         if self._round_new_atoms:
-            self.pending_atoms.extendleft(reversed(self._round_new_atoms))
+            if self.native_distill:
+                self.pending_atoms.extendleft(reversed(self._round_new_atoms))
             self._round_new_atoms.clear()
         # 全部 watch_dir 共用一个 pending/claimed 队列；持续提交到 cluster 池满。
         # 最后不足 batch_size 的尾批也立即提交。
-        self._submit_cluster_batches()
-        self._submit_task_graph()
+        # External kernels own Skill production; keep split/embed running but
+        # do not let the native classifier create baby skills.
+        if self.native_distill:
+            self._submit_cluster_batches()
+            self._submit_task_graph()
 
         # ── Step 5a: 用户点名的 generate 入队到 SkillEdit 同一线程池 ──
         # 先于自动 SkillEdit 提交，避免后台整理把用户任务挤到池外。
@@ -530,7 +541,8 @@ class DirectoryWatcher:
         # reconciliation 兜住进程重启、外部写入和时间型 jam gate。
         # 不放在 _scan_dir 内是因为 skill_dir 不是 watch_dir，跟 wd 循环
         # 无关——每个 watcher 只有一个全局 skill_dir。
-        self._run_skill_edit_step()
+        if self.native_distill:
+            self._run_skill_edit_step()
         self._check_scripting_requests()
 
         # ── Step 6: 灰度判定独立轮询 ──

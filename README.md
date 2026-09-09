@@ -142,7 +142,7 @@ xskill是一套无监督的skill蒸馏方案，其不需要构建数据集就可
 > SkillOpt 强依赖 ValSet 提供进化所需的监督信号。
 > 在 ALFWorld 的 Epoch 2、3、4 中，ValSet 均出现精度溢出，导致进化失败，是其算法缺陷。
 
-未来会支持嵌入不同的算法内核，敬请期待。
+xskill 支持切换算法内核来驱动技能进化，详见下方「可选：切换算法内核」。
 
 * * *
 
@@ -216,6 +216,8 @@ xskill serve --server  # 会打印connect join命令，复制给组内同事便�
 ```bash
 xskill connect <host:port> --token <token>  --name <工号/姓名>
 ```
+
+默认全部上传；只想上传部分项目时 `xskill privacy mode allowlist`，再到项目目录里 `xskill privacy allow`，`xskill privacy status` 查看每个项目的判定。server 端 `team.server.privacy_mode: allowlist` 可要求全员白名单（客户端需本版本及以上）。
 
 connect 成功后，指南会装进本机已探测到的 Claude Code、Codex、Cursor 等 agent。在对应 agent 里输入 `/xskill-helper`，就可以查 generate、search、升级这些用法。没有地址和 token 时，把上面这条命令当示例，向你们自己的 server 管理员要 host、token 和工号，不要连外网公开实例。
 
@@ -310,6 +312,11 @@ skillhub:
  ```
 然后将公司内网skillhub随意放置到该目录下（支持多个skillhub），xskill就会自动探测skill并纳入推荐，将相关skill自动推送给指定的用户.
 
+#### 可选：切换算法内核
+
+xskill 默认使用内置 native 内核（拆分、归类、编辑三个代理）驱动技能进化。团队模式下，管理员可以在设置页把 `kernel_id` 切换为第三方内核（如 OpenEarth），让外部算法接管"轨迹 ready 之后生成 Skill"这一环节，其余流程不变。切换是可选的，不写 `kernel` 段时一切照旧。
+
+操作步骤和详细说明见 [算法内核使用指南](docs/openearth-kernel.md)。
 
 * * *
 

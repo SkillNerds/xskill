@@ -134,6 +134,8 @@ xskill serve --server                          # prints a join token
 xskill connect <host:port> --token <token> --name <user-id>
 ```
 
+Everything is uploaded by default. To upload only some projects, run `xskill privacy mode allowlist`, then `xskill privacy allow` inside each project; `xskill privacy status` shows the decision per project. Server operators can require the allowlist for everyone with `team.server.privacy_mode: allowlist` (clients on this version or newer).
+
 After connect succeeds, type `/xskill-helper` in Claude Code, Codex, Cursor, or another detected agent to see generate, search, and upgrade. If you do not have a host and token yet, treat the command above as the example and ask your own server operator. Do not connect to a public instance.
 
 - **Silently distill your top performers** — one person's solution reaches the whole team automatically.
@@ -206,6 +208,12 @@ xskill atom read <atom_id>                                     # read transcript
 ```
 
 Standalone readiness: `xskill traj search` works out of the box after `pip install xskill` without requiring a server connection. The first search automatically scans local harnesses and builds an index, or you can run `xskill init` for guided setup. When connected to a team server, searches query the team catalog by default; pass `--local` to search this machine only.
+
+#### Optional: switch the algorithm kernel
+
+xskill ships with a built-in native kernel (split, cluster, edit agents) that drives skill evolution. In team mode, the admin can change `kernel_id` on the settings page to a third-party kernel such as OpenEarth. The external kernel takes over "generate Skills from ready atoms" while everything else stays the same. This is entirely optional — leave out the `kernel` block and nothing changes.
+
+See [Algorithm kernel guide](docs/openearth-kernel.md) for setup steps and details.
 
 * * *
 

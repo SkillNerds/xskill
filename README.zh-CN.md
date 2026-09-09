@@ -118,6 +118,7 @@ Windows 下 `connect` 会自动把自己装成「计划任务」后台常驻（�
 xskill connect <host:port> --token <token>   # 首次:握手 + 自动拉起后台常驻
 xskill status                                  # 查看常驻状态
 xskill stop / xskill start                     # 停止 / 重新拉起(需先 connect 过)
+xskill privacy status                          # 每个项目的上传判定；mode allowlist 后只传 allow 过的项目
 ```
 
 macOS / Linux 的原生常驻（launchd / systemd --user）仍在路上，当前用自己的 init 系统托管 `xskill connect --foreground` 即可。
@@ -150,6 +151,10 @@ xskill atom read <atom_id>                                  # 按行号阅读指
 ```
 
 单机开箱即用：`pip install xskill` 之后无需连接 server 即可通过 `xskill traj search` 检索本机各 agent 会话，首次使用会自动扫描已支持的 agent 并建立本地索引，也可以执行 `xskill init` 进行交互式环境扫描与引导。已连接团队服务时，默认检索团队库，添加 `--local` 可强制检索本机。
+
+### 可选：切换算法内核
+
+默认使用内置 native 内核驱动技能进化。管理员可在设置页把 `kernel_id` 切换为第三方内核（如 OpenEarth），让外部算法接管 Skill 生成环节，其余流程不变。不写 `kernel` 段时一切照旧。操作步骤见 [算法内核使用指南](docs/openearth-kernel.md)。
 
 ## 架构图
 
