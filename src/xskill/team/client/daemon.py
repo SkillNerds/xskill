@@ -38,8 +38,9 @@ from xskill.ecosystems.installation import (
     read_install_metadata_file,
     read_skill_head_sha,
 )
-from xskill.team.client.state import ClientState
+from xskill.team.client.state import ClientState, save_client_state
 from xskill.team.client.collector import TeamCollector
+from xskill.team.client.privacy import SERVER_MODES, effective_mode, load_policy
 from xskill.team.shared.git_bundle import apply_repo_bundle, make_branch_bundle
 from xskill.team.shared.reconcile import reconcile_skill_side
 from xskill.team.shared.protocol import (
@@ -139,9 +140,12 @@ class TeamClient:
         min_change_interval: int = 600,
         auto_update: bool = True,
         use_proxy: bool = False,
+        state_path: Path | None = None,
     ):
         self.state = state
         self.http = http
+        # server 改模式后 sync 回写连接文件；None（测试）只改内存。
+        self.state_path = Path(state_path) if state_path else None
         self.home_root = Path(home_root) if home_root else Path.home()
         from xskill.config import XSKILL_HOME, resolve_team_client_skill_dir
         # 状态根只认仓库约定的 XSKILL_HOME（测试可 monkeypatch），不从 skill_dir 猜父目录。
@@ -166,6 +170,7 @@ class TeamClient:
             quiet_seconds=quiet_seconds, home_root=self.home_root,
             min_change_interval=min_change_interval,
         )
+        self.collector.server_privacy_mode = state.server_privacy_mode
         self._stop = threading.Event()
         self.auto_update = auto_update
         # updater 的 server 方向请求跟随 connect 的 --use-proxy；默认直连内网 server。
@@ -185,7 +190,11 @@ class TeamClient:
     # ── ① 采集 + 上传 ────────────────────────────────────────────
     def collect_and_upload(self) -> int:
         """扫 outbox 静默轨迹，脱敏后上传 server。返回成功上传条数。"""
-        pending = self.collector.pending()
+        try:
+            pending = self.collector.pending()
+        except ValueError as rules_error:
+            logger.error("privacy rules unreadable, uploads paused until fixed: %s", rules_error)
+            return 0
         if not pending:
             return 0
         req = UploadRequest(trajectories=[
@@ -211,7 +220,22 @@ class TeamClient:
         resp = self.http.get("/api/v1/team/sync", headers=self._hdr())
         if resp.status_code != 200:
             raise RuntimeError(f"sync failed: HTTP {resp.status_code} — {resp.text}")
-        return SyncResponse.model_validate(resp.json())
+        manifest = SyncResponse.model_validate(resp.json())
+        if (manifest.privacy_mode in SERVER_MODES
+                and manifest.privacy_mode != self.state.server_privacy_mode):
+            try:
+                local_mode = load_policy(self.collector.privacy_path).local_mode
+            except ValueError:
+                local_mode = "auto"
+            before = effective_mode(self.state.server_privacy_mode, local_mode)
+            after = effective_mode(manifest.privacy_mode, local_mode)
+            self.state.server_privacy_mode = manifest.privacy_mode
+            self.collector.server_privacy_mode = manifest.privacy_mode
+            if self.state_path is not None:
+                save_client_state(self.state, self.state_path)
+            logger.info("privacy: server mode %s, effective mode %s -> %s",
+                        manifest.privacy_mode, before, after)
+        return manifest
 
     @staticmethod
     def apply_client_take(manifest: SyncResponse) -> SyncResponse:
@@ -757,6 +781,11 @@ class TeamClient:
         if updater:
             updater.start()
         self.collector.start_ingesters()
+        # 先同步一次拿最新模式，避免离线期间 server 收紧后首轮按旧模式上传。
+        try:
+            self.sync()
+        except Exception as sync_error:
+            logger.warning("initial sync failed error_type=%s", type(sync_error).__name__)
         logger.info(
             "team client running server_hash=%s client_id_hash=%s",
             hashlib.sha256(

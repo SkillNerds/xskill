@@ -228,6 +228,7 @@ def _init_connect_args(args, address: str, token: str, name: str | None):
         no_auto_update=bool(getattr(args, "no_auto_update", False)),
         no_skill=True,
         target_root=getattr(args, "target_root", None),
+        privacy=None,
     )
 
 
@@ -382,6 +383,17 @@ def cmd_connect(args) -> int:
 
     state_path = get_team_client_state_path()
 
+    requested_privacy = getattr(args, "privacy", None)
+    if requested_privacy:
+        from xskill.team.client.privacy import load_policy, save_policy
+        try:
+            policy = load_policy()
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        policy.local_mode = requested_privacy
+        save_policy(policy)
+
     if args.address:
         state = _connect_handshake(args, state_path)
         if state is None:
@@ -392,6 +404,36 @@ def cmd_connect(args) -> int:
         except FileNotFoundError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
+
+    from xskill.team.client.privacy import load_policy
+    try:
+        report = _privacy_report(state, load_policy(), time_budget_seconds=2.0)
+    except ValueError as exc:
+        report = None
+        print(f"privacy: 规则文件损坏，采集已停止：{exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 摘要只是展示，不能挡住 connect
+        report = None
+        print(f"privacy: 本机轨迹清单统计失败，稍后用 xskill privacy status 查看：{exc}", file=sys.stderr)
+    if report is not None:
+        print(f"privacy: {report.mode}（{_PRIVACY_ORIGIN_LABEL[report.origin]}；"
+              f"{_PRIVACY_MODE_MEANING[report.mode]}）")
+        total = report.upload + report.skip
+        if not report.complete:
+            print("  本机轨迹较多，项目清单仍在统计中，稍后用 xskill privacy status 查看。")
+        elif report.mode == "allowlist":
+            if report.upload == 0:
+                print(f"  本机发现 {len(report.projects)} 个项目、共 {total} 条轨迹，当前全部不会上传。")
+            else:
+                print(f"  本机发现 {len(report.projects)} 个项目、共 {total} 条轨迹，"
+                      f"将上传 {report.upload} 条，不上传 {report.skip} 条。")
+            print("  放行方式：")
+            print("    cd <项目目录> && xskill privacy allow     放行一个项目")
+            print("    xskill privacy review                       逐个过一遍")
+            print("    xskill privacy status                       查看清单")
+        else:
+            print(f"  本机发现 {len(report.projects)} 个项目、共 {total} 条轨迹，将在后台开始上传。")
+            print("  不想上传的项目：xskill privacy deny <path>（下一轮扫描即生效，已传的不会删除）")
+            print("  改为只传放行项目：xskill privacy mode allowlist")
 
     # 握手或复用已存连接成功后再装 /xskill-helper：前台阻塞循环开始前必须先装，
     # 否则 Linux 退化成 run_forever 后这条命令再也走不到安装。
@@ -470,7 +512,10 @@ def _connect_handshake(args, state_path):
         print(f"error: 注册失败: {e}", file=sys.stderr)
         return None
     state = ClientState(server_url=server_url, client_id=client_id,
-                        join_token=args.token)
+                        join_token=args.token,
+                        server_privacy_mode=(reg.get("privacy_mode")
+                                             if reg.get("privacy_mode") in ("allowlist", "denylist")
+                                             else None))
     save_client_state(state, state_path)
     name_hint = f"  (--name={args.name})" if args.name else ""
     print(f"connected: client_id={client_id}  server={server_url}{name_hint}")
@@ -489,7 +534,7 @@ def _run_team_client_forever(state, *, use_proxy: bool,
     import httpx
     from xskill.config import (
         get_team_client_cursor_path, get_team_client_history_path,
-        resolve_local_skill_dir,
+        get_team_client_state_path, resolve_local_skill_dir,
     )
     from xskill.team.client.daemon import TeamClient
 
@@ -502,6 +547,7 @@ def _run_team_client_forever(state, *, use_proxy: bool,
         history_path=get_team_client_history_path(state.server_url),
         auto_update=auto_update,
         use_proxy=use_proxy,
+        state_path=get_team_client_state_path(),
     )
     client.run_forever()   # 阻塞
 
@@ -535,6 +581,17 @@ def _print_connect_status(st: dict, as_json: bool) -> None:
         print(f"  server   : {st['server_url']}")
     if st.get("client_id"):
         print(f"  client_id: {st['client_id']}")
+    privacy = st.get("privacy")
+    # 纯升级用户（无规则、生效 denylist）status 输出保持原样，不多这一行。
+    if privacy and (privacy["mode"] == "allowlist" or privacy["rules"]["allow"] or privacy["rules"]["deny"]):
+        rules = privacy["rules"]
+        server_text = privacy["server_mode"] or ("未下发" if privacy["connected"] else "(未连接)")
+        print(f"  privacy  : {privacy['mode']} ({_PRIVACY_ORIGIN_LABEL[privacy['mode_origin']]}"
+              f"; server {server_text})  "
+              f"allow {rules['allow']}, deny {rules['deny']}; "
+              f"上传 {privacy['upload']} 条 / 不上传 {privacy['skip']} 条")
+    if st.get("privacy_error"):
+        print(f"  privacy  : 规则文件损坏，采集已停止：{st['privacy_error']}")
     if st.get("warning"):
         print(f"  warning  : {st['warning']}")
 
@@ -709,6 +766,25 @@ def cmd_status(args) -> int:
     except ServiceError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+    try:
+        from xskill.config import get_team_client_state_path
+        from xskill.team.client.privacy import default_privacy_path, load_policy
+        from xskill.team.client.state import load_client_state
+        state_path = get_team_client_state_path()
+        state = load_client_state(state_path) if state_path.is_file() else None
+        policy_path = default_privacy_path()
+        policy = load_policy(policy_path)
+        report = _privacy_report(state, policy, time_budget_seconds=2.0)
+        st["privacy"] = {
+            **report.to_dict(),
+            "connected": state is not None,
+            "rules": {
+                "allow": sum(1 for rule in policy.projects.values() if rule.rule == "allow"),
+                "deny": sum(1 for rule in policy.projects.values() if rule.rule == "deny"),
+            },
+        }
+    except Exception as exc:  # noqa: BLE001 隐私行只是展示，不能挡住 status
+        st["privacy_error"] = str(exc)
     _print_connect_status(st, as_json=getattr(args, "json", False))
     return 0
 
@@ -2738,6 +2814,264 @@ def cmd_repair_baselines(args) -> int:
 # argparse
 # ═══════════════════════════════════════════════════════════════
 
+
+_PRIVACY_HELP_DESCRIPTION = """\
+管理本机轨迹是否上传到 team server。规则只保存在本机，不会发送服务器。
+
+模式决定"没写规则的项目怎么办"，server 与本机各有一个设置，生效的是更严的那个：
+  allowlist  默认不上传，只上传你用 allow 放行的项目
+  denylist   默认上传，只跳过你用 deny 排除的项目（server 默认）"""
+
+_PRIVACY_HELP_EPILOG = """\
+说明:
+  · 项目按绝对路径匹配，会解析符号链接；macOS 与 Windows 上不区分大小写。
+    子目录规则优先于父目录规则。
+  · 不上传的轨迹不会被读取、不会上传，也不会记为已上传；之后放行会在
+    下一轮扫描中正常上传。
+  · 轨迹 sidecar 没记录工作目录时（目前 Cursor 与 Trae 都不记）无法归属到项目：
+    allowlist 模式下不上传，denylist 模式下上传。status 会单独列出。
+
+examples:
+  xskill privacy mode allowlist            # 本机改为白名单，server 无法放宽
+  cd ~/code/my-service && xskill privacy allow
+  xskill privacy deny ~/code/secret-project
+  xskill privacy status
+"""
+
+_PRIVACY_ORIGIN_LABEL = {
+    "local": "本机设置",
+    "server_required": "server 要求",
+    "server_default": "server 默认",
+    "server_missing": "server 未下发，按 denylist",
+    "disconnected": "未连接 server",
+}
+
+_PRIVACY_MODE_MEANING = {
+    "allowlist": "默认不上传，只上传你放行的项目",
+    "denylist": "默认上传，只跳过你排除的项目",
+}
+
+
+def _privacy_report(state, policy, *, time_budget_seconds=None):
+    from xskill.config import XSKILL_HOME
+    from xskill.team.client.privacy import build_report, scan_local_trajectories
+    rows, complete = scan_local_trajectories(
+        XSKILL_HOME, time_budget_seconds=time_budget_seconds,
+    )
+    return build_report(
+        policy, state.server_privacy_mode if state else None, rows,
+        complete=complete, connected=state is not None,
+    )
+
+
+def cmd_privacy(args) -> int:
+    import json as _json
+    from pathlib import Path
+    from xskill.config import XSKILL_HOME
+    from xskill.team.client.privacy import (
+        LOCAL_MODES, canonical_project_path, effective_mode, mode_origin,
+        normalize_project_path, path_is_within, save_policy, scan_local_trajectories,
+    )
+    as_json = getattr(args, "json", False)
+    try:
+        from xskill.config import get_team_client_state_path
+        from xskill.team.client.privacy import default_privacy_path, load_policy
+        from xskill.team.client.state import load_client_state
+        state_path = get_team_client_state_path()
+        state = load_client_state(state_path) if state_path.is_file() else None
+        policy_path = default_privacy_path()
+        policy = load_policy(policy_path)
+    except ValueError as exc:
+        _write_search_output(f"error: {exc}", to_stderr=True)
+        return 2
+    server_mode = state.server_privacy_mode if state else None
+    action = args.privacy_action
+
+    def emit(payload: dict, lines: list[str]) -> None:
+        if as_json:
+            _write_search_output(_json.dumps(payload, ensure_ascii=False, indent=2))
+            return
+        for line in lines:
+            _write_search_output(line)
+
+    if action == "mode":
+        if not args.target:
+            effective = effective_mode(server_mode, policy.local_mode)
+            emit({"local_mode": policy.local_mode, "server_mode": server_mode,
+                  "mode": effective,
+                  "mode_origin": mode_origin(server_mode, policy.local_mode, connected=state is not None)},
+                 [f"mode: {policy.local_mode}"
+                  + ("（跟随 server）" if policy.local_mode == "auto" else "（本机设置）")
+                  + f"  server: {server_mode or '(未连接)' if state is None else server_mode or '未下发'}"
+                  + f"  生效: {effective}"])
+            return 0
+        if args.target not in LOCAL_MODES:
+            _write_search_output(f"error: mode 只能是 {' / '.join(LOCAL_MODES)}", to_stderr=True)
+            return 2
+        policy.local_mode = args.target
+        save_policy(policy, policy_path)
+        effective = effective_mode(server_mode, policy.local_mode)
+        server_text = server_mode or ("(未连接)" if state is None else "未下发")
+        head = (f"Mode: {policy.local_mode}（本机设置；server 当前 {server_text}，生效 {effective}"
+                + ("，server 要求" if server_mode == "allowlist" and policy.local_mode != "allowlist" else "")
+                + "）")
+        if policy.local_mode == "auto":
+            head = f"Mode: auto（跟随 server；server 当前 {server_text}，生效 {effective}）"
+        lines = [head]
+        allowed_count = sum(1 for rule in policy.projects.values() if rule.rule == "allow")
+        if policy.local_mode == "allowlist":
+            lines.append(f"  未放行的项目从下一轮扫描起不再上传。已放行 {allowed_count} 个项目不受影响。")
+        elif policy.local_mode == "denylist" and server_mode == "allowlist":
+            lines.append("  server 要求白名单，本机设置暂不生效；server 放宽后自动按 denylist 运行。")
+        elif effective == "denylist":
+            lines.append("  未排除的项目默认上传。")
+        emit({"status": "set", "local_mode": policy.local_mode, "server_mode": server_mode,
+              "mode": effective}, lines)
+        return 0
+
+    if action == "status":
+        report = _privacy_report(state, policy)
+        if as_json:
+            _write_search_output(_json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+            return 0
+        server_text = report.server_mode or ("(未连接)" if state is None else "未下发")
+        _write_search_output(f"mode: {report.mode}（{_PRIVACY_ORIGIN_LABEL[report.origin]}；server {server_text}）"
+              f"  {_PRIVACY_MODE_MEANING[report.mode]}")
+        _write_search_output("")
+        rows = [(summary.path, summary.traj, ", ".join(summary.harnesses),
+                 summary.rule or ("默认·上传" if summary.effective == "upload" else "默认·不上传"))
+                for summary in report.projects]
+        for extra in (report.no_cwd, report.broken_sidecar):
+            if extra.traj:
+                rows.append((extra.path, extra.traj, ", ".join(extra.harnesses),
+                             "默认·上传" if extra.effective == "upload" else "默认·不上传"))
+        if not rows:
+            _write_search_output("(本机尚未发现任何轨迹)")
+            return 0
+        import unicodedata
+
+        def padded(text: str, width: int) -> str:
+            display_width = sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
+            return text + " " * max(0, width - display_width)
+
+        path_width = max(len("PROJECT"), *(len(row[0]) for row in rows))
+        harness_width = max(len("SOURCES"), *(len(row[2]) for row in rows))
+        _write_search_output(f"{padded('PROJECT', path_width)}  {'TRAJ':>5}  {padded('SOURCES', harness_width)}  DECISION")
+        for path, traj, harnesses, decision in rows:
+            _write_search_output(f"{padded(path, path_width)}  {traj:>5}  {padded(harnesses, harness_width)}  {decision}")
+        _write_search_output("")
+        _write_search_output(f"上传 {report.upload} 条，不上传 {report.skip} 条。")
+        if report.no_cwd.traj:
+            _write_search_output(f"提示：{report.no_cwd.traj} 条轨迹的 sidecar 未记录工作目录（Cursor / Trae 等），无法按项目放行。")
+        if report.broken_sidecar.traj:
+            _write_search_output(f"提示：{report.broken_sidecar.traj} 条轨迹的 sidecar 缺失或损坏，无法归属项目。")
+        if not report.complete:
+            _write_search_output("提示：本机轨迹较多，清单在时间预算内未统计完整。")
+        return 0
+
+    if action == "review":
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            _write_search_output("error: review 需要交互式终端。脚本里请用 xskill privacy allow <path> / deny <path>。", to_stderr=True)
+            return 2
+        report = _privacy_report(state, policy)
+        _write_search_output(f"mode: {report.mode}  本机发现 {len(report.projects)} 个项目。"
+              "每项输入 a=放行 d=排除 回车=保持不变 q=退出")
+        _write_search_output("")
+        allowed = denied = kept = 0
+        for index, summary in enumerate(report.projects, start=1):
+            current = summary.rule or ("默认·上传" if summary.effective == "upload" else "默认·不上传")
+            _write_search_output(f"[{index}/{len(report.projects)}] {summary.path}   {summary.traj} 条  "
+                  f"{', '.join(summary.harnesses)}   当前: {current}")
+            choice = input("  > ").strip().lower()
+            if choice == "q":
+                break
+            if choice == "a":
+                policy.set_project(summary.path, "allow")
+                allowed += 1
+                _write_search_output("  Allowed.")
+            elif choice == "d":
+                policy.set_project(summary.path, "deny")
+                denied += 1
+                _write_search_output("  Denied.")
+            else:
+                kept += 1
+        save_policy(policy, policy_path)
+        final_report = _privacy_report(state, policy)
+        _write_search_output("")
+        _write_search_output(f"完成：放行 {allowed} 个，排除 {denied} 个，保持不变 {kept} 个。"
+              f"上传 {final_report.upload} 条，不上传 {final_report.skip} 条。")
+        if final_report.no_cwd.traj:
+            default_text = "上传" if final_report.no_cwd.effective == "upload" else "不上传"
+            _write_search_output(f"另有 {final_report.no_cwd.traj} 条轨迹未记录工作目录（Cursor / Trae 等），按模式默认处理（{default_text}）。")
+        return 0
+
+    target_path = Path(args.target) if args.target else Path.cwd()
+    shown = canonical_project_path(target_path)
+    key = normalize_project_path(target_path)
+    if action == "clear":
+        removed, _key = policy.clear_project(target_path)
+        if not removed:
+            emit({"status": "not_found", "path": shown}, [f"Not found: {shown}"])
+            return 1
+        save_policy(policy, policy_path)
+        effective = effective_mode(server_mode, policy.local_mode)
+        default_text = "不上传" if effective == "allowlist" else "上传"
+        emit({"status": "cleared", "path": shown, "mode": effective},
+             [f"Cleared: {shown}", f"  回到模式默认（{effective}：{default_text}）。"])
+        return 0
+
+    rule = "allow" if action == "allow" else "deny"
+    changed, _key = policy.set_project(target_path, rule)
+    if not changed:
+        emit({"status": f"already_{rule}ed", "path": shown},
+             [f"Already {'allowed' if rule == 'allow' else 'denied'}: {shown}"])
+        return 0
+    save_policy(policy, policy_path)
+    rows, _complete = scan_local_trajectories(XSKILL_HOME)
+    matched = [row for row in rows if row.cwd and path_is_within(normalize_project_path(row.cwd), key)]
+    no_cwd_count = sum(1 for row in rows if row.cwd is None and row.sidecar_readable)
+    effective = effective_mode(server_mode, policy.local_mode)
+    payload = {"status": f"{rule}ed", "path": shown, "matched": len(matched),
+               "unattributed": no_cwd_count, "mode": effective}
+    if rule == "allow":
+        lines = [f"Allowed: {shown}",
+                 f"  该目录及子目录下的轨迹将上传（含已有的 {len(matched)} 条，下一轮扫描开始）。"]
+        if not Path(shown).exists():
+            lines[1] = "  提示：该目录当前不存在，规则已保存，将对之后在此目录下产生的轨迹生效。"
+        if no_cwd_count:
+            lines.append(f"  注意：本机另有 {no_cwd_count} 条轨迹未记录工作目录（Cursor / Trae 等），本规则对它们不生效。")
+        lines.append("  取消：xskill privacy deny  或  xskill privacy clear")
+        emit(payload, lines)
+        return 0
+    lines = [f"Denied: {shown}",
+             f"  该目录及子目录下的轨迹不会读取、不会上传（含已有的 {len(matched)} 条）。"]
+    if not Path(shown).exists():
+        lines[1] = "  提示：该目录当前不存在，规则已保存，将对之后在此目录下产生的轨迹生效。"
+    import sqlite3
+    previously_uploaded: set[str] = set()
+    for db_path in sorted((XSKILL_HOME / "clients").glob("*/client_state.db")):
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as readonly_db:
+                for row in matched:
+                    found = readonly_db.execute(
+                        "SELECT 1 FROM trajectory_upload_state "
+                        "WHERE trajectory_id=? AND uploaded_cleaned_content_hash IS NOT NULL",
+                        (row.traj_id,),
+                    ).fetchone()
+                    if found:
+                        previously_uploaded.add(row.traj_id)
+        except sqlite3.Error:
+            continue
+    uploaded_count = len(previously_uploaded)
+    payload["previously_uploaded"] = uploaded_count
+    if uploaded_count:
+        lines.append(f"  注意：其中 {uploaded_count} 条此前已上传过，本规则只阻止之后的上传，不会删除服务器上的副本。")
+    if effective == "allowlist":
+        lines.append("  当前模式下该目录本来就不上传；此规则会在 server 切换为 denylist 后继续生效。")
+    emit(payload, lines)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="xskill",
@@ -3018,6 +3352,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--target-root", default=None,
         help="[测试/隔离] 安装与探测的 HOME 根（默认真实 HOME）",
     )
+    p_conn.add_argument(
+        "--privacy", choices=["allowlist", "denylist", "auto"], default=None,
+        help="连接前设置本机上传模式（同 xskill privacy mode）。allowlist=只上传放行的项目",
+    )
+
+    p_privacy = sub.add_parser(
+        "privacy",
+        help="管理本机哪些项目的轨迹上传到 team server",
+        description=_PRIVACY_HELP_DESCRIPTION,
+        epilog=_PRIVACY_HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_privacy.add_argument(
+        "privacy_action",
+        choices=["status", "mode", "allow", "deny", "clear", "review"],
+        metavar="<command>",
+        help="status | mode [allowlist|denylist|auto] | allow [path] | deny [path] | clear [path] | review",
+    )
+    p_privacy.add_argument("target", nargs="?", type=str,
+                           help="mode 的取值，或项目路径（默认当前目录）")
+    p_privacy.add_argument("--json", action="store_true", help="机读 JSON 输出")
 
     p_start = sub.add_parser(
         "start", help="把 connect 装成后台常驻（开机自启 + 崩溃自愈）",
@@ -3157,6 +3512,8 @@ def main() -> int:
         return cmd_stop(args)
     if args.command == "status":
         return cmd_status(args)
+    if args.command == "privacy":
+        return cmd_privacy(args)
     if args.command == "update":
         return cmd_update(args)
     if args.command == "dashboard":

@@ -8,6 +8,7 @@ xskill.py — XSkill 顶层门面
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -197,9 +198,21 @@ class XSkill:
             from xskill.team.server.state import ensure_join_token
             from xskill.config import get_team_server_state_path
             token = ensure_join_token(get_team_server_state_path())
+            from xskill.config import get_config, team_privacy_mode
+            try:
+                privacy_mode = team_privacy_mode(get_config())
+            except ValueError as config_error:
+                print(f"error: {config_error}", file=sys.stderr)
+                return
             print(f"xskill team server at http://{host}:{port}/")
             print(f"  clients join with:")
             print(f"    xskill connect <THIS_HOST>:{port} --token {token}")
+            if privacy_mode == "allowlist":
+                print("  privacy mode: allowlist  (要求客户端只上传各自放行的项目，旧版客户端不识别；"
+                      "config team.server.privacy_mode 可改为 denylist)")
+            else:
+                print("  privacy mode: denylist  (默认上传，用户可 deny 项目或本机改为 allowlist；"
+                      "config team.server.privacy_mode=allowlist 可要求全员白名单)")
         elif home_root:
             print(f"xskill serve at http://{host}:{port}/  [debug home: {home_root}]")
         else:
