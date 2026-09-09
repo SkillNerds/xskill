@@ -8,6 +8,10 @@
 
 开启后，Task Graph 使用独立 worker 消费持久脏队列，不阻塞 Atom 到 Skill 的拆分、路由和编辑流水线。
 
+选择外部算法内核后，Task Graph 仍处理 Session/Atom 的回填和增量更新；
+`task_graph.enabled: false` 才会暂停它。外部内核继续负责 Skill 生产，
+原生 cluster 和自动 SkillEdit 不会因此重新启用。
+
 ## 数据流
 
 1. Harness 适配器从 Codex、DeepSeek Harness 和 OpenClaw 轨迹中保留模型、Harness、run id、结构化终态和 execution usage event。
