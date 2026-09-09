@@ -128,10 +128,14 @@ def test_standalone_worker_commands_share_resolved_ecosystem_home(
         str(ecosystem_home.resolve()),
     ]
     assert set(records_by_name) == {
-        "agent-worker", "ecosystem-ingest", "ux-scores-sync",
+        "agent-worker", "ecosystem-ingest", "kernel-host", "ux-scores-sync",
     }
     assert records_by_name["agent-worker"].command[-2:] == expected_home_arguments
     assert records_by_name["agent-worker"].keyword_arguments["persistent"] is True
+    kernel_command = records_by_name["kernel-host"].command
+    assert kernel_command[-1] == "kernel-host"
+    assert "--server" not in kernel_command
+    assert records_by_name["kernel-host"].keyword_arguments["persistent"] is True
     ingest_command = records_by_name["ecosystem-ingest"].command
     home_argument_index = ingest_command.index("--home")
     assert ingest_command[
@@ -244,12 +248,15 @@ def test_team_server_schedules_only_server_watcher(
         record.name: record for record in scheduler_records
     }
     assert set(records_by_name) == {
-        "recommend-heavy", "agent-worker", "ux-scores-sync",
+        "recommend-heavy", "agent-worker", "kernel-host", "ux-scores-sync",
     }
     watcher_command = records_by_name["agent-worker"].command
     assert watcher_command[-1] == "--server"
     assert "--home" not in watcher_command
     assert records_by_name["agent-worker"].keyword_arguments["persistent"] is True
+    kernel_command = records_by_name["kernel-host"].command
+    assert kernel_command[-2:] == ["kernel-host", "--server"]
+    assert records_by_name["kernel-host"].keyword_arguments["persistent"] is True
     assert "persistent" not in records_by_name["recommend-heavy"].keyword_arguments
     assert records_by_name["recommend-heavy"].command[-1] == "recommend-heavy"
     assert "persistent" not in records_by_name["ux-scores-sync"].keyword_arguments

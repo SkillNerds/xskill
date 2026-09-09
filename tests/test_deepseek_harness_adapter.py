@@ -475,9 +475,9 @@ class TestInstall:
 
     def test_harness_name_for_dsh_bridge_dir(self, tmp_path):
         """上传元数据里的 harness 必须是 deepseek_harness，不能退化为 dsh。"""
-        from xskill.team.client.collector import _harness_for
+        from xskill.team.client.collector import harness_for_bridge
         md = tmp_path / "dsh_sessions" / "traj_dsh_x.md"
-        assert _harness_for(md) == "deepseek_harness"
+        assert harness_for_bridge(md) == "deepseek_harness"
 
 
 # ──────────────────────────────────────────────────────────────────
