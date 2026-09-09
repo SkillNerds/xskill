@@ -11,6 +11,7 @@ from pathlib import Path
 
 from xskill.tasks.evidence import (
     ScopedTrajectoryEvidence,
+    TrajectorySourceMissing,
     collect_trajectory_evidence,
 )
 from xskill.tasks.linker import BoundedTaskLinker
@@ -209,6 +210,7 @@ class TaskGraphService:
 
         resolved: dict[tuple[int, str], ScopedTrajectoryEvidence | None] = {}
         collection_failed: set[tuple[int, str]] = set()
+        failed_collection_scopes: set[tuple[str, str]] = set()
         old_scopes_by_key: dict[tuple[int, str], tuple[str, str] | None] = {}
         for row in dirty_rows:
             key = (int(row["watch_dir_id"]), str(row["filename"]))
@@ -231,6 +233,7 @@ class TaskGraphService:
                 )
                 continue
             watch_dir, trajectory = live
+            scope = None
             try:
                 scope = self.resolver.resolve(
                     watch_dir=watch_dir, trajectory=trajectory,
@@ -238,7 +241,7 @@ class TaskGraphService:
                 evidence = collect_trajectory_evidence(
                     watch_dir=watch_dir, trajectory=trajectory, scope=scope,
                 )
-            except FileNotFoundError:
+            except TrajectorySourceMissing:
                 logger.info(
                     "Task Graph source disappeared before collection: %s/%s",
                     watch_dir.get("path"), row["filename"],
@@ -250,6 +253,10 @@ class TaskGraphService:
                     watch_dir.get("path"), row["filename"], exc_info=True,
                 )
                 collection_failed.add(key)
+                if old_scope is not None:
+                    failed_collection_scopes.add(old_scope)
+                if scope is not None:
+                    failed_collection_scopes.add((scope.tenant_id, scope.task_scope_id))
                 continue
             resolved[key] = evidence
             if evidence is not None:
@@ -283,9 +290,13 @@ class TaskGraphService:
         selected_scopes = sorted(selected_scope_set)
         processed_rows: list[dict] = []
         built = []
-        failed_scopes = []
+        failed_scopes = sorted({scope_id for _tenant, scope_id in failed_collection_scopes})
         successful_scope_set: set[tuple[str, str]] = set()
         for tenant_id, task_scope_id in selected_scopes:
+            # A warm cache must not hide a failed collection while another
+            # source in this scope advances. Retry the complete scope instead.
+            if (tenant_id, task_scope_id) in failed_collection_scopes:
+                continue
             try:
                 generation, source_count = self._rebuild_scope(
                     tenant_id, task_scope_id, resolved,
@@ -407,7 +418,7 @@ class TaskGraphService:
                                 scope=scope,
                             )
                             self._cache_evidence(evidence)
-                        except FileNotFoundError:
+                        except TrajectorySourceMissing:
                             evidence = None
                     else:
                         evidence = None
