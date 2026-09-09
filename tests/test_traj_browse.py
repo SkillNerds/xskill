@@ -36,7 +36,7 @@ def _short_card_md(query: str) -> str:
     )
 
 
-def test_find_query_hits_first_line_and_spread(tmp_path):
+def test_find_query_hits_first_line(tmp_path):
     alice = tmp_path / "alice"
     bob = tmp_path / "bob"
     _write(alice, "traj_cc_alice_memleak", _short_card_md(
@@ -104,7 +104,7 @@ def test_format_listing_matches_product_header():
     )
     assert text.startswith(
         "query='patentdagger' 命中 179 条不同轨迹，展示 2 条"
-        "（同名前缀已错开）。看内容用 --cards，一次最多 8 个 id。"
+        "（按相关度排序）。看内容用 --cards，一次最多 8 个 id。"
     )
     assert "还有 177 条未列出，换一组词可以搜到别的。" in text
     assert "下一页：xskill traj search patentdagger --page 2" in text

@@ -495,7 +495,7 @@ def test_cli_search_traj_local_prints_hits(monkeypatch, capsys, tmp_path):
     assert rc == 0
     out = capsys.readouterr()
     assert "query='django migration' 命中 1 条不同轨迹，展示 1 条" in out.out
-    assert "同名前缀已错开" in out.out
+    assert "按相关度排序" in out.out
     assert "看内容用 --cards，一次最多 8 个 id。" in out.out
     assert "看原文：xskill traj read <traj_id>" not in out.out
     assert "traj_cc_alice_memleak" in out.out
