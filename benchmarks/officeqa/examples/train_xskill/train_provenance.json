@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "run_id": "train-officeqa-xskill-example",
+  "algo": "xskill",
+  "benchmark": "officeqa",
+  "train_uids_sha256": "01a3dea402ed30b9c659094b923d6df622f50804bd9c21c0a8b8a83c55f90e6c",
+  "merge_val_into_train": true,
+  "selection_split": null,
+  "target_harness": "claude_code_native_skills",
+  "algo_components": {
+    "splitter": "traj2skill_window_v2",
+    "atom_distiller": "compact_atom_compiler",
+    "canary_router": "hard_canary_v2",
+    "simulated_user_workers": 3
+  },
+  "intermediate_checkpoints": [
+    {
+      "step": 1,
+      "skill_sha256": "1a2b3c4d5e678901234567890000000000000000000000000000000000000003",
+      "checkpoint_dir": "./runs/train-officeqa/checkpoints/step_1",
+      "action": "promoted_to_staging",
+      "log_file": "./runs/train-officeqa/logs/step_1.log"
+    },
+    {
+      "step": 2,
+      "skill_sha256": "3a8ca2b1a5c8d81a9f1827364500000000000000000000000000000000000001",
+      "checkpoint_dir": "./runs/train-officeqa/checkpoints/step_2",
+      "action": "merged_to_main",
+      "log_file": "./runs/train-officeqa/logs/step_2.log"
+    }
+  ],
+  "skill_sha256": "3a8ca2b1a5c8d81a9f1827364500000000000000000000000000000000000001"
+}

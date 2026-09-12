@@ -3396,6 +3396,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="打印免密登录链接，点击即以自己的身份进入 server 看板",
     )
 
+    from xskill.bench.cli import add_bench_parser
+    add_bench_parser(sub)
+
     p_stats = sub.add_parser(
         "stats", help="Show token usage & estimated cost (Issue #43)",
     )
@@ -3483,9 +3486,9 @@ def _setup_logging(debug: bool, quiet: bool, *, command: str = "") -> None:
 # main
 # ═══════════════════════════════════════════════════════════════
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
         return 1
@@ -3518,6 +3521,9 @@ def main() -> int:
         return cmd_update(args)
     if args.command == "dashboard":
         return cmd_dashboard(args)
+    if args.command == "bench":
+        from xskill.bench.cli import dispatch_bench
+        return dispatch_bench(args)
 
     # skillhub 搜索/下载/上传是瘦客户端侧（走 team server），不碰 config.yaml。
     if args.command == "search":

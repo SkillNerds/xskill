@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SkillNerds/xskill/benchmarks/schemas/summary.schema.json",
+  "title": "summary",
+  "description": "整趟结束后的汇总。accuracy = n_pass / n_total，timeout 计入 n_total。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "benchmark",
+    "split_name",
+    "model",
+    "n_total",
+    "n_pass",
+    "accuracy",
+    "status_counts",
+    "usage_totals",
+    "refs"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "benchmark": { "type": "string", "enum": ["officeqa", "spreadsheet", "alfworld"] },
+    "split_name": {
+      "type": "string",
+      "enum": ["train", "val", "test", "train_plus_val"]
+    },
+    "model": { "type": "string", "minLength": 1 },
+    "n_total": { "type": "integer", "minimum": 0 },
+    "n_pass": { "type": "integer", "minimum": 0 },
+    "accuracy": { "type": "number", "minimum": 0, "maximum": 1 },
+    "status_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pass", "fail", "timeout", "invalid", "infra_error"],
+      "properties": {
+        "pass": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "timeout": { "type": "integer", "minimum": 0 },
+        "invalid": { "type": "integer", "minimum": 0 },
+        "infra_error": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "usage_totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cost_usd",
+        "usage_missing_n"
+      ],
+      "properties": {
+        "input_tokens": { "type": "integer", "minimum": 0 },
+        "output_tokens": { "type": "integer", "minimum": 0 },
+        "cache_read_tokens": { "type": "integer", "minimum": 0 },
+        "total_tokens": { "type": "integer", "minimum": 0 },
+        "cost_usd": { "type": "number", "minimum": 0 },
+        "usage_missing_n": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_config_sha256",
+        "results_sha256",
+        "split_manifest_sha256"
+      ],
+      "properties": {
+        "run_config_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "results_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "skill_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "split_manifest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "train_provenance_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "started_at": { "type": "string", "minLength": 1 },
+    "finished_at": { "type": "string", "minLength": 1 },
+    "resumed": { "type": "boolean" }
+  }
+}

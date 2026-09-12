@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SkillNerds/xskill/benchmarks/schemas/result_record.schema.json",
+  "title": "result_record",
+  "description": "results.jsonl 中的一行。status 为 timeout 时 is_correct 必须为 false。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "uid",
+    "gold_answer",
+    "pred_answer",
+    "status",
+    "is_correct"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "uid": { "type": "string", "minLength": 1 },
+    "summary_text": { "type": "string" },
+    "gold_answer": { "type": ["string", "number", "boolean", "null"] },
+    "pred_answer": { "type": ["string", "number", "boolean", "null"] },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail", "timeout", "invalid", "infra_error"]
+    },
+    "is_correct": { "type": "boolean" },
+    "latency_ms": { "type": "number", "minimum": 0 },
+    "attempts": { "type": "integer", "minimum": 0 },
+    "log_file": { "type": "string" },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["litellm", "local_fallback", "missing"]
+        },
+        "input_tokens": { "type": "integer", "minimum": 0 },
+        "output_tokens": { "type": "integer", "minimum": 0 },
+        "cache_read_tokens": { "type": "integer", "minimum": 0 },
+        "total_tokens": { "type": "integer", "minimum": 0 },
+        "cost_usd": { "type": "number", "minimum": 0 },
+        "request_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "skill_sha256": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

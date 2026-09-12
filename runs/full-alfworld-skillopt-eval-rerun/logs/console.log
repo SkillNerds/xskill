@@ -1,0 +1,25 @@
+[xskill-bench] Initializing benchmark: ALFWorld (Split: test, 134 items)
+[xskill-bench] Model: deepseek-v4-flash | Algo: skillopt | Harness: claude_code_exec (Tools: Read, Bash)
+[xskill-bench] Skill SHA-256: 9690...32c4 (frozen) | Workers: 4
+Evaluating: 100%|██████████████████████████████| 134/134 [01:05:49<00:00, 29.47s/it]
+  ├── pass: 104
+  ├── fail: 30
+  └── timeout: 0 (counted as unpassed)
+
+--------------------------------------------------------------------------------
+Benchmark Results: ALFWorld (test)
+--------------------------------------------------------------------------------
+Overall Accuracy: 77.61% (104/134)
+  ├── Passed Items : 104
+  ├── Failed Items : 30
+  └── Timeout Items: 0 (counted as unpassed)
+
+Usage & Cost:
+  ├── Total Tokens : 0 (Prompt: 0 | Completion: 0)
+  └── Total Spend  : $0.00 USD (usage.source=missing)
+
+Artifacts saved to:
+  ├── Config  : /home/admin/alfworld_full/skillopt/eval/run_config.json
+  ├── Details : /home/admin/alfworld_full/skillopt/eval/results.jsonl
+  └── Summary : /home/admin/alfworld_full/skillopt/eval/summary.json
+--------------------------------------------------------------------------------

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "run_id": "eval-officeqa-xskill-example",
+  "phase": "eval",
+  "algo": "xskill",
+  "benchmark": "officeqa",
+  "split_manifest": "benchmarks/officeqa/manifests/officeqa_skillopt_id_split.json",
+  "split_name": "test",
+  "model": "deepseek-v4-flash",
+  "harness": {
+    "id": "claude_code_native_skills",
+    "tools": [
+      "Read",
+      "Bash",
+      "Skill"
+    ],
+    "notes": "xskill 官方原生模式，skill 作为标准包安装，由 Skill 工具调用"
+  },
+  "skill_sha256": "3a8ca2b1a5c8d81a9f1827364500000000000000000000000000000000000001",
+  "scorer": {
+    "id": "skillopt.envs.officeqa.evaluator.evaluate",
+    "module": "skillopt.envs.officeqa.evaluator",
+    "metric": "em",
+    "soft_metric": "f1",
+    "commit": "02cdead11f635546f11e7669b08a96ce823d6377",
+    "sha256": "49dad2a2bdede9665541102fe47ca74ab2a0cc05ad84d2f8ca047f223c1b4aef",
+    "notes": "SkillOpt 官方归一化整串匹配为 hard，token F1 为 soft。不用 Databricks reward.py。"
+  },
+  "code": {
+    "xskill_commit": "c7be097000000000000000000000000000000000"
+  },
+  "workers": 4,
+  "timeout_s": 600,
+  "max_tool_turns": 24,
+  "retry": {
+    "request_retries": 3,
+    "case_retries": 1
+  },
+  "seed": 42,
+  "failure_policy": "timeout 标记为超时状态，计算准确率时与 fail 同样计为未通过（计入分母，不计入分子）"
+}
