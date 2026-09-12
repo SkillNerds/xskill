@@ -1,0 +1,18 @@
+{
+  "run_id": "full-officeqa-skillopt-eval",
+  "uid": "UID0203",
+  "model": "deepseek-v4-flash",
+  "captured_at": "2026-09-10T07:24:00+00:00",
+  "response": {
+    "id": "100fc24f-17e9-42b4-bf08-d2c6830cbf2a",
+    "model": "deepseek-v4-flash",
+    "usage": {
+      "input_tokens": 48302,
+      "output_tokens": 8586,
+      "cache_read_input_tokens": 658432,
+      "prompt_tokens": 48302,
+      "completion_tokens": 8586,
+      "prompt_cache_hit_tokens": 658432
+    }
+  }
+}

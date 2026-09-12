@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "run_id": "eval-officeqa-xskill-example",
+  "benchmark": "officeqa",
+  "split_name": "test",
+  "model": "deepseek-v4-flash",
+  "n_total": 3,
+  "n_pass": 1,
+  "accuracy": 0.3333333333333333,
+  "status_counts": {
+    "pass": 1,
+    "fail": 1,
+    "timeout": 1,
+    "invalid": 0,
+    "infra_error": 0
+  },
+  "usage_totals": {
+    "input_tokens": 2150,
+    "output_tokens": 300,
+    "total_tokens": 2450,
+    "cost_usd": 0.0025,
+    "usage_missing_n": 1
+  },
+  "refs": {
+    "run_config_sha256": "aa0763eccf663f72e6bb05b047cc8438d809dec2f4c86ed76ef26606617bce13",
+    "results_sha256": "a63983e67d9c3983e9d48edffffc00c6b50df724ca35a83dd630af2dd3be21d5",
+    "skill_sha256": "3a8ca2b1a5c8d81a9f1827364500000000000000000000000000000000000001",
+    "split_manifest_sha256": "b3e78c450bf45072531727834d12277155a5e6038e06fd46401dafaf8eb3550d"
+  },
+  "started_at": "2026-08-31T08:00:00+00:00",
+  "finished_at": "2026-08-31T08:04:12+00:00",
+  "resumed": false
+}

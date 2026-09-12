@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SkillNerds/xskill/benchmarks/schemas/split_manifest.schema.json",
+  "title": "split_manifest",
+  "description": "题号划分名单。只允许放 id，禁止放题目正文或语料路径。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "benchmark",
+    "source",
+    "counts",
+    "train",
+    "val",
+    "test"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "benchmark": { "type": "string", "enum": ["officeqa", "spreadsheet", "alfworld"] },
+    "source": { "type": "string", "minLength": 1 },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["train", "val", "test"],
+      "properties": {
+        "train": { "type": "integer", "minimum": 0 },
+        "val": { "type": "integer", "minimum": 0 },
+        "test": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "train": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "val": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "test": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

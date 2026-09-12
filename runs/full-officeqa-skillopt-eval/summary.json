@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "run_id": "full-officeqa-skillopt-eval",
+  "benchmark": "officeqa",
+  "split_name": "test",
+  "model": "deepseek-v4-flash",
+  "n_total": 172,
+  "n_pass": 137,
+  "accuracy": 0.7965116279069767,
+  "status_counts": {
+    "pass": 137,
+    "fail": 33,
+    "timeout": 2,
+    "invalid": 0,
+    "infra_error": 0
+  },
+  "usage_totals": {
+    "input_tokens": 4461583,
+    "output_tokens": 2629501,
+    "total_tokens": 7091084,
+    "cost_usd": 4.335900295999999,
+    "usage_missing_n": 2
+  },
+  "refs": {
+    "run_config_sha256": "4821f835c448afbe6b78de53e929778a5e4b582e9ede0f8e0019012d1bd8abbb",
+    "results_sha256": "ef3edd82f7387a0fdaa97f777cb7483015f285c0bda6a8ecdea8a7f72aa6e8c2",
+    "skill_sha256": "5c7fb76fa008629e673ae97b459572fffbd56d051e1fc5231845ca4e558dafb0",
+    "split_manifest_sha256": "b3e78c450bf45072531727834d12277155a5e6038e06fd46401dafaf8eb3550d"
+  },
+  "started_at": "2026-09-10T06:25:59+00:00",
+  "finished_at": "2026-09-10T07:39:00+00:00",
+  "resumed": false
+}

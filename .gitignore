@@ -77,3 +77,13 @@ Thumbs.db
 scripts/bench/real/
 scripts/bench/baseline_window.json
 scripts/bench/baseline_window.md
+
+# 精度评测本地产物（默认不进 git）
+/runs/*
+# 本机已跑完的 SkillOpt 三套参考分（文档「当前进度」）
+!/runs/full-officeqa-skillopt-eval/
+!/runs/full-officeqa-skillopt-eval/**
+!/runs/full-spreadsheet-skillopt-eval/
+!/runs/full-spreadsheet-skillopt-eval/**
+!/runs/full-alfworld-skillopt-eval-rerun/
+!/runs/full-alfworld-skillopt-eval-rerun/

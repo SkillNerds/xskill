@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "run_id": "train-officeqa-skillopt-example",
+  "algo": "skillopt",
+  "benchmark": "officeqa",
+  "train_uids_sha256": "1a6e07ef8533ce27c286f5c2985b1927e829809de869eadc877fe8e471bb3d19",
+  "merge_val_into_train": false,
+  "selection_split": "val",
+  "optimizer_backend": "openai_chat",
+  "target_harness": "skillopt_claude_code_exec",
+  "hyperparameters": {
+    "rounds": 5,
+    "batch_size": 10,
+    "gate_threshold": 0.75,
+    "rollout_workers": 4
+  },
+  "intermediate_checkpoints": [
+    {
+      "round": 1,
+      "skill_sha256": "5c6d7e8f1234567890abcdef0000000000000000000000000000000000000002",
+      "val_score": 0.62,
+      "action": "accept",
+      "log_file": "./runs/train-skillopt/logs/round_1.log"
+    },
+    {
+      "round": 2,
+      "skill_sha256": "1a2b3c4d5e678901234567890000000000000000000000000000000000000003",
+      "val_score": 0.58,
+      "action": "reject_and_rollback",
+      "log_file": "./runs/train-skillopt/logs/round_2.log"
+    }
+  ],
+  "skill_sha256": "5c6d7e8f1234567890abcdef0000000000000000000000000000000000000002"
+}

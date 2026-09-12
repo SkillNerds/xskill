@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "run_id": "full-alfworld-skillopt-train",
+  "algo": "skillopt",
+  "benchmark": "alfworld",
+  "train_uids_sha256": "4da851c361a2482c3443828920f4c80efd5f0b94351684a40d7440a20c7d2345",
+  "merge_val_into_train": false,
+  "selection_split": "val",
+  "optimizer_backend": "openai_chat",
+  "target_harness": "skillopt_claude_code_exec",
+  "hyperparameters": {
+    "source": "configs/alfworld/default.yaml",
+    "runtime": "image",
+    "num_epochs": 4,
+    "train_size": 0,
+    "batch_size": 40,
+    "accumulation": 1,
+    "minibatch_size": 8,
+    "merge_batch_size": 8,
+    "skill_update_mode": "patch",
+    "lr_scheduler": "cosine",
+    "learning_rate": 4,
+    "use_gate": true,
+    "use_slow_update": true,
+    "use_meta_skill": true,
+    "seed": 42,
+    "rollout_workers": 4,
+    "rollout_workers_official": 8,
+    "optimizer_backend": "openai_chat",
+    "target_backend": "claude_code_exec",
+    "skill_init": "vendor_default",
+    "deviations": {
+      "evaluation.eval_test": "官方 true → false：训练阶段不许碰 test split，测试集只在评测阶段跑"
+    }
+  },
+  "intermediate_checkpoints": [
+    {
+      "step": 1,
+      "round": 1,
+      "skill_sha256": "3f00bf00cd6e92e8cf7ecb05137ebbff615bda471f3adb353cc341f6c33a0154",
+      "checkpoint_dir": "/home/admin/alfworld_full/skillopt/train/skillopt_run/steps/step_0001",
+      "action": "accept_new_best",
+      "log_file": "/home/admin/alfworld_full/skillopt/train/logs/skillopt_train.log",
+      "val_score": 1.0
+    },
+    {
+      "step": 2,
+      "round": 2,
+      "skill_sha256": "4aeb4782bdba09709fd62c64a63aafebb75ab1796119d17a9c6a74601f3366b2",
+      "checkpoint_dir": "/home/admin/alfworld_full/skillopt/train/skillopt_run/steps/step_0002",
+      "action": "reject",
+      "log_file": "/home/admin/alfworld_full/skillopt/train/logs/skillopt_train.log",
+      "val_score": 0.9444444444444444
+    },
+    {
+      "step": 3,
+      "round": 3,
+      "skill_sha256": "ccf96797e380ed7323b5e303ac8128779b077b6c3768bf5e2a96f7e077542686",
+      "checkpoint_dir": "/home/admin/alfworld_full/skillopt/train/skillopt_run/steps/step_0003",
+      "action": "skip_no_patches",
+      "log_file": "/home/admin/alfworld_full/skillopt/train/logs/skillopt_train.log",
+      "val_score": 1.0
+    },
+    {
+      "step": 4,
+      "round": 4,
+      "skill_sha256": "96900449ecd2294d337d34423cf9c4746a199db90901a5010a42e0d03a4a32c4",
+      "checkpoint_dir": "/home/admin/alfworld_full/skillopt/train/skillopt_run/steps/step_0004",
+      "action": "skip_no_patches",
+      "log_file": "/home/admin/alfworld_full/skillopt/train/logs/skillopt_train.log",
+      "val_score": 1.0
+    }
+  ],
+  "skill_sha256": "96900449ecd2294d337d34423cf9c4746a199db90901a5010a42e0d03a4a32c4"
+}

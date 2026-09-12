@@ -1,0 +1,14 @@
+{
+  "eval_submission_id": 181,
+  "algo": "xskill",
+  "benchmark": "spreadsheet",
+  "model": "deepseek-v4-flash",
+  "workers": 3,
+  "timeout_s": 600,
+  "max_tool_turns": 5,
+  "historical_tools": ["Read", "Bash", "Skill"],
+  "merge_val_into_train": false,
+  "skill_sha256": "3a8ca2b1a5c8d81a9f1827364500000000000000000000000000000000000001",
+  "scorer": {"id": "spreadsheetbench.cell_compare", "metric": "hard"},
+  "xskill_commit": "c7be0976f30f4011d660250f5e0ef35a314c34f1"
+}
