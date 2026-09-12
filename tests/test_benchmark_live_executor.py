@@ -29,7 +29,8 @@ UNTOUCHED = {
 
 
 def _sha(rel: str) -> str:
-    return hashlib.sha256((ROOT / rel).read_bytes()).hexdigest()
+    data = (ROOT / rel).read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(data).hexdigest()
 
 
 def test_live_does_not_touch_official_manifests_or_splitter():

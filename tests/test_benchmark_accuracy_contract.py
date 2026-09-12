@@ -109,19 +109,18 @@ def test_timeout_row_is_not_correct():
     assert summary["status_counts"]["timeout"] == 1
 
 
+def _file_sha(path: Path) -> str:
+    data = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
 def test_summary_refs_match_files():
     ex = BENCH / "officeqa" / "examples" / "eval_xskill"
     summary = _load(ex / "summary.json")
-    assert summary["refs"]["run_config_sha256"] == hashlib.sha256(
-        (ex / "run_config.json").read_bytes()
-    ).hexdigest()
-    assert summary["refs"]["results_sha256"] == hashlib.sha256(
-        (ex / "results.jsonl").read_bytes()
-    ).hexdigest()
+    assert summary["refs"]["run_config_sha256"] == _file_sha(ex / "run_config.json")
+    assert summary["refs"]["results_sha256"] == _file_sha(ex / "results.jsonl")
     manifest = BENCH / "officeqa" / "manifests" / "officeqa_skillopt_id_split.json"
-    assert summary["refs"]["split_manifest_sha256"] == hashlib.sha256(
-        manifest.read_bytes()
-    ).hexdigest()
+    assert summary["refs"]["split_manifest_sha256"] == _file_sha(manifest)
 
 
 def test_missing_run_id_rejected():

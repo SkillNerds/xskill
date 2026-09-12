@@ -8,6 +8,28 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
+# Unix 写到已关闭的管道是 EPIPE(32)。Windows 同一情况常报 EINVAL(22)。
+_BROKEN_PIPE = {32}
+if os.name == "nt":
+    _BROKEN_PIPE.add(22)
+
+
+def _is_broken_pipe(exc: OSError) -> bool:
+    return getattr(exc, "errno", None) in _BROKEN_PIPE
+
+
+def _write_text(handle: TextIO, text: str) -> None:
+    try:
+        handle.write(text)
+        handle.flush()
+        return
+    except UnicodeEncodeError:
+        pass
+    encoding = getattr(handle, "encoding", None) or "utf-8"
+    safe = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    handle.write(safe)
+    handle.flush()
+
 
 def ignore_sigpipe() -> None:
     try:
@@ -38,7 +60,7 @@ def quiet_broken_stdout() -> None:
     except BrokenPipeError:
         _redirect_stdout_devnull()
     except OSError as exc:
-        if getattr(exc, "errno", None) == 32:
+        if _is_broken_pipe(exc):
             _redirect_stdout_devnull()
         else:
             raise
@@ -48,12 +70,11 @@ def safe_write(text: str, stream: TextIO | None = None) -> None:
     line = text if text.endswith("\n") else f"{text}\n"
     handle = sys.stdout if stream is None else stream
     try:
-        handle.write(line)
-        handle.flush()
+        _write_text(handle, line)
     except BrokenPipeError:
         return
     except OSError as exc:
-        if getattr(exc, "errno", None) == 32:
+        if _is_broken_pipe(exc):
             return
         raise
 
@@ -67,12 +88,11 @@ class SafeTee:
     def write(self, text: str) -> int:
         for handle in self.handles:
             try:
-                handle.write(text)
-                handle.flush()
+                _write_text(handle, text)
             except BrokenPipeError:
                 continue
             except OSError as exc:
-                if getattr(exc, "errno", None) == 32:
+                if _is_broken_pipe(exc):
                     continue
                 raise
         return len(text)
@@ -84,7 +104,7 @@ class SafeTee:
             except BrokenPipeError:
                 continue
             except OSError as exc:
-                if getattr(exc, "errno", None) == 32:
+                if _is_broken_pipe(exc):
                     continue
                 raise
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -35,7 +36,8 @@ UNTOUCHED = {
 
 
 def _sha(rel: str) -> str:
-    return hashlib.sha256((ROOT / rel).read_bytes()).hexdigest()
+    data = (ROOT / rel).read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(data).hexdigest()
 
 
 def _skill_dir(tmp_path: Path) -> Path:
@@ -368,6 +370,30 @@ def test_fake_run_pipeline(tmp_path):
     summary = json.loads((out / "eval/summary.json").read_text(encoding="utf-8"))
     assert summary["benchmark"] == "alfworld"
     assert summary["n_total"] == 3
+
+
+def test_safe_write_survives_cp1252_progress_bar():
+    from xskill.bench.card import progress_line
+    from xskill.bench.stdio import safe_write
+
+    class Cp1252:
+        encoding = "cp1252"
+
+        def __init__(self) -> None:
+            self.chunks: list[str] = []
+
+        def write(self, text: str) -> int:
+            text.encode("cp1252")
+            self.chunks.append(text)
+            return len(text)
+
+        def flush(self) -> None:
+            return None
+
+    handle = Cp1252()
+    safe_write(progress_line(3, 3, 1.0), handle)
+    assert handle.chunks
+    assert "Evaluating" in "".join(handle.chunks)
 
 
 def test_run_finishes_eval_when_stdout_pipe_breaks(tmp_path, monkeypatch):
@@ -813,7 +839,8 @@ def test_skillopt_official_train_alfworld_runs_in_image(tmp_path):
     assert "sk-run-key" not in " ".join(plan.argv)
     env_file = Path(plan.argv[plan.argv.index("--env-file") + 1])
     assert "TARGET_AZURE_OPENAI_API_KEY=sk-run-key" in env_file.read_text(encoding="utf-8")
-    assert oct(env_file.stat().st_mode & 0o777) == "0o600"
+    if os.name != "nt":
+        assert oct(env_file.stat().st_mode & 0o777) == "0o600"
     script = plan.argv[-1]
     # 覆盖 entrypoint 直接跑官方 train.py，绕开打榜镜像里 batch_size=3 那套缩水值。
     assert "scripts/train.py" in script
