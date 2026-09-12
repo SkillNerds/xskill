@@ -125,11 +125,14 @@ def test_alfworld_mini_import(tmp_path: Path):
 
 def _kind_has(board: str, job: str) -> bool:
     path = f"/models/xarena/{board}/{job}/eval/results.jsonl"
-    proc = subprocess.run(
-        ["docker", "exec", "lb-control-plane", "test", "-f", path],
-        capture_output=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["docker", "exec", "lb-control-plane", "test", "-f", path],
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
     return proc.returncode == 0
 
 

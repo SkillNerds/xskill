@@ -195,12 +195,17 @@ def test_official_merge_counts_do_not_rewrite_manifest():
 
 
 def test_officeqa_scorer_is_skillopt_evaluate_not_reward():
-    result = officeqa_evaluate("1,284,500,000", "1284500000")
-    assert float(result["em"]) == 1.0
-    assert_no_reward_imported()
     src = (ROOT / "src/xskill/bench/scorer.py").read_text(encoding="utf-8")
     assert "reward.py" in src
     assert "refused" in src or "must not" in src
+    try:
+        result = officeqa_evaluate("1,284,500,000", "1284500000")
+    except RuntimeError as exc:
+        if "not found" in str(exc):
+            pytest.skip("SkillOpt OfficeQA evaluate() not installed")
+        raise
+    assert float(result["em"]) == 1.0
+    assert_no_reward_imported()
 
 
 def test_fake_eval_writes_four_files_and_card(tmp_path, capsys):
@@ -769,6 +774,11 @@ def test_skillopt_train_secrets_file_is_gone_when_the_run_ends(tmp_path):
         (run_dir / "best_skill.md").write_text("# best\n", encoding="utf-8")
         return 0
 
+    split = tmp_path / "split"
+    for name in ("train", "val", "test"):
+        folder = split / name
+        folder.mkdir(parents=True)
+        (folder / "items.json").write_text("[]\n", encoding="utf-8")
     run_official_train(
         benchmark="alfworld",
         model="deepseek-v4-flash",
@@ -777,6 +787,7 @@ def test_skillopt_train_secrets_file_is_gone_when_the_run_ends(tmp_path):
         output_dir=out,
         proxy_url="http://127.0.0.1:4000",
         proxy_key="sk-run-key",
+        split_dir=split,
         runner=fake_exec,
     )
     assert not secrets.exists()

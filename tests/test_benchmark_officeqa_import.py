@@ -131,11 +131,14 @@ def test_mini_import_does_not_touch_splitter_files():
 
 
 def _kind_sub200_available() -> bool:
-    proc = subprocess.run(
-        ["docker", "exec", "lb-control-plane", "test", "-f", KIND_RESULTS],
-        capture_output=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["docker", "exec", "lb-control-plane", "test", "-f", KIND_RESULTS],
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
     return proc.returncode == 0
 
 

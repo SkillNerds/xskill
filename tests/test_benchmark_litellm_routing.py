@@ -28,9 +28,12 @@ BENCHMARKS = ("officeqa", "spreadsheet", "alfworld")
 
 
 def _image_or_skip(image: str) -> str:
-    proc = subprocess.run(
-        ["docker", "image", "inspect", image], capture_output=True, text=True, check=False
-    )
+    try:
+        proc = subprocess.run(
+            ["docker", "image", "inspect", image], capture_output=True, text=True, check=False
+        )
+    except FileNotFoundError:
+        pytest.skip("docker not installed")
     if proc.returncode != 0:
         pytest.skip(f"image missing: {image}")
     return image

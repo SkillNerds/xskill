@@ -31,7 +31,7 @@ from xskill.cli import build_parser
 from xskill.usage import cost_usd, extract_usage, load_price_table
 
 ROOT = Path(__file__).resolve().parents[1]
-PROPOSAL = Path("/home/admin/xskill/benchmarks/BENCHMARK_FRAMEWORK_PROPOSAL.md")
+PROPOSAL = ROOT / "benchmarks" / "BENCHMARK_FRAMEWORK_PROPOSAL.md"
 UNTOUCHED = {
     "scripts/bench/README.md": "2f3fb4030e0a3eb32be655dd5f994f04db47a9b0041300942a885f9383b8387b",
     "scripts/bench/evaluate.py": "7fa0916005ec820cbeedc1ba6d7c8b5211c56990f8b14c4d3db1840feb14600d",
@@ -452,12 +452,15 @@ def test_host_claude_custom_headers_smoke():
     ],
 )
 def test_image_claude_custom_headers_smoke(image):
-    proc = subprocess.run(
-        ["docker", "image", "inspect", image],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["docker", "image", "inspect", image],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        pytest.skip("docker not installed")
     if proc.returncode != 0:
         pytest.skip(f"image missing: {image}")
     server, port = _serve_header_capture()
