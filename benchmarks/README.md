@@ -65,14 +65,22 @@ python3.11 benchmarks/validate.py
 
 ## 目录
 
+规范、名单、样例在本目录。实现主体在 `src/xskill/bench/`，命令从 `src/xskill/cli.py` 挂 `xskill bench`。`scripts/bench/` 是薄包装、旧榜导入和 LiteLLM 辅助。完整树见 `BENCHMARK_FRAMEWORK_PROPOSAL.md` 的「仓库目录组织与文件存放位置」。
+
 ```text
 benchmarks/
+├── BENCHMARK_FRAMEWORK_PROPOSAL.md
 ├── README.md
 ├── validate.py
-├── schemas/
+├── schemas/                    # 四个产物加划分名单
 ├── images/
 │   └── xskill_train_litellm/   # 只改上游地址来源的训练镜像副本
 ├── officeqa/
 ├── spreadsheet/
 └── alfworld/
+
+src/xskill/bench/               # 训练、评测、打分
+scripts/bench/                  # 薄包装与辅助（同目录拆分器旧文件勿覆盖）
+tests/test_benchmark_*.py
+runs/                           # 默认不进 git；三套 SkillOpt 参考分已进仓
 ```

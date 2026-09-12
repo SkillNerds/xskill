@@ -498,52 +498,123 @@ Artifacts saved to:
 
 ## 仓库目录组织与文件存放位置
 
-代码仓库划分为「通用公共层」「具体数据集层」以及「本地实验产物」三层结构：
+下面按仓库里已经落地的位置写，不是早期设想的三层树。规范、划分名单和样例在 `benchmarks/`。训练、评测、打分的实现主体在 `src/xskill/bench/`，命令由 `src/xskill/cli.py` 挂上 `xskill bench`。`scripts/bench/` 是薄包装、旧榜导入和 LiteLLM 辅助，三个数据集的 `run.py` 转调 `xskill bench`，`evaluate.py` 只校验已有 run 目录、不调模型。OfficeQA 没有单独的 `evaluator.py`，归一化匹配在 `src/xskill/bench/scorer.py` 里调用 SkillOpt 的 `evaluate`。`scripts/bench/` 同目录还有轨迹拆分器旧文件，与精度评测无关，不要改、不要覆盖。单测在 `tests/test_benchmark_*.py`，pytest 由 `tests/conftest.py` 设 `XSKILL_BENCH_FAKE=1`。`runs/` 默认不进 git；本机已跑完的三套 SkillOpt 参考分按例外进仓。
 
 ```text
 xskill/
-├── benchmarks/                                # 评测规范与数据集配置
-│   ├── README.md                              # 全局精度评测总说明指南
-│   ├── schemas/                               # 四份产物文件的通用 JSON 格式规范
+├── benchmarks/                                          # 评测规范、划分名单、样例、校验
+│   ├── BENCHMARK_FRAMEWORK_PROPOSAL.md                  # 本文（规范全文）
+│   ├── README.md                                        # 精度评测合同说明
+│   ├── validate.py                                      # 校验四个产物与划分名单
+│   ├── schemas/
 │   │   ├── run_config.schema.json
 │   │   ├── train_provenance.schema.json
 │   │   ├── result_record.schema.json
-│   │   └── summary.schema.json
-│   ├── officeqa/                              # OfficeQA 专属目录
-│   │   ├── README.md                          # OfficeQA 评测说明
-│   │   ├── manifests/                         # 题号划分名单（officeqa_skillopt_id_split.json）
-│   │   └── examples/                          # 填写参考样例（run_config 等示例文件）
-│   ├── spreadsheet/                           # SpreadsheetBench 专属目录
-│   │   ├── README.md                          # 表格评测说明
-│   │   ├── manifests/                         # 题号划分名单（train 80 / val 40 / test 280）
-│   │   └── examples/                          # 表格任务配置样例
-│   └── alfworld/                              # ALFWorld 专属目录
-│       ├── README.md                          # 具身任务评测说明
-│       ├── manifests/                         # 题号划分名单（train 39 / val 18 / test 134）
-│       └── examples/                          # 交互任务配置样例
+│   │   ├── summary.schema.json
+│   │   └── split_manifest.schema.json                   # 划分名单格式
+│   ├── images/
+│   │   └── xskill_train_litellm/                        # 只改上游地址来源的训练镜像副本
+│   │       ├── Dockerfile
+│   │       ├── build.sh
+│   │       └── patch_litellm.sh
+│   ├── officeqa/
+│   │   ├── README.md
+│   │   ├── manifests/
+│   │   │   └── officeqa_skillopt_id_split.json
+│   │   └── examples/
+│   │       ├── eval_xskill/                             # run_config、results、summary
+│   │       ├── eval_skillopt/
+│   │       ├── train_xskill/                            # train_provenance
+│   │       └── train_skillopt/
+│   ├── spreadsheet/
+│   │   ├── README.md
+│   │   ├── manifests/
+│   │   │   └── spreadsheet_skillopt_id_split.json       # train 80、val 40、test 280
+│   │   └── examples/
+│   │       └── eval_xskill/
+│   └── alfworld/
+│       ├── README.md
+│       ├── manifests/
+│       │   └── alfworld_skillopt_id_split.json           # train 39、val 18、test 134
+│       └── examples/
+│           └── eval_xskill/
 │
-├── scripts/bench/                             # 评测与打分程序
-│   ├── cli.py                                 # 统一的命令行入口（支持 xskill bench 调用）
-│   ├── litellm_usage.py                       # 通用用量统计工具（从网关日志提取 token 与费用）
-│   ├── officeqa/                              # OfficeQA 专属执行与打分脚本
-│   │   ├── run.py                             # OfficeQA 做题执行入口
-│   │   ├── evaluate.py                        # 评测校验与汇总脚本
-│   │   └── evaluator.py                       # OfficeQA 归一化精确匹配打分脚本（与 SkillOpt 对齐）
-│   ├── spreadsheet/                           # SpreadsheetBench 专属脚本
-│   │   ├── run.py                             # 表格任务做题入口
-│   │   └── evaluate.py                        # 电子表格比对打分脚本
-│   └── alfworld/                              # ALFWorld 专属脚本
-│       ├── run.py                             # 具身环境交互做题入口
-│       └── evaluate.py                        # 模拟器环境判定打分脚本
+├── src/xskill/
+│   ├── cli.py                                           # 挂上 xskill bench
+│   └── bench/                                           # 训练、评测、打分的实现主体
+│       ├── __init__.py
+│       ├── cli.py                                       # xskill bench 的真正入口
+│       ├── pipeline.py                                  # train、eval、run 流水线
+│       ├── live.py                                      # 真做题（Claude 加官方打分）
+│       ├── executor.py                                  # 做题执行器接线
+│       ├── scorer.py                                    # 打分；OfficeQA 调 SkillOpt evaluate
+│       ├── dataset.py                                   # 按官方划分名单取题
+│       ├── split.py                                     # 读划分名单
+│       ├── hparams.py                                   # 超参单一来源
+│       ├── artifacts.py                                 # 四个产物读写与校验
+│       ├── card.py                                      # 成绩卡
+│       ├── usage.py                                     # 用量回填
+│       ├── proxy.py                                     # LiteLLM 代理与虚拟 key
+│       ├── skillopt_train.py                            # 拉起 SkillOpt 官方 train.py
+│       ├── xskill_image.py                              # 拉起 xskill 训练镜像
+│       ├── alfworld_eval_rollout.py                     # ALFWorld 单局多轮
+│       ├── train_loop.py                                # 冻结 skill 的文件读写
+│       ├── skill_io.py                                  # skill 文件摘要
+│       ├── mode.py                                      # 真做题；pytest 走 XSKILL_BENCH_FAKE
+│       ├── stdio.py                                     # 管道断开后继续跑
+│       ├── paths.py                                     # 仓库与名单路径
+│       └── constants.py
 │
-└── runs/                                      # 本地实验产物目录（自动生成，默认不进 Git）
-    └── <run_id>/                              # 每次实验独立的输出目录
-        ├── run_config.json                    # 1. 运行前配置
-        ├── train_provenance.json              # 2. 训练来源说明（若包含训练）
-        ├── results.jsonl                      # 3. 逐题执行明细（含 gold_answer 与 request_ids）
-        ├── summary.json                       # 4. 最终汇总报告
-        ├── checkpoints/                       # 训练演化过程中的 skill 版本快照目录
-        └── logs/                              # 详细的单题交互与系统日志目录
+├── scripts/bench/                                       # 薄包装、旧榜导入、LiteLLM 辅助
+│   ├── cli.py                                           # 转调 xskill.bench.cli
+│   ├── litellm_usage.py                                 # 从网关或旁路文件补记用量
+│   ├── litellm_setup.py                                 # 检查并补齐代理路由
+│   ├── contract_import.py                               # 把旧榜评测收成四个产物
+│   ├── _smoke_skills/
+│   │   ├── alfworld-react/
+│   │   │   └── SKILL.md
+│   │   └── spreadsheet-python/
+│   │       └── SKILL.md
+│   ├── officeqa/
+│   │   ├── README.md
+│   │   ├── run.py                                       # 转调 xskill bench
+│   │   ├── evaluate.py                                  # 校验已有 run 目录，不调模型
+│   │   └── import_leaderboard_eval.py
+│   ├── spreadsheet/
+│   │   ├── README.md
+│   │   ├── run.py
+│   │   ├── evaluate.py
+│   │   └── import_leaderboard_eval.py
+│   ├── alfworld/
+│   │   ├── README.md
+│   │   ├── run.py
+│   │   ├── evaluate.py
+│   │   └── import_leaderboard_eval.py
+│   └── （同目录另有轨迹拆分器旧文件，与精度评测无关）
+│
+├── tests/
+│   ├── conftest.py                                      # pytest 设 XSKILL_BENCH_FAKE=1
+│   ├── test_benchmark_accuracy_contract.py
+│   ├── test_benchmark_bench_cli.py
+│   ├── test_benchmark_hparams.py
+│   ├── test_benchmark_litellm_usage.py
+│   ├── test_benchmark_litellm_routing.py
+│   ├── test_benchmark_live_executor.py
+│   ├── test_benchmark_officeqa_import.py
+│   ├── test_benchmark_step3_import.py
+│   └── test_benchmark_xskill_image_train.py
+│
+└── runs/                                                # 实验产物；默认不进 git
+    ├── <run_id>/                                        # 新跑的实验
+    │   ├── run_config.json                              # 1. 运行前配置
+    │   ├── train_provenance.json                        # 2. 训练来源（含训练时才有）
+    │   ├── results.jsonl                                # 3. 逐题明细
+    │   ├── summary.json                                 # 4. 汇总成绩单
+    │   ├── checkpoints/                                 # 冻结 skill 快照
+    │   └── logs/                                        # 单题交互与用量日志
+    ├── full-officeqa-skillopt-eval/                     # 已进 git 的 SkillOpt 参考分
+    ├── full-spreadsheet-skillopt-eval/
+    └── full-alfworld-skillopt-eval-rerun/
 ```
 
 ---
