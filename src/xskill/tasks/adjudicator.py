@@ -279,6 +279,10 @@ class LLMTaskLinkAdjudicator:
             task_id=value["task_id"],
             reason_code=value["reason_code"],
         )
-        if judgement.task_id is not None and judgement.task_id not in set(candidate_ids):
-            raise TaskAdjudicationError("model selected a task outside bounded candidates")
+        if judgement.task_id is not None and judgement.task_id not in set(
+            candidate_ids
+        ):
+            raise TaskAdjudicationError(
+                "model selected a task outside bounded candidates"
+            )
         return judgement

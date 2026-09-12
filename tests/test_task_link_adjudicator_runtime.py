@@ -52,9 +52,7 @@ class _FakeCompletions:
 )
 def test_runtime_config_validates_task_adjudication(config, message):
     with pytest.raises(ValueError, match=message):
-        normalize_runtime_config(
-            {"llm": {}, "embedding": {}, "task_graph": config}
-        )
+        normalize_runtime_config({"llm": {}, "embedding": {}, "task_graph": config})
 
 
 def test_service_builds_opt_in_adjudicator_with_a_separate_bounded_budget(

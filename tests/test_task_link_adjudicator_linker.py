@@ -22,7 +22,9 @@ def _sha(value: str) -> str:
 
 
 def _trajectory(*intents: str) -> ScopedTrajectoryEvidence:
-    session_ref = SessionRef("tenant-test", "task-scope-test", "source-test", "traj-test")
+    session_ref = SessionRef(
+        "tenant-test", "task-scope-test", "source-test", "traj-test"
+    )
     scope = ScopeIdentity(
         tenant_id="tenant-test",
         task_scope_id="task-scope-test",
@@ -176,9 +178,10 @@ def test_unconfirmed_model_link_stays_proposed_and_audit_is_private(tmp_path):
     store.publish(generation)
     loaded = store.load_current()
     assert loaded is not None
-    assert loaded.metrics["model_adjudications"] == generation.metrics[
-        "model_adjudications"
-    ]
+    assert (
+        loaded.metrics["model_adjudications"]
+        == generation.metrics["model_adjudications"]
+    )
 
 
 def test_model_abstention_is_visible_for_review_without_forcing_a_link():
@@ -193,8 +196,7 @@ def test_model_abstention_is_visible_for_review_without_forcing_a_link():
     assert generation.metrics["model_abstain_judgement_count"] == 1
     assert generation.metrics["model_needs_review_membership_count"] == 1
     assert any(
-        membership.decision == "needs_review"
-        for membership in generation.memberships
+        membership.decision == "needs_review" for membership in generation.memberships
     )
 
 

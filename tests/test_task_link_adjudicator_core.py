@@ -36,9 +36,7 @@ class _FakeLLM:
 
 
 def _response(decision="same_task", task_id="task-allowed", reason="same_objective"):
-    return json.dumps(
-        {"decision": decision, "task_id": task_id, "reason_code": reason}
-    )
+    return json.dumps({"decision": decision, "task_id": task_id, "reason_code": reason})
 
 
 def _question(*, candidates=None) -> TaskLinkQuestion:
@@ -70,9 +68,7 @@ def test_adjudicator_emits_a_bounded_prompt_and_accepts_structured_output():
 
     judgement = LLMTaskLinkAdjudicator(llm).judge(_question())
 
-    assert judgement == TaskLinkJudgement(
-        "same_task", "task-allowed", "same_objective"
-    )
+    assert judgement == TaskLinkJudgement("same_task", "task-allowed", "same_objective")
     prompt, system = llm.calls[0]
     assert json.loads(prompt)["candidates"][0]["task_id"] == "task-allowed"
     assert "untrusted evidence" in system
