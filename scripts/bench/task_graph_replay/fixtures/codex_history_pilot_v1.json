@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "suite_id": "privacy-safe-codex-history-pilot-v1",
+  "run_manifest": {
+    "repository_revision": "c7be097",
+    "generated_at": "2026-08-31T14:00:00Z",
+    "fixture_kind": "privacy-safe-local-codex-pilot",
+    "source_note": "Semantic paraphrases of locally reviewed Codex user turns; no raw rollout, path, credential, or tool output is included."
+  },
+  "linker_config": {
+    "top_k": 8,
+    "recent_k": 6,
+    "posting_cap": 64
+  },
+  "cases": [
+    {
+      "case_id": "codex-maintenance-followup",
+      "sessions": [
+        {
+          "source_scope_id": "source-local-codex",
+          "traj_id": "traj-maintenance-followup",
+          "atoms": [
+            {
+              "atom_id": "atom-maintenance-prep",
+              "intent": "持续维护并迭代工具项目，完成本地开发准备",
+              "summary": "同步项目并建立后续维护所需的本地环境",
+              "raw_segment": "## User\n持续维护并迭代工具项目，先完成基本准备。\n",
+              "skills": []
+            },
+            {
+              "atom_id": "atom-maintainer-audit",
+              "intent": "核对维护者在远端仓库的全部进行中工作",
+              "summary": "检查维护者当前的 Issue、PR 和分支状态",
+              "raw_segment": "## User\n先核对维护者的全部线上工作情况。\n",
+              "skills": []
+            },
+            {
+              "atom_id": "atom-linker-question-1",
+              "intent": "确认 Atom 到 Logical Task 是否依靠规则并检查非 mock 测试",
+              "summary": "调查 Task linker 的实现与真实测试覆盖",
+              "raw_segment": "## User\n当前 Atom 到 Logical Task 依靠规则吗？有非 mock 的效果测试吗？\n",
+              "skills": []
+            },
+            {
+              "atom_id": "atom-linker-question-2",
+              "intent": "确认 Atom 到 Logical Task 是否依靠规则并检查非 mock 测试",
+              "summary": "再次确认 Task linker 的实现与真实测试覆盖",
+              "raw_segment": "## User\n当前 Atom 到 Logical Task 依靠规则吗？有非 mock 的效果测试吗？\n",
+              "skills": []
+            },
+            {
+              "atom_id": "atom-linker-history-eval",
+              "intent": "使用本机 Codex 历史验证 Atom 到 Logical Task 效果并设计 LLM 增强",
+              "summary": "延续 Task linker 调查，增加真实回放和 LLM 判别方案",
+              "raw_segment": "## User\n可以使用本机 Codex 历史验证效果吗？后续还需要增加 LLM 推理能力。\n",
+              "skills": []
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-maintenance-prep", "task_id": "task-maintenance-prep"},
+        {"atom_id": "atom-maintainer-audit", "task_id": "task-maintainer-audit"},
+        {"atom_id": "atom-linker-question-1", "task_id": "task-linker-evaluation"},
+        {"atom_id": "atom-linker-question-2", "task_id": "task-linker-evaluation"},
+        {"atom_id": "atom-linker-history-eval", "task_id": "task-linker-evaluation"}
+      ],
+      "expected_attempt_count": 3,
+      "expected_attempt_relations": []
+    },
+    {
+      "case_id": "codex-main-promotion-followup",
+      "sessions": [
+        {
+          "source_scope_id": "source-local-codex",
+          "traj_id": "traj-main-promotion",
+          "atoms": [
+            {
+              "atom_id": "atom-promote-1",
+              "intent": "进一步推进项目并最终合入 main 分支",
+              "summary": "继续现有实现并准备合入主分支",
+              "raw_segment": "## User\n进一步推进，这个最终要合入 main 分支。\n",
+              "skills": []
+            },
+            {
+              "atom_id": "atom-promote-2",
+              "intent": "进一步推进项目并最终合入 main 分支",
+              "summary": "继续现有实现并准备合入主分支",
+              "raw_segment": "## User\n进一步推进，最终都要合入主分支。\n",
+              "skills": []
+            },
+            {
+              "atom_id": "atom-promote-3",
+              "intent": "进一步推进项目并最终合入 main 分支",
+              "summary": "继续现有实现并准备合入主分支",
+              "raw_segment": "## User\n进一步推进，最终都要合入主分支。\n",
+              "skills": []
+            },
+            {
+              "atom_id": "atom-promote-optimize",
+              "intent": "持续推进并优化当前项目",
+              "summary": "在同一交付目标下继续优化",
+              "raw_segment": "## User\n持续化推进和优化。\n",
+              "skills": []
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-promote-1", "task_id": "task-project-promotion"},
+        {"atom_id": "atom-promote-2", "task_id": "task-project-promotion"},
+        {"atom_id": "atom-promote-3", "task_id": "task-project-promotion"},
+        {"atom_id": "atom-promote-optimize", "task_id": "task-project-promotion"}
+      ],
+      "expected_attempt_count": 1,
+      "expected_attempt_relations": []
+    },
+    {
+      "case_id": "codex-short-contextual-followup",
+      "sessions": [
+        {
+          "source_scope_id": "source-local-codex",
+          "traj_id": "traj-read-project",
+          "atoms": [
+            {
+              "atom_id": "atom-read-project",
+              "intent": "阅读当前项目",
+              "summary": "检查项目结构和实现",
+              "raw_segment": "## User\n阅读当前项目。\n",
+              "skills": []
+            },
+            {
+              "atom_id": "atom-understand-project",
+              "intent": "阅读并理解当前项目",
+              "summary": "继续检查项目结构并形成整体理解",
+              "raw_segment": "## User\n阅读和理解当前项目。\n",
+              "skills": []
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-read-project", "task_id": "task-read-project"},
+        {"atom_id": "atom-understand-project", "task_id": "task-read-project"}
+      ],
+      "expected_attempt_count": 1,
+      "expected_attempt_relations": []
+    },
+    {
+      "case_id": "codex-explicit-frontend-continuation",
+      "sessions": [
+        {
+          "source_scope_id": "source-local-codex",
+          "traj_id": "traj-frontend-continuation",
+          "atoms": [
+            {
+              "atom_id": "atom-frontend-1",
+              "intent": "继续推进修改并参照既有项目重构前端",
+              "summary": "延续当前修改并改善前端实现",
+              "raw_segment": "## User\n继续推进修改，并参照既有项目重构前端。\n",
+              "skills": []
+            },
+            {
+              "atom_id": "atom-frontend-2",
+              "intent": "继续推进修改并参照既有项目重构前端",
+              "summary": "延续当前修改并改善前端实现",
+              "raw_segment": "## User\n继续推进修改，并参照既有项目重构前端。\n",
+              "skills": []
+            }
+          ]
+        }
+      ],
+      "gold_memberships": [
+        {"atom_id": "atom-frontend-1", "task_id": "task-frontend-redesign"},
+        {"atom_id": "atom-frontend-2", "task_id": "task-frontend-redesign"}
+      ],
+      "expected_attempt_count": 1,
+      "expected_attempt_relations": []
+    }
+  ]
+}

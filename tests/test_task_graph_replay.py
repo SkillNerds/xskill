@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from pathlib import Path
 
@@ -30,6 +31,7 @@ BASELINE_PATH = FIXTURE_DIR / "baseline_v1.json"
 REPORT_PATH = FIXTURE_DIR / "baseline_v1.report.json"
 LINKER_FIXTURE_PATH = FIXTURE_DIR / "linker_structure_v1.json"
 LINKER_REPORT_PATH = FIXTURE_DIR / "linker_structure_v1.report.json"
+CODEX_HISTORY_FIXTURE_PATH = FIXTURE_DIR / "codex_history_pilot_v1.json"
 
 
 pytestmark = pytest.mark.algorithm_replay
@@ -300,6 +302,66 @@ def test_production_linker_beats_session_and_atom_grouping_baselines():
     assert metrics["proposals"]["max_proposals_per_atom"] <= 8
     assert metrics["attempts"]["exact_case_rate"] == 1.0
     assert metrics["attempt_relations"]["f1"] == 1.0
+
+
+def test_privacy_safe_codex_history_pilot_records_real_conversation_gap():
+    suite = evaluate_linker.load_suite(CODEX_HISTORY_FIXTURE_PATH)
+    report = evaluate_linker.evaluate_suite(suite)
+    metrics = report["metrics"]
+    task_graph = metrics["grouping"]["task_graph"]
+
+    assert report["run_manifest"]["fixture_kind"] == ("privacy-safe-local-codex-pilot")
+    assert sum(case["atom_count"] for case in report["cases"]) == 13
+    assert sum(case["gold_task_count"] for case in report["cases"]) == 6
+    assert task_graph["pairwise"] == {
+        "true_positive": 1,
+        "false_positive": 0,
+        "false_negative": 10,
+        "precision": 1.0,
+        "recall": 0.090909,
+        "f1": 0.166667,
+    }
+    assert task_graph["b3"]["f1"] == 0.7
+    assert metrics["proposals"]["recoverable_recall"] == 0.5
+    assert metrics["attempts"]["exact_case_rate"] == 0.25
+
+
+def test_privacy_safe_codex_history_pilot_contains_no_raw_local_identifiers():
+    payload = CODEX_HISTORY_FIXTURE_PATH.read_text(encoding="utf-8")
+
+    for forbidden in (
+        "/home/",
+        "/Users/",
+        ".codex/",
+        "github.com",
+        "tiammomo",
+        "api_key",
+        "Bearer ",
+        "DESKTOP-",
+        "password",
+    ):
+        assert forbidden not in payload
+    assert re.search(r"\b[A-Za-z]:\\", payload) is None
+    assert re.search(r"[\w.%+-]+@[\w.-]+\.[A-Za-z]{2,}", payload) is None
+    assert re.search(r"\bc\d{7,}\b", payload, re.IGNORECASE) is None
+    assert (
+        re.search(
+            r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+            r"|192\.168\.\d{1,3}\.\d{1,3}"
+            r"|172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})\b",
+            payload,
+        )
+        is None
+    )
+    assert (
+        re.search(
+            r"\bclient(?:_id)?\s*[`:=\s]+\s*`?[a-f0-9]{16,}`?",
+            payload,
+            re.IGNORECASE,
+        )
+        is None
+    )
+    assert re.search(r"\bsk-[A-Za-z0-9_-]{8,}", payload) is None
 
 
 def test_linker_structure_keeps_a_b_a_and_cross_session_uncertainty_visible():
