@@ -32,8 +32,9 @@
    校验：start_line 必须是真实 ``## User`` 行、必须 ≥ 续接点、必须严格大于
    上一条；不合法直接返回 error 字符串让 agent 自改。
 
-6. **增量续拆（续写场景）**：``resume_line = last_offset``；agent 只对
-   ``≥ resume_line`` 的新意图 ``submit_atom``,prior 块锚定,不全量重拆。
+6. **增量续拆（续写场景）**：续接点包含已校验的独立续写证据；助手或工具
+   续写归属前一个 Atom，不改写其正文，不新增贡献。新 User 之前的续写单独
+   保存，agent 从新 User 边界继续拆分，不全量重拆。
 
 7. **绝不收静默空**：``agent.run()`` 后查 ``run_response.status``,error 即抛。
 """
@@ -51,6 +52,7 @@ from typing import Any, Callable
 from xskill.agents.atom_text import dominant_language
 from xskill.config import interests_config
 from xskill.pipeline.atom import AtomTask, AtomTaskStore
+from xskill.pipeline.atom_continuations import project_continuation, save_continuation
 
 logger = logging.getLogger("xskill.task_agent")
 
@@ -374,7 +376,7 @@ class TaskAgent:
 
         EOF 硬校验：首 atom offset_start=1、末 atom offset_end=total+1；有 User
         轮却 0 提交 → 抛错；落盘后断言区间铺满 [resume, total+1)。
-        增量续拆：resume_line = last_offset,只切 ≥ resume 的新意图。
+        增量续拆：先保存旧目标的续写证据，再从新 User 边界拆新增意图。
         """
         traj_path = Path(traj_path)
         text = traj_path.read_text(encoding="utf-8")
@@ -382,7 +384,12 @@ class TaskAgent:
         total_lines = len(lines)
         source_model = _sidecar_model(traj_path)
 
-        resume_line = self.store.last_offset(traj_id) or 1
+        prior_atoms = self.store.list_by_traj(traj_id)
+        prior_atom = prior_atoms[-1] if prior_atoms else None
+        resume_line = (
+            project_continuation(self.store.root, prior_atom, lines).offset_end
+            if prior_atom is not None else 1
+        )
         if resume_line > total_lines:
             return []  # 没有新增行,省一次 LLM 调用
 
@@ -398,14 +405,18 @@ class TaskAgent:
         )
         # 续拆：只保留 ≥ resume_line 的 User 回合作为可切边界。
         new_queries = [(ln, snip) for ln, snip in queries if ln >= resume_line]
+        if prior_atom is not None:
+            # Results preceding the next User belong to the preceding Atom.
+            # Persist only a continuation locator; never re-emit a consumed Atom.
+            continuation_end = new_queries[0][0] if new_queries else total_lines + 1
+            tail = lines[resume_line - 1:continuation_end - 1]
+            if not new_queries or any(line.strip() for line in tail):
+                save_continuation(self.store.root, prior_atom, lines, continuation_end)
+                resume_line = continuation_end
+            # Preserve the legacy new-Atom boundary for a whitespace-only gap.
         if not new_queries:
-            # 续接点之后没有真正的用户意图回合（全是机器噪声 / 无 User）→
-            # 无新 atom。但若是首轮（resume==1）且全文确实无任何 User 回合,
-            # 则整条无可拆边界,合法返回空（无 User 轮,不触发 0 提交抛错）。
             return []
 
-        prior_atoms = self.store.list_by_traj(traj_id)
-        prior_atom = prior_atoms[-1] if prior_atoms else None
         # Do not feed ``prior_atom`` into the in-run deduper.  A persisted Atom
         # may already have been embedded, clustered, and consumed by SkillEdit;
         # mutating it here would require an explicit downstream invalidation and
