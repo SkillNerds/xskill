@@ -19,7 +19,9 @@ LLM 和 Embedding 分别配置 base_url / model / api_key
 from __future__ import annotations
 
 import logging
+import math
 import os
+import time
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Literal, Optional
@@ -61,6 +63,7 @@ class LLMClient:
     # 里可覆盖；缩小可省 token 费但要承担更高 fallback 率。
     max_tokens: int = 10000
     temperature: float = 0.0
+    request_timeout: float = 60.0
     # 限流配置；None = 不限流(快路径)。
     # 详见 src/xskill/utils/rate_limit.py 与 docs/adr/0001。
     rate_limit_cfg: "Optional[dict]" = field(default=None)
@@ -93,6 +96,16 @@ class LLMClient:
             kwargs["max_tokens"] = int(cfg["max_tokens"])
         if "temperature" in cfg:
             kwargs["temperature"] = float(cfg["temperature"])
+        if "request_timeout" in cfg:
+            request_timeout = cfg["request_timeout"]
+            if (
+                isinstance(request_timeout, bool)
+                or not isinstance(request_timeout, (int, float))
+                or not math.isfinite(request_timeout)
+                or request_timeout <= 0
+            ):
+                raise ValueError("llm.request_timeout 必须是正数")
+            kwargs["request_timeout"] = float(request_timeout)
         if "rate_limit" in cfg:
             kwargs["rate_limit_cfg"] = cfg["rate_limit"]
         return cls(**kwargs)
@@ -100,16 +113,40 @@ class LLMClient:
     def _get_client(self):
         if self._client is None:
             from openai import OpenAI
-            kwargs = {"base_url": self.base_url, "api_key": self.api_key or "no-key", "timeout": 60.0}
+            kwargs = {
+                "base_url": self.base_url,
+                "api_key": self.api_key or "no-key",
+                "timeout": self.request_timeout,
+            }
             if not ssl_verify():
                 import httpx
-                kwargs["http_client"] = httpx.Client(verify=False, timeout=60.0)
+                kwargs["http_client"] = httpx.Client(
+                    verify=False,
+                    timeout=self.request_timeout,
+                )
                 logger.warning("T2S_SSL_VERIFY=false → LLM HTTPS 证书验证已关闭")
             self._client = OpenAI(**kwargs)
         return self._client
 
-    def chat(self, prompt: str, system: str = "") -> str:
+    def chat(
+        self,
+        prompt: str,
+        system: str = "",
+        *,
+        timeout_seconds: float | None = None,
+    ) -> str:
         """单轮对话，返回文本"""
+        request_timeout = self.request_timeout
+        if timeout_seconds is not None:
+            if (
+                isinstance(timeout_seconds, bool)
+                or not isinstance(timeout_seconds, (int, float))
+                or not math.isfinite(timeout_seconds)
+                or timeout_seconds <= 0
+            ):
+                raise ValueError("timeout_seconds 必须是正数")
+            request_timeout = min(request_timeout, float(timeout_seconds))
+        deadline = time.monotonic() + request_timeout
         if self.rate_limit_cfg:
             # 走限流 wrapper —— 共享按 base_url 注册的桶
             from xskill.utils.rate_limit import (
@@ -130,10 +167,15 @@ class LLMClient:
                 weights=self.rate_limit_cfg.get("_pool_weights"),
             )
             wrapper = RateLimitedLLM(limiter=limiter, inner_call=self._raw_chat)
-            resp = wrapper.call(prompt=prompt, system=system, timeout=60.0)
+            resp = wrapper.call(
+                prompt=prompt,
+                system=system,
+                deadline=deadline,
+                timeout=request_timeout,
+            )
             self._record(resp)
             return resp.choices[0].message.content
-        resp = self._raw_chat(prompt=prompt, system=system)
+        resp = self._raw_chat(prompt=prompt, system=system, deadline=deadline)
         self._record(resp)
         return resp.choices[0].message.content
 
@@ -147,19 +189,31 @@ class LLMClient:
         )
         ledger.record_llm(current_step(), self.model, resp)
 
-    def _raw_chat(self, *, prompt: str, system: str = ""):
+    def _raw_chat(
+        self,
+        *,
+        prompt: str,
+        system: str = "",
+        deadline: float | None = None,
+    ):
         """原始 LLM 调用,返回完整 response 对象(供 wrapper reconcile usage)。"""
         client = self._get_client()
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
+        timeout = self.request_timeout
+        if deadline is not None:
+            timeout = min(timeout, deadline - time.monotonic())
+            if timeout <= 0:
+                raise TimeoutError("LLM request deadline exhausted before dispatch")
         try:
             return client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
+                timeout=timeout,
             )
         except Exception as e:
             logger.error(f"LLM 调用失败: {e}")
