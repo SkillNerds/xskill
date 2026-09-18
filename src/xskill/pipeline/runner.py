@@ -530,7 +530,9 @@ class DirectoryWatcher:
         # do not let the native classifier create baby skills.
         if self.native_distill:
             self._submit_cluster_batches()
-            self._submit_task_graph()
+        # Task tracking is independent of which kernel produces Skills.
+        # Its own enabled flag still controls backfill and dirty processing.
+        self._submit_task_graph()
 
         # ── Step 5a: 用户点名的 generate 入队到 SkillEdit 同一线程池 ──
         # 先于自动 SkillEdit 提交，避免后台整理把用户任务挤到池外。
