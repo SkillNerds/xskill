@@ -20,6 +20,10 @@ from xskill.tasks.models import (
 from xskill.tasks.scopes import ScopeIdentity
 
 
+class TrajectorySourceMissing(FileNotFoundError):
+    """The original Session disappeared, rather than a referenced Atom file."""
+
+
 def _hash_json(value: Any) -> str:
     payload = json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -430,8 +434,10 @@ def collect_trajectory_evidence(
         observed_at = datetime.fromtimestamp(
             markdown_path.stat().st_mtime, tz=timezone.utc,
         ).isoformat(timespec="milliseconds")
-    except OSError as error:
-        raise FileNotFoundError(f"trajectory evidence is unavailable: {markdown_path}") from error
+    except FileNotFoundError as error:
+        raise TrajectorySourceMissing(
+            f"trajectory evidence is unavailable: {markdown_path}"
+        ) from error
     session_hash = hashlib.sha256(markdown_payload).hexdigest()
     session_ref = SessionRef(
         tenant_id=scope.tenant_id,
