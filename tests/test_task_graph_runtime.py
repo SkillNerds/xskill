@@ -311,9 +311,13 @@ def test_task_graph_dashboard_routes_require_admin_and_apply_override(
         json={"user_name": "reviewer", "secret": "secret"},
     )
     assert login.status_code == 200
-    assert admin.get(
+    overview = admin.get(
         "/api/v1/dashboard/task-graph/overview",
-    ).json()["tasks"] == 1
+    ).json()
+    assert overview["tasks"] == 1
+    assert overview["evidence_feed"] == {
+        "pending": 1, "processed": 0, "fallback": 0, "rejected": 0,
+    }
     response = admin.post(
         "/api/v1/dashboard/task-graph/override",
         json={
@@ -1083,6 +1087,8 @@ def test_projection_serialises_rows_outside_write_transaction(tmp_path, monkeypa
     in_transaction_calls = []
     original_json = projection._json
     original_loads = json.loads
+    original_feed_rows = projection._task_evidence_feed_rows
+    prepared_feeds = []
 
     def json_outside_transaction(value):
         if any(connection.in_transaction for connection in connections):
@@ -1094,6 +1100,13 @@ def test_projection_serialises_rows_outside_write_transaction(tmp_path, monkeypa
             in_transaction_calls.append(("loads", raw))
         return original_loads(raw, *args, **kwargs)
 
+    def feed_outside_transaction(generation):
+        assert not any(connection.in_transaction for connection in connections)
+        rows = original_feed_rows(generation)
+        prepared_feeds.append(rows)
+        return rows
+
+    monkeypatch.setattr(projection, "_task_evidence_feed_rows", feed_outside_transaction)
     monkeypatch.setattr(projection, "pooled_connection", tracking_pooled_connection)
     monkeypatch.setattr(projection, "_json", json_outside_transaction)
     monkeypatch.setattr(json, "loads", loads_outside_transaction)
@@ -1105,6 +1118,8 @@ def test_projection_serialises_rows_outside_write_transaction(tmp_path, monkeypa
     assert result["failed_scopes"] == []
     assert connections
     assert in_transaction_calls == []
+    assert prepared_feeds and all(prepared_feeds)
+    assert projection.list_pending_task_evidence(db_path=db_path)
     assert list_logical_tasks(service.resolver.tenant_id, db_path=db_path)
 
 
