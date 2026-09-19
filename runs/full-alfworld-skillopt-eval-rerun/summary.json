@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "run_id": "full-alfworld-skillopt-eval-rerun",
+  "benchmark": "alfworld",
+  "split_name": "test",
+  "model": "deepseek-v4-flash",
+  "n_total": 134,
+  "n_pass": 104,
+  "accuracy": 0.7761194029850746,
+  "status_counts": {
+    "pass": 104,
+    "fail": 30,
+    "timeout": 0,
+    "invalid": 0,
+    "infra_error": 0
+  },
+  "usage_totals": {
+    "input_tokens": 12866639,
+    "output_tokens": 292387,
+    "total_tokens": 13159026,
+    "cost_usd": 6.047271999999996,
+    "usage_missing_n": 0
+  },
+  "refs": {
+    "run_config_sha256": "1eb230171a4e88a3061d3a68bc06d9b734a9249c88db5c52045d25b6d047e80e",
+    "results_sha256": "438a2c7ecf42fe70f12f0ef6d5367af7fec2993b7c3f6a87e4508460963a9e9f",
+    "skill_sha256": "96900449ecd2294d337d34423cf9c4746a199db90901a5010a42e0d03a4a32c4",
+    "split_manifest_sha256": "7bd21c41efbe76776df9d99b5983c6978430a76e1f0880983d1456a2d1f14fa6"
+  },
+  "started_at": "2026-09-06T12:49:07+00:00",
+  "finished_at": "2026-09-06T13:54:57+00:00",
+  "resumed": false
+}

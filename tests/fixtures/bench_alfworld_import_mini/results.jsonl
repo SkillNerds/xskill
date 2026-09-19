@@ -1,0 +1,3 @@
+{"id": "test:0000", "hard": 1, "fail_reason": "", "gamefile": "/tmp/game.tw-pddl", "task_description": "mini alf pass"}
+{"id": "test:0001", "hard": 0, "fail_reason": "Episode ended without completing the task", "gamefile": "/tmp/game.tw-pddl", "task_description": "mini alf fail"}
+{"id": "test:0002", "hard": 0, "fail_reason": "task-timeout-600s", "gamefile": "/tmp/game.tw-pddl", "task_description": "mini alf timeout"}

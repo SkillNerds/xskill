@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "run_id": "eval-alfworld-xskill-example",
+  "phase": "eval",
+  "algo": "xskill",
+  "benchmark": "alfworld",
+  "split_manifest": "benchmarks/alfworld/manifests/alfworld_skillopt_id_split.json",
+  "split_name": "test",
+  "model": "deepseek-v4-flash",
+  "harness": {
+    "id": "claude_code_native_skills",
+    "tools": [
+      "Read",
+      "Bash",
+      "Skill"
+    ],
+    "notes": "xskill Native Claude Code"
+  },
+  "skill_sha256": "3a8ca2b1a5c8d81a9f1827364500000000000000000000000000000000000001",
+  "scorer": {
+    "id": "alfworld.env_won",
+    "metric": "hard"
+  },
+  "code": {
+    "xskill_commit": "c7be097000000000000000000000000000000000"
+  },
+  "workers": 2,
+  "timeout_s": 600,
+  "failure_policy": "timeout 标记为超时状态，计算准确率时与 fail 同样计为未通过（计入分母，不计入分子）"
+}

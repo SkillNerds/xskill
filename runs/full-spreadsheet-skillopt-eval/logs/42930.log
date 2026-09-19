@@ -1,0 +1,1 @@
+uid=42930 status=fail runner-error=FileNotFoundError: no (input, golden) pair found in /home/admin/leaderboard/leadeboard_apps/spreadsheets_bench/data/official/spreadsheetbench_verified_400/spreadsheet/42930 (looked for *_init.xlsx+*_golden.xlsx, initial.xlsx+golden.xlsx)

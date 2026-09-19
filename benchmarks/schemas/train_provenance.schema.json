@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SkillNerds/xskill/benchmarks/schemas/train_provenance.schema.json",
+  "title": "train_provenance",
+  "description": "训练结束时落盘的来源与演化记录。纯评测可不写此文件。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "algo",
+    "benchmark",
+    "train_uids_sha256",
+    "merge_val_into_train",
+    "selection_split",
+    "target_harness",
+    "intermediate_checkpoints",
+    "skill_sha256"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "algo": { "type": "string", "enum": ["xskill", "skillopt", "noskill"] },
+    "benchmark": { "type": "string", "enum": ["officeqa", "spreadsheet", "alfworld"] },
+    "train_uids_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "merge_val_into_train": { "type": "boolean" },
+    "selection_split": {
+      "type": ["string", "null"],
+      "enum": ["val", "train", null]
+    },
+    "target_harness": {
+      "type": "string",
+      "enum": ["claude_code_native_skills", "skillopt_claude_code_exec"]
+    },
+    "optimizer_backend": { "type": "string" },
+    "algo_components": { "type": "object" },
+    "hyperparameters": { "type": "object" },
+    "intermediate_checkpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["skill_sha256", "action"],
+        "properties": {
+          "step": { "type": "integer" },
+          "round": { "type": "integer" },
+          "skill_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "checkpoint_dir": { "type": "string" },
+          "action": { "type": "string", "minLength": 1 },
+          "log_file": { "type": "string" },
+          "val_score": { "type": "number" }
+        }
+      }
+    },
+    "skill_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

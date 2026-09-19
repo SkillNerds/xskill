@@ -1,0 +1,18 @@
+{
+  "run_id": "full-spreadsheet-skillopt-eval",
+  "uid": "59902",
+  "model": "deepseek-v4-flash",
+  "captured_at": "2026-09-08T05:02:23+00:00",
+  "response": {
+    "id": "72392fe2-ab0b-434a-a5ed-aeeff516324b",
+    "model": "deepseek-v4-flash",
+    "usage": {
+      "input_tokens": 17499,
+      "output_tokens": 10114,
+      "cache_read_input_tokens": 101504,
+      "prompt_tokens": 17499,
+      "completion_tokens": 10114,
+      "prompt_cache_hit_tokens": 101504
+    }
+  }
+}

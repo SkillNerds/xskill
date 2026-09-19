@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "run_id": "full-spreadsheet-skillopt-eval",
+  "benchmark": "spreadsheet",
+  "split_name": "test",
+  "model": "deepseek-v4-flash",
+  "n_total": 280,
+  "n_pass": 237,
+  "accuracy": 0.8464285714285714,
+  "status_counts": {
+    "pass": 237,
+    "fail": 25,
+    "timeout": 18,
+    "invalid": 0,
+    "infra_error": 0
+  },
+  "usage_totals": {
+    "input_tokens": 37683598,
+    "output_tokens": 4965741,
+    "total_tokens": 42649339,
+    "cost_usd": 22.379398863999995,
+    "usage_missing_n": 0
+  },
+  "refs": {
+    "run_config_sha256": "3722896c8a31909f0e5b428fcbe8feff5086e24282dabcbd3041175c24005be2",
+    "results_sha256": "10430957d9f79819bbcd75122517bb292550f24dc3cf7e55b5913627a76b0710",
+    "skill_sha256": "742410127f1a29a1dc4bbe0b5a9df19d11f878477c397c88ea36337bcc11b9d4",
+    "split_manifest_sha256": "2925235c03c28d2cea72d34aeb32497c53145191251a269090c512cd344e71b8"
+  },
+  "started_at": "2026-09-08T02:45:59+00:00",
+  "finished_at": "2026-09-08T06:12:06+00:00",
+  "resumed": false
+}

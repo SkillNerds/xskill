@@ -1,0 +1,25 @@
+[xskill-bench] Initializing benchmark: OfficeQA (Split: test, 172 items)
+[xskill-bench] Model: deepseek-v4-flash | Algo: skillopt | Harness: claude_code_exec (Tools: Read, Bash)
+[xskill-bench] Skill SHA-256: 5c7f...afb0 (frozen) | Workers: 4
+Evaluating: 100%|██████████████████████████████| 172/172 [01:13:01<00:00, 25.47s/it]
+  ├── pass: 137
+  ├── fail: 33
+  └── timeout: 2 (counted as unpassed)
+
+--------------------------------------------------------------------------------
+Benchmark Results: OfficeQA (test)
+--------------------------------------------------------------------------------
+Overall Accuracy: 79.65% (137/172)
+  ├── Passed Items : 137
+  ├── Failed Items : 33
+  └── Timeout Items: 2 (counted as unpassed)
+
+Usage & Cost:
+  ├── Total Tokens : 7,091,084 (Prompt: 4,461,583 | Completion: 2,629,501)
+  └── Total Spend  : $4.34 USD (mixed usage sources)
+
+Artifacts saved to:
+  ├── Config  : /home/admin/officeqa_full/skillopt/eval/run_config.json
+  ├── Details : /home/admin/officeqa_full/skillopt/eval/results.jsonl
+  └── Summary : /home/admin/officeqa_full/skillopt/eval/summary.json
+--------------------------------------------------------------------------------

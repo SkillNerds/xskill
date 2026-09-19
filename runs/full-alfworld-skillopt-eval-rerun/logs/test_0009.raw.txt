@@ -1,0 +1,12 @@
+Initializing AlfredTWEnv...
+Overall we have 134 games in split=eval_out_of_distribution
+Evaluating with 134 games
+[alf-rollout] id=test:0009 success=True won=True turns=5 steps=5 session=40c63e00-b762-4310-ba98-a9aa83704db6 reason=ok
+
+[stderr]
+
+  0%|          | 0/341 [00:00<?, ?it/s]
+ 22%|██▏       | 75/341 [00:00<00:00, 749.32it/s]
+ 44%|████▍     | 150/341 [00:00<00:00, 699.69it/s]
+ 78%|███████▊  | 265/341 [00:00<00:00, 892.50it/s]
+100%|██████████| 341/341 [00:00<00:00, 740.58it/s]

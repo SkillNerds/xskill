@@ -1,0 +1,3 @@
+{"id": "52532", "hard": 1, "ok": true, "fail_reason": "", "error": "", "task_description": "mini spreadsheet pass"}
+{"id": "41-47", "hard": 0, "ok": false, "fail_reason": "eval-mismatch: value@Sheet1!A1: gt=1 pred=2", "error": "", "task_description": "mini spreadsheet fail"}
+{"id": "59794", "hard": 0, "ok": false, "fail_reason": "task-timeout-600s", "error": "timeout", "task_description": "mini spreadsheet timeout"}

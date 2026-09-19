@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "run_id": "full-officeqa-skillopt-train",
+  "algo": "skillopt",
+  "benchmark": "officeqa",
+  "train_uids_sha256": "1a6e07ef8533ce27c286f5c2985b1927e829809de869eadc877fe8e471bb3d19",
+  "merge_val_into_train": false,
+  "selection_split": "val",
+  "optimizer_backend": "openai_chat",
+  "target_harness": "skillopt_claude_code_exec",
+  "hyperparameters": {
+    "source": "configs/officeqa/default.yaml",
+    "runtime": "host",
+    "num_epochs": 4,
+    "train_size": 0,
+    "batch_size": 40,
+    "accumulation": 1,
+    "minibatch_size": 8,
+    "merge_batch_size": 8,
+    "skill_update_mode": "patch",
+    "lr_scheduler": "cosine",
+    "learning_rate": 4,
+    "use_gate": true,
+    "use_slow_update": true,
+    "use_meta_skill": true,
+    "seed": 42,
+    "rollout_workers": 4,
+    "rollout_workers_official": 4,
+    "optimizer_backend": "openai_chat",
+    "target_backend": "claude_code_exec",
+    "skill_init": "vendor_default",
+    "deviations": {
+      "evaluation.eval_test": "官方 true → false：训练阶段不许碰 test split，测试集只在评测阶段跑"
+    }
+  },
+  "intermediate_checkpoints": [
+    {
+      "step": 1,
+      "round": 1,
+      "skill_sha256": "d26183f683bddd82c4b17276d5f0bb8c54386fd6ae957df55f5e6b5306ee61e4",
+      "checkpoint_dir": "/home/admin/officeqa_full/skillopt/train/skillopt_run/steps/step_0001",
+      "action": "accept_new_best",
+      "log_file": "/home/admin/officeqa_full/skillopt/train/logs/skillopt_train.log",
+      "val_score": 0.9583333333333334
+    },
+    {
+      "step": 2,
+      "round": 1,
+      "skill_sha256": "56de79017b44c0fbbaf7e2ad356d0288297c7d8f1ef3e0c39f91029dfb99e016",
+      "checkpoint_dir": "/home/admin/officeqa_full/skillopt/train/skillopt_run/steps/step_0002",
+      "action": "reject",
+      "log_file": "/home/admin/officeqa_full/skillopt/train/logs/skillopt_train.log",
+      "val_score": 0.9583333333333334
+    },
+    {
+      "step": 3,
+      "round": 2,
+      "skill_sha256": "56de79017b44c0fbbaf7e2ad356d0288297c7d8f1ef3e0c39f91029dfb99e016",
+      "checkpoint_dir": "/home/admin/officeqa_full/skillopt/train/skillopt_run/steps/step_0003",
+      "action": "reject",
+      "log_file": "/home/admin/officeqa_full/skillopt/train/logs/skillopt_train.log",
+      "val_score": 0.9166666666666666
+    },
+    {
+      "step": 4,
+      "round": 2,
+      "skill_sha256": "d5290d0e96eafae51561ab3127a77346dd3e53d032907fb1a049d8f1641bfbce",
+      "checkpoint_dir": "/home/admin/officeqa_full/skillopt/train/skillopt_run/steps/step_0004",
+      "action": "reject",
+      "log_file": "/home/admin/officeqa_full/skillopt/train/logs/skillopt_train.log",
+      "val_score": 0.9166666666666666
+    },
+    {
+      "step": 5,
+      "round": 3,
+      "skill_sha256": "d5290d0e96eafae51561ab3127a77346dd3e53d032907fb1a049d8f1641bfbce",
+      "checkpoint_dir": "/home/admin/officeqa_full/skillopt/train/skillopt_run/steps/step_0005",
+      "action": "reject",
+      "log_file": "/home/admin/officeqa_full/skillopt/train/logs/skillopt_train.log",
+      "val_score": 0.9583333333333334
+    },
+    {
+      "step": 6,
+      "round": 3,
+      "skill_sha256": "6fe1ff57256e17ce94486e6f15c3261c78c5d29fa8af86055bf913fe517337b0",
+      "checkpoint_dir": "/home/admin/officeqa_full/skillopt/train/skillopt_run/steps/step_0006",
+      "action": "reject",
+      "log_file": "/home/admin/officeqa_full/skillopt/train/logs/skillopt_train.log",
+      "val_score": 0.9583333333333334
+    },
+    {
+      "step": 7,
+      "round": 4,
+      "skill_sha256": "6fe1ff57256e17ce94486e6f15c3261c78c5d29fa8af86055bf913fe517337b0",
+      "checkpoint_dir": "/home/admin/officeqa_full/skillopt/train/skillopt_run/steps/step_0007",
+      "action": "reject",
+      "log_file": "/home/admin/officeqa_full/skillopt/train/logs/skillopt_train.log",
+      "val_score": 0.9583333333333334
+    },
+    {
+      "step": 8,
+      "round": 4,
+      "skill_sha256": "5c7fb76fa008629e673ae97b459572fffbd56d051e1fc5231845ca4e558dafb0",
+      "checkpoint_dir": "/home/admin/officeqa_full/skillopt/train/skillopt_run/steps/step_0008",
+      "action": "reject",
+      "log_file": "/home/admin/officeqa_full/skillopt/train/logs/skillopt_train.log",
+      "val_score": 0.9583333333333334
+    }
+  ],
+  "skill_sha256": "5c7fb76fa008629e673ae97b459572fffbd56d051e1fc5231845ca4e558dafb0"
+}

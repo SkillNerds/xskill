@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "run_id": "full-spreadsheet-skillopt-eval",
+  "phase": "eval",
+  "algo": "skillopt",
+  "benchmark": "spreadsheet",
+  "split_manifest": "benchmarks/spreadsheet/manifests/spreadsheet_skillopt_id_split.json",
+  "split_name": "test",
+  "model": "deepseek-v4-flash",
+  "harness": {
+    "id": "skillopt_claude_code_exec",
+    "tools": [
+      "Read",
+      "Bash"
+    ],
+    "notes": "SkillOpt 官方原生模式，skill.md 作为本地工作区说明文档直接供模型阅读；评测超参两算法同值：workers=4、max_tool_turns=30、单题 600 秒；出处：workers、max_turns、exec_timeout 抄 configs/spreadsheetbench/default.yaml；官方 workers=24，本机 4 核封顶到 4，两算法同样封顶"
+  },
+  "skill_sha256": "742410127f1a29a1dc4bbe0b5a9df19d11f878477c397c88ea36337bcc11b9d4",
+  "scorer": {
+    "id": "spreadsheetbench.cell_compare",
+    "metric": "hard",
+    "notes": "逐单元格比对作者标准答案表。"
+  },
+  "code": {
+    "xskill_commit": "c7be0976f30f4011d660250f5e0ef35a314c34f1"
+  },
+  "workers": 4,
+  "timeout_s": 600.0,
+  "max_tool_turns": 30,
+  "retry": {
+    "request_retries": 3,
+    "case_retries": 1
+  },
+  "seed": 42,
+  "failure_policy": "timeout 标记为超时状态，计算准确率时与 fail 同样计为未通过（计入分母，不计入分子）"
+}

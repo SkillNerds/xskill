@@ -218,3 +218,9 @@ def _guard_install_to_claude_code(monkeypatch):
     # watcher.py 是 ``from xskill.ecosystems import install_to_claude_code``
     # 但在函数内 lazy import，所以只 patch 模块属性就够了——下次 from import
     # 拿到的是 patched 版本。
+
+
+@pytest.fixture(autouse=True)
+def _xskill_bench_fake_in_pytest(monkeypatch):
+    """CLI 默认真做题。pytest 里不打模型，用 XSKILL_BENCH_FAKE=1 走接线。"""
+    monkeypatch.setenv("XSKILL_BENCH_FAKE", "1")

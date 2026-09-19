@@ -1,0 +1,25 @@
+[xskill-bench] Initializing benchmark: SpreadsheetBench (Split: test, 280 items)
+[xskill-bench] Model: deepseek-v4-flash | Algo: skillopt | Harness: claude_code_exec (Tools: Read, Bash)
+[xskill-bench] Skill SHA-256: 7424...b9d4 (frozen) | Workers: 4
+Evaluating: 100%|██████████████████████████████| 280/280 [03:26:06<00:00, 44.17s/it]
+  ├── pass: 237
+  ├── fail: 25
+  └── timeout: 18 (counted as unpassed)
+
+--------------------------------------------------------------------------------
+Benchmark Results: SpreadsheetBench (test)
+--------------------------------------------------------------------------------
+Overall Accuracy: 84.64% (237/280)
+  ├── Passed Items : 237
+  ├── Failed Items : 25
+  └── Timeout Items: 18 (counted as unpassed)
+
+Usage & Cost:
+  ├── Total Tokens : 8,307,517 (Prompt: 4,077,727 | Completion: 4,229,790)
+  └── Total Spend  : $6.62 USD (mixed usage sources)
+
+Artifacts saved to:
+  ├── Config  : /home/admin/spreadsheet_full/skillopt/eval/run_config.json
+  ├── Details : /home/admin/spreadsheet_full/skillopt/eval/results.jsonl
+  └── Summary : /home/admin/spreadsheet_full/skillopt/eval/summary.json
+--------------------------------------------------------------------------------
