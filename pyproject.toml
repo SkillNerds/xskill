@@ -104,7 +104,7 @@ include-package-data = true
 [tool.setuptools.package-data]
 xskill = [
     "data/*.json",            # vendored 价格表(Issue #43),随 wheel 发布
-    "dashboard/static/*",     # 看板前端壳(index.html / app.js),随 wheel 发布
+    "dashboard/static/*",     # 看板前端壳(index.html / app.js / i18n.js),随 wheel 发布
     "agents/prompts/*.txt",   # skill-creator 官方提示词(case生成/desc优化),随 wheel 发布
     "data/skill/xskill-helper/*",    # 捆绑的 /xskill-helper 使用指南（connect 装到各生态）
     "data/skill/xskill-helper/**/*", # 上者的子目录(references 等)一并打包

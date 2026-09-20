@@ -15,6 +15,7 @@ _CFG = {"dashboard": {"enabled": True, "public": True}}
 _STANDALONE_ALLOWED_OPERATIONS = {
     ("get", "/"),
     ("get", "/app.js"),
+    ("get", "/i18n.js"),
     ("get", "/api/v1/dashboard/overview"),
     ("get", "/api/v1/dashboard/by-domain"),
     ("get", "/api/v1/dashboard/rates"),
