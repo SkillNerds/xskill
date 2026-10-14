@@ -1,0 +1,80 @@
+[
+ {
+  "id": 40892,
+  "instruction": "I need a formula to extract the color mentioned in each cell of column 1 and display that same color in column 2. For example, if a cell in column 1 says 'Dress with red details,' I want the corresponding cell in column 2 to show 'Red'. I have uploaded the file for reference. If no answer is found, output an empty string. Only add the colors mentioned in the list located in Column D.",
+  "spreadsheet_path": "spreadsheet/40892",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "B2:B17"
+ },
+ {
+  "id": 48745,
+  "instruction": "How can I look up multiple product codes that are located within the same cell, separated by semicolons, in an Excel table where these codes span columns 'C' and the lookup table covers columns 'G' and 'H'? Specifically, I need to identify which group each product code belongs to, with 'Group 1', 'Group 2', or 'BOTH' as potential outcomes for each cell if it contains multiple product codes that map to different groups. Additionally, if a cell contains only one product code, the semicolon is still present. Example scenarios include a single product code look-up resulting in 'Group 1', multiple product codes from the same group resulting in the respective group name, and multiple product codes from different groups resulting in 'BOTH'.I have a table where column 'c' can contain multiple values separated with a semicolon.\nI want to lookup each separated value in that cell against the lookup table in columns G and H.\nRow 5 would be PRD1 lookups and finds it is in Group 1\nRow 6 would be PRD2;PRD1 lookups and finds they are in Group 1\nRow 7 would be PRD4 lookups and finds it is in Group 2\nRow 8 would be PRD5;PRD6 lookups and finds they are in Group 2\nRow 9 would be PRD1;PRD4;PRD6 lookups and finds they are in Group 1 and Group 2 and would return Group 1, Group 2\nRow 10 would be PRD1;PRD6 lookups and finds they are in Group 1 and Group 2 and would return Group 1, Group 2\nThe semicolon is present in the same cell.\nIf multiple Groups in single cell, please range the index in asending order.",
+  "spreadsheet_path": "spreadsheet/48745",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "D5:D10"
+ },
+ {
+  "id": 32612,
+  "instruction": "How can I create a workday column in an Excel file that identifies each date as the day of the week (e.g., Mon, Tue, Wed, etc.)? Additionally, when the date is a holiday, you do not need to fill in the day of the week, instead you need to marks the date as a public holiday, specifying if it's a working public holiday (PH(working)) or a non-working public holiday (PH(non-working)), using a provided list of public holidays.",
+  "spreadsheet_path": "spreadsheet/32612",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "E2:E75"
+ },
+ {
+  "id": "325-44",
+  "instruction": "I am working with data at a wtype_id, name, and status level, and I need to split the filter data from a column into specific columns of data. I've attached the input data tab and the output data tab for reference. Leave the cell which does not have any data defined blank and leading zeros can be omitted. Retain the 'Input' data tab and update the 'Output' data tab with the result.",
+  "spreadsheet_path": "spreadsheet/325-44",
+  "instruction_type": "Sheet-Level Manipulation",
+  "answer_position": "'Output'!A1:G10",
+  "answer_sheet": "Output",
+  "data_position": "Input!'A1:D4,'Output!'A1:G6'"
+ },
+ {
+  "id": "262-17",
+  "instruction": "How can I create ranges for header values 'Task' and 'Responsibility' without hard coding the range definitions, and then apply a multiple column sort using VBA in Excel? The macro should identify the positions of these headers dynamically and perform the sorting based on the data provided in the first worksheet, with the expected outcome detailed in the second worksheet attached to the thread. The first level sorts the \"Tasks\" column from small to large, and the second level sorts the \"Responsibilities\" column from small to large",
+  "spreadsheet_path": "spreadsheet/262-17",
+  "instruction_type": "Sheet-Level Manipulation",
+  "answer_position": "Sheet1'!A1:F14",
+  "answer_sheet": "'Sheet1','Sheet2'",
+  "data_position": "Sheet1!A1:F14','Sheet2!A1:F14'"
+ },
+ {
+  "id": "141-20",
+  "instruction": "How can I create a macro that finds and deletes rows in two Excel sheets named 'PL Recon Items' and 'Statement Recon Items', where the invoice number in column C of 'PL Recon Items' and the value in column D match the reference number in column F and value in column I of 'Statement Recon Items'? The matching rows, which I have highlighted in yellow, should be deleted from both sheets. Could someone provide the code to accomplish this?",
+  "spreadsheet_path": "spreadsheet/141-20",
+  "instruction_type": "Sheet-Level Manipulation",
+  "answer_position": "'PL Recon Items!'A1:D2,'Statement Recon Items!'A1:J3",
+  "answer_sheet": "PL Recon Items,Statement Recon Items",
+  "data_position": "PL Recon Items!'A1: D2, 'Statement Recon Items!'A1: J3'"
+ },
+ {
+  "id": 52216,
+  "instruction": "I'm having some trouble with getting my INDEX-MATCH formula to return values from subsequent rows beneath the first row (the first row returns the correct values, as desired).\nI'm not sure if a third MATCH argument is needed in the formula, but, if it is, I'm struggling with determining the correct lookup_value & lookup_array syntax.\nI've attached a workbook with some mock data on there to assist - on the 'INPUTS' tab, you'll see the dollar amounts in C15:G15 are displaying correctly which is being pulled from the 'Sheet2\" tab.\nHow can I adjust my INDEX-MATCH formula in the 'INPUTS' tab to retrieve values from rows below the first row, which currently returns the correct data, specifically for a dataset in which the output is contingent on a dropdown selection that alternates between 'Metro' and 'Regional' and affects the displayed dollar amounts?\nSo, I just need some help with getting this formula to display the correct amounts for the rest of the expenses underneath Advertising & Marketing (C15).\nI figure that if just the electricity line can be solved, then I can adopt it for the remainder (hence the lack of numbers for most of the other expenses).\nWrite a formula that will work when copied across columns C through G, and apply it to the first 5 years of Electricity expenses. No need to apply the new formula to the expense rows below Electricity.",
+  "spreadsheet_path": "spreadsheet/52216",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "'INPUTS'!C15:G16"
+ },
+ {
+  "id": "22-47",
+  "instruction": "I need to sort data in column B based on a helper column (J) so that the first entries written in column J are shown first in the output range F:H. Names listed in column J, include all matching rows and keep their original order from the source and do not sort within the group. Names not listed in column J should be arranged as they are in the original data (same order). The sort should skip empty cells, headers, and duplicate items, where duplicates are defined by identical entries in both column B and C. If the helper column J is empty, only then sort alphabetically A–Z and still skip empty cells, headers, and duplicate items. Additionally, I need this sorting process to handle new ranges that contain headers and some names in range A:C, as well as changes in names listed in column J. The final answer should be output in columns G and H, and sort only column H sorted lowest to highest.",
+  "spreadsheet_path": "spreadsheet/22-47",
+  "instruction_type": "Sheet-Level Manipulation",
+  "answer_position": "F2:H10",
+  "answer_sheet": "sheet1",
+  "data_position": "sheet1!A1:j24',',ورق1!B1:B11'"
+ },
+ {
+  "id": 55421,
+  "instruction": "How can I create a formula in Excel that will check the numbers in Column A and return specific text in Column F based on the following conditions: when a number in Column A is accompanied exclusively by the status 'SCH' in Column D, the text 'FUTURE' should be returned in Column F; if it appears with both statuses 'NO SHOW' and 'SCH', then 'NS/SCHED' should be shown in Column F; if the number comes with the 'NO SHOW' status and a date is present in Column E, 'NO ACTION NEEDED' should be the output; and finally, if there is a 'NO SHOW' status with an empty date field in Column E, 'CALL PT' should appear in Column F?",
+  "spreadsheet_path": "spreadsheet/55421",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "F2:F20"
+ },
+ {
+  "id": 56427,
+  "instruction": "How can I transpose the values in column G where column B has the value 1 and pull sequential values from consecutive rows in column G, stopping after the number of runners specified in column C? The formula should preserve blanks as blanks (not zeros). An example dataset has been provided where the transposition was done partially, but I'm seeking a formulaic solution that will provide the full result. Once complete, shade the range H2:S28 in #E2EFD, and remove decimals for any whole values that range. Then center align all cells to the right of column G.",
+  "spreadsheet_path": "spreadsheet/56427",
+  "instruction_type": "Cell-Level Manipulation",
+  "answer_position": "H2:S28"
+ }
+]

@@ -1,0 +1,94 @@
+# xskill config TEMPLATE — 打榜镜像·xskill (reduced-scale real training).
+# xskill 不读环境变量/key 文件，所以 api_key 用占位符；entrypoint_train.sh 在
+# 运行时把 __DEEPSEEK_API_KEY__ / __DASHSCOPE_API_KEY__ 替换成真实 key 后落到
+# $XSKILL_HOME/config.yaml。
+#
+# 关键：xskill 的 baby->main "毕业"门槛是 candidates.py 里硬编码的
+# ATOM_PROMOTION_THRESHOLD（runner 构造 SkillEditAgent 时不传 threshold，所以
+# config 的 candidates.threshold 改不动它）。reduced 规模下必须在 entrypoint 里
+# 直接 patch 该常量调低，否则 4 条轨迹攒不满默认 10 分 -> 零毕业 -> 全是 baby
+# stub -> 没有真正蒸馏出的 SKILL.md。详见 entrypoint_train.sh。
+
+# ===== Skill repository (candidate + main 都落这里) =====
+skill_dir: __XSKILL_HOME__/skill
+
+# ===== LLM (generation / scoring / cluster / SkillEdit) =====
+llm:
+  base_url: https://api.deepseek.com
+  model:    deepseek-v4-flash
+  api_key:  __DEEPSEEK_API_KEY__
+  max_tokens: 10000
+  request_timeout: 120
+  connect_timeout: 15
+
+# ===== Embedding (atom 入库 + AtomTaskSearch 向量检索) =====
+# DeepSeek 无 embeddings API；用 DashScope text-embedding-v4。
+embedding:
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  model:    text-embedding-v4
+  api_key:  __DASHSCOPE_API_KEY__
+  dim:      0
+
+# ===== 候选攒分阈值 (v1 路径 + stale 归档用；v2 毕业门槛见 entrypoint patch) =====
+candidates:
+  threshold:        2     # v1 ready_for_promotion / stale 用；调低无副作用
+  stale_days:       3650  # 别在短跑里把候选归档成 stale
+  min_source_trajs: 1
+
+# ===== SkillEditAgent（把 candidates 整理成正文 SKILL.md 的写作 agent）=====
+skill_edit_agent:
+  tool_call_limit:     24
+  timeout_seconds:     600
+  read_file_max_bytes: 15000
+
+# ===== Canary（main->staging 灰度）：team-CS 在线进化模式开启并调低门槛。 =====
+# epoch1.. team-CS：worker 作为 distinct client 上传解题轨迹，server 端 CS 归因
+# 给 atom 按 side 打 ux_score；main 有分后 SkillEdit 把已有技能的更新路由到
+# commit_to_staging 开灰度分支，check_and_decide 在样本够时 promote/discard。
+# 小数据下必须调低（否则永远凑不够样本）：probability=0.5 让 ~50% 流量进 staging，
+# min_samples/total_samples=2 让 2 条样本就能决策，scope_top_n=1。
+# 注：entrypoint_train.sh 渲染时还会再覆盖这段（双保险），见 1a) 段。
+canary:
+  enabled:       true
+  probability:   0.5
+  min_samples:   2
+  max_days_hold: 14
+  rotate_interval: 60
+  scope_top_n:   1
+  total_samples: 2
+
+# ===== description 触发优化：commit 时跑一次 hill-climb 调 frontmatter。短跑
+# 可保留（失败不阻塞 commit），但把预算压小省时间/省 token。 =====
+skill_opt:
+  enabled:       true
+  n_cases:       6
+  runs_per_case: 1
+  max_iters:     2
+  max_llm_calls: 60
+  train_frac:    0.6
+  seed:          42
+  catalog_max_skills: 12
+  catalog_desc_cap:   256
+  probe_case_timeout: 45
+  rerun_enabled:      false
+
+# ===== Watcher（serve 里的目录轮询）=====
+watcher:
+  poll_interval:  10
+  max_concurrent: 2
+
+# ===== Ingest（claude_code session jsonl -> traj_*.md 桥接）=====
+ingest:
+  # 评测场景：脚本批量产 session、写完即定稿，settle 调小到 5s 便于尽快入库。
+  settle_seconds: 5
+  mask_patterns:
+    # 剥掉 SkillOpt codex harness 每题固定的 turn-0 提示词外壳，防聚类被任务外壳吸住。
+    - '(?s)Use the workspace files to solve the task\..*?summarize the approach\.'
+
+# ===== Dashboard：关掉（打榜镜像无需 web 控制台）=====
+dashboard:
+  enabled:  false
+  public:   false
+  password: ""
+  default_harness: claude_code
+  default_model:   deepseek-v4-flash

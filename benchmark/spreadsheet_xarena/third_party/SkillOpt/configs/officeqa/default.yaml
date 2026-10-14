@@ -1,0 +1,34 @@
+_base_: ../_base_/default.yaml
+
+model:
+  reasoning_effort: medium
+
+train:
+  batch_size: 40
+  accumulation: 1
+
+gradient:
+  minibatch_size: 8
+  merge_batch_size: 8
+
+optimizer:
+  learning_rate: 4
+
+env:
+  name: officeqa
+  skill_init: skillopt/envs/officeqa/skills/initial.md
+  split_mode: split_dir
+  split_dir: data/officeqa_split
+  data_dirs:
+    - data/officeqa_docs_official
+  workers: 4
+  max_tool_turns: 24
+  max_completion_tokens: 16384
+  search_mode: offline
+  max_queries_per_turn: 4
+  search_api_url: http://apisix.westus2.cloudapp.azure.com/search_tool/search
+  search_auth_env: OFFICEQA_CUSTOM_SEARCH_AUTH
+  search_provider: duckduckgo
+  search_max_num_results: 4
+  search_timeout_seconds: 20
+  limit: 0

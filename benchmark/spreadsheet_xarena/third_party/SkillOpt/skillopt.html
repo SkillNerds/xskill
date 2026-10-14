@@ -1,0 +1,2739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SkillOpt | Executive Strategy for Self-Evolving Agent Skills</title>
+  <meta name="description" content="Project webpage for SkillOpt, a text-space optimizer that trains reusable natural-language skills for frozen language agents.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 23 23'%3E%3Crect width='10' height='10' fill='%23F25022'/%3E%3Crect x='13' width='10' height='10' fill='%237FBA00'/%3E%3Crect y='13' width='10' height='10' fill='%2300A4EF'/%3E%3Crect x='13' y='13' width='10' height='10' fill='%23FFB900'/%3E%3C/svg%3E">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..900,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+    :root {
+      --paper: #f8f9fc;
+      --paper-2: #eef2ff;
+      --ink: #1e293b;
+      --muted: #64748b;
+      --quiet: #94a3b8;
+      --line: #e2e8f0;
+      --line-strong: #c7d2fe;
+      --panel: #ffffff;
+      --panel-warm: #fff7ed;
+      --blue: #4f46e5;
+      --teal: #0ea5e9;
+      --red: #ec4899;
+      --gold: #f59e0b;
+      --green: #16a34a;
+      --black: #0f172a;
+      --violet: #7c3aed;
+      --shadow: 0 12px 30px rgba(79, 70, 229, 0.10);
+      --mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      --serif: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --display: "Fraunces", Georgia, serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 18% 10%, rgba(124, 58, 237, 0.08), transparent 38%),
+        radial-gradient(circle at 88% 78%, rgba(245, 158, 11, 0.08), transparent 42%),
+        radial-gradient(circle at 58% 38%, rgba(236, 72, 153, 0.055), transparent 46%),
+        var(--paper);
+      font-family: var(--serif);
+      line-height: 1.7;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: inherit;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 4px;
+    }
+
+    img {
+      max-width: 100%;
+      display: block;
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(40px);
+      transition:
+        opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1),
+        transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .reveal {
+        opacity: 1;
+        transform: none;
+        transition: none;
+      }
+    }
+
+    .topbar {
+      position: fixed;
+      z-index: 100;
+      top: 0;
+      left: 0;
+      right: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 20px 48px;
+      color: var(--ink);
+      background: rgba(255, 255, 255, 0.35);
+      border-bottom: 1px solid rgba(226, 232, 240, 0);
+      backdrop-filter: blur(16px) saturate(180%);
+      -webkit-backdrop-filter: blur(16px) saturate(180%);
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      transition: background 0.3s, border-color 0.3s, box-shadow 0.3s, padding 0.3s;
+    }
+
+    .topbar.scrolled {
+      padding-top: 14px;
+      padding-bottom: 14px;
+      background: rgba(255, 255, 255, 0.66);
+      border-bottom: 1px solid rgba(226, 232, 240, 0.55);
+      box-shadow: 0 2px 16px rgba(15, 23, 42, 0.05);
+    }
+
+    .navbar-logos {
+      display: flex;
+      align-items: center;
+      gap: 22px;
+    }
+
+    .brandmark {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      color: #0f172a;
+      font-family: var(--display);
+      font-size: 1.45rem;
+      font-weight: 650;
+      letter-spacing: -0.015em;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: opacity 0.25s ease;
+    }
+
+    .brandmark:hover {
+      opacity: 0.85;
+    }
+
+    .brandmark .brand-skill {
+      color: #0f172a;
+    }
+
+    .brandmark .brand-opt {
+      display: inline-block;
+      padding-right: 0.15em;
+      margin-right: -0.15em;
+      background: linear-gradient(110deg, #0ea5e9 0%, #4f46e5 25%, #7c3aed 50%, #ec4899 78%, #f59e0b 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      font-style: italic;
+    }
+
+    .microsoft-mark {
+      width: 16px;
+      height: 16px;
+      margin-right: 8px;
+      flex: 0 0 auto;
+    }
+
+    .navbar-divider {
+      width: 1px;
+      height: 30px;
+      background: #cbd5e1;
+    }
+
+    .navbar-related {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 12px 5px 10px;
+      color: inherit;
+      background: rgba(255, 255, 255, 0.70);
+      border: 1px solid rgba(124, 58, 237, 0.20);
+      border-radius: 999px;
+      text-decoration: none;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+
+    .navbar-related:hover {
+      color: inherit;
+      transform: translateY(-1px);
+      border-color: rgba(124, 58, 237, 0.42);
+      box-shadow: 0 4px 14px rgba(124, 58, 237, 0.14);
+    }
+
+    .navbar-related .nr-icon {
+      position: relative;
+      width: 16px;
+      height: 16px;
+      flex: 0 0 auto;
+      border-radius: 5px;
+      background: linear-gradient(135deg, #4f46e5, #7c3aed 56%, #ec4899);
+    }
+
+    .navbar-related .nr-icon::before {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 6px;
+      height: 6px;
+      border: 1.5px solid #ffffff;
+      border-radius: 999px;
+    }
+
+    .navbar-related .nr-icon::after {
+      content: "";
+      position: absolute;
+      right: 3px;
+      bottom: 4px;
+      width: 5px;
+      height: 1.5px;
+      background: #ffffff;
+      border-radius: 999px;
+      transform: rotate(45deg);
+    }
+
+    .navbar-related .nr-label {
+      display: block;
+      color: var(--violet);
+      font-family: var(--mono);
+      font-size: 0.58rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      line-height: 1;
+      text-transform: uppercase;
+    }
+
+    .navbar-related .nr-name {
+      display: block;
+      margin-top: 2px;
+      font-family: var(--display);
+      font-size: 0.98rem;
+      font-weight: 750;
+      line-height: 1;
+      letter-spacing: -0.01em;
+      background: linear-gradient(135deg, #4f46e5, #ec4899);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 18px 28px;
+    }
+
+    .nav a {
+      color: var(--muted);
+      font-size: 0.92rem;
+      font-weight: 600;
+      text-decoration: none;
+      border-bottom: 1px solid transparent;
+      transition: color 0.2s, border-color 0.2s;
+    }
+
+    .nav a:hover {
+      color: var(--blue);
+      border-color: var(--red);
+    }
+
+    .hero {
+      position: relative;
+      min-height: 76vh;
+      display: grid;
+      align-items: center;
+      padding: 124px 28px 84px;
+      color: var(--ink);
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 20% 18%, rgba(14, 165, 233, 0.13), transparent 32%),
+        radial-gradient(circle at 72% 24%, rgba(236, 72, 153, 0.12), transparent 34%),
+        linear-gradient(160deg, #eef2ff 0%, #f8f9fc 42%, #eef2ff 100%);
+    }
+
+    .hero-inner {
+      width: min(1080px, 100%);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: minmax(0, 0.98fr) minmax(300px, 0.5fr);
+      gap: 36px;
+      align-items: center;
+    }
+
+    .kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      width: fit-content;
+      padding: 7px 16px;
+      color: var(--violet);
+      background: rgba(124, 58, 237, 0.08);
+      border: 1px solid rgba(124, 58, 237, 0.20);
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .hero h1 {
+      margin: 22px 0 12px;
+      font-family: var(--display);
+      font-size: clamp(3.8rem, 8vw, 6.7rem);
+      line-height: 0.92;
+      letter-spacing: -0.02em;
+      max-width: 820px;
+      background: linear-gradient(110deg, #0ea5e9 0%, #4f46e5 32%, #7c3aed 54%, #ec4899 78%, #f59e0b 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero-subtitle {
+      max-width: 760px;
+      margin: 0;
+      color: #334155;
+      font-size: clamp(1.08rem, 1.7vw, 1.34rem);
+      line-height: 1.55;
+      font-weight: 500;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 30px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 42px;
+      padding: 12px 22px;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-decoration: none;
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+      transition: transform 180ms ease, background 180ms ease, color 180ms ease, box-shadow 180ms ease;
+    }
+
+    .button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 24px rgba(124, 58, 237, 0.16);
+    }
+
+    .button.primary {
+      color: #ffffff;
+      background: linear-gradient(135deg, #4f46e5 0%, #ec4899 100%);
+      border-color: transparent;
+    }
+
+    .button.secondary {
+      color: var(--ink);
+      background: #ffffff;
+      border-color: var(--line);
+    }
+
+    .button.tertiary {
+      color: #ffffff;
+      background: var(--black);
+      border-color: var(--black);
+    }
+
+    .button-icon {
+      width: 16px;
+      height: 16px;
+      flex: 0 0 auto;
+      fill: currentColor;
+    }
+
+    .arxiv-icon {
+      width: 15px;
+      height: 20px;
+      object-fit: contain;
+    }
+
+    .related-project {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      max-width: 100%;
+      margin-top: 28px;
+      padding: 10px 22px 10px 14px;
+      color: inherit;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid rgba(124, 58, 237, 0.20);
+      border-radius: 999px;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+      text-align: left;
+      text-decoration: none;
+      backdrop-filter: blur(8px);
+      transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+    }
+
+    .related-project:hover {
+      color: inherit;
+      transform: translateY(-2px);
+      border-color: rgba(124, 58, 237, 0.42);
+      box-shadow: 0 12px 28px rgba(124, 58, 237, 0.14);
+    }
+
+    .related-icon {
+      position: relative;
+      flex: 0 0 auto;
+      width: 28px;
+      height: 28px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #4f46e5, #7c3aed 56%, #ec4899);
+    }
+
+    .related-icon::before {
+      content: "";
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      width: 10px;
+      height: 10px;
+      border: 2px solid #ffffff;
+      border-radius: 999px;
+    }
+
+    .related-icon::after {
+      content: "";
+      position: absolute;
+      right: 7px;
+      bottom: 7px;
+      width: 8px;
+      height: 2px;
+      background: #ffffff;
+      border-radius: 999px;
+      transform: rotate(45deg);
+      transform-origin: center;
+    }
+
+    .related-text {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .related-tag {
+      color: var(--violet);
+      font-family: var(--mono);
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .related-title {
+      color: var(--ink);
+      font-size: 0.98rem;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+
+    .related-title strong {
+      font-family: var(--display);
+      font-size: 1.16rem;
+      font-weight: 700;
+      font-style: italic;
+      background: linear-gradient(135deg, #4f46e5, #ec4899);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .related-summary {
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.35;
+    }
+
+    .related-arrow {
+      flex: 0 0 auto;
+      color: var(--red);
+      font-size: 1.1rem;
+      transition: transform 180ms ease;
+    }
+
+    .related-project:hover .related-arrow {
+      transform: translateX(4px);
+    }
+
+    .hero-ledger {
+      position: relative;
+      overflow: hidden;
+      width: 100%;
+      padding: 24px;
+      color: var(--ink);
+      background: rgba(255, 255, 255, 0.78);
+      border: 1px solid rgba(124, 58, 237, 0.20);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+
+    .hero-ledger::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(124, 58, 237, 0.08) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(124, 58, 237, 0.06) 1px, transparent 1px);
+      background-size: 26px 26px;
+      opacity: 0.34;
+      pointer-events: none;
+    }
+
+    .hero-ledger > * {
+      position: relative;
+    }
+
+    .ledger-kicker {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 5px 11px;
+      color: var(--violet);
+      background: rgba(124, 58, 237, 0.10);
+      border: 1px solid rgba(124, 58, 237, 0.20);
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: 0.71rem;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .ledger-hero {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .ledger-value {
+      font-family: var(--display);
+      font-size: 5.85rem;
+      font-weight: 800;
+      line-height: 0.9;
+      white-space: nowrap;
+      color: var(--black);
+    }
+
+    .ledger-denominator {
+      color: var(--quiet);
+      font-family: var(--display);
+      font-size: 2.65rem;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .ledger-copy {
+      max-width: 320px;
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 1.02rem;
+      line-height: 1.45;
+    }
+
+    .ledger-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0;
+      margin-top: 22px;
+      border-top: 1px solid var(--line);
+    }
+
+    .ledger-stat {
+      padding-top: 14px;
+    }
+
+    .ledger-stat + .ledger-stat {
+      padding-left: 16px;
+      border-left: 1px solid var(--line);
+    }
+
+    .ledger-stat span {
+      display: block;
+      color: var(--quiet);
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      text-transform: uppercase;
+    }
+
+    .ledger-stat b {
+      display: block;
+      margin-top: 6px;
+      color: var(--violet);
+      font-family: var(--display);
+      font-size: 2.25rem;
+      line-height: 1;
+    }
+
+    .ledger-stat b.ledger-stat-text {
+      max-width: 8.5rem;
+      font-size: 1.08rem;
+      line-height: 1.12;
+    }
+
+    main {
+      width: min(1080px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    .section {
+      position: relative;
+      padding: 72px 0 4px;
+    }
+
+    .section-header {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(200px, 0.42fr) minmax(0, 1fr);
+      gap: 48px;
+      align-items: start;
+      margin-bottom: 26px;
+      border-top: 0;
+      padding-top: 4px;
+    }
+
+    .section-header::before {
+      content: "";
+      position: absolute;
+      top: -18px;
+      left: 0;
+      width: 56px;
+      height: 4px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--blue), var(--red));
+      box-shadow: 0 6px 18px rgba(236, 72, 153, 0.24);
+    }
+
+    .section-eyebrow {
+      font-family: var(--mono);
+      color: var(--violet);
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      margin: 0;
+      font-family: var(--display);
+      font-size: 2.55rem;
+      line-height: 1.04;
+      letter-spacing: -0.015em;
+      color: #0f172a;
+    }
+
+    .section-lede {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+      max-width: 740px;
+    }
+
+    .manifesto {
+      display: grid;
+      grid-template-columns: 1.05fr 0.95fr;
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .statement {
+      padding: 30px;
+      background:
+        linear-gradient(135deg, rgba(79, 70, 229, 0.94), rgba(236, 72, 153, 0.90)),
+        var(--blue);
+      color: #ffffff;
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .statement h3,
+    .panel h3 {
+      margin: 0 0 12px;
+      font-family: var(--display);
+      font-size: 1.45rem;
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    .statement p {
+      margin: 0;
+      color: rgba(255, 255, 255, 0.84);
+      font-size: 1.04rem;
+    }
+
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin-top: 24px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 6px 11px;
+      color: #ffffff;
+      background: rgba(255, 255, 255, 0.16);
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .step {
+      min-height: 128px;
+      padding: 18px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 1px 4px rgba(15, 23, 42, 0.04);
+      transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+    }
+
+    .step:hover,
+    .panel:hover,
+    .transfer:hover {
+      transform: translateY(-3px);
+      border-color: var(--line-strong);
+      box-shadow: 0 10px 28px rgba(124, 58, 237, 0.10);
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 8px;
+      font-family: var(--mono);
+      color: var(--violet);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+    }
+
+    .step p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.96rem;
+    }
+
+    .figure-frame {
+      margin-top: 22px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .figure-frame img {
+      width: 100%;
+      background: #ffffff;
+    }
+
+    .comparison-frame {
+      margin-top: 18px;
+      padding: 18px;
+      color: var(--ink);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .comparison-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: end;
+      margin-bottom: 16px;
+    }
+
+    .comparison-heading span {
+      color: var(--red);
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .comparison-heading h3 {
+      margin: 6px 0 0;
+      font-family: var(--display);
+      font-size: 2rem;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
+    .comparison-legend {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+      max-width: 560px;
+    }
+
+    .legend-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 26px;
+      padding: 5px 8px;
+      color: var(--muted);
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: 0.67rem;
+    }
+
+    .legend-chip::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      background: var(--color);
+      border-radius: 3px;
+    }
+
+    .comparison-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .benchmark-panel {
+      min-width: 0;
+      padding: 14px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.70)),
+        #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+
+    .benchmark-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: start;
+      margin-bottom: 10px;
+    }
+
+    .benchmark-top h4 {
+      margin: 0;
+      font-family: var(--display);
+      font-size: 1.28rem;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
+    .delta-pill {
+      flex: none;
+      padding: 5px 8px;
+      color: var(--green);
+      background: rgba(22, 163, 74, 0.10);
+      border: 1px solid rgba(22, 163, 74, 0.25);
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: 0.67rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .bar-stage {
+      position: relative;
+      display: flex;
+      align-items: flex-end;
+      gap: 6px;
+      height: 170px;
+      padding: 24px 8px 22px 34px;
+      background:
+        linear-gradient(rgba(124, 58, 237, 0.08) 1px, transparent 1px) 0 24px / 100% 42px,
+        rgba(238, 242, 255, 0.58);
+      border-left: 1px solid rgba(124, 58, 237, 0.20);
+      border-bottom: 1px solid rgba(124, 58, 237, 0.20);
+      border-radius: 12px;
+    }
+
+    .axis-range {
+      position: absolute;
+      left: 7px;
+      bottom: 6px;
+      color: var(--quiet);
+      font-family: var(--mono);
+      font-size: 0.58rem;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      text-transform: uppercase;
+    }
+
+    .method-bar {
+      position: relative;
+      flex: 1;
+      min-width: 0;
+      height: max(8px, var(--h));
+      background: var(--color);
+      border-radius: 4px 4px 2px 2px;
+      opacity: 0.86;
+    }
+
+    .method-bar.skillopt {
+      border: 2px solid rgba(15, 23, 42, 0.62);
+      box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.14), 0 10px 18px rgba(22, 163, 74, 0.20);
+      opacity: 1;
+    }
+
+    .method-bar span {
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 6px);
+      transform: translateX(-50%);
+      padding: 2px 5px;
+      color: #f8faf7;
+      background: var(--green);
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: 0.62rem;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .caption {
+      padding: 13px 16px;
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      line-height: 1.55;
+    }
+
+    .teaser-showcase {
+      position: relative;
+      margin-top: -28px;
+      padding: 22px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .video-showcase {
+      margin-top: -28px;
+      margin-bottom: 22px;
+    }
+
+    .video-frame {
+      margin: 18px 0 0;
+      padding: 14px;
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 1px 4px rgba(15, 23, 42, 0.04);
+    }
+
+    .video-frame iframe {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      display: block;
+      background: #0d1117;
+      border: 0;
+      border-radius: 10px;
+    }
+
+    .teaser-heading {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 20px;
+      align-items: start;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .teaser-heading span {
+      color: var(--red);
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .teaser-heading h2 {
+      font-size: 2.25rem;
+    }
+
+    .teaser-figure {
+      margin: 18px 0 0;
+      padding: 14px;
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow-x: auto;
+    }
+
+    .teaser-figure img {
+      width: 100%;
+      min-width: 760px;
+      height: auto;
+    }
+
+    .teaser-caption {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 0.73rem;
+      line-height: 1.55;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 1040px;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      line-height: 1.35;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding: 12px 14px;
+      text-align: left;
+      color: #ffffff;
+      background: linear-gradient(135deg, #4f46e5, #7c3aed);
+      border-bottom: 1px solid var(--line-strong);
+      font-weight: 600;
+    }
+
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: middle;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    tbody tr:nth-child(even) td {
+      background: #f8fafc;
+    }
+
+    .harness-group td {
+      border-top: 2px solid var(--line-strong);
+    }
+
+    .num {
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .model-cell {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      font-weight: 700;
+    }
+
+    .model-icon {
+      width: 20px;
+      height: 20px;
+      flex: 0 0 auto;
+      object-fit: contain;
+      border-radius: 5px;
+      background: #ffffff;
+      box-shadow: 0 0 0 1px rgba(226, 232, 240, 0.9);
+    }
+
+    .heat {
+      color: var(--ink);
+      background:
+        linear-gradient(90deg, rgba(22, 163, 74, 0.16) 0%, rgba(22, 163, 74, 0.16) calc(var(--heat) * 1%), transparent calc(var(--heat) * 1%)) !important;
+      font-weight: 600;
+    }
+
+    .heat-avg {
+      color: #4338ca;
+      background:
+        linear-gradient(135deg, rgba(79, 70, 229, 0.12), rgba(236, 72, 153, 0.10)),
+        #f8fafc !important;
+      font-weight: 700;
+    }
+
+    .method-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .panel {
+      padding: 22px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+    }
+
+    .panel.accent-blue {
+      border-top: 4px solid var(--blue);
+    }
+
+    .panel.accent-red {
+      border-top: 4px solid var(--red);
+    }
+
+    .panel.accent-gold {
+      border-top: 4px solid var(--gold);
+    }
+
+    .panel.accent-green {
+      border-top: 4px solid var(--green);
+    }
+
+    .panel p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.96rem;
+    }
+
+    .callout {
+      margin-top: 18px;
+      padding: 18px 20px;
+      color: var(--ink);
+      background: var(--panel-warm);
+      border: 1px solid rgba(245, 158, 11, 0.24);
+      border-left: 6px solid var(--gold);
+      border-radius: 14px;
+      font-size: 1rem;
+    }
+
+    .ablation-layout {
+      display: grid;
+      gap: 16px;
+    }
+
+    .ablation-layout table {
+      min-width: 720px;
+    }
+
+    .ablation-summary .mini-list {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .evolution-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1.42fr) minmax(300px, 0.58fr);
+      gap: 16px;
+      align-items: stretch;
+      min-height: 520px;
+    }
+
+    .evolution-chart {
+      display: flex;
+      flex-direction: column;
+      min-height: 520px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .chart-toolbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 16px 18px 12px;
+      border-bottom: 1px solid var(--line);
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+
+    .chart-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px 14px;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      white-space: nowrap;
+    }
+
+    .legend-item::before {
+      content: "";
+      width: 22px;
+      height: 3px;
+      background: var(--legend);
+      border-radius: 999px;
+    }
+
+    .chart-scroller {
+      flex: 1;
+      overflow-x: auto;
+      padding: 10px 14px 0;
+    }
+
+    .skill-chart {
+      width: 100%;
+      min-width: 760px;
+      height: 100%;
+      min-height: 390px;
+      display: block;
+      font-family: var(--mono);
+    }
+
+    .chart-grid {
+      stroke: rgba(124, 58, 237, 0.12);
+      stroke-width: 1;
+    }
+
+    .chart-axis {
+      stroke: rgba(79, 70, 229, 0.32);
+      stroke-width: 1.2;
+    }
+
+    .chart-label {
+      fill: var(--quiet);
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+
+    .line-train,
+    .line-selection {
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 4;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .line-train {
+      stroke: var(--teal);
+    }
+
+    .line-selection {
+      stroke: var(--blue);
+    }
+
+    .chart-point {
+      cursor: pointer;
+      outline: none;
+    }
+
+    .chart-point circle:not(.hit) {
+      fill: var(--panel);
+      stroke-width: 3;
+      transition: r 140ms ease, fill 140ms ease, stroke-width 140ms ease;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .chart-point .hit {
+      fill: transparent;
+      stroke: transparent;
+      stroke-width: 26;
+    }
+
+    .chart-point[data-state="accepted"] circle:not(.hit) {
+      stroke: var(--green);
+    }
+
+    .chart-point[data-state="rejected"] circle:not(.hit) {
+      stroke: var(--red);
+    }
+
+    .chart-point[data-state="slow"] circle:not(.hit) {
+      stroke: var(--gold);
+    }
+
+    .chart-point[data-state="baseline"] circle:not(.hit) {
+      stroke: var(--line-strong);
+    }
+
+    .chart-point.is-active circle:not(.hit),
+    .chart-point:hover circle:not(.hit),
+    .chart-point:focus circle:not(.hit) {
+      r: 7;
+      fill: #fff7ed;
+      stroke-width: 4;
+    }
+
+    .chart-caption {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 12px 18px 16px;
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      line-height: 1.55;
+    }
+
+    .evolution-detail {
+      display: flex;
+      flex-direction: column;
+      min-height: 438px;
+      height: 100%;
+      padding: 20px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .detail-kicker {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 14px;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      color: var(--quiet);
+      text-transform: uppercase;
+    }
+
+    .detail-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 5px 8px;
+      color: var(--violet);
+      background: rgba(124, 58, 237, 0.10);
+      border: 1px solid rgba(124, 58, 237, 0.18);
+      border-radius: 999px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .evolution-detail h3 {
+      margin: 0 0 14px;
+      font-family: var(--display);
+      font-size: 1.9rem;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
+    .detail-metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin: 0 0 16px;
+    }
+
+    .detail-metric {
+      padding: 12px;
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+
+    .detail-metric span {
+      display: block;
+      color: var(--quiet);
+      font-family: var(--mono);
+      font-size: 0.67rem;
+      text-transform: uppercase;
+    }
+
+    .detail-metric b {
+      display: block;
+      margin-top: 4px;
+      font-family: var(--display);
+      font-size: 1.62rem;
+      line-height: 1;
+    }
+
+    .detail-summary {
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 0.96rem;
+    }
+
+    .detail-edits {
+      display: grid;
+      gap: 9px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      overflow-y: auto;
+      min-height: 150px;
+      max-height: 184px;
+      padding-right: 4px;
+    }
+
+    .detail-edits li {
+      padding: 10px 11px;
+      color: var(--muted);
+      background: rgba(238, 242, 255, 0.58);
+      border-left: 4px solid var(--violet);
+      border-radius: 10px;
+      font-size: 0.92rem;
+      line-height: 1.42;
+    }
+
+    .evolution-footnotes {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .evolution-note {
+      padding: 14px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .evolution-note b {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--ink);
+      font-size: 0.82rem;
+    }
+
+    .mini-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .mini-item {
+      display: grid;
+      grid-template-columns: 96px 1fr;
+      gap: 14px;
+      padding: 13px;
+      background: rgba(255, 255, 255, 0.7);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+
+    .mini-item b {
+      color: var(--red);
+      font-family: var(--mono);
+      font-size: 0.76rem;
+      text-transform: uppercase;
+    }
+
+    .mini-item span {
+      color: var(--muted);
+    }
+
+    .transfer-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .transfer {
+      padding: 18px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      min-height: 160px;
+      box-shadow: 0 1px 4px rgba(15, 23, 42, 0.04);
+      transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+    }
+
+    .transfer:nth-child(2) {
+      background: #ffffff;
+    }
+
+    .transfer:nth-child(3) {
+      background: #ffffff;
+    }
+
+    .transfer:nth-child(4) {
+      background: #ffffff;
+    }
+
+    .transfer .big {
+      display: block;
+      margin: 8px 0;
+      font-family: var(--display);
+      font-size: 2.15rem;
+      font-weight: 800;
+      line-height: 1;
+      background: linear-gradient(135deg, #4f46e5, #ec4899);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .transfer p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .bibtex-box {
+      position: relative;
+      overflow-x: auto;
+      margin-top: 18px;
+      padding: 22px 24px;
+      color: #94a3b8;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      box-shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
+    }
+
+    .bibtex-box pre {
+      margin: 0;
+    }
+
+    .bibtex-box code {
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      line-height: 1.6;
+      white-space: pre;
+    }
+
+    .copy-btn {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      padding: 6px 14px;
+      color: #a5b4fc;
+      background: rgba(124, 58, 237, 0.20);
+      border: 1px solid rgba(124, 58, 237, 0.30);
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+    }
+
+    .copy-btn:hover {
+      background: rgba(124, 58, 237, 0.35);
+    }
+
+    .copy-btn.copied {
+      color: #86efac;
+      background: rgba(34, 197, 94, 0.20);
+      border-color: rgba(34, 197, 94, 0.30);
+    }
+
+    .footer {
+      margin-top: 80px;
+      padding: 32px 0 44px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+
+    .footer a {
+      color: inherit;
+      text-decoration-color: var(--line-strong);
+      text-underline-offset: 3px;
+    }
+
+    @media (max-width: 980px) {
+      .topbar {
+        padding: 12px 18px;
+        gap: 16px;
+      }
+
+      .navbar-logos {
+        gap: 14px;
+      }
+
+      .navbar-related {
+        padding-right: 10px;
+      }
+
+      .nav a {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+
+      .hero {
+        min-height: auto;
+        padding-top: 126px;
+      }
+
+      .hero-inner,
+      .manifesto,
+      .teaser-heading,
+      .section-header,
+      .evolution-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .comparison-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .comparison-legend {
+        justify-content: flex-start;
+      }
+
+      .comparison-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .hero h1 {
+        font-size: 4.1rem;
+      }
+
+      .method-grid,
+      .transfer-grid,
+      .evolution-footnotes {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 680px) {
+      main {
+        width: min(100% - 24px, 1160px);
+      }
+
+      .topbar {
+        padding: 12px;
+        align-items: flex-start;
+        flex-direction: column;
+        position: static;
+        background: rgba(255, 255, 255, 0.82);
+      }
+
+      .navbar-logos {
+        width: 100%;
+        flex-wrap: wrap;
+      }
+
+      .navbar-divider {
+        display: none;
+      }
+
+      .nav {
+        justify-content: flex-start;
+      }
+
+      .hero {
+        padding: 40px 12px 34px;
+      }
+
+      .hero h1 {
+        font-size: 3.1rem;
+      }
+
+      .hero-subtitle {
+        font-size: 1.08rem;
+      }
+
+      h2 {
+        font-size: 2rem;
+      }
+
+      .method-grid,
+      .ablation-summary .mini-list,
+      .comparison-grid,
+      .transfer-grid,
+      .evolution-footnotes,
+      .steps {
+        grid-template-columns: 1fr;
+      }
+
+      .mini-item,
+      .detail-metrics,
+      .chart-caption {
+        grid-template-columns: 1fr;
+      }
+
+      .ledger-value {
+        font-size: 4.35rem;
+      }
+
+      .ledger-denominator {
+        font-size: 2.05rem;
+      }
+
+      .ledger-stats {
+        grid-template-columns: 1fr;
+      }
+
+      .ledger-stat + .ledger-stat {
+        padding-left: 0;
+        border-left: 0;
+      }
+
+      .bar-stage {
+        height: 150px;
+      }
+
+      .chart-toolbar,
+      .chart-caption {
+        flex-direction: column;
+      }
+
+      .teaser-showcase {
+        margin-top: 12px;
+        padding: 12px;
+      }
+
+      .teaser-figure {
+        padding: 8px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar" id="navbar" aria-label="Page navigation">
+    <div class="navbar-logos">
+      <a class="brandmark" href="#top" aria-label="SkillOpt home">
+        <svg class="microsoft-mark" viewBox="0 0 23 23" aria-hidden="true">
+          <rect width="10" height="10" fill="#F25022"></rect>
+          <rect x="13" width="10" height="10" fill="#7FBA00"></rect>
+          <rect y="13" width="10" height="10" fill="#00A4EF"></rect>
+          <rect x="13" y="13" width="10" height="10" fill="#FFB900"></rect>
+        </svg>
+        <span class="brand-skill">Skill</span><span class="brand-opt">Opt</span>
+      </a>
+      <div class="navbar-divider" aria-hidden="true"></div>
+      <a class="navbar-related" href="https://microsoft.github.io/SkillLens/" target="_blank" rel="noopener" title="Companion project: SkillLens">
+        <span class="nr-icon" aria-hidden="true"></span>
+        <span>
+          <span class="nr-label">Related</span>
+          <span class="nr-name">SkillLens</span>
+        </span>
+      </a>
+    </div>
+    <nav class="nav" aria-label="Sections">
+      <a href="#idea">Idea</a>
+      <a href="#method">Method</a>
+      <a href="#results">Results</a>
+      <a href="#ablations">Ablations</a>
+      <a href="#evolution">Evolution</a>
+      <a href="#transfer">Transfer</a>
+      <a href="#citation">Citation</a>
+      <a href="https://github.com/microsoft/SkillOpt" target="_blank" rel="noopener">Code</a>
+    </nav>
+  </header>
+
+  <section class="hero" id="top">
+    <div class="hero-inner">
+      <div>
+        <span class="kicker">Text-space optimization for frozen agents</span>
+        <h1>SkillOpt</h1>
+        <p class="hero-subtitle">
+          Executive Strategy for Self-Evolving Agent Skills. SkillOpt treats a compact
+          natural-language skill document as the trainable state of a frozen language
+          agent, then learns that document through rollouts, reflection, bounded edits,
+          and held-out validation gates.
+        </p>
+        <div class="hero-actions" aria-label="Primary links">
+          <a class="button primary" href="#idea">Core Idea</a>
+          <a class="button secondary" href="#method">Method</a>
+          <a class="button secondary" href="#results">View Results</a>
+          <a class="button tertiary" href="https://github.com/microsoft/SkillOpt" target="_blank" rel="noopener">
+            <svg class="button-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.62 2.29 6.69 5.47 7.78.4.08.55-.18.55-.4 0-.2-.01-.86-.01-1.56-2.01.38-2.53-.5-2.69-.95-.09-.23-.48-.95-.82-1.14-.28-.15-.68-.52-.01-.53.63-.01 1.08.59 1.23.83.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.03 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.42 7.42 0 0 1 8 4.01c.68 0 1.36.09 2 .27 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.13-1.87 3.82-3.65 4.03.29.26.54.75.54 1.51 0 1.09-.01 1.97-.01 2.24 0 .22.15.48.55.4A8.1 8.1 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z"/>
+            </svg>
+            Code Repo
+          </a>
+          <a class="button secondary" href="https://arxiv.org/abs/2605.23904" target="_blank" rel="noopener" aria-label="arXiv paper">
+            <img class="button-icon arxiv-icon" src="skillopt-assets/arxiv-logomark-small.svg" alt="" aria-hidden="true">
+            Paper
+          </a>
+          <a class="button secondary" href="https://youtu.be/JUBMDTCiM0M" target="_blank" rel="noopener">
+            <svg class="button-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M14.7 4.1a1.9 1.9 0 0 0-1.34-1.34C12.18 2.44 8 2.44 8 2.44s-4.18 0-5.36.32A1.9 1.9 0 0 0 1.3 4.1 19.8 19.8 0 0 0 .99 7.75c0 1.28.11 2.55.31 3.65a1.9 1.9 0 0 0 1.34 1.34c1.18.32 5.36.32 5.36.32s4.18 0 5.36-.32a1.9 1.9 0 0 0 1.34-1.34c.2-1.1.31-2.37.31-3.65 0-1.28-.11-2.55-.31-3.65ZM6.6 10.04V5.46l3.9 2.29-3.9 2.29Z"/>
+            </svg>
+            Video
+          </a>
+        </div>
+        <a class="related-project" href="https://microsoft.github.io/SkillLens/" target="_blank" rel="noopener" aria-label="Open the SkillLens project page">
+          <span class="related-icon" aria-hidden="true"></span>
+          <span class="related-text">
+            <span class="related-tag">Related project</span>
+            <span class="related-title"><strong>SkillLens</strong> studies model-generated agent skills.</span>
+            <span class="related-summary">A companion project page from Microsoft Research.</span>
+          </span>
+          <span class="related-arrow" aria-hidden="true">-&gt;</span>
+        </a>
+      </div>
+
+      <aside class="hero-ledger" aria-label="Key result summary">
+        <span class="ledger-kicker">Main result</span>
+        <div class="ledger-hero" aria-label="52 out of 52 settings">
+          <span class="ledger-value">52</span>
+          <span class="ledger-denominator">/52</span>
+        </div>
+        <p class="ledger-copy">
+          Best or tied-best in every model x benchmark and harness x benchmark setting.
+        </p>
+        <div class="ledger-stats" aria-label="Evaluation coverage">
+          <div class="ledger-stat">
+            <span>Target models</span>
+            <b>7</b>
+          </div>
+          <div class="ledger-stat">
+            <span>Benchmarks</span>
+            <b>6</b>
+          </div>
+          <div class="ledger-stat">
+            <span>Harnesses</span>
+            <b class="ledger-stat-text">Codex + Claude Code</b>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <main>
+    <section class="teaser-showcase video-showcase" aria-labelledby="video-title">
+      <div class="teaser-heading">
+        <span>Project Video</span>
+        <div>
+          <h2 id="video-title">SkillOpt in motion.</h2>
+          <p class="section-lede">
+            A short visual overview of how SkillOpt treats natural-language skills
+            as trainable artifacts: roll out, reflect, edit, validate, and export.
+          </p>
+        </div>
+      </div>
+      <figure class="video-frame">
+        <iframe
+          src="https://www.youtube.com/embed/JUBMDTCiM0M"
+          title="SkillOpt project video"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          allowfullscreen>
+        </iframe>
+      </figure>
+      <p class="teaser-caption">
+        Promotional video for the SkillOpt project page. The static paper teaser is shown below for high-resolution inspection.
+      </p>
+    </section>
+
+    <section class="teaser-showcase" aria-labelledby="teaser-title">
+      <div class="teaser-heading">
+        <span>Paper Teaser</span>
+        <div>
+          <h2 id="teaser-title">The core loop at a glance.</h2>
+          <p class="section-lede">
+            The teaser summarizes the SkillOpt training loop: rollout evidence,
+            optimizer-side reflection, bounded skill edits, validation gating,
+            and the exported reusable skill.
+          </p>
+        </div>
+      </div>
+      <figure class="teaser-figure">
+        <img src="skillopt-assets/teaser-1.png" alt="SkillOpt teaser figure showing the target model, optimizer model, bounded edits, validation gate, and exported best skill.">
+      </figure>
+      <p class="teaser-caption">
+        Figure from the SkillOpt paper. On small screens, the figure area scrolls horizontally to preserve the original details.
+      </p>
+    </section>
+
+    <section class="section" id="idea">
+      <div class="section-header">
+        <div class="section-eyebrow">01 / Core Idea</div>
+        <div>
+          <h2>Train the procedure, not the weights.</h2>
+          <p class="section-lede">
+            SkillOpt makes the skill document itself the optimization target. The
+            target model, backend, and harness stay fixed; the procedure that guides
+            evidence gathering, tool use, verification, and output formatting evolves.
+          </p>
+        </div>
+      </div>
+
+      <div class="manifesto">
+        <article class="statement">
+          <h3>A skill is external state for an agent.</h3>
+          <p>
+            Instead of fine-tuning a model or hand-maintaining prompts, SkillOpt runs
+            the frozen agent on scored batches, asks a separate optimizer model to
+            propose structured edits, and accepts a candidate only when validation
+            performance improves.
+          </p>
+          <div class="chip-row">
+            <span class="chip">Frozen target model</span>
+            <span class="chip">Optimizer model</span>
+            <span class="chip">Add / delete / replace edits</span>
+            <span class="chip">Held-out gate</span>
+          </div>
+        </article>
+
+        <div class="steps" aria-label="Optimization loop summary">
+          <div class="step">
+            <strong>Rollout</strong>
+            <p>The target model executes tasks with the current skill and records scored trajectories.</p>
+          </div>
+          <div class="step">
+            <strong>Reflect</strong>
+            <p>The optimizer analyzes success and failure minibatches to find reusable procedures.</p>
+          </div>
+          <div class="step">
+            <strong>Edit</strong>
+            <p>Candidate add, delete, and replace operations are merged and ranked under a budget.</p>
+          </div>
+          <div class="step">
+            <strong>Gate</strong>
+            <p>The candidate skill is kept only if it improves held-out selection performance.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="method">
+      <div class="section-header">
+        <div class="section-eyebrow">02 / Method</div>
+        <div>
+          <h2>A training loop for natural-language skills.</h2>
+          <p class="section-lede">
+            The loop deliberately mirrors a learning algorithm: rollout evidence acts
+            like a forward pass, reflection acts like a language-level backward pass,
+            and the textual learning rate bounds how far the skill can move.
+          </p>
+        </div>
+      </div>
+
+      <div class="method-grid">
+        <article class="panel accent-blue">
+          <h3>Evidence</h3>
+          <p>Rollout batches capture messages, tool calls, verifier feedback, task metadata, and final scores.</p>
+        </article>
+        <article class="panel accent-red">
+          <h3>Minibatches</h3>
+          <p>Failures and successes are reflected separately so edits correct recurring errors while preserving working behavior.</p>
+        </article>
+        <article class="panel accent-gold">
+          <h3>Bounded Edits</h3>
+          <p>An edit budget functions as a textual learning rate, preventing useful rules from being overwritten by broad rewrites.</p>
+        </article>
+        <article class="panel accent-green">
+          <h3>Memory</h3>
+          <p>Rejected edits, slow update, and optimizer-side meta skill provide longer-horizon feedback without bloating deployment.</p>
+        </article>
+      </div>
+
+      <figure class="figure-frame">
+        <img src="skillopt-assets/pipeline-1.png" alt="SkillOpt pipeline showing rollout, reflection, bounded edits, validation gate, slow update, and meta skill.">
+        <figcaption class="caption">
+          SkillOpt pipeline from the paper. The frozen target model executes with the current skill; the optimizer model proposes bounded edits; held-out validation decides whether the candidate becomes the new current skill.
+        </figcaption>
+      </figure>
+    </section>
+
+    <section class="section" id="results">
+      <div class="section-header">
+        <div class="section-eyebrow">03 / Main Results</div>
+        <div>
+          <h2>SkillOpt improves GPT and Qwen target models.</h2>
+          <p class="section-lede">
+            The table reports main-result gains across target models and
+            execution harnesses, comparing no-skill execution with the final
+            SkillOpt skill on held-out test splits.
+          </p>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table aria-label="Main result gain heatmap by model, harness, and benchmark">
+          <thead>
+            <tr>
+              <th>Target model</th>
+              <th>Harness</th>
+              <th class="num">SearchQA</th>
+              <th class="num">Sheet</th>
+              <th class="num">Office</th>
+              <th class="num">DocVQA</th>
+              <th class="num">LiveMath</th>
+              <th class="num">ALFWorld</th>
+              <th class="num">Avg gain</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="model-cell"><img class="model-icon" src="skillopt-assets/openai.png" alt="OpenAI logo">GPT-5.5</span></td>
+              <td>Direct chat</td>
+              <td class="num heat" style="--heat: 19;">+9.6</td>
+              <td class="num heat" style="--heat: 77;">+38.9</td>
+              <td class="num heat" style="--heat: 77;">+39.0</td>
+              <td class="num heat" style="--heat: 24;">+12.4</td>
+              <td class="num heat" style="--heat: 58;">+29.3</td>
+              <td class="num heat" style="--heat: 23;">+11.9</td>
+              <td class="num heat-avg">+23.5</td>
+            </tr>
+            <tr>
+              <td><span class="model-cell"><img class="model-icon" src="skillopt-assets/openai.png" alt="OpenAI logo">GPT-5.4</span></td>
+              <td>Direct chat</td>
+              <td class="num heat" style="--heat: 12;">+6.2</td>
+              <td class="num heat" style="--heat: 42;">+21.1</td>
+              <td class="num heat" style="--heat: 25;">+12.8</td>
+              <td class="num heat" style="--heat: 27;">+13.6</td>
+              <td class="num heat" style="--heat: 14;">+7.2</td>
+              <td class="num heat" style="--heat: 31;">+15.6</td>
+              <td class="num heat-avg">+12.8</td>
+            </tr>
+            <tr>
+              <td><span class="model-cell"><img class="model-icon" src="skillopt-assets/openai.png" alt="OpenAI logo">GPT-5.4-mini</span></td>
+              <td>Direct chat</td>
+              <td class="num heat" style="--heat: 8;">+4.3</td>
+              <td class="num heat" style="--heat: 22;">+11.4</td>
+              <td class="num heat" style="--heat: 53;">+26.7</td>
+              <td class="num heat" style="--heat: 33;">+16.5</td>
+              <td class="num heat" style="--heat: 9;">+4.8</td>
+              <td class="num heat" style="--heat: 25;">+12.7</td>
+              <td class="num heat-avg">+12.7</td>
+            </tr>
+            <tr>
+              <td><span class="model-cell"><img class="model-icon" src="skillopt-assets/openai.png" alt="OpenAI logo">GPT-5.4-nano</span></td>
+              <td>Direct chat</td>
+              <td class="num heat" style="--heat: 37;">+19.0</td>
+              <td class="num heat" style="--heat: 16;">+8.2</td>
+              <td class="num heat" style="--heat: 66;">+33.7</td>
+              <td class="num heat" style="--heat: 97;">+49.4</td>
+              <td class="num heat" style="--heat: 8;">+4.0</td>
+              <td class="num heat" style="--heat: 69;">+35.1</td>
+              <td class="num heat-avg">+24.9</td>
+            </tr>
+            <tr>
+              <td><span class="model-cell"><img class="model-icon" src="skillopt-assets/openai.png" alt="OpenAI logo">GPT-5.2</span></td>
+              <td>Direct chat</td>
+              <td class="num heat" style="--heat: 22;">+11.2</td>
+              <td class="num heat" style="--heat: 37;">+18.9</td>
+              <td class="num heat" style="--heat: 42;">+21.5</td>
+              <td class="num heat" style="--heat: 33;">+16.5</td>
+              <td class="num heat" style="--heat: 30;">+15.2</td>
+              <td class="num heat" style="--heat: 32;">+16.4</td>
+              <td class="num heat-avg">+16.6</td>
+            </tr>
+            <tr>
+              <td><span class="model-cell"><img class="model-icon" src="skillopt-assets/qwen-color.png" alt="Qwen logo">Qwen3.5-4B</span></td>
+              <td>Direct chat</td>
+              <td class="num heat" style="--heat: 6;">+3.1</td>
+              <td class="num heat" style="--heat: 29;">+14.6</td>
+              <td class="num heat" style="--heat: 30;">+15.2</td>
+              <td class="num heat" style="--heat: 4;">+2.1</td>
+              <td class="num heat" style="--heat: 58;">+29.6</td>
+              <td class="num heat" style="--heat: 100;">+50.7</td>
+              <td class="num heat-avg">+19.2</td>
+            </tr>
+            <tr>
+              <td><span class="model-cell"><img class="model-icon" src="skillopt-assets/qwen-color.png" alt="Qwen logo">Qwen3.6-35B-A3B</span></td>
+              <td>Direct chat</td>
+              <td class="num heat" style="--heat: 15;">+7.6</td>
+              <td class="num heat" style="--heat: 18;">+9.3</td>
+              <td class="num heat" style="--heat: 2;">+1.2</td>
+              <td class="num heat" style="--heat: 7;">+3.8</td>
+              <td class="num heat" style="--heat: 21;">+10.4</td>
+              <td class="num heat" style="--heat: 44;">+22.4</td>
+              <td class="num heat-avg">+9.1</td>
+            </tr>
+            <tr class="harness-group">
+              <td><span class="model-cell"><img class="model-icon" src="skillopt-assets/openai.png" alt="OpenAI logo">GPT-5.5</span></td>
+              <td>Codex</td>
+              <td class="num heat" style="--heat: 11;">+5.5</td>
+              <td class="num heat" style="--heat: 100;">+57.5</td>
+              <td class="num heat" style="--heat: 25;">+12.8</td>
+              <td class="num heat" style="--heat: 10;">+5.0</td>
+              <td class="num heat" style="--heat: 55;">+28.0</td>
+              <td class="num">N/A</td>
+              <td class="num heat-avg">+21.8</td>
+            </tr>
+            <tr>
+              <td><span class="model-cell"><img class="model-icon" src="skillopt-assets/openai.png" alt="OpenAI logo">GPT-5.5</span></td>
+              <td>Claude Code</td>
+              <td class="num heat" style="--heat: 8;">+4.0</td>
+              <td class="num heat" style="--heat: 100;">+58.3</td>
+              <td class="num heat" style="--heat: 27;">+13.9</td>
+              <td class="num heat" style="--heat: 7;">+3.5</td>
+              <td class="num heat" style="--heat: 26;">+13.3</td>
+              <td class="num">N/A</td>
+              <td class="num heat-avg">+18.6</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <section class="comparison-frame" aria-labelledby="comparison-title">
+        <div class="comparison-head">
+          <div class="comparison-heading">
+            <span>Method comparison</span>
+            <h3 id="comparison-title">SkillOpt clears the strongest baseline on every benchmark.</h3>
+          </div>
+          <div class="comparison-legend" id="method-comparison-legend" aria-label="Compared methods"></div>
+        </div>
+        <div class="comparison-grid" id="method-comparison-grid" aria-label="Per-benchmark method comparison"></div>
+      </section>
+
+    </section>
+
+    <section class="section" id="ablations">
+      <div class="section-header">
+        <div class="section-eyebrow">04 / Ablations</div>
+        <div>
+          <h2>The controls are doing real work.</h2>
+          <p class="section-lede">
+            The paper isolates the optimizer components that keep skill learning stable:
+            enough evidence, bounded textual updates, rejected-edit feedback, slow
+            update, and optimizer-side memory.
+          </p>
+        </div>
+      </div>
+
+      <div class="ablation-layout">
+        <div class="table-wrap">
+          <table aria-label="Component ablations">
+            <thead>
+              <tr>
+                <th>Component</th>
+                <th>Setting</th>
+                <th class="num">SearchQA</th>
+                <th class="num">Spreadsheet</th>
+                <th class="num">LiveMath</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Learning rate</td>
+                <td>lr=4 default</td>
+                <td class="num"><strong>87.1</strong></td>
+                <td class="num"><strong>77.5</strong></td>
+                <td class="num"><strong>61.3</strong></td>
+              </tr>
+              <tr>
+                <td>Learning rate</td>
+                <td>without lr</td>
+                <td class="num">84.6</td>
+                <td class="num">75.7</td>
+                <td class="num">57.3</td>
+              </tr>
+              <tr>
+                <td>Rejected buffer</td>
+                <td>with buffer</td>
+                <td class="num"><strong>87.1</strong></td>
+                <td class="num"><strong>77.5</strong></td>
+                <td class="num"><strong>61.3</strong></td>
+              </tr>
+              <tr>
+                <td>Rejected buffer</td>
+                <td>without buffer</td>
+                <td class="num">85.5</td>
+                <td class="num">72.9</td>
+                <td class="num">58.9</td>
+              </tr>
+              <tr>
+                <td>Update memory</td>
+                <td>meta skill + slow update</td>
+                <td class="num"><strong>87.1</strong></td>
+                <td class="num"><strong>77.5</strong></td>
+                <td class="num"><strong>61.3</strong></td>
+              </tr>
+              <tr>
+                <td>Update memory</td>
+                <td>without both</td>
+                <td class="num">86.3</td>
+                <td class="num">55.0</td>
+                <td class="num">59.7</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <article class="panel ablation-summary">
+          <h3>What the ablations say</h3>
+          <div class="mini-list">
+            <div class="mini-item">
+              <b>Bounded</b>
+              <span>Textual learning rates prevent destructive rewrites while keeping enough plasticity to learn new procedures.</span>
+            </div>
+            <div class="mini-item">
+              <b>Gated</b>
+              <span>Held-out selection turns reflection into propose-and-test optimization rather than unconditional self-editing.</span>
+            </div>
+            <div class="mini-item">
+              <b>Buffered</b>
+              <span>Rejected edits become negative feedback, helping the optimizer avoid repeating harmful directions.</span>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <figure class="figure-frame">
+        <img src="skillopt-assets/epoch-trends-1.png" alt="Epoch checkpoint trends for SpreadsheetBench, SearchQA, and LiveMath.">
+        <figcaption class="caption">
+          Epoch checkpoint trends from the paper. Selection-best checkpoints are compared with train rollout score and unseen test performance.
+        </figcaption>
+      </figure>
+    </section>
+
+    <section class="section" id="evolution">
+      <div class="section-header">
+        <div class="section-eyebrow">05 / Skill Evolution</div>
+        <div>
+          <h2>A typical run turns failures into concrete operating rules.</h2>
+          <p class="section-lede">
+            This ALFWorld run uses GPT-5.4-mini as the frozen target model and
+            GPT-5.5 as the optimizer model. The plot tracks train rollout and
+            held-out selection scores; hover or focus a point to inspect the
+            skill edit proposed at that stage.
+          </p>
+        </div>
+      </div>
+
+      <div class="evolution-shell">
+        <article class="evolution-chart" aria-label="ALFWorld skill evolution chart">
+          <div class="chart-toolbar">
+            <span>ALFWorld / train-sel evolution</span>
+            <div class="chart-legend" aria-label="Chart legend">
+              <span class="legend-item" style="--legend: var(--teal)">Train rollout</span>
+              <span class="legend-item" style="--legend: var(--blue)">Selection gate</span>
+            </div>
+          </div>
+          <div class="chart-scroller">
+            <svg class="skill-chart" viewBox="0 0 790 340" role="img" aria-labelledby="evolution-chart-title evolution-chart-desc">
+              <title id="evolution-chart-title">ALFWorld skill evolution scores</title>
+              <desc id="evolution-chart-desc">Selection score rises from 68.6 percent to 81.4 percent, while rejected edits are visible as downward candidate points.</desc>
+              <line class="chart-grid" x1="70" y1="60" x2="730" y2="60"></line>
+              <line class="chart-grid" x1="70" y1="115" x2="730" y2="115"></line>
+              <line class="chart-grid" x1="70" y1="170" x2="730" y2="170"></line>
+              <line class="chart-grid" x1="70" y1="225" x2="730" y2="225"></line>
+              <line class="chart-grid" x1="70" y1="280" x2="730" y2="280"></line>
+              <line class="chart-axis" x1="70" y1="280" x2="730" y2="280"></line>
+              <line class="chart-axis" x1="70" y1="60" x2="70" y2="280"></line>
+              <text class="chart-label" x="25" y="64">85%</text>
+              <text class="chart-label" x="25" y="119">80%</text>
+              <text class="chart-label" x="25" y="174">75%</text>
+              <text class="chart-label" x="25" y="229">70%</text>
+              <text class="chart-label" x="25" y="284">65%</text>
+              <text class="chart-label" x="50" y="318">base</text>
+              <text class="chart-label" x="181" y="318">step 1</text>
+              <text class="chart-label" x="311" y="318">step 2</text>
+              <text class="chart-label" x="441" y="318">step 3</text>
+              <text class="chart-label" x="563" y="318">slow</text>
+              <text class="chart-label" x="701" y="318">step 4</text>
+              <polyline class="line-selection" points="70,240.7 200,201.4 330,162.1 460,232.9 590,99.3 720,146.4"></polyline>
+              <polyline class="line-train" points="200,238.8 330,156.3 460,142.5 590,115 720,87.5"></polyline>
+              <g class="chart-point" data-index="0" data-state="baseline" tabindex="0" role="button" aria-label="Baseline selection score 68.6 percent">
+                <circle class="hit" cx="70" cy="240.7" r="12"></circle>
+                <circle cx="70" cy="240.7" r="5"></circle>
+              </g>
+              <g class="chart-point" data-index="1" data-state="accepted" tabindex="0" role="button" aria-label="Step 1 accepted, selection score 72.1 percent">
+                <circle class="hit" cx="200" cy="201.4" r="12"></circle>
+                <circle cx="200" cy="201.4" r="5"></circle>
+                <circle cx="200" cy="238.8" r="4"></circle>
+              </g>
+              <g class="chart-point" data-index="2" data-state="accepted" tabindex="0" role="button" aria-label="Step 2 accepted, selection score 75.7 percent">
+                <circle class="hit" cx="330" cy="162.1" r="12"></circle>
+                <circle cx="330" cy="162.1" r="5"></circle>
+                <circle cx="330" cy="156.3" r="4"></circle>
+              </g>
+              <g class="chart-point" data-index="3" data-state="rejected" tabindex="0" role="button" aria-label="Step 3 rejected, candidate selection score 69.3 percent">
+                <circle class="hit" cx="460" cy="232.9" r="12"></circle>
+                <circle cx="460" cy="232.9" r="5"></circle>
+                <circle cx="460" cy="142.5" r="4"></circle>
+              </g>
+              <g class="chart-point" data-index="4" data-state="slow" tabindex="0" role="button" aria-label="Slow update accepted, selection score 81.4 percent">
+                <circle class="hit" cx="590" cy="99.3" r="12"></circle>
+                <circle cx="590" cy="99.3" r="5"></circle>
+                <circle cx="590" cy="115" r="4"></circle>
+              </g>
+              <g class="chart-point" data-index="5" data-state="rejected" tabindex="0" role="button" aria-label="Step 4 rejected, candidate selection score 77.1 percent">
+                <circle class="hit" cx="720" cy="146.4" r="12"></circle>
+                <circle cx="720" cy="146.4" r="5"></circle>
+                <circle cx="720" cy="87.5" r="4"></circle>
+              </g>
+            </svg>
+          </div>
+          <div class="chart-caption">
+            <span>Accepted edits become the current skill only after held-out selection improves.</span>
+            <span>Step 3 is rescued by a slow update; Step 4 trains higher but fails selection.</span>
+          </div>
+        </article>
+
+        <aside class="evolution-detail" aria-live="polite">
+          <div class="detail-kicker">
+            <span id="evo-step">Slow update</span>
+            <span class="detail-badge" id="evo-status">Accepted</span>
+          </div>
+          <h3 id="evo-title">Epoch 3 slow update</h3>
+          <div class="detail-metrics">
+            <div class="detail-metric">
+              <span>Train rollout</span>
+              <b id="evo-train">80.0%</b>
+            </div>
+            <div class="detail-metric">
+              <span>Selection gate</span>
+              <b id="evo-selection">81.4%</b>
+            </div>
+          </div>
+          <p class="detail-summary" id="evo-summary">
+            Longitudinal comparison found no regressions and three improvements, so a broader search-memory update became the new best skill.
+          </p>
+          <ul class="detail-edits" id="evo-edits">
+            <li>Count any generic target receptacle instance as valid.</li>
+            <li>Keep a strict numbered searched set and do not re-check observed locations.</li>
+            <li>Broaden search after several misses in one location type.</li>
+          </ul>
+        </aside>
+      </div>
+
+      <div class="evolution-footnotes">
+        <div class="evolution-note">
+          <b>Run setup</b>
+          Target model: GPT-5.4-mini. Optimizer model: GPT-5.5. The skill starts from a compact ALFWorld instruction file and is edited in text space.
+        </div>
+        <div class="evolution-note">
+          <b>Selection rule</b>
+          Candidate edits are accepted only when held-out selection improves the current best score.
+        </div>
+        <div class="evolution-note">
+          <b>Outcome</b>
+          The selected skill improves final ALFWorld test hard score from 70.9% to 85.8%.
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="transfer">
+      <div class="section-header">
+        <div class="section-eyebrow">06 / Transfer</div>
+        <div>
+          <h2>The exported skill behaves like a reusable artifact.</h2>
+          <p class="section-lede">
+            SkillOpt exports a compact <code>best_skill.md</code>. The paper tests
+            whether that artifact transfers across model sizes, execution harnesses,
+            and nearby benchmarks without further target-side optimization.
+          </p>
+        </div>
+      </div>
+
+      <div class="transfer-grid">
+        <article class="transfer">
+          <span>Cross-model</span>
+          <span class="big">+15.2</span>
+          <p>GPT-5.4 LiveMath skill transferred to GPT-5.4-nano on LiveMathBench.</p>
+        </article>
+        <article class="transfer">
+          <span>Cross-harness</span>
+          <span class="big">+31.8</span>
+          <p>Codex-trained SpreadsheetBench skill transferred into Claude Code.</p>
+        </article>
+        <article class="transfer">
+          <span>Self-optimizer</span>
+          <span class="big">+10.4</span>
+          <p>GPT-5.4-nano used as its own optimizer improved SpreadsheetBench over baseline.</p>
+        </article>
+        <article class="transfer">
+          <span>Deployment</span>
+          <span class="big">1 file</span>
+          <p>The target model consumes only the final skill, not optimizer memory.</p>
+        </article>
+      </div>
+
+      <div class="callout">
+        A stronger optimizer model gives the largest gains, but the loop is not merely
+        distillation from a stronger model. Even matched target-as-optimizer settings
+        can discover useful edits when the update is constrained, buffered, and
+        validated.
+      </div>
+    </section>
+
+    <section class="section" id="citation">
+      <div class="section-header">
+        <div class="section-eyebrow">07 / BibTeX</div>
+        <div>
+          <h2>Citation.</h2>
+          <p class="section-lede">
+            If you find SkillOpt useful, please cite the arXiv preprint below.
+          </p>
+        </div>
+      </div>
+
+      <div class="bibtex-box">
+        <button class="copy-btn" type="button" onclick="copyBibtex(this)">Copy</button>
+        <pre><code>@misc{yang2026skilloptexecutivestrategyselfevolving,
+      title={SkillOpt: Executive Strategy for Self-Evolving Agent Skills}, 
+      author={Yifan Yang and Ziyang Gong and Weiquan Huang and Qihao Yang and Ziwei Zhou and Zisu Huang and Yan Li and Xuemei Gao and Qi Dai and Bei Liu and Kai Qiu and Yuqing Yang and Dongdong Chen and Xue Yang and Chong Luo},
+      year={2026},
+      eprint={2605.23904},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2605.23904}, 
+}</code></pre>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <span>SkillOpt: Executive Strategy for Self-Evolving Agent Skills</span>
+      <span><a href="https://github.com/microsoft/SkillOpt" target="_blank" rel="noopener">Code</a> / <a href="#citation">Citation</a></span>
+    </footer>
+  </main>
+  <script>
+    (function () {
+      const navbar = document.getElementById("navbar");
+      const updateNavbar = () => {
+        if (!navbar) return;
+        navbar.classList.toggle("scrolled", window.scrollY > 40);
+      };
+      updateNavbar();
+      window.addEventListener("scroll", updateNavbar, { passive: true });
+
+      const revealSelector = [
+        ".teaser-showcase",
+        ".section-header",
+        ".manifesto",
+        ".method-grid",
+        ".figure-frame",
+        ".table-wrap",
+        ".comparison-frame",
+        ".ablation-layout",
+        ".evolution-shell",
+        ".evolution-footnotes",
+        ".transfer-grid",
+        ".callout",
+        ".bibtex-box"
+      ].join(",");
+      const revealNodes = Array.from(document.querySelectorAll(revealSelector));
+      revealNodes.forEach((node) => node.classList.add("reveal"));
+
+      if ("IntersectionObserver" in window) {
+        const observer = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+              entry.target.classList.add("visible");
+            }
+          });
+        }, { threshold: 0, rootMargin: "0px 0px -8% 0px" });
+        revealNodes.forEach((node) => observer.observe(node));
+      } else {
+        revealNodes.forEach((node) => node.classList.add("visible"));
+      }
+    })();
+
+    function copyBibtex(btn) {
+      const box = btn.closest(".bibtex-box");
+      const text = box ? box.querySelector("code").textContent : "";
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = "Copied!";
+        btn.classList.add("copied");
+        setTimeout(() => {
+          btn.textContent = "Copy";
+          btn.classList.remove("copied");
+        }, 2000);
+      });
+    }
+
+    const methodComparison = {
+      methods: [
+        { key: "NoSkill", label: "No skill", color: "#94a3b8" },
+        { key: "Human", label: "Human skill", color: "#7c3aed" },
+        { key: "LLM", label: "LLM skill", color: "#4f46e5" },
+        { key: "Trace", label: "Trace2Skill", color: "#0ea5e9" },
+        { key: "TextGrad", label: "TextGrad", color: "#ec4899" },
+        { key: "GEPA", label: "GEPA", color: "#f59e0b" },
+        { key: "Ours", label: "SkillOpt", color: "#16a34a" }
+      ],
+      benches: [
+        {
+          name: "SearchQA",
+          yMin: 65,
+          yMax: 85,
+          values: { NoSkill: 71.3, Human: 74.5, LLM: 72.9, Trace: 76.5, TextGrad: 76.4, GEPA: 78.1, Ours: 80.0 }
+        },
+        {
+          name: "SpreadsheetBench",
+          yMin: 25,
+          yMax: 55,
+          values: { NoSkill: 32.6, Human: 46.5, LLM: 35.9, Trace: 39.3, TextGrad: 31.3, GEPA: 47.3, Ours: 51.7 }
+        },
+        {
+          name: "OfficeQA",
+          yMin: 25,
+          yMax: 55,
+          values: { NoSkill: 31.0, Human: 48.3, LLM: 29.0, Trace: 35.1, TextGrad: 38.7, GEPA: 47.8, Ours: 52.4 }
+        },
+        {
+          name: "DocVQA",
+          yMin: 70,
+          yMax: 92,
+          values: { NoSkill: 72.3, Human: 86.0, LLM: 86.0, Trace: 87.4, TextGrad: 83.2, GEPA: 85.0, Ours: 89.1 }
+        },
+        {
+          name: "LiveMath",
+          yMin: 20,
+          yMax: 45,
+          values: { NoSkill: 26.7, Human: 28.1, LLM: 29.1, Trace: 33.7, TextGrad: 24.9, GEPA: 32.2, Ours: 42.9 }
+        },
+        {
+          name: "ALFWorld",
+          yMin: 50,
+          yMax: 87,
+          values: { NoSkill: 60.8, Human: 54.7, LLM: 70.4, Trace: 73.4, TextGrad: 67.5, GEPA: 75.4, Ours: 84.3 }
+        }
+      ]
+    };
+
+    function renderMethodComparison() {
+      const grid = document.getElementById("method-comparison-grid");
+      const legend = document.getElementById("method-comparison-legend");
+      if (!grid || !legend) return;
+
+      methodComparison.methods.forEach((method) => {
+        const chip = document.createElement("span");
+        chip.className = "legend-chip";
+        chip.style.setProperty("--color", method.color);
+        chip.textContent = method.label;
+        legend.appendChild(chip);
+      });
+
+      methodComparison.benches.forEach((bench) => {
+        const panel = document.createElement("article");
+        panel.className = "benchmark-panel";
+
+        const top = document.createElement("div");
+        top.className = "benchmark-top";
+
+        const title = document.createElement("h4");
+        title.textContent = bench.name;
+
+        const ours = bench.values.Ours;
+        const bestBaseline = Math.max(
+          ...methodComparison.methods
+            .filter((method) => method.key !== "Ours")
+            .map((method) => bench.values[method.key])
+        );
+        const delta = ours - bestBaseline;
+
+        const deltaPill = document.createElement("span");
+        deltaPill.className = "delta-pill";
+        deltaPill.textContent = `SkillOpt +${delta.toFixed(1)}`;
+
+        top.appendChild(title);
+        top.appendChild(deltaPill);
+
+        const stage = document.createElement("div");
+        stage.className = "bar-stage";
+
+        const axis = document.createElement("span");
+        axis.className = "axis-range";
+        axis.textContent = `y ${bench.yMin}-${bench.yMax}`;
+        stage.appendChild(axis);
+
+        methodComparison.methods.forEach((method) => {
+          const value = bench.values[method.key];
+          const height = Math.max(4, ((value - bench.yMin) / (bench.yMax - bench.yMin)) * 100);
+          const bar = document.createElement("div");
+          bar.className = method.key === "Ours" ? "method-bar skillopt" : "method-bar";
+          bar.style.setProperty("--h", `${height}%`);
+          bar.style.setProperty("--color", method.color);
+          bar.title = `${method.label}: ${value.toFixed(1)}`;
+          bar.setAttribute("aria-label", `${bench.name} ${method.label} score ${value.toFixed(1)}`);
+
+          if (method.key === "Ours") {
+            const valueLabel = document.createElement("span");
+            valueLabel.textContent = value.toFixed(1);
+            bar.appendChild(valueLabel);
+          }
+
+          stage.appendChild(bar);
+        });
+
+        panel.appendChild(top);
+        panel.appendChild(stage);
+        grid.appendChild(panel);
+      });
+    }
+
+    renderMethodComparison();
+
+    const evolutionSteps = [
+      {
+        step: "Baseline",
+        status: "Initial",
+        title: "Initial ALFWorld skill",
+        train: "-",
+        selection: "68.6%",
+        summary: "The starting skill solves many direct cases, but failures cluster around repeated search, loose object matching, and unfinished pick-two progress.",
+        edits: [
+          "Generic search and delivery rules, with no persistent numbered-location memory.",
+          "Selection baseline before any optimizer edit is applied.",
+          "The run uses this score as the acceptance floor for future candidates."
+        ]
+      },
+      {
+        step: "Step 1",
+        status: "Accepted",
+        title: "Search memory and exact targets",
+        train: "68.8%",
+        selection: "72.1%",
+        summary: "The first accepted edit fixes recurring navigation loops and makes object matching stricter.",
+        edits: [
+          "Add a persistent checklist for observed receptacles, surfaces, containers, and appliances.",
+          "Use semantic search priors, then broaden without revisiting checked locations.",
+          "Require exact object nouns; do not treat similar items as substitutes."
+        ]
+      },
+      {
+        step: "Step 2",
+        status: "Accepted",
+        title: "Delivery, transforms, and pick-two bookkeeping",
+        train: "76.3%",
+        selection: "75.7%",
+        summary: "The second accepted edit turns several procedural hints into executable rules for ALFWorld task types.",
+        edits: [
+          "Open the target receptacle if needed and place the held goal object directly.",
+          "Treat clean, heat, and cool adjectives as mandatory transformations.",
+          "For pick-two tasks, place one object, count progress, then fetch only the remaining instance."
+        ]
+      },
+      {
+        step: "Step 3",
+        status: "Rejected",
+        title: "Candidate overfits search bookkeeping",
+        train: "77.5%",
+        selection: "69.3%",
+        summary: "The local train rollout improves, but held-out selection drops below the current best, so the candidate is rejected.",
+        edits: [
+          "Proposed a more executable search ledger in every search-oriented thought.",
+          "The gate prevents this narrower rewrite from replacing the stronger Step 2 skill.",
+          "Rejected-edit feedback is kept as negative evidence for future updates."
+        ]
+      },
+      {
+        step: "Slow update",
+        status: "Accepted",
+        title: "Epoch 3 slow update",
+        train: "80.0%",
+        selection: "81.4%",
+        summary: "Longitudinal comparison finds no regressions and three improvements, so a broader search-memory update becomes the new best skill.",
+        edits: [
+          "Count any generic target receptacle instance as valid.",
+          "Keep a strict numbered searched set and do not re-check observed locations.",
+          "Broaden search after several misses in one location type."
+        ]
+      },
+      {
+        step: "Step 4",
+        status: "Rejected",
+        title: "Higher train score, lower selection score",
+        train: "82.5%",
+        selection: "77.1%",
+        summary: "The final candidate looks better on the training batch but fails to beat the slow-update checkpoint on selection.",
+        edits: [
+          "Tried to make numbered-location memory even more explicit.",
+          "Added stronger failed-route marking after repeated impossible moves.",
+          "Selection rejects it, preserving the 81.4% slow-update best skill."
+        ]
+      }
+    ];
+
+    const pointNodes = document.querySelectorAll(".chart-point");
+    const detailFields = {
+      step: document.getElementById("evo-step"),
+      status: document.getElementById("evo-status"),
+      title: document.getElementById("evo-title"),
+      train: document.getElementById("evo-train"),
+      selection: document.getElementById("evo-selection"),
+      summary: document.getElementById("evo-summary"),
+      edits: document.getElementById("evo-edits")
+    };
+
+    function showEvolutionStep(index) {
+      const item = evolutionSteps[index];
+      if (!item || !detailFields.title) return;
+
+      detailFields.step.textContent = item.step;
+      detailFields.status.textContent = item.status;
+      detailFields.title.textContent = item.title;
+      detailFields.train.textContent = item.train;
+      detailFields.selection.textContent = item.selection;
+      detailFields.summary.textContent = item.summary;
+      detailFields.edits.innerHTML = "";
+
+      item.edits.forEach((edit) => {
+        const li = document.createElement("li");
+        li.textContent = edit;
+        detailFields.edits.appendChild(li);
+      });
+
+      pointNodes.forEach((node) => {
+        node.classList.toggle("is-active", Number(node.dataset.index) === index);
+      });
+    }
+
+    pointNodes.forEach((node) => {
+      const index = Number(node.dataset.index);
+      node.addEventListener("mouseenter", () => showEvolutionStep(index));
+      node.addEventListener("focus", () => showEvolutionStep(index));
+      node.addEventListener("click", () => showEvolutionStep(index));
+    });
+
+    showEvolutionStep(4);
+  </script>
+</body>
+</html>
