@@ -44,22 +44,19 @@ def _iso(ts: str) -> str:
 
 
 def load_usage_records(skill_dir: Optional[Path]) -> list[dict]:
-    """全部自有 skill 的使用打分记录（``<skill>/.ux_scores.jsonl`` 统一视图）。
+    """全部自有 skill 的使用打分记录统一视图。
 
     每条 ``{skill, side, sha, score, scored_at, atom_id, traj_id, user_model}``。
     atom 级记录（AtomCanary.append）与历史 traj 级记录（append_ux_score）
     统一到该视图；一条记录 = 一次真实使用打分（写入侧幂等去重）。
 
-    一次扫描要读遍全库每个 ``<skill>/.ux_scores.jsonl``（十万级 skill 库 = 每次
-    调用十万次文件读），而这份视图被八个看板端点各自独立调用——故按 skill_dir
-    做 ``_USAGE_RECORDS_TTL_SECONDS`` 的短时缓存 + 单飞：一个请求波次只扫一次盘，
-    ttl 到期后自然读到新写入的打分。
+    优先读 ``registry.db.ux_scores``（与 ranked/canary 同源，由 sync worker
+    从盘增量灌入）；DB 对该 skill_dir 尚无命中时回退扫
+    ``<skill>/.ux_scores.jsonl``（测试 fixture / sync 未到）。结果按 skill_dir
+    做 ``_USAGE_RECORDS_TTL_SECONDS`` 短时缓存 + 单飞。
 
     调用方拿到的每条记录都是独立的可改写副本（记录里全是 JSON 标量，逐条
     ``dict()`` 即与深拷贝等价），缓存内的共享记录永不被调用方改写。
-
-    ranked/canary 已切 ``registry.db.ux_scores``；看板仍按 skill_dir 扫盘
-    （多 root 隔离、无 atom/traj 键的旧 fixture 仍可用）。DB 由 sync worker 维护。
     """
     if not skill_dir:
         return []
@@ -67,7 +64,25 @@ def load_usage_records(skill_dir: Optional[Path]) -> list[dict]:
     if not root.is_dir():
         return []
 
-    def build_records() -> list[dict]:
+    def build_from_db() -> list[dict] | None:
+        """DB 有本 root 下 skill 的命中则返回；完全未同步则 None 触发盘回退。"""
+        from xskill.pipeline.ux_scores_store import load_all_usage_records
+        names = {
+            p.name for p in root.iterdir()
+            if p.is_dir() and not p.name.startswith(".")
+        }
+        if not names:
+            return []
+        all_recs = load_all_usage_records()
+        matched = [r for r in all_recs if r.get("skill") in names]
+        if not matched and all_recs:
+            # 库里有别的 root 的分、本 root 尚未 sync → 仍走盘
+            return None
+        if not matched and not all_recs:
+            return None
+        return matched
+
+    def build_from_disk() -> list[dict]:
         from xskill.canary import load_ux_scores
         out: list[dict] = []
         for d in sorted(root.iterdir()):
@@ -86,6 +101,15 @@ def load_usage_records(skill_dir: Optional[Path]) -> list[dict]:
                     "user_model": rec.get("user_model") or "",
                 })
         return out
+
+    def build_records() -> list[dict]:
+        try:
+            db_out = build_from_db()
+        except Exception:
+            db_out = None
+        if db_out is not None:
+            return db_out
+        return build_from_disk()
 
     cached = _usage_records_cache.get_or_build(
         _catalog_path_key(root), build_records)
