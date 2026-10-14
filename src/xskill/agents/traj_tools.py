@@ -11,7 +11,7 @@ GenerateAgent 的完整工具面（18 个，这里实现前 4 个）
 1. ``traj_search(query, offset, limit, context)`` —— 找轨迹的唯一入口。不带
    query 是翻目录，按最近修改排序分页给 traj_id、行数、首问一句；带 query 是
    全文检索，每行带首个命中行号、片段与该条总命中处数，context>0 时首命中处
-   带前后原文，同名前缀的轨迹会错开展示。
+   带前后原文，按命中处数、首次命中行、修改时间和 ID 排序。
 2. ``atom_search(query, top_k)`` —— 语义检索轨迹原子。query 用整句自然语言，
    返回每个原子的 traj_id、行号区间、intent、summary 摘句和 tags；关键词搜
    不准、想按"这类事怎么做"找轨迹时用它。旧原子行号可能不可靠，会标注。
@@ -325,32 +325,6 @@ def _line_count(path: Path) -> int:
         return 0
 
 
-def _family(stem: str) -> str:
-    parts = stem.split("_")
-    return "_".join(parts[:3]) if len(parts) >= 3 else stem
-
-
-def _spread(paths: list[Path], take: int) -> list[Path]:
-    """按 traj_id 前缀分桶轮取，避免一个项目的会话刷满整页。"""
-    buckets: dict[str, list[Path]] = {}
-    for path in paths:
-        buckets.setdefault(_family(path.stem), []).append(path)
-    out: list[Path] = []
-    index = 0
-    while len(out) < take:
-        advanced = False
-        for items in buckets.values():
-            if index < len(items):
-                out.append(items[index])
-                advanced = True
-                if len(out) >= take:
-                    break
-        if not advanced:
-            break
-        index += 1
-    return out
-
-
 def _rg(args: list[str], timeout: int) -> str:
     try:
         completed = subprocess.run(
@@ -389,6 +363,8 @@ def _format_search_hit(
 
 
 def _search_by_query(query: str, take: int, context: int = 0) -> str:
+    from xskill.traj_browse import TrajHit, query_hit_sort_key
+
     roots = _traj_roots()
     if not shutil.which("rg"):
         return _search_by_query_python(query, take, roots, context)
@@ -414,16 +390,19 @@ def _search_by_query(query: str, take: int, context: int = 0) -> str:
                     counts[path] = int(num)
                 except ValueError:
                     counts[path] = 1
-    hits = list(counts)
-    if not hits:
+    if not counts:
         return (
             f"query={query!r} 没有命中。换一组更常见的词，"
             "或不给 query 直接翻目录。"
         )
-    shown = _spread(hits, take)
-    leftover = len(hits) - len(shown)
-    rows: list[str] = []
-    for path in shown:
+    # Only the top count bands can reach this page. Read first-hit lines for
+    # the entire cutoff band so ties are ranked correctly without reopening
+    # every lower-relevance file just to discard it afterward.
+    cutoff = sorted(counts.values(), reverse=True)[min(take, len(counts)) - 1]
+    hits: list[TrajHit] = []
+    for path, count in counts.items():
+        if count < cutoff:
+            continue
         args = ["rg", "-n", "--no-heading", "--color", "never", "--smart-case",
                 "-m", "1", "-e", query, str(path)]
         out = _rg(args, 10)
@@ -431,14 +410,16 @@ def _search_by_query(query: str, take: int, context: int = 0) -> str:
         first = lines[0] if lines else "1:"
         lineno, _, content = first.partition(":")
         hit_line = int(lineno) if lineno.isdigit() else 1
-        rows.append(
-            _format_search_hit(
-                path, hit_line, content, counts.get(path, 1), context,
-            )
-        )
+        hits.append(TrajHit(path.stem, path, "", hit_line, content, count))
+    shown = sorted(hits, key=query_hit_sort_key)[:take]
+    leftover = len(counts) - len(shown)
+    rows = [
+        _format_search_hit(hit.path, hit.line, hit.snippet, hit.hit_count, context)
+        for hit in shown
+    ]
     head = (
-        f"query={query!r} 命中 {len(hits)} 条不同轨迹，展示 {len(shown)} 条"
-        f"（同名前缀已错开）。看内容用 traj_cards，一次最多 {CARDS_MAX} 个 id。"
+        f"query={query!r} 命中 {len(counts)} 条不同轨迹，展示 {len(shown)} 条"
+        f"（按相关度排序）。看内容用 traj_cards，一次最多 {CARDS_MAX} 个 id。"
         "命中处数多的轨迹通常整条都和主题相关，优先精读；"
         "想看某一处的前后文，read_traj 按行号跳过去。"
     )
@@ -450,8 +431,10 @@ def _search_by_query(query: str, take: int, context: int = 0) -> str:
 def _search_by_query_python(
     query: str, take: int, roots: list[Path], context: int = 0,
 ) -> str:
+    from xskill.traj_browse import TrajHit, query_hit_sort_key
+
     needle = query.lower()
-    hits: list[tuple[Path, int, str, int]] = []
+    hits: list[TrajHit] = []
     for path in _traj_files():
         first_no, first_line, count = 0, "", 0
         try:
@@ -464,21 +447,18 @@ def _search_by_query_python(
         except OSError:
             continue
         if count:
-            hits.append((path, first_no, first_line, count))
+            hits.append(TrajHit(path.stem, path, "", first_no, first_line, count))
     if not hits:
         return f"query={query!r} 没有命中。换一组词，或不给 query 直接翻目录。"
-    ordered = _spread([path for path, _, _, _ in hits], take)
-    lookup = {path: (number, line, count) for path, number, line, count in hits}
-    rows = []
-    for path in ordered:
-        if path not in lookup:
-            continue
-        number, line, count = lookup[path]
-        rows.append(_format_search_hit(path, number, line, count, context))
+    ordered = sorted(hits, key=query_hit_sort_key)[:take]
+    rows = [
+        _format_search_hit(hit.path, hit.line, hit.snippet, hit.hit_count, context)
+        for hit in ordered
+    ]
     leftover = len(hits) - len(rows)
     head = (
         f"query={query!r} 命中 {len(hits)} 条不同轨迹，展示 {len(rows)} 条"
-        f"（无 rg，退回逐行匹配）。看内容用 traj_cards。"
+        "（按相关度排序；无 rg，退回逐行匹配）。看内容用 traj_cards。"
     )
     if leftover > 0:
         head += f" 还有 {leftover} 条未列出。"
@@ -495,9 +475,9 @@ def traj_search(
 
     带 query 时按关键词搜全部轨迹正文，每条命中给 traj_id、首个命中行号和该条
     的总命中处数；命中处数多的轨迹通常整条都和主题相关。context 大于 0 时首个
-    命中处会带出前后几行原文，用来快速判断命中是不是想要的。同一项目的会话会
-    错开，避免一页全是同一个前缀。用户指令里的关键词、报错片段、命令名、模块
-    名都适合当 query。不带 query 时按最近修改排序分页，每条给 traj_id、总行
+    命中处会带出前后几行原文，用来快速判断命中是不是想要的。先按命中处数降序、
+    首次命中行升序，再按修改时间降序和 ID 排序。用户指令里的关键词、报错片段、
+    命令名、模块名都适合当 query。不带 query 时按最近修改排序分页，每条给 traj_id、总行
     数、首问一句，用于摸清库里有什么。
     两种模式返回的都只是索引，要看内容用 traj_cards，要精读用 read_traj。
     轨迹目录不要用 list_files 或 grep_files。

@@ -104,29 +104,9 @@ def _source_of(traj_id: str) -> str:
     return "unknown"
 
 
-def _family(stem: str) -> str:
-    parts = stem.split("_")
-    return "_".join(parts[:3]) if len(parts) >= 3 else stem
-
-
-def _spread(paths: list[Path], take: int) -> list[Path]:
-    buckets: dict[str, list[Path]] = {}
-    for path in paths:
-        buckets.setdefault(_family(path.stem), []).append(path)
-    out: list[Path] = []
-    index = 0
-    while len(out) < take:
-        advanced = False
-        for items in buckets.values():
-            if index < len(items):
-                out.append(items[index])
-                advanced = True
-                if len(out) >= take:
-                    break
-        if not advanced:
-            break
-        index += 1
-    return out
+def query_hit_sort_key(hit: TrajHit) -> tuple[int, int, float, str]:
+    """Shared CLI/team/Generate relevance order, applied before pagination."""
+    return (-hit.hit_count, hit.line, -_mtime(hit.path), hit.traj_id)
 
 
 def _parse_sections(text: str) -> list[_Section]:
@@ -324,9 +304,7 @@ def find_query_hits(
     hits = _search_rg(query, files)
     if hits is None:
         hits = _search_python(query, files)
-    by_path = {hit.path: hit for hit in hits}
-    ordered = _spread([hit.path for hit in hits], len(hits))
-    return [by_path[path] for path in ordered if path in by_path]
+    return sorted(hits, key=query_hit_sort_key)
 
 
 def page_slice(items: list[Any], page: int, page_size: int) -> list[Any]:
@@ -399,7 +377,7 @@ def format_listing(
     flag = f" {extra_flags}" if extra_flags else ""
     head = (
         f"query={query!r} 命中 {total} 条不同轨迹，展示 {shown} 条"
-        f"（同名前缀已错开）。看内容用 --cards，一次最多 {CARDS_MAX} 个 id。"
+        f"（按相关度排序）。看内容用 --cards，一次最多 {CARDS_MAX} 个 id。"
     )
     if leftover > 0:
         head += f" 还有 {leftover} 条未列出，换一组词可以搜到别的。"
