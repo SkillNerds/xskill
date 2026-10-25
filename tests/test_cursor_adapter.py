@@ -373,3 +373,63 @@ class TestJsonlIngesterIsolation:
             tmp_path / "traj", home_root=tmp_path,
         )
         assert results == []
+
+
+# ──────────────────────────────────────────────────────────────────
+# T4. slug → 真实项目目录（sidecar cwd，供 xskill privacy 按项目放行）
+# ──────────────────────────────────────────────────────────────────
+
+def _slug_for(path: Path) -> str:
+    """按 Cursor 的编码方式把真实路径变成目录名：去掉根（Windows 保留盘符）、分隔符换连字符、小写。"""
+    parts = list(path.resolve().parts)
+    root = parts.pop(0)
+    drive = root.rstrip("\\/").rstrip(":")
+    if drive:
+        parts.insert(0, drive)
+    return "-".join(parts).lower()
+
+
+class TestCursorProjectDir:
+    def test_decodes_hyphenated_dir_names_by_checking_disk(self, tmp_path):
+        from xskill.ecosystems.cursor import _decode_cursor_slug
+        project = tmp_path / "my-service" / "backend-api"
+        project.mkdir(parents=True)
+        assert _decode_cursor_slug(_slug_for(project)) == str(project.resolve())
+
+    def test_prefers_existing_layout_when_slug_is_ambiguous(self, tmp_path):
+        from xskill.ecosystems.cursor import _decode_cursor_slug
+        (tmp_path / "gq" / "code").mkdir(parents=True)
+        (tmp_path / "gq-code").mkdir()
+        assert _decode_cursor_slug(_slug_for(tmp_path / "gq-code")) == str((tmp_path / "gq-code").resolve())
+        (tmp_path / "gq-code").rmdir()
+        assert _decode_cursor_slug(_slug_for(tmp_path / "gq" / "code")) == str((tmp_path / "gq" / "code").resolve())
+
+    def test_matches_case_insensitively(self, tmp_path):
+        from xskill.ecosystems.cursor import _decode_cursor_slug
+        project = tmp_path / "MyProj"
+        project.mkdir()
+        assert _decode_cursor_slug(_slug_for(project)) == str(project.resolve())
+
+    def test_returns_empty_when_project_no_longer_exists(self, tmp_path):
+        from xskill.ecosystems.cursor import _decode_cursor_slug
+        assert _decode_cursor_slug(_slug_for(tmp_path / "gone-project")) == ""
+        assert _decode_cursor_slug("") == ""
+
+    def test_ingest_writes_real_cwd_into_sidecar(self, tmp_path, fixture_content):
+        project = tmp_path / "code" / "my-service"
+        project.mkdir(parents=True)
+        _place_fixture_in_cursor_home(tmp_path, fixture_content, encoded_cwd=_slug_for(project))
+        results = ingest_cursor_sessions(tmp_path / "traj", home_root=tmp_path)
+        assert len(results) == 1
+        meta = json.loads(Path(results[0]["path"]).with_suffix(".json").read_text(encoding="utf-8"))
+        assert meta["cwd"] == str(project.resolve())
+        from xskill.ecosystems._shared import _sanitize_for_filename
+        expected_project = _sanitize_for_filename(_slug_for(project), maxlen=32)
+        assert results[0]["traj_id"] == f"traj_cursor_{expected_project}_abc12345"
+
+    def test_ingest_leaves_cwd_absent_when_project_missing(self, tmp_path, fixture_content):
+        _place_fixture_in_cursor_home(tmp_path, fixture_content, encoded_cwd="c-proj-foo")
+        results = ingest_cursor_sessions(tmp_path / "traj", home_root=tmp_path)
+        meta = json.loads(Path(results[0]["path"]).with_suffix(".json").read_text(encoding="utf-8"))
+        assert "cwd" not in meta
+        assert results[0]["traj_id"] == "traj_cursor_c-proj-foo_abc12345"

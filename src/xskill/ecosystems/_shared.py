@@ -118,6 +118,8 @@ class EcosystemSpec:
     is_session_complete: Optional[Callable[[str], bool]] = None
     is_session_complete_path: Optional[Callable[[Path], bool]] = None
     cwd_from_path: Optional[Callable[[Path], str]] = None
+    # 可选：从源文件路径反解出真实项目目录，写进 sidecar 的 cwd（cwd_from_path 只管 traj_id 的项目段）。
+    project_dir_from_path: Optional[Callable[[Path], str]] = None
     adapt_path: Optional[Callable[[Path, dict], tuple[str, dict]]] = None
     # 可选：自定义「文件 → 文本」读取。默认 None = ``read_text``。给需要先
     # 解码再解析的生态用（DeepSeek Harness 默认写 zstd 帧序列的
@@ -1095,7 +1097,7 @@ class JsonlIngester:
                 session_start_t = session_start_time(jsonl_path)
                 traj_id = self._make_traj_id("", sid, source_path=jsonl_path)
                 md_content, json_metadata = self.spec.adapt_path(
-                    jsonl_path, {"session_id": sid},
+                    jsonl_path, self._session_metadata(sid, jsonl_path),
                 )
                 result = _store_adapted_trajectory(
                     md_content,
@@ -1133,7 +1135,7 @@ class JsonlIngester:
                 result = submit_trajectory(
                     content=content,
                     format=self.spec.adapter_format,
-                    metadata={"session_id": sid},
+                    metadata=self._session_metadata(sid, jsonl_path),
                     traj_id=traj_id,
                     traj_dir=target_traj_dir,
                 )
@@ -1186,6 +1188,15 @@ class JsonlIngester:
         for md in target_traj_dir.glob(f"{self.spec.traj_id_prefix}*.md"):
             out[md.stem.rsplit("_", 1)[-1]] = md
         return out
+
+    def _session_metadata(self, sid: str, jsonl_path: Path) -> dict:
+        """交给 adapter 的初始 meta；生态能从路径反解项目目录时带上 cwd。"""
+        metadata = {"session_id": sid}
+        if self.spec.project_dir_from_path is not None:
+            project_dir = self.spec.project_dir_from_path(jsonl_path)
+            if project_dir:
+                metadata["cwd"] = project_dir
+        return metadata
 
     def _make_traj_id(
         self,

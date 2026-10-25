@@ -2828,7 +2828,7 @@ _PRIVACY_HELP_EPILOG = """\
     子目录规则优先于父目录规则。
   · 不上传的轨迹不会被读取、不会上传，也不会记为已上传；之后放行会在
     下一轮扫描中正常上传。
-  · 轨迹 sidecar 没记录工作目录时（目前 Cursor 与 Trae 都不记）无法归属到项目：
+  · 轨迹 sidecar 没记录工作目录时无法归属到项目（Trae 不记；Cursor 只在项目目录仍存在时能反解）：
     allowlist 模式下不上传，denylist 模式下上传。status 会单独列出。
 
 examples:
@@ -2962,7 +2962,7 @@ def cmd_privacy(args) -> int:
         _write_search_output("")
         _write_search_output(f"上传 {report.upload} 条，不上传 {report.skip} 条。")
         if report.no_cwd.traj:
-            _write_search_output(f"提示：{report.no_cwd.traj} 条轨迹的 sidecar 未记录工作目录（Cursor / Trae 等），无法按项目放行。")
+            _write_search_output(f"提示：{report.no_cwd.traj} 条轨迹的 sidecar 未记录工作目录（Trae、已删除项目的 Cursor 会话等），无法按项目放行。")
         if report.broken_sidecar.traj:
             _write_search_output(f"提示：{report.broken_sidecar.traj} 条轨迹的 sidecar 缺失或损坏，无法归属项目。")
         if not report.complete:
@@ -3002,7 +3002,7 @@ def cmd_privacy(args) -> int:
               f"上传 {final_report.upload} 条，不上传 {final_report.skip} 条。")
         if final_report.no_cwd.traj:
             default_text = "上传" if final_report.no_cwd.effective == "upload" else "不上传"
-            _write_search_output(f"另有 {final_report.no_cwd.traj} 条轨迹未记录工作目录（Cursor / Trae 等），按模式默认处理（{default_text}）。")
+            _write_search_output(f"另有 {final_report.no_cwd.traj} 条轨迹未记录工作目录（Trae 等），按模式默认处理（{default_text}）。")
         return 0
 
     target_path = Path(args.target) if args.target else Path.cwd()
@@ -3039,7 +3039,7 @@ def cmd_privacy(args) -> int:
         if not Path(shown).exists():
             lines[1] = "  提示：该目录当前不存在，规则已保存，将对之后在此目录下产生的轨迹生效。"
         if no_cwd_count:
-            lines.append(f"  注意：本机另有 {no_cwd_count} 条轨迹未记录工作目录（Cursor / Trae 等），本规则对它们不生效。")
+            lines.append(f"  注意：本机另有 {no_cwd_count} 条轨迹未记录工作目录（Trae 等），本规则对它们不生效。")
         lines.append("  取消：xskill privacy deny  或  xskill privacy clear")
         emit(payload, lines)
         return 0

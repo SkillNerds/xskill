@@ -6,7 +6,7 @@
   server allowlist 下本机 denylist 无效
 * allowlist 下无规则一条都不上传，且正文一次都不读、不留任何上传状态
 * 项目规则含子目录、符号链接、相对路径、~、大小写；子目录规则优先于父目录
-* Cursor / Trae 无 cwd 与 sidecar 损坏的轨迹按模式默认处理
+* 无 cwd（Trae、已删项目的 Cursor 会话）与 sidecar 损坏的轨迹按模式默认处理
 * 删除规则后可重新进入上传流程
 * server 改模式后下一轮 sync 生效并落盘，无需重新 connect
 * 规则文件损坏时明确失败，而不是当作无规则放行
@@ -460,7 +460,7 @@ def test_cli_status_and_mode_before_connect(cli_home, capsys):
     assert return_code == 0
     assert "mode: denylist（未连接 server；server (未连接)）" in captured.out
     assert "上传 3 条，不上传 0 条。" in captured.out
-    assert "Cursor / Trae" in captured.out
+    assert "未记录工作目录" in captured.out
 
     return_code, captured = _run_privacy(capsys, "mode", "allowlist")
     assert return_code == 0
@@ -489,7 +489,7 @@ def test_cli_allow_deny_clear_roundtrip(cli_home, capsys, monkeypatch):
     return_code, captured = _run_privacy(capsys, "allow")
     assert return_code == 0
     assert captured.out.startswith(f"Allowed: {pv.canonical_project_path(backend)}")
-    assert "含已有的 1 条" in captured.out and "Cursor / Trae" in captured.out
+    assert "含已有的 1 条" in captured.out and "未记录工作目录" in captured.out
 
     return_code, captured = _run_privacy(capsys, "allow", str(backend))
     assert return_code == 0 and captured.out.startswith("Already allowed:")
@@ -571,7 +571,7 @@ def test_cli_help_explains_modes():
                       if isinstance(action, argparse._SubParsersAction))
     help_text = subparsers.choices["privacy"].format_help()
     assert "allowlist" in help_text and "denylist" in help_text
-    assert "Cursor 与 Trae" in help_text
+    assert "Trae 不记" in help_text and "Cursor" in help_text
     connect_help = subparsers.choices["connect"].format_help()
     assert "--privacy" in connect_help
 

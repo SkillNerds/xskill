@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -131,6 +132,48 @@ def _cwd_from_cursor_path(jsonl_path: Path) -> str:
     return ""
 
 
+def _decode_cursor_slug(slug: str) -> str:
+    """把 ``home-admin-my-service`` 反解成磁盘上真实存在的 ``/home/admin/my-service``。
+
+    slug 里的连字符既可能是路径分隔符也可能是目录名的一部分，且已被小写，
+    只能逐级对照磁盘上的目录名试出来；对不上（项目已删除）返回空串。
+    """
+    tokens = [token for token in slug.split("-") if token]
+    if not tokens:
+        return ""
+    if os.name == "nt":
+        if len(tokens[0]) != 1 or not tokens[0].isalpha():
+            return ""
+        root = Path(f"{tokens[0].upper()}:\\")
+        tokens = tokens[1:]
+    else:
+        root = Path("/")
+
+    def walk(current: Path, index: int) -> Optional[Path]:
+        if index == len(tokens):
+            return current
+        try:
+            entries = {name.lower(): name for name in os.listdir(current)}
+        except OSError:
+            return None
+        # 先试最长的候选名，让带连字符的目录名优先于把它拆成多级
+        for end in range(len(tokens), index, -1):
+            actual = entries.get("-".join(tokens[index:end]))
+            if actual is None or not (current / actual).is_dir():
+                continue
+            found = walk(current / actual, end)
+            if found is not None:
+                return found
+        return None
+
+    decoded = walk(root, 0)
+    return str(decoded) if decoded is not None else ""
+
+
+def _project_dir_from_cursor_path(jsonl_path: Path) -> str:
+    return _decode_cursor_slug(_cwd_from_cursor_path(jsonl_path))
+
+
 # ─────────────────────────────────────────────────────────────────
 # Ecosystem spec
 # ─────────────────────────────────────────────────────────────────
@@ -145,6 +188,7 @@ CURSOR_SPEC = EcosystemSpec(
     session_id_from_path=_cursor_session_id_from_path,
     cwd_from_content=_read_cwd_from_cursor_jsonl,
     cwd_from_path=_cwd_from_cursor_path,
+    project_dir_from_path=_project_dir_from_cursor_path,
     adapter_format="cursor_transcripts_jsonl",
     traj_id_prefix="traj_cursor_",
     skills_install_path=_cursor_skills_path,  # ~/.cursor/skills/ — Cursor 自己的 skill 目录
@@ -225,8 +269,8 @@ def _adapt_cursor_transcripts_jsonl(content: str, metadata: dict) -> tuple[str, 
     ```
 
     Cursor 没有显式 ``sessionId`` / ``cwd`` 字段——sid 在文件名，cwd 在父目录名
-    （encoded slug，本 adapter 不反解）。所以 meta 里 ``session_id`` / ``cwd``
-    都为空，由上层 ingester 用 ``source_jsonl`` 推断（如有需要）。
+    （encoded slug）。两者都由上层 ingester 从路径推断后放进 ``metadata`` 传入：
+    ``cwd`` 只在 slug 能对照磁盘反解成真实目录时才有。
     """
     timeline: list[dict] = []
     tool_names: list[str] = []

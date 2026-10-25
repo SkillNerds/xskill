@@ -102,9 +102,9 @@ xskill connect <host:port> --token <t> --privacy allowlist   # set the mode befo
 
 A skipped trajectory is never read, never uploaded and never marked as
 uploaded, so allowing it later uploads it on the next scan. A trajectory whose
-sidecar records no working directory (Cursor and Trae never do) cannot be
-matched to a project: it follows the mode default and `status` lists it
-separately.
+sidecar records no working directory (Trae never does; Cursor only when the
+project directory still exists on disk) cannot be matched to a project: it
+follows the mode default and `status` lists it separately.
 Rules never delete what was already uploaded.
 
 ## Generate or rewrite a Skill
