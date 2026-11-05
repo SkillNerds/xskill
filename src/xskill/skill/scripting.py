@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_skill_write
+
 import logging
 from pathlib import Path
 
@@ -56,6 +58,7 @@ def scripting_status(skill_path: Path) -> dict:
 
 def request_scripting(skill_path: Path) -> dict:
     """写入请求标记。条件不满足时抛 ValueError。"""
+    require_skill_write(marker_path(skill_path))
     status = scripting_status(skill_path)
     if not status["enabled"]:
         raise ValueError(status["reason"] or "scripting not available")
@@ -65,6 +68,7 @@ def request_scripting(skill_path: Path) -> dict:
 
 
 def clear_scripting_request(skill_path: Path) -> None:
+    require_skill_write(marker_path(skill_path))
     path = marker_path(skill_path)
     try:
         path.unlink()

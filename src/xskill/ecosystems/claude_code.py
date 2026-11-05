@@ -903,6 +903,7 @@ class CCSessionIngester:
         history_path: Path | str | None = None,
         assignments_path: Path | str | None = None,
         registry_db_path: Path | str | None = None,
+        target_skill: str | None = None,
     ):
         from xskill.ecosystems._history import InstallHistory
         from xskill.canary import SessionAssignments
@@ -911,6 +912,9 @@ class CCSessionIngester:
         self.home_root = Path(home_root) if home_root else Path.home()
         self.poll_interval = poll_interval
         self.skill_dir = Path(skill_dir) if skill_dir else None
+        self.target_skill = target_skill
+        if target_skill is not None and (skill_dir is None or registry_db_path is None):
+            raise ValueError("target_skill requires explicit skill_dir and registry_db_path database")
         self.target_root = Path(target_root) if target_root else self.home_root
         self.history: InstallHistory | None = (
             InstallHistory(history_path) if history_path else None
@@ -995,6 +999,8 @@ class CCSessionIngester:
                 raise RuntimeError(
                     f"invalid Claude Code receipt intent: {intent_path}"
                 ) from error
+            if self.target_skill is not None and isinstance(intent, dict) and intent.get("skill") != self.target_skill:
+                continue
             if (
                 not isinstance(intent, dict)
                 or intent.get("schema_version") != 2
@@ -1138,6 +1144,8 @@ class CCSessionIngester:
         if self.history is None or self.skill_dir is None:
             return
         for session_id, intent in tuple(self._receipt_intents.items()):
+            if self.target_skill is not None and intent["skill"] != self.target_skill:
+                continue
             skill_path = self.skill_dir / intent["skill"]
             staging_path = (
                 skill_path.parent
@@ -1147,7 +1155,7 @@ class CCSessionIngester:
             )
             current_generation = _strict_canary_generation(skill_path)
             if (
-                staging_path.is_file()
+                (staging_path.is_file() or self.target_skill is not None)
                 and current_generation == intent["generation"]
             ):
                 continue
@@ -1305,6 +1313,36 @@ class CCSessionIngester:
             if self.history is not None
             else self.target_traj_dir
         )
+        if self.target_skill is not None:
+            from xskill.pipeline.distillation import DistillationStore
+            from xskill.skill.write_policy import library_write_guard
+            from xskill.ecosystems.install_ledger import InstallLedger, use_ledger
+
+            store = DistillationStore(self.registry_db_path, self.skill_dir)
+            policy = store.policy()
+            if policy.mode == "auto" or policy.target_skill != self.target_skill:
+                raise PermissionError("Claude Code target no longer matches active distillation authority")
+            run = store.run()
+            target_path = self.skill_dir / self.target_skill
+            if run["mode"] == "create_one" and not run["owns_target"]:
+                if os.path.lexists(target_path):
+                    raise PermissionError("Claude Code target creation ownership is not established")
+            else:
+                try:
+                    identity = target_path.stat()
+                except OSError as exc:
+                    raise PermissionError("Claude Code target identity changed or disappeared") from exc
+                if json.loads(run["target_identity"]) != {"dev": identity.st_dev, "ino": identity.st_ino}:
+                    raise PermissionError("Claude Code target directory identity changed")
+            state_root = self.registry_db_path.parent
+            ledger = InstallLedger(
+                state_root / "installations.sqlite",
+                staging_root=state_root / "removal-staging",
+            )
+            with use_ledger(ledger):
+                with library_write_guard(self.skill_dir, policy, db_path=self.registry_db_path):
+                    with exclusive_path_lock(lock_root / ".cc_session_ingest.lock"):
+                        return self._run_once_locked()
         with exclusive_path_lock(lock_root / ".cc_session_ingest.lock"):
             return self._run_once_locked()
 
@@ -1324,11 +1362,21 @@ class CCSessionIngester:
         self._cancel_stale_receipt_intents()
         self._stats["polls"] += 1
         self._stats["last_poll"] = time.time()
-        staging_skills = (
-            _staging_skills_under(self.skill_dir)
-            if self.skill_dir is not None and self.history is not None
-            else []
-        )
+        if self.target_skill is not None and self.skill_dir is not None and self.history is not None:
+            # A fixed target needs main feedback before its first staging exists.
+            # Avoid scanning sibling canaries, which may have pending recovery.
+            from xskill.skill.git import run_git
+            target_path = self.skill_dir / self.target_skill
+            main_exists = target_path.is_dir() and run_git(
+                ["rev-parse", "--verify", "main"], cwd=str(target_path),
+            )[0] == 0
+            staging_skills = [self.target_skill] if main_exists else []
+        else:
+            staging_skills = (
+                _staging_skills_under(self.skill_dir)
+                if self.skill_dir is not None and self.history is not None
+                else []
+            )
         canary_skill = staging_skills[0] if staging_skills else None
         active_generation = None
         if canary_skill is not None:
@@ -2005,6 +2053,8 @@ class CCSessionIngester:
         snapshot = self.history.snapshot()
         snapshot_records = snapshot.index.records
         for session_id, intent in tuple(self._receipt_intents.items()):
+            if self.target_skill is not None and intent["skill"] != self.target_skill:
+                continue
             assignment = snapshot.index.session_assignment(
                 intent["skill"],
                 "claude_code",
@@ -2046,6 +2096,7 @@ class CCSessionIngester:
             if (
                 record.get("action") != "session_assignment"
                 or record.get("target") != "claude_code"
+                or (self.target_skill is not None and record.get("skill") != self.target_skill)
             ):
                 continue
             self._materialize_assignment_record(
@@ -2067,6 +2118,8 @@ class CCSessionIngester:
         session_id = record.get("session_id")
         side = record.get("side")
         skill_name = record.get("skill")
+        if self.target_skill is not None and skill_name != self.target_skill:
+            return
         installed_at = record.get("t")
         if (
             not isinstance(session_id, str)
@@ -2158,6 +2211,8 @@ class CCSessionIngester:
     ) -> dict[str, dict]:
         """按 start time 归因真实 side；批尾一次切换只影响下一批 session。"""
         assert self.skill_dir is not None and self.history is not None
+        if self.target_skill is not None and skill_name != self.target_skill:
+            raise PermissionError("Claude Code attribution is outside the fixed target")
         if not observations:
             return {}
         skill_path = self.skill_dir / skill_name
@@ -2173,6 +2228,10 @@ class CCSessionIngester:
             if len(observation_generations) == 1
             else _strict_canary_generation(skill_path)
         )
+        rotation_enabled = self.target_skill is None or (
+            bool(expected_generation.partition(":")[2])
+            and (skill_path.parent / ".canary" / skill_name / "SKILL.md").is_file()
+        )
         decision_ids = []
         for observation in observations:
             session_id = observation["session_id"]
@@ -2183,7 +2242,7 @@ class CCSessionIngester:
                 else f"assignment:{session_id}"
             )
             decision_ids.append(assignment_id)
-            if observation["used_skill"] and not observation["rebridged"]:
+            if rotation_enabled and observation["used_skill"] and not observation["rebridged"]:
                 decision_ids.append(f"flip:{session_id}")
 
         def prepare_batch(

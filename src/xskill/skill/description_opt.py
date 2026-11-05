@@ -27,6 +27,8 @@ rate_limit + retry），绝不另起进程/线程。
 
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_skill_write, safe_write_text, safe_mkdir
+
 import json
 import logging
 import random
@@ -95,6 +97,7 @@ def optimize_description(
     "candidates", "exp_dir", ...}``；``enabled=False`` 时只返回
     ``{"enabled": False}``（no-op）。
     """
+    require_skill_write(skill_dir)
     skill_dir = Path(skill_dir)
     opt_cfg = dict(config.get("skill_opt", {}) or {})
 
@@ -132,7 +135,7 @@ def optimize_description(
     budget = _Budget(max_calls=max_llm_calls)
 
     opt_root = skill_dir / ".description_optimization"
-    opt_root.mkdir(parents=True, exist_ok=True)
+    safe_mkdir(opt_root)
 
     # ── 1. case 生成（缓存复用）─────────────────────────────────
     cases = _load_or_generate_cases(
@@ -179,7 +182,7 @@ def optimize_description(
     exp_id = _next_exp_id(opt_root)
     ts = time.strftime("%Y%m%d-%H%M%S")
     exp_dir = opt_root / f"{exp_id}_{ts}"
-    exp_dir.mkdir(parents=True, exist_ok=True)
+    safe_mkdir(exp_dir)
 
     attempts_path = exp_dir / "attempts.jsonl"
 
@@ -263,7 +266,7 @@ def optimize_description(
     best_desc = best["description"]
     if best_desc != current_description:
         fm_dict["description"] = best_desc
-        skill_md.write_text(fm.serialize(fm_dict, body), encoding="utf-8")
+        safe_write_text(skill_md, fm.serialize(fm_dict, body))
         logger.info(
             "description_opt[%s]: 写回 best desc (test_score=%.3f): %r",
             skill_name, best["test_score"], best_desc[:80],
@@ -370,7 +373,7 @@ def _load_or_generate_cases(
             f"case 生成失败：LLM 未返回合法 JSON 数组（skill={skill_name}）"
         )
     cases = _normalize_cases(cases)[:n_cases]
-    cache.write_text(json.dumps(cases, ensure_ascii=False, indent=2),
+    safe_write_text(cache, json.dumps(cases, ensure_ascii=False, indent=2),
                      encoding="utf-8")
     logger.info("description_opt[%s]: 生成 %d cases → cases.json",
                 skill_name, len(cases))
@@ -640,15 +643,14 @@ def _slug_topic(topic: str) -> str:
 def _write_case_json(exp_dir: Path, topic: str, job_name: str,
                      rec: dict) -> None:
     tdir = exp_dir / _slug_topic(topic)
-    tdir.mkdir(parents=True, exist_ok=True)
-    (tdir / f"{job_name}.json").write_text(
+    safe_mkdir(tdir)
+    safe_write_text(tdir / f"{job_name}.json",
         json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8",
     )
 
 
 def _append_jsonl(path: Path, obj: dict) -> None:
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    safe_write_text(path, json.dumps(obj, ensure_ascii=False) + "\n", append=True)
 
 
 def _write_summary(
@@ -693,7 +695,7 @@ def _write_summary(
         "catalog_size": int(catalog_size),
         "no_competition": bool(no_competition),
     }
-    (exp_dir / "summary.json").write_text(
+    safe_write_text(exp_dir / "summary.json",
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8",
     )
     return summary

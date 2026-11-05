@@ -13,6 +13,8 @@ YAML frontmatter；legacy（skill.md + .abstract）目录读时惰性合成，�
 
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_management_write
+
 import errno
 import json
 import logging
@@ -110,6 +112,7 @@ def _rmtree_with_retry(path: Path) -> None:
 
 def _remove_tree(path: Path) -> None:
     """删 skill 目录（含 ``.git/objects``）。ENOTEMPTY 时重试。"""
+    require_management_write(Path(path).parent, operation='delete')
     path = Path(path)
     if path.is_symlink() or path.is_file():
         path.unlink()
@@ -593,6 +596,7 @@ def skill_diff(skill_dir: Path, name: str, v1: str | None = None, v2: str | None
 
 def rollback_skill(skill_dir: Path, name: str, version: str | None = None) -> bool:
     """Roll a skill back to a specific commit or HEAD~1."""
+    require_management_write(skill_dir, operation='rollback_skill')
     skill_path = skill_dir / name
     if not skill_path.is_dir():
         logger.error(f"skill not found: {name}")
@@ -621,6 +625,7 @@ def unfreeze_skill(skill_dir: Path, name: str) -> bool:
 
 def _set_frozen(skill_dir: Path, name: str, frozen: bool) -> bool:
     """Flip frontmatter.metadata.frozen and persist. Auto-migrates legacy dirs."""
+    require_management_write(skill_dir, operation='_set_frozen')
     skill_path = skill_dir / name
     if not skill_path.is_dir():
         logger.error(f"skill not found: {name}")
@@ -654,6 +659,7 @@ def _set_frozen(skill_dir: Path, name: str, frozen: bool) -> bool:
 
 def delete_skill(skill_dir: Path, name: str, *, db_path: Path | None = None) -> bool:
     """Delete a skill directory and commit."""
+    require_management_write(skill_dir, operation='delete_skill')
     skill_path = skill_dir / name
     if not skill_path.is_dir():
         logger.error(f"skill not found: {name}")

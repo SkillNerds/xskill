@@ -1,8 +1,8 @@
 # 指定技能蒸馏限制最终设计与开发方案
 
-> 状态：最终设计方案，待用户审核。本文中的命令、字段和接口尚未实现。
+> 状态：用户已授权实施；本地实现与使用文档已完成，验证结果另见验证记录。
 > 日期：2026-11-05。
-> 执行约束：功能实施须经用户审核后按 `superpowers:executing-plans` 分阶段执行。当前仅提交设计方案文档，不实现功能、不运行蒸馏，不创建 PR 或合并。
+> 执行约束：按已审核方案实施；仅在隔离环境验证，不运行个人真实蒸馏。用户另行授权提交并推送个人仓库，不创建 PR 或合并。
 
 **Goal:** 在单人本地模式下，允许用户指定这次只能新建或更新一个技能，并保证其他技能不被本次运行及其后台任务改动。
 
@@ -65,7 +65,7 @@
 - 不增加“仅使用选中轨迹”和“完成后自动停止”；现有素材来源、隐私限制及手动停止方式保留。
 - 不改写历史原文，不删除历史或 Atom，不清空个人技能库。
 - 开发和测试只使用临时目录与数据库，不自动启动个人真实全量蒸馏。
-- 开发测试不自动安装真实技能到个人工具目录，不自动推送 GitHub；用户正式启用后，仅目标技能可以沿用现有安装流程。
+- 开发测试不安装真实技能到个人工具目录；仅按用户明确授权提交并推送个人仓库。用户正式启用后，仅目标技能可以沿用现有安装流程。
 
 ## 2. 现状核对与复用依据
 
@@ -77,7 +77,7 @@
 - `src/xskill/agents/agno_factory.py`
 - `tests/test_gpt5_nano_parameters.py`
 
-当前这两处源码已有 `generation_parameters()` 兼容改动：GPT-5 nano 使用 `max_completion_tokens`，不传 `temperature`。与早先分析时的工作区相比已发生变化。本次没有运行相关测试，不能据此宣称验收通过。
+这两处源码已有 `generation_parameters()` 兼容改动：GPT-5 nano 使用 `max_completion_tokens`，不传 `temperature`。实施前已审阅并单独运行相关参数测试，27 项通过；三个文件内容指纹保持不变，不混入本功能提交。
 
 | 已有位置 | 已有能力 | 本次用途 |
 | --- | --- | --- |
@@ -95,7 +95,7 @@
 
 ## 3. 用户操作与 CLI 设计
 
-以下命令为本方案新增接口，尚未实现。配置命令仅准备下一次运行，不启动 LLM 或蒸馏。
+以下为已实现的新增接口。配置命令仅准备下一次运行，不启动 LLM 或蒸馏。
 
 ```powershell
 # 先正常停止本地 serve，等待其 worker 退出。
@@ -178,7 +178,7 @@ generation           技能库控制记录的代数，用于拒绝过期上下�
 
 调度层先过滤，避免无意义 LLM 调用与误清理；实际写入口再检查，防止工具或框架绕过调度。
 
-同一技能库在进程启动时登记一个固定的运行守卫。受限库中的修改要求同时满足：
+同一技能库在进程启动时登记一个固定的运行守卫。库根的 `.distillation-control.json` 仅记录显式 registry 路径和库身份，控制状态仍以数据库为准；配置在激活受限记录之前准备此定位文件。独立 CLI 或 SDK 进程也能发现生效中的限制，缺少当前运行守卫时拒绝写入。定位文件损坏或数据库无法读取时停止，不回退 auto。受限库中的修改要求同时满足：
 
 1. 调用属于当前运行和当前 generation。
 2. 逻辑技能身份等于固定目标。
@@ -259,12 +259,13 @@ stopped / interrupted → closed（切换到新运行或 auto）
 
 ### 6.2 排他运行
 
-- 新增非阻塞的技能库运行锁，键使用真实 root，位置在 state 根下的锁目录，不放进其他技能目录。
+- 新增非阻塞的技能库运行锁，键使用真实 root，位置统一为真实技能库父目录的 `.xskill-library-locks`，不放进任何技能目录。不同 state 根指向同一技能库时必须竞争同一把锁；锁目录和路径前缀拒绝链接或 reparse point。
 - 本地 native agent-worker 从启动到所有在途线程停止期间持有锁；native 的 auto 与受限运行都使用此锁，防止启动第二个自由 worker。
 - configure 以非阻塞方式尝试同一锁，拿不到立即报仍有 writer，不排队偷偷切换。
 - web 宿主仍在运行时也拒绝 configure，防止 supervisor 在切换过程中重新拉起旧 worker。
 - 每次持锁操作使用同一 generation；正常停止先停止提交新任务，再收敛在途任务，最后释放锁。
 - 旧版本进程不认识新锁，不能靠新锁约束它。首次启用前必须确认旧宿主和旧 worker 已退出；无法确认就不切换。
+- 宿主、native worker、独立 kernel-host 和生态摄入进程均提供可核对的生命周期状态；旧状态缺少 PID 时，实际配置入口执行有界进程核对。存活探测超时或无法确认时拒绝切换，不自动终止进程。
 
 现有锁实现会等待竞争者，新增非阻塞入口必须返回明确冲突，不能让 configure 无限等待。
 
@@ -379,6 +380,7 @@ TaskAgent 继续拆分真实用户意图，保留现有 interests 过滤和读�
 | `src/xskill/cli.py` | distill configure/status，角色和参数校验；不自动启动蒸馏 |
 | `src/xskill/_workers.py`、`pipeline/watcher_factory.py` | 提前加载守卫、持锁、恢复、启动失败与退出等待 |
 | `src/xskill/api/app.py` | 启动支持范围校验、管理写请求拒绝、独立子进程启动顺序 |
+| `src/xskill/utils/status_file.py` | 生命周期 PID 与活动状态，用于确认宿主和辅助 worker 已退出 |
 | `src/xskill/agents/agent_tools.py` | 传递 policy、工具前置检查、skip_atom、固定目标，现有上下文切换不扩大权限 |
 | `src/xskill/agents/task_cluster_agent.py` | 受限归类说明、accepted/skipped 完整性；auto prompt 保留 |
 | `src/xskill/pipeline/runner.py` | 定向素材枚举与进度、各后台阶段/回调过滤、旧队列保留、目标结果投影 |
@@ -386,6 +388,8 @@ TaskAgent 继续拆分真实用户意图，保留现有 interests 过滤和读�
 | `src/xskill/skill/candidates.py`、`skill/git.py` | 真正修改文件与 Git 状态前的底层检查；覆盖 legacy 路径 |
 | `src/xskill/skill/description_opt.py`、`skill/scripting.py`、`src/xskill/canary.py` | 优化、标记、灰度直接写入与 cleanup 的校验 |
 | `src/xskill/skill/skill.py`、`skill/repo.py`、`skill/importer.py` | 管理操作在所有写副作用前拒绝；不能先移动或备份再报错 |
+| `src/xskill/ecosystems/claude_code.py` | 保留目标技能的真实使用归因和 side/SHA 头信息，过滤非目标轮转、修复与安装 |
+| `src/xskill/ecosystems/installation.py`、`_shared.py`、`_fallback.py`、`install_ledger.py` 及生态专用安装包装 | 校验实际安装目的地、备份、元信息和账本写入口，防止独立副本绕过目标限制 |
 | `src/xskill/kernels/context.py`、`kernels/runtime.py` | 不支持组合的早期拒绝，避免独立发布旁路 |
 | `README.md`、新增 `docs/targeted-distillation.md` | 使用方法、停止语义、状态说明、范围和故障恢复说明 |
 
@@ -393,17 +397,17 @@ TaskAgent 继续拆分真实用户意图，保留现有 interests 过滤和读�
 
 ## 11. 开发步骤与阶段验收
 
-审核后按顺序执行。下面复选框全部为待实施项；本轮不执行。
+以下保留审核时的开发顺序与验收契约。实现和测试已覆盖各阶段，实际执行结果及限制以[验证记录](../../reports/2026-11-05-targeted-distillation-validation.md)为准；测试代码是可执行的接口契约。
 
 ### 阶段 A：隔离开发环境与保留现有工作
 
-- [ ] 再核对 remote、HEAD、已有 diff、Python 和 editable 包位置，记录三个 nano 文件的内容指纹。
-- [ ] 使用当前适合的 checkout，实施前建立 `codex/targeted-distillation` 分支；不重置、不清理已有 nano 修改，不自动创建或切换 worktree。
-- [ ] 创建测试专用 state 根、技能目录、SQLite 和安装目的地。所有模型由 fake factory 注入；测试夹具禁止连接实际 LLM/embedding endpoint。
-- [ ] 扩展现有 isolation fixture：任何解析到真实个人 state 根或真实 harness 安装目录的写入立即使测试失败。
-- [ ] 阅读 nano diff，单独运行其三路径参数测试；不把通过结果当作指定蒸馏已通过。
+- 再核对 remote、HEAD、已有 diff、Python 和 editable 包位置，记录三个 nano 文件的内容指纹。
+- 使用当前适合的 checkout，实施前建立 `codex/targeted-distillation` 分支；不重置、不清理已有 nano 修改，不自动创建或切换 worktree。
+- 创建测试专用 state 根、技能目录、SQLite 和安装目的地。所有模型由 fake factory 注入；测试夹具禁止连接实际 LLM/embedding endpoint。
+- 扩展现有 isolation fixture：任何解析到真实个人 state 根或真实 harness 安装目录的写入立即使测试失败。
+- 阅读 nano diff，单独运行其三路径参数测试；不把通过结果当作指定蒸馏已通过。
 
-未来执行的核对命令：
+环境核对与基线测试命令：
 
 ```powershell
 git status --short
@@ -418,7 +422,7 @@ python -m pytest tests/test_gpt5_nano_parameters.py tests/test_llm_client.py tes
 
 **文件：** `write_policy.py`、`distillation.py`、`registry.py`、`tasks/locking.py`；新增 `tests/test_distillation_policy.py`、`tests/test_distillation_runs.py`。
 
-核心权限测试先按以下契约编写，作为最早的失败测试。这里定义的是本方案的待实现接口，不是已经存在的能力：
+核心权限测试按以下契约编写；实际测试还覆盖进程边界、链接和恢复约束：
 
 ```python
 from dataclasses import FrozenInstanceError
@@ -449,11 +453,11 @@ def test_restricted_policy_is_fixed_and_rejects_other_skill(tmp_path):
         policy.target_skill = "other-skill"
 ```
 
-- [ ] 先写失败用例：默认 auto、新建重名、更新缺失、参数互斥、不同 home 隔离、配置中断、过期 generation、缺失权限、锁冲突立即返回。
-- [ ] 实现三表 migration 和准确区分“有效 auto”与“受限状态无法读取”的读取逻辑；数据库错误不回退 auto。
-- [ ] 实现 prepare/resume/close 及创建归属记录，配置时不生成技能目录。
-- [ ] 实现不可变权限、非阻塞运行锁、同一真实路径别名归一化。
-- [ ] 用临时根执行单元检查，确认没有创建真实状态文件。
+- 先写失败用例：默认 auto、新建重名、更新缺失、参数互斥、不同 home 隔离、配置中断、过期 generation、缺失权限、锁冲突立即返回。
+- 实现三表 migration 和准确区分“有效 auto”与“受限状态无法读取”的读取逻辑；数据库错误不回退 auto。
+- 实现 prepare/resume/close 及创建归属记录，配置时不生成技能目录。
+- 实现不可变权限、非阻塞运行锁、同一真实路径别名归一化。
+- 用临时根执行单元检查，确认没有创建真实状态文件。
 
 ```powershell
 python -m pytest tests/test_distillation_policy.py tests/test_distillation_runs.py -q
@@ -465,12 +469,12 @@ python -m pytest tests/test_distillation_policy.py tests/test_distillation_runs.
 
 **文件：** 上述权限模块及第 10 节列出的候选、Git、Agent、Canary、管理、内核写入口；新增 `tests/test_distillation_write_boundaries.py`。
 
-- [ ] 参数化调用现有 agent 工具及底层函数，先写“非目标拒绝且快照不变”的失败测试。
-- [ ] 对批量候选增加“后一个条目非法时，前一个也没有写入”的测试。
-- [ ] 实现工具检查和底层守卫；直接框架调用没有任务上下文时也拒绝受限库写入。
-- [ ] 实现文件/链接/目录身份校验，包含 `.git`、辅助落点、junction、硬链接和路径替换。
-- [ ] 禁止 rename/move、外部内核和受限期间交互管理写入。
-- [ ] 核对直接 write、copy、replace、unlink、mkdir、Dulwich 引用修改是否都有到达检查；用动态用例确认，不能只靠文本搜索宣称覆盖。
+- 参数化调用现有 agent 工具及底层函数，先写“非目标拒绝且快照不变”的失败测试。
+- 对批量候选增加“后一个条目非法时，前一个也没有写入”的测试。
+- 实现工具检查和底层守卫；直接框架调用没有任务上下文时也拒绝受限库写入。
+- 实现文件/链接/目录身份校验，包含 `.git`、辅助落点、junction、硬链接和路径替换。
+- 禁止 rename/move、外部内核和受限期间交互管理写入。
+- 核对直接 write、copy、replace、unlink、mkdir、Dulwich 引用修改是否都有到达检查；用动态用例确认，不能只靠文本搜索宣称覆盖。
 
 ```powershell
 python -m pytest tests/test_distillation_write_boundaries.py tests/test_skill_tools_dotgit_guard.py tests/test_candidates_concurrency.py tests/test_git_lock_concurrency.py -q
@@ -482,12 +486,12 @@ python -m pytest tests/test_distillation_write_boundaries.py tests/test_skill_to
 
 **文件：** `distillation.py`、`runner.py`、`task_cluster_agent.py`、`agent_tools.py` 及 checkpoint 路径；新增 `tests/test_distillation_materials.py`。
 
-- [ ] 先写历史已 clustered 且轨迹 done 仍能进入定向判断的测试。
-- [ ] 写 accepted、skipped、漏结果、内容变化和跨目录 ID 碰撞用例。
-- [ ] 实现受限运行的有界素材枚举，复用已有 Atom，不重置全局进度。
-- [ ] 实现 skip_atom 和受限 prompt；auto 使用原 prompt。
-- [ ] 为候选应用和提交增加固定 operation 标识，注入在候选写入后、DB 确认前、checkpoint 后的崩溃，验证恢复不漏、不重复消费。
-- [ ] 检查受限路径不会调用 score_task 改全局评分，不会把本轮跳过写成全局 NOT_FIT。
+- 先写历史已 clustered 且轨迹 done 仍能进入定向判断的测试。
+- 写 accepted、skipped、漏结果、内容变化和跨目录 ID 碰撞用例。
+- 实现受限运行的有界素材枚举，复用已有 Atom，不重置全局进度。
+- 实现 skip_atom 和受限 prompt；auto 使用原 prompt。
+- 为候选应用记录 run、来源、Atom、内容指纹组成的固定身份，为提交增加框架生成的 run/Atom receipt；注入候选写入后、DB 确认前、checkpoint 后的崩溃，验证恢复不漏、不重复消费。
+- 检查受限路径不会调用 score_task 改全局评分，不会把本轮跳过写成全局 NOT_FIT。
 
 ```powershell
 python -m pytest tests/test_distillation_materials.py tests/test_skill_tools_atom.py tests/test_candidates_atom.py tests/test_agent_tool_context_isolation.py -q
@@ -499,12 +503,12 @@ python -m pytest tests/test_distillation_materials.py tests/test_skill_tools_ato
 
 **文件：** `runner.py`、`_workers.py`、`watcher_factory.py`、`api/app.py`、内核启动入口；新增 `tests/test_distillation_background.py`、`tests/test_distillation_recovery.py`。
 
-- [ ] 用临时目标和多个非目标预置所有后台积压，先写单轮扫描不改非目标的测试。
-- [ ] 实现各阶段在认领、清标记、ack、回流、轮转、超时裁决之前过滤。
-- [ ] startup 在生态扫描、发布、scheduler 启动等副作用前确认支持范围和权限；所有实际 writer 持运行锁。
-- [ ] 明确 shutdown 的在途任务收敛规则，不能 watcher.stop 返回后仍有旧任务写而锁已释放。
-- [ ] 测试 supervisor 重启相同 run、server/外部内核拒绝、第二个 auto writer 拒绝、旧任务保留。
-- [ ] 纯盘到库投影继续合入已有扫描，不新增按请求全盘扫描。
+- 用临时目标和多个非目标预置所有后台积压，先写单轮扫描不改非目标的测试。
+- 实现各阶段在认领、清标记、ack、回流、轮转、超时裁决之前过滤。
+- startup 在生态扫描、发布、scheduler 启动等副作用前确认支持范围和权限；所有实际 writer 持运行锁。
+- 明确 shutdown 的在途任务收敛规则，不能 watcher.stop 返回后仍有旧任务写而锁已释放。
+- 测试 supervisor 重启相同 run、server/外部内核拒绝、第二个 auto writer 拒绝、旧任务保留。
+- 纯盘到库投影继续合入已有扫描，不新增按请求全盘扫描。
 
 ```powershell
 python -m pytest tests/test_distillation_background.py tests/test_distillation_recovery.py tests/test_skill_edit_dirty_queue.py tests/test_agent_worker.py tests/test_agent_worker_runtime.py tests/test_server_watcher_startup.py tests/test_canary_rotation.py -q
@@ -516,12 +520,12 @@ python -m pytest tests/test_distillation_background.py tests/test_distillation_r
 
 **文件：** `cli.py`、`artifact_validation.py`、提交路径、文档；新增 `tests/test_distillation_cli.py`、`tests/test_distillation_artifacts.py`、`tests/test_distillation_e2e.py`。
 
-- [ ] 先写 CLI 参数、角色限制、configure 不启动 LLM、status 仅读数据库用例。
-- [ ] 实现用户入口、清楚的错误消息和状态投影。
-- [ ] 在临时技能库通过 fake agent 跑通 create_one 和 update_only 的现有候选/编辑/Git 流程。
-- [ ] 故意让 fake agent 读取其他技能后改写、创建近义名、提交其他技能、漏引用或不提交，验证拒绝或未完成状态。
-- [ ] 校验提交树，区分 staging 与 main，并保持阈值和灰度门不变。
-- [ ] 补使用文档，说明本地停止方法、恢复操作、已有候选会被处理、没有自动结束功能。
+- 先写 CLI 参数、角色限制、configure 不启动 LLM、status 仅读数据库用例。
+- 实现用户入口、清楚的错误消息和状态投影。
+- 在临时技能库通过 fake agent 跑通 create_one 和 update_only 的现有候选/编辑/Git 流程。
+- 故意让 fake agent 读取其他技能后改写、创建近义名、提交其他技能、漏引用或不提交，验证拒绝或未完成状态。
+- 校验提交树，区分 staging 与 main，并保持阈值和灰度门不变。
+- 补使用文档，说明本地停止方法、恢复操作、已有候选会被处理、没有自动结束功能。
 
 ```powershell
 python -m pytest tests/test_distillation_cli.py tests/test_distillation_artifacts.py tests/test_distillation_e2e.py tests/test_cli_serve_guard.py tests/test_skill_edit_batch_turns.py tests/test_skill_edit_mutation_contracts.py tests/test_description_opt.py -q
@@ -594,4 +598,4 @@ python -m pytest tests/test_skill_edit_agent.py tests/test_skill_edit_batch_turn
 
 本次请审核的主要产品选择是：新建填写现有 description，更新读取已有说明；通过 CLI 操作，支持本地 native，停机切换；不新增 objective、选轨迹或自动停止；旧积压保留；门槛和灰度不被指定目标绕过。
 
-审核通过前不实施功能。实施过程中不自动提交、合并或推送；已有 nano 改动不得被混入未经用户审核的提交。
+用户已授权本地实施并提交、推送个人仓库，仍不创建 PR 或合并。已有 nano 改动保持原样，不混入本功能提交。真实模型效果实验、个人全量蒸馏及个人安装均未执行。

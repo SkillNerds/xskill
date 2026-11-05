@@ -27,7 +27,7 @@ from typing import Optional
 
 from dulwich.errors import NotGitRepository
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from xskill import __version__
@@ -929,6 +929,24 @@ def create_app(home_root: Path | str | None = None,
         description="Trajectory-to-Skill distillation API",
         version=__version__,
     )
+    from xskill.config import XSKILL_HOME, get_registry_db_path, kernel_config
+    from xskill.pipeline.distillation import DistillationStore
+    distillation_store = DistillationStore(get_registry_db_path(xskill_home=XSKILL_HOME), _skill_dir)
+
+    @app.middleware("http")
+    async def _guard_administrative_writes(request: Request, call_next):
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            try:
+                from xskill.skill.write_policy import current_write_policy
+                restricted = (distillation_store.status()["mode"] != "auto"
+                              or current_write_policy(_skill_dir).mode != "auto")
+            except Exception as exc:
+                return JSONResponse(status_code=503, content={"detail": f"Cannot verify distillation authority: {exc}"})
+            read_posts = {"/api/v1/trajectories/search", "/api/v1/skills/search", "/api/v1/trajectories/submit"}
+            if restricted and request.url.path not in read_posts:
+                return JSONResponse(status_code=409, content={"detail": "Administrative writes are disabled during a targeted distillation run; stop serve and configure auto first."})
+        return await call_next(request)
+
     app.include_router(router)
 
     # team server 模式：挂 /api/v1/team/* 路由
@@ -1027,6 +1045,28 @@ def create_app(home_root: Path | str | None = None,
     # ------------------------------------------------------------------
     @app.on_event("startup")
     async def _startup():
+        from contextlib import ExitStack
+        from xskill.skill.write_policy import library_write_guard
+        from xskill.tasks.locking import root_host_lock
+        policy = distillation_store.policy()
+        selected = kernel_config(_config, xskill_home=XSKILL_HOME)
+        if policy.mode != "auto" and (team_server or selected["active"] != "native"):
+            raise RuntimeError("targeted distillation supports standalone native workers only")
+        stack = ExitStack()
+        app.state.distillation_lifecycle = stack
+        try:
+            stack.enter_context(root_host_lock(XSKILL_HOME, _skill_dir))
+            policy = distillation_store.policy()
+            if policy.mode != "auto" and (team_server or selected["active"] != "native"):
+                raise RuntimeError("targeted distillation supports standalone native workers only")
+            stack.enter_context(library_write_guard(_skill_dir, policy, db_path=distillation_store.db_path))
+            app.state.distillation_policy = policy
+            await _startup_runtime()
+        except BaseException:
+            stack.close()
+            raise
+
+    async def _startup_runtime():
         """Initialize agent tool config and watcher runtime dependencies.
 
         无 fallback：LLM/embed 客户端构造失败一律 raise，daemon 启动失败而不是
@@ -1304,6 +1344,14 @@ def create_app(home_root: Path | str | None = None,
 
     @app.on_event("shutdown")
     async def _shutdown():
+        try:
+            await _shutdown_runtime()
+        finally:
+            stack = getattr(app.state, "distillation_lifecycle", None)
+            if stack is not None:
+                stack.close()
+
+    async def _shutdown_runtime():
         # 先竖旗：所有 worker 线程里的 LLM 重试循环见旗即弃，退避睡眠立即
         # 中断。不竖旗的话 join 最坏拖 11 分钟，supervisor 10s 后 SIGKILL。
         from xskill.utils.shutdown import request_shutdown

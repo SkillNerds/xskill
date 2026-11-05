@@ -25,6 +25,10 @@ v2 (AtomTask 流水线) 引入 baby 分支：ClusterAgent 调 new_skill_folder �
 
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_repo_lock_write, _pinned_parent
+
+from xskill.skill.write_policy import require_skill_write, SkillWriteDenied, current_write_policy
+
 import errno
 import hashlib
 import io
@@ -57,6 +61,7 @@ XSKILL_AUTHOR = b"xskill <xskill@local>"
 def _write_repo_identity(repo: Repo) -> None:
     """把 user.email / user.name 写进 .git/config，让 git CLI 工具读取
     也能看到稳定身份（外部 git 调试 / inspect 用）。"""
+    require_skill_write(repo.path, operation='git_mutation')
     cfg = repo.get_config()
     cfg.set((b"user",), b"email", b"xskill@local")
     cfg.set((b"user",), b"name", b"xskill")
@@ -185,6 +190,7 @@ def _acquire_windows_file_lock(lock_file, msvcrt_module) -> None:
 @contextmanager
 def _cross_process_repo_lock(repo_dir: str | Path):
     """Take one reentrant OS file lock for a repository in this thread."""
+    require_skill_write(repo_dir, operation='write_content')
     repository_key = str(Path(repo_dir).resolve())
     depths = getattr(_repo_file_lock_state, "depths", None)
     if depths is None:
@@ -200,8 +206,18 @@ def _cross_process_repo_lock(repo_dir: str | Path):
         return
 
     lock_path = _repo_lock_file(repo_dir)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+b") as lock_file:
+    require_repo_lock_write(lock_path, repo_dir)
+    policy = require_skill_write(repo_dir)
+    with _pinned_parent(lock_path) if policy.mode != "auto" else nullcontext():
+        require_repo_lock_write(lock_path, repo_dir)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    parent_guard = _pinned_parent(lock_path) if policy.mode != "auto" else nullcontext()
+    with parent_guard, lock_path.open("a+b") as lock_file:
+        require_repo_lock_write(lock_path, repo_dir)
+        if policy.mode != "auto":
+            opened, current = os.fstat(lock_file.fileno()), lock_path.lstat()
+            if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+                raise SkillWriteDenied("repository lock identity changed")
         if os.name == "nt":
             import msvcrt  # pylint: disable=import-error
 
@@ -244,6 +260,9 @@ def skill_repo_locks(
     writes set ``use_git_write_limit=False`` because they share the repository
     lock with Git but do not consume a Git write slot.
     """
+    repo_dirs = tuple(repo_dirs)
+    for _path in repo_dirs:
+        require_skill_write(_path, operation='git_mutation' if use_git_write_limit else 'write_content')
     repository_paths = sorted({
         Path(repo_dir).resolve()
         for repo_dir in repo_dirs
@@ -259,9 +278,16 @@ def skill_repo_locks(
                 repository_lock = _repo_lock_for(repository_path)
                 repository_lock.acquire()
                 lock_stack.callback(repository_lock.release)
+                policy = require_skill_write(repository_path)
+                if policy.mode != "auto" and repository_path.is_dir():
+                    lock_stack.enter_context(_pinned_parent(repository_path / ".distillation-repo-pin"))
+                    if (repository_path / ".git").is_dir():
+                        lock_stack.enter_context(_pinned_parent(repository_path / ".git" / ".distillation-repo-pin"))
                 lock_stack.enter_context(
                     _cross_process_repo_lock(repository_path),
                 )
+            for _path in repo_dirs:
+                require_skill_write(_path, operation='git_mutation' if use_git_write_limit else 'write_content')
             yield
 
 
@@ -294,6 +320,7 @@ def skill_repo_lock(
 SKILL_GITIGNORE = """# xskill v2 skill 仓库的 ignore 规则
 # candidates buffer 不版本化（cluster agent 高频写入，与 skill 内容演化解耦）
 .candidates.yml
+.distillation-run.json
 
 # 灰度运行时数据
 .ux_scores.jsonl
@@ -555,6 +582,7 @@ def _stage_all(repo: Repo, root: Path) -> bool:
     dulwich.add 不处理 deletion；用 staged() 比对，把工作区不存在但 index 里有
     的路径 ``stage`` 为删除（直接 del index[name]）。
     """
+    require_skill_write(root, operation='git_mutation')
 
     ignore_patterns = _load_gitignore_patterns(root)
     rel_paths: list[str] = []
@@ -574,7 +602,7 @@ def _stage_all(repo: Repo, root: Path) -> bool:
         # 优化实验数据。
         if ".description_optimization" in parts:
             continue
-        if rel.name == ".scripting_requested" or parts[0] == ".scripting_requested":
+        if rel.name in {".scripting_requested", ".distillation-run.json"} or parts[0] == ".scripting_requested":
             continue
         rel_str = str(rel).replace(os.sep, "/")
         if _is_ignored(rel_str, ignore_patterns):
@@ -648,6 +676,7 @@ def _do_commit(repo: Repo, message: str, *, allow_empty: bool = False) -> tuple[
     - allow_empty=False 且没有改动 → 返回 (None, 'nothing to commit') 模拟
       git CLI 退出码非零 + stderr 'nothing to commit'。
     """
+    require_skill_write(repo.path, operation='git_mutation')
     # 检测是否有改动：比较 index 树和 HEAD 树
     try:
         head_sha = repo.refs[b"HEAD"]
@@ -682,10 +711,12 @@ def _do_commit(repo: Repo, message: str, *, allow_empty: bool = False) -> tuple[
 
 def _branch_force_create(repo: Repo, name: str, target_sha: bytes) -> None:
     """``git branch -f <name> <sha>`` 等价：强制把 branch ref 指到 sha。"""
+    require_skill_write(repo.path, operation='git_mutation')
     repo.refs[_ref_for_branch(name)] = target_sha
 
 
 def _branch_delete(repo: Repo, name: str) -> None:
+    require_skill_write(repo.path, operation='git_mutation')
     ref = _ref_for_branch(name)
     if ref in repo.refs:
         del repo.refs[ref]
@@ -702,6 +733,7 @@ def _checkout_branch(
 
     工作区策略：见函数末尾注释。
     """
+    require_skill_write(repo.path, operation='git_mutation')
     ref = _ref_for_branch(branch)
     exists = ref in repo.refs
     explicit_from = from_sha is not None
@@ -751,6 +783,7 @@ def _checkout_paths_from_ref(repo: Repo, ref: str, paths: list[str]) -> tuple[in
     """``git checkout <ref> -- <paths>``：把 paths 在 ref 上的内容写回工作树
     + index。``paths`` 形如 ``["<dirname>/"]``——展开成该目录下所有文件。
     """
+    require_skill_write(repo.path, operation='git_mutation')
     sha = _resolve_rev(repo, ref)
     if sha is None:
         return 128, f"fatal: bad revision {ref}"
@@ -992,6 +1025,65 @@ def _command_writes(args: list[str]) -> bool:
     return False
 
 
+def _read_only_diff(args: list[str], cwd: str) -> tuple[int, str, str]:
+    """Render working/index diffs using temporary blobs; never stage objects."""
+    from dulwich.object_store import iter_tree_contents
+    from dulwich.patch import write_blob_diff
+    import stat
+
+    with _open_repo(cwd) as repo:
+        try:
+            tree = repo[repo.refs[b"HEAD"]].tree
+        except KeyError:
+            tree = None
+        committed = {
+            entry.path: entry for entry in iter_tree_contents(repo.object_store, tree)
+        } if tree is not None else {}
+        index = repo.open_index()
+        indexed = dict(index.items())
+        if "--cached" in args:
+            changed = [
+                name for name in set(committed) | set(indexed)
+                if (getattr(committed.get(name), "sha", None), getattr(committed.get(name), "mode", None))
+                != (getattr(indexed.get(name), "sha", None), getattr(indexed.get(name), "mode", None))
+            ]
+            return 0, "\n".join(name.decode("utf-8") for name in sorted(changed)), ""
+        output = io.BytesIO()
+        for name in sorted(set(committed) | set(indexed)):
+            old = committed.get(name)
+            old_blob = repo[old.sha] if old is not None else None
+            if old_blob is not None and not isinstance(old_blob, Blob):
+                continue
+            path = Path(cwd) / os.fsdecode(name)
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                info = None
+            if info is None or stat.S_ISDIR(info.st_mode):
+                new_blob, mode = None, None
+            else:
+                new_blob = Blob()
+                if stat.S_ISLNK(info.st_mode):
+                    new_blob.data = os.fsencode(os.readlink(path))
+                    mode = 0o120000
+                else:
+                    new_blob.data = path.read_bytes()
+                    mode = 0o100755 if info.st_mode & stat.S_IXUSR else 0o100644
+            if old_blob is not None and new_blob is not None and old_blob.data == new_blob.data and old.mode == mode:
+                continue
+            write_blob_diff(output, (name if old else None, old.mode if old else None, old_blob), (name if new_blob else None, mode, new_blob))
+        return 0, output.getvalue().decode("utf-8", errors="replace"), ""
+
+
+def _read_repo_guard(cwd: str, restricted: bool):
+    if restricted:
+        try:
+            require_skill_write(cwd)
+        except SkillWriteDenied:
+            return _repo_lock_for(cwd)
+    return skill_repo_lock(cwd, use_git_write_limit=False)
+
+
 def run_git(args: list[str], cwd: str) -> tuple[int, str, str]:
     """老 caller 入口。按 args[0] dispatch 到 dulwich-backed handler。
 
@@ -1008,11 +1100,20 @@ def run_git(args: list[str], cwd: str) -> tuple[int, str, str]:
         return 1, "", f"unsupported git subcommand: {sub}"
 
     try:
-        with skill_repo_lock(
-            cwd,
-            use_git_write_limit=_command_writes(args),
-        ):
+        restricted = current_write_policy().mode != "auto" or current_write_policy(cwd).mode != "auto"
+        if sub == "diff" and (rest == ["HEAD"] or ("--cached" in rest and "--name-only" in rest)):
+            if restricted:
+                with _read_repo_guard(cwd, restricted=True):
+                    return _read_only_diff(rest, cwd)
+        if _command_writes(args):
+            require_skill_write(cwd, operation="git_mutation")
+            with skill_repo_lock(cwd):
+                return handler(rest, cwd)
+        # Only authorized target reads may create/take the target file lock.
+        with _read_repo_guard(cwd, restricted):
             return handler(rest, cwd)
+    except SkillWriteDenied:
+        raise
     except NotGitRepository as e:
         return 128, "", f"fatal: not a git repository: {e}"
     except Exception as e:  # noqa: BLE001
@@ -1024,6 +1125,7 @@ def run_git(args: list[str], cwd: str) -> tuple[int, str, str]:
 
 def _h_init(_args: list[str], cwd: str) -> tuple[int, str, str]:
     """``git init``。"""
+    require_skill_write(cwd, operation='git_mutation')
     Path(cwd).mkdir(parents=True, exist_ok=True)
     repo = porcelain.init(cwd, bare=False)
     # 默认 HEAD 指向 refs/heads/master——project 用 main，但 init 后下个
@@ -1034,6 +1136,7 @@ def _h_init(_args: list[str], cwd: str) -> tuple[int, str, str]:
 
 def _h_config(args: list[str], cwd: str) -> tuple[int, str, str]:
     """``git config <key> <value>``。仅支持 user.* 这种 section.key 形态。"""
+    require_skill_write(cwd, operation='git_mutation')
     if len(args) < 2:
         return 1, "", "config needs key + value"
     key, value = args[0], args[1]
@@ -1265,6 +1368,7 @@ def _h_status(args: list[str], cwd: str) -> tuple[int, str, str]:
 
 def _h_add(_args: list[str], cwd: str) -> tuple[int, str, str]:
     """``git add . / -A``."""
+    require_skill_write(cwd, operation='git_mutation')
     with _open_repo(cwd) as repo:
         _stage_all(repo, Path(cwd))
     return 0, "", ""
@@ -1272,6 +1376,7 @@ def _h_add(_args: list[str], cwd: str) -> tuple[int, str, str]:
 
 def _h_commit(args: list[str], cwd: str) -> tuple[int, str, str]:
     """``git commit [--allow-empty] -m <msg>``."""
+    require_skill_write(cwd, operation='git_mutation')
     msg = ""
     allow_empty = False
     it = iter(args)
@@ -1388,6 +1493,7 @@ def _h_checkout(args: list[str], cwd: str) -> tuple[int, str, str]:
       - checkout -- .
       - checkout <ref> -- <pathspec>
     """
+    require_skill_write(cwd, operation='git_mutation')
     # checkout -- . / checkout -- <path>: 用 ref（默认 HEAD）的内容覆盖 working
     if "--" in args:
         ddi = args.index("--")
@@ -1454,6 +1560,7 @@ def _h_checkout(args: list[str], cwd: str) -> tuple[int, str, str]:
 
 def _h_reset(args: list[str], cwd: str) -> tuple[int, str, str]:
     """``git reset --hard <ref>``."""
+    require_skill_write(cwd, operation='git_mutation')
     mode = "mixed"
     target: str | None = None
     for a in args:
@@ -1612,6 +1719,7 @@ def _h_diff(args: list[str], cwd: str) -> tuple[int, str, str]:
 
 def _h_clean(_args: list[str], cwd: str) -> tuple[int, str, str]:
     """``git clean -fd``——删未追踪文件 + 目录。"""
+    require_skill_write(cwd, operation='git_mutation')
     # 简化实现：把 status untracked 的全删
     with _open_repo(cwd) as repo:
         status = porcelain.status(repo=repo, untracked_files="all")
@@ -1641,6 +1749,7 @@ def _h_merge(args: list[str], cwd: str) -> tuple[int, str, str]:
       - A 是 B 的 ancestor → fast-forward：把当前 branch 指向 B，重置工作区
       - 否则 → 创建 merge commit（两 parents：A, B）
     """
+    require_skill_write(cwd, operation='git_mutation')
     ff_only = "--ff" in args and "--no-ff" not in args
     msg = "merge"
     branch: str | None = None
@@ -1744,6 +1853,7 @@ def _h_update_ref(args: list[str], cwd: str) -> tuple[int, str, str]:
     D9 用它在 discard_staging 前把被拒 staging commit 挂到
     ``refs/rejected/<ts>-<sha>`` 只读 ref，保持对 log/show 可达。
     """
+    require_skill_write(cwd, operation='git_mutation')
     if args and args[0] == "-d":
         if len(args) != 2:
             return 1, "", "usage: update-ref -d <ref>"
@@ -1825,6 +1935,7 @@ def init_skill_repo_on_baby(skill_dir: str, name: str, description: str) -> None
       5. add . + commit "init: <name>"
       6. 重命名默认分支为 ``baby``
     """
+    require_skill_write(skill_dir, operation='git_mutation')
     from datetime import date as _date
 
     p = Path(skill_dir)
@@ -1896,6 +2007,7 @@ def commit_baby_to_main_branch(skill_dir: str, message: str) -> bool:
       1. add -A + commit -m <message>
       2. baby → main rename
     """
+    require_skill_write(skill_dir, operation='git_mutation')
     with skill_repo_lock(skill_dir):
         with _open_repo(skill_dir) as repo:
             cur = _current_branch_name(repo)
@@ -1930,6 +2042,7 @@ def commit_baby_checkpoint(skill_dir: str, message: str) -> str | None:
     removal intentionally lives in the caller so it can share one outer
     ``skill_repo_lock`` transaction with this Git mutation.
     """
+    require_skill_write(skill_dir, operation='git_mutation')
     with skill_repo_lock(skill_dir):
         with _open_repo(skill_dir) as repo:
             cur = _current_branch_name(repo)
@@ -1965,6 +2078,8 @@ def commit_to_staging_branch(skill_dir: str, message: str) -> bool:
       4. 物化 staging SKILL.md 到 ``<skill_dir>/../.canary/<name>/``
       5. 回到 main 分支
     """
+    policy = require_skill_write(skill_dir, operation='git_mutation')
+    materialization_failed = False
     p = Path(skill_dir)
     with skill_repo_lock(skill_dir):
         with _open_repo(skill_dir) as repo:
@@ -1982,6 +2097,10 @@ def commit_to_staging_branch(skill_dir: str, message: str) -> bool:
 
             _stage_all(repo, p)
             sha, err = _do_commit(repo, message)
+            if sha is None and err == "nothing to commit" and policy.mode != "auto":
+                repo.refs.set_symbolic_ref(b"HEAD", _ref_for_branch("main"))
+                del repo.refs[_ref_for_branch("staging")]
+                return False
             if sha is None and err != "nothing to commit":
                 logger.warning(f"staging commit 失败: {err}")
                 # rollback
@@ -2004,6 +2123,7 @@ def commit_to_staging_branch(skill_dir: str, message: str) -> bool:
                 materialize_staging(p, canary_root)
             except Exception:
                 logger.exception("materialize_staging 失败: %s", Path(skill_dir).name)
+                materialization_failed = policy.mode != "auto"
 
             # 回 main
             repo.refs.set_symbolic_ref(b"HEAD", _ref_for_branch("main"))
@@ -2011,6 +2131,10 @@ def commit_to_staging_branch(skill_dir: str, message: str) -> bool:
                 porcelain.reset(repo=repo, mode="hard", treeish=_ref_for_branch("main"))
             except Exception as e:
                 logger.warning("reset back to main failed: %s", e)
+                if policy.mode != "auto":
+                    return False
+    if materialization_failed:
+        return False
     logger.info(f"🚦 staging candidate committed: {Path(skill_dir).name}: {message}")
     from xskill.skill.catalog_store import notify_native_upsert
     notify_native_upsert(skill_dir)
@@ -2023,6 +2147,7 @@ def commit_update_main_branch(skill_dir: str, message: str) -> bool:
     与 ``commit_to_staging_branch`` 的区别：不开 staging、不物化 canary，直接把
     SkillEditAgent 写入工作区的 SKILL.md 提交到 main。
     """
+    require_skill_write(skill_dir, operation='git_mutation')
     with skill_repo_lock(skill_dir):
         with _open_repo(skill_dir) as repo:
             cur = _current_branch_name(repo)
@@ -2053,6 +2178,7 @@ def ensure_head_on_main(skill_dir: str | Path) -> None:
     把工作区换成导入正文，应先保证目标 main 的树就是当前工作区（例如
     刚 copytree 进来的仓，checkout main 只是对齐 HEAD）。
     """
+    require_skill_write(skill_dir, operation='git_mutation')
     skill_dir = Path(skill_dir)
     with skill_repo_lock(skill_dir):
         with _open_repo(skill_dir) as repo:
@@ -2090,6 +2216,7 @@ def ensure_head_on_main(skill_dir: str | Path) -> None:
 
 def init_imported_repo_on_main(skill_dir: str | Path, message: str) -> None:
     """把已有工作区初始化成 per-skill git，第一笔提交落在 main（不走 baby）。"""
+    require_skill_write(skill_dir, operation='git_mutation')
     skill_dir = Path(skill_dir)
     skill_dir.mkdir(parents=True, exist_ok=True)
     with skill_repo_lock(skill_dir):
@@ -2127,6 +2254,7 @@ def commit_progressive_turn(skill_dir: str, turn_branch: str, message: str) -> b
     返回 False 当且仅当 turn_branch 已存在（不应发生,调用方按递增 turn 号
     生成分支名）。commit 本身允许空提交（本轮 agent 可能什么都没改）。
     """
+    require_skill_write(skill_dir, operation='git_mutation')
     with skill_repo_lock(skill_dir):
         with _open_repo(skill_dir) as repo:
             if _has_branch(repo, turn_branch):
@@ -2153,6 +2281,7 @@ def checkout_head_ref_only(skill_dir: str, branch: str) -> None:
     ``_stage_all`` 会把 turn 分支上积累的全部改动当成"原分支的未提交改动"
     一并收进这一次终态 commit。
     """
+    require_skill_write(skill_dir, operation='git_mutation')
     with skill_repo_lock(skill_dir):
         with _open_repo(skill_dir) as repo:
             repo.refs.set_symbolic_ref(b"HEAD", _ref_for_branch(branch))
@@ -2177,11 +2306,13 @@ def list_turn_branches(skill_dir: str, base_branch: str | None = None) -> list[s
 
 def ensure_repo(skill_dir: str):
     """确保 skill_dir 是一个 git 仓库，在 main 分支上。"""
+    require_skill_write(skill_dir, operation='git_mutation')
     with skill_repo_lock(skill_dir):
         _ensure_repo_locked(skill_dir)
 
 
 def _ensure_repo_locked(skill_dir: str) -> None:
+    require_skill_write(skill_dir, operation='git_mutation')
     p = Path(skill_dir)
     p.mkdir(parents=True, exist_ok=True)
     if not (p / ".git").exists():
@@ -2237,6 +2368,7 @@ def has_changes(skill_dir: str) -> bool:
 
 
 def commit_changes(skill_dir: str, message: str) -> bool:
+    require_skill_write(skill_dir, operation='git_mutation')
     with skill_repo_lock(skill_dir):
         with _open_repo(skill_dir) as repo:
             _stage_all(repo, Path(skill_dir))
@@ -2255,6 +2387,7 @@ def commit_generate_to_main_branch(skill_dir: str, message: str) -> str:
     Empty commits are allowed.  Staging is never created.  Returns the full
     commit SHA (hex string).
     """
+    require_skill_write(skill_dir, operation='git_mutation')
     from dulwich import porcelain
 
     root = Path(skill_dir)

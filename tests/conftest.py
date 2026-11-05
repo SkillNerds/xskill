@@ -135,22 +135,18 @@ def _find_tmp_polluted_entries() -> list[Path]:
 def _block_real_home_pollution(request):
     """每个测试前后扫描真实 ~/.claude/skills/，确保没被污染。
 
-    - **setUp**：扫描 + 清理（避免上个测试遗留干扰本测试 baseline）
+    - **setUp**：只读快照，不清理用户原有条目
     - **tearDown**：再扫，新增指向 tmp 的 symlink → fail 测试并清理
     """
     baseline = _snapshot_skills_dir()
-    for p in _find_tmp_polluted_entries():
-        try:
-            p.unlink()
-        except OSError:
-            pass
 
     yield
 
     post_polluted = _find_tmp_polluted_entries()
     new_polluted = [p for p in post_polluted if p.name not in baseline]
-    # 不管是不是新加的，只要指向 tmp 都清掉（防止 cascade）
-    for p in post_polluted:
+    # Only remove pollution created by this test; pre-existing personal entries
+    # are not ours to delete, including broken links.
+    for p in new_polluted:
         try:
             p.unlink()
         except OSError:

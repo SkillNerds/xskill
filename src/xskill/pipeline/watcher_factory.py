@@ -20,7 +20,8 @@ def build_watcher(config: dict, *, home_root: Path | None = None,
                   logs_dir: Path | None = None,
                   spill_root: Path | None = None,
                   server_mode: bool = False, on_poll_hook=None,
-                  native_distill: bool = True):
+                  native_distill: bool = True,
+                  distillation_store=None, distillation_policy=None):
     """构造 ``DirectoryWatcher``(读 watcher 段 + 造 llm/embed 客户端)。
 
     与原 web startup 的构造收敛到一处。``on_poll_hook`` 用于常驻
@@ -50,6 +51,12 @@ def build_watcher(config: dict, *, home_root: Path | None = None,
         if skill_dir is not None
         else get_skill_dir(config, xskill_home=state_root)
     ).expanduser().resolve()
+    # Admission precedes price loading, model construction, or any scan hook.
+    from xskill.pipeline.distillation import DistillationStore
+    store = distillation_store or DistillationStore(resolved_db_path, resolved_skill_dir)
+    policy = distillation_policy or store.policy()
+    if policy.mode != "auto" and (server_mode or not native_distill):
+        raise RuntimeError("targeted distillation supports standalone native workers only")
     resolved_config_path = (
         Path(config_path)
         if config_path is not None
@@ -93,6 +100,8 @@ def build_watcher(config: dict, *, home_root: Path | None = None,
         usage_ledger=usage_ledger,
         on_poll_hook=on_poll_hook,
         native_distill=native_distill,
+        **({"distillation_store": store, "distillation_policy": policy}
+           if policy.mode != "auto" else {}),
     )
 
 
@@ -101,6 +110,8 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
                                     registry_db_path: Path,
                                     install_history_path: Path,
                                     excluded_ecosystems: set[str] | None = None,
+                                    install_skills: bool = True,
+                                    target_skill: str | None = None,
                                     ) -> None:
     """检测本机各生态 → 装 skill → 对每个生态一次性桥接其 session。
 
@@ -127,6 +138,23 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
     )
     from xskill.ecosystems._history import InstallHistory
     from xskill.pipeline.registry import register_dir
+
+    if not install_skills:
+        # Keep extraction and registry ingestion live while disabling all
+        # distribution and side rotation callbacks of this discovery pass.
+        def skip_install(*_args, **_kwargs):
+            return []
+        install_all_to_claude_code = skip_install
+        ensure_claude_code_install = skip_install
+        install_all_to_codex = skip_install
+        install_all_to_nga3 = skip_install
+        install_all_to_ngagent = skip_install
+        install_all_to_opencode = skip_install
+        install_all_to_openclaw = skip_install
+        install_all_to_cursor = skip_install
+        install_all_to_deepseek_harness = skip_install
+        install_all_to_trae = skip_install
+        ensure_zstandard_for_dsh = skip_install
 
     install_history = InstallHistory(install_history_path)
     poll_interval = float(config.get("watcher", {}).get("poll_interval", 10))
@@ -155,7 +183,7 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
             try:
                 skill_paths = [
                     skill_path
-                    for skill_path in sorted(skill_dir.iterdir())
+                    for skill_path in (sorted(skill_dir.iterdir()) if install_skills else [])
                     if skill_path.is_dir()
                     and (skill_path / "SKILL.md").is_file()
                 ]
@@ -199,10 +227,11 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
                                             reason=str(exc)[:200])
             CCSessionIngester(
                 target_traj_dir=bridge, home_root=home_root,
-                poll_interval=poll_interval, skill_dir=skill_dir,
-                target_root=home_root, history_path=install_history_path,
-                assignments_path=skill_dir / "session_assignments.jsonl",
+                poll_interval=poll_interval, skill_dir=skill_dir if install_skills or target_skill else None,
+                target_root=home_root, history_path=install_history_path if install_skills or target_skill else None,
+                assignments_path=skill_dir / "session_assignments.jsonl" if install_skills or target_skill else None,
                 registry_db_path=registry_db_path,
+                **({"target_skill": target_skill} if target_skill else {}),
             ).run_once()
 
         elif eco == "codex":
@@ -262,7 +291,7 @@ def ingest_detected_ecosystems_once(config: dict, home_root: Path,
             flip_hook = make_openclaw_canary_flip_hook(
                 skill_dir=skill_dir, target_root=home_root,
                 history=install_history, probability=canary_cfg.probability,
-            )
+            ) if install_skills else None
             JsonlIngester(OPENCLAW_SPEC, target_traj_dir=bridge, home_root=home_root,
                           poll_interval=poll_interval,
                           on_new_sessions=flip_hook,

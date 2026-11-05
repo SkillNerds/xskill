@@ -60,6 +60,26 @@ from xskill.pipeline.trajectory import validate_trajectory_source
 
 logger = logging.getLogger("xskill.watcher")
 
+
+def _with_distillation_policy(function):
+    """Bind immutable run authority also for watcher callbacks and direct calls."""
+    from functools import wraps
+
+    @wraps(function)
+    def bound(self, *args, **kwargs):
+        if not getattr(self, "restricted_distillation", False):
+            return function(self, *args, **kwargs)
+        from xskill.skill.write_policy import use_write_policy
+        from xskill.ecosystems.install_ledger import use_ledger
+        from contextlib import ExitStack
+        with ExitStack() as bindings:
+            bindings.enter_context(use_write_policy(self.distillation_policy))
+            ledger = getattr(self, "installation_ledger", None)
+            if ledger is not None:
+                bindings.enter_context(use_ledger(ledger))
+            return function(self, *args, **kwargs)
+    return bound
+
 # SkillEdit N=1 连续失败达到该次数后抬高调度错误分，优先跑其他 skill。
 SKILL_EDIT_N1_FAIL_DEPRIORITIZE = 3
 
@@ -129,7 +149,8 @@ class DirectoryWatcher:
                  spill_root=None,
                  usage_ledger=None,
                  server_mode=False, install_history_path=None,
-                 on_poll_hook=None, native_distill=True):
+                 on_poll_hook=None, native_distill=True,
+                 distillation_store=None, distillation_policy=None):
         self.llm = llm
         self.embed_client = embed_client
         self.usage_ledger = usage_ledger
@@ -151,13 +172,33 @@ class DirectoryWatcher:
         # the native classifier does not create baby skills that occupy
         # names the external kernel would publish.
         self.native_distill = bool(native_distill)
+        from xskill.skill.write_policy import DistillationPolicy
+        self.distillation_store = distillation_store
+        self.distillation_policy = distillation_policy or (
+            distillation_store.policy() if distillation_store is not None
+            else DistillationPolicy()
+        )
+        self.restricted_distillation = self.distillation_policy.mode != "auto"
+        self._distillation_cursors = {}
+        if self.restricted_distillation and (
+            self.server_mode or not self.native_distill or distillation_store is None
+        ):
+            raise ValueError("restricted distillation requires a local native run store")
         # XSkill 自身状态根与 Agent 生态 home_root 是两类路径，不能混用。
         from xskill.config import XSKILL_HOME
         xskill_state_root = (
             Path(xskill_home)
             if xskill_home is not None
-            else XSKILL_HOME
+            else (self.distillation_store.db_path.parent
+                  if self.restricted_distillation else XSKILL_HOME)
         ).expanduser().resolve()
+        self.installation_ledger = None
+        if self.restricted_distillation:
+            from xskill.ecosystems.install_ledger import InstallLedger
+            state = self.distillation_store.db_path.parent
+            self.installation_ledger = InstallLedger(
+                state / "installations.sqlite", staging_root=state / "removal-staging",
+            )
         self.install_history_path = (
             Path(install_history_path) if install_history_path
             else xskill_state_root / "install_history.jsonl"
@@ -287,6 +328,15 @@ class DirectoryWatcher:
         self._generate_completed = 0
         self._generate_failed = 0
 
+    def _distillation_skill_paths(self):
+        if self.restricted_distillation:
+            return [self.skill_dir / self.distillation_policy.target_skill]
+        return sorted(self.skill_dir.iterdir())
+
+    def _distillation_allows(self, path):
+        return (not self.restricted_distillation
+                or Path(path) == self.skill_dir / self.distillation_policy.target_skill)
+
     def start(self):
         if self._thread and self._thread.is_alive():
             return
@@ -295,18 +345,18 @@ class DirectoryWatcher:
         self._thread.start()
         logger.info("watcher started (interval=%.1fs, four independent pools)", self.poll_interval)
 
-    def stop(self):
+    def stop(self, *, wait=False):
         self._stop.set()
         if self._thread:
             # watcher 线程是 daemon，不必等完整个 poll 周期（默认 30s+5s 会
             # 把优雅退出拖过 supervisor 的 stopwaitsecs）；短等后直接放弃
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=None if wait else 5)
         # cancel_futures：排队未跑的任务直接丢弃。在跑的 worker 由
         # SHUTTING_DOWN 事件叫停（agno_factory 重试循环），不在这里等。
         for pool in self._pools.values():
-            pool.shutdown(wait=False, cancel_futures=True)
-        self._task_graph_pool.shutdown(wait=False, cancel_futures=True)
-        self.cluster_write_queue.shutdown(wait=False)
+            pool.shutdown(wait=wait, cancel_futures=True)
+        self._task_graph_pool.shutdown(wait=wait, cancel_futures=True)
+        self.cluster_write_queue.shutdown(wait=wait)
         logger.info("watcher stopped")
 
     def pause(self):
@@ -334,6 +384,8 @@ class DirectoryWatcher:
             "scans": self._stats["polls"],
             "running": self.is_running,
             "paused": self.is_paused,
+            **({"distillation": self.distillation_store.status()}
+               if self.restricted_distillation else {}),
         }
 
     @property
@@ -492,6 +544,7 @@ class DirectoryWatcher:
                     logger.exception("watcher scan error")
             self._stop.wait(self.poll_interval)
 
+    @_with_distillation_policy
     def _scan_once(self):
         """一次扫描：收割 → 发现 → 提交任务 → 调度 pending skill edits。"""
         self._last_poll = time.time()
@@ -530,7 +583,8 @@ class DirectoryWatcher:
         # do not let the native classifier create baby skills.
         if self.native_distill:
             self._submit_cluster_batches()
-            self._submit_task_graph()
+            if not self.restricted_distillation:
+                self._submit_task_graph()
 
         # ── Step 5a: 用户点名的 generate 入队到 SkillEdit 同一线程池 ──
         # 先于自动 SkillEdit 提交，避免后台整理把用户任务挤到池外。
@@ -569,6 +623,60 @@ class DirectoryWatcher:
         # CS 模式的分桶在 client 的 reconcile_skill_sides 里按 client_id 做。
         if not self.server_mode:
             self._reconcile_skill_sides()
+        if self.restricted_distillation:
+            self._refresh_distillation_artifact()
+
+    def _refresh_distillation_artifact(self):
+        from xskill.canary import main_sha, staging_sha, load_ux_scores
+        from xskill.skill.candidates import load_candidates, ATOM_PROMOTION_THRESHOLD
+        from xskill.skill.artifact_validation import (
+            ArtifactValidationError, validate_skill_artifact,
+        )
+        runs = self.distillation_store
+        run = runs.run()
+        target = self.skill_dir / self.distillation_policy.target_skill
+        try:
+            staging = staging_sha(target)
+            main = main_sha(target)
+            if staging:
+                artifact = validate_skill_artifact(target, expected_name=target.name, ref=staging)
+                materialized = self.skill_dir / ".canary" / target.name
+                copy_artifact = validate_skill_artifact(materialized, expected_name=target.name)
+                if set(copy_artifact["files"]) != set(artifact["files"]):
+                    raise ArtifactValidationError("materialized staging tree is incomplete")
+                from dulwich.repo import Repo
+                with Repo(str(target)) as repository:
+                    from xskill.skill.git import _lookup_path_in_tree, _read_blob
+                    commit = repository[artifact["sha"].encode()]
+                    for relative in artifact["files"]:
+                        blob = _lookup_path_in_tree(repository, commit.tree, relative)
+                        if blob is None or (materialized / relative).read_bytes() != _read_blob(repository, blob):
+                            raise ArtifactValidationError("materialized staging differs from its commit")
+                    message = commit.message.decode("utf-8", "replace")
+                produced_here = f"XSkill-Run: {run['run_id']}" in message.splitlines()
+                runs.set_artifact(
+                    "candidate_committed" if produced_here else "waiting_canary",
+                    branch="staging", sha=artifact["sha"],
+                )
+                return
+            if main and main != run["base_sha"]:
+                artifact = validate_skill_artifact(target, expected_name=target.name, ref=main)
+                runs.set_artifact("main_committed", branch="main", sha=artifact["sha"])
+                return
+            pending = load_candidates(target).get("candidates", [])
+            total = sum(int(c.get("weightscore", 0)) for c in pending)
+            status = runs.status()
+            if not pending and not status["accepted"]:
+                state = "no_relevant_material" if status["skipped"] else "draft"
+            elif total < ATOM_PROMOTION_THRESHOLD:
+                state = "waiting_evidence"
+            elif main and not any(r.get("side") == "main" for r in load_ux_scores(target)):
+                state = "waiting_main_feedback"
+            else:
+                state = "draft"
+            runs.set_artifact(state)
+        except ArtifactValidationError as error:
+            runs.set_artifact("failed", error=str(error))
 
     def _submit_task_graph(self) -> None:
         """Run the durable semantic branch without delaying Atom→Skill work."""
@@ -605,6 +713,8 @@ class DirectoryWatcher:
         不另开池：占 edit 席位、走 edit 的 llm_weight。pending 文件在
         ``<home>/generate_jobs/pending/``，与 logs 同级，web 与 worker 都能见。
         """
+        if self.restricted_distillation:
+            return
         if self.skill_dir is None or not self.skill_dir.is_dir():
             return
         from xskill.team.server import generate_jobs as gen_jobs
@@ -654,6 +764,9 @@ class DirectoryWatcher:
 
     def _run_skill_edit_step(self):
         """Step 5 的冷启动感知封装：hold 只等 rebuild 快照内轨迹到终态。"""
+        if self.restricted_distillation:
+            self._check_pending_skill_edits()
+            return
         from xskill.pipeline.cold_start import COLD_START_MAX_HOLD_SECONDS
         cold_start_signal = self._cold_start_signal
         if not cold_start_signal.exists:
@@ -693,6 +806,7 @@ class DirectoryWatcher:
         )
         cold_start_signal.consume()
 
+    @_with_distillation_policy
     def _check_pending_skill_edits(self, threshold=None):
         """从持久脏队列选出 skill，调 ``SkillEditAgent.maybe_run()``。
 
@@ -724,10 +838,14 @@ class DirectoryWatcher:
         )
         if reconcile_due:
             try:
-                reconcile_skill_edit_dirty(
-                    self.skill_dir,
-                    **self._db_kw(),
-                )
+                if self.restricted_distillation:
+                    from xskill.pipeline.registry import mark_skill_edit_dirty
+                    mark_skill_edit_dirty(
+                        self.skill_dir / self.distillation_policy.target_skill,
+                        reason="restricted_reconcile", **self._db_kw(),
+                    )
+                else:
+                    reconcile_skill_edit_dirty(self.skill_dir, **self._db_kw())
             except Exception:
                 # YAML/skill 目录是真相源；队列投影失败不能阻断其余流水线。
                 logger.exception("skill_edit dirty reconciliation failed")
@@ -764,6 +882,8 @@ class DirectoryWatcher:
         dirty_skills: list[tuple[Path, int]] = []
         for row in dirty_rows:
             skill_path = self.skill_dir / str(row["skill"])
+            if not self._distillation_allows(skill_path):
+                continue
             generation = int(row["generation"])
             if (
                 not skill_path.is_dir()
@@ -937,6 +1057,9 @@ class DirectoryWatcher:
         # 每个 worker 必须在自己的入口 bind，并在 finally 中 reset。
         from xskill.agents import agent_tools
         tool_context = agent_tools.create_agent_tool_context(
+            distillation_policy=self.distillation_policy,
+            distillation_store=self.distillation_store,
+            installation_ledger=self.installation_ledger,
             skill_dir=self.skill_dir,
             data_dir=self.skill_dir,
             config=self.config,
@@ -1050,10 +1173,13 @@ class DirectoryWatcher:
             meta["xfer"] = "baby_main"
         return meta
 
+    @_with_distillation_policy
     def _on_skill_edit_done(self, result) -> None:
         """``_harvest`` 收割 stage="skill_edit" future 用：_stats 自增 + 即时
         install。回主线程串行做（避免对无锁的 self._stats 并发自增）。"""
         d, ok, next_batch_size = result
+        if not self._distillation_allows(d):
+            raise PermissionError("skill edit callback is outside the fixed target")
         if ok:
             self._skill_edit_retry_batch_sizes.pop(d, None)
             self._skill_edit_n1_fail_counts.pop(d, None)
@@ -1119,6 +1245,7 @@ class DirectoryWatcher:
         except Exception:
             logger.exception("install after SkillEdit failed: %s", d.name)
 
+    @_with_distillation_policy
     def _check_scripting_requests(self) -> None:
         """扫 ``.scripting_requested``，丢进和编辑代理同一个 worker 池。"""
         if self.skill_dir is None or not self.skill_dir.is_dir():
@@ -1126,7 +1253,7 @@ class DirectoryWatcher:
         from xskill.skill.scripting import has_scripting_request
 
         requested = [
-            skill_path for skill_path in sorted(self.skill_dir.iterdir())
+            skill_path for skill_path in self._distillation_skill_paths()
             if skill_path.is_dir()
             and not skill_path.name.startswith(".")
             and has_scripting_request(skill_path)
@@ -1164,6 +1291,9 @@ class DirectoryWatcher:
         store = stores[0] if stores else None
         traj_root = Path(stores[0].root) if stores else self.skill_dir
         tool_context = agent_tools.create_agent_tool_context(
+            distillation_policy=self.distillation_policy,
+            distillation_store=self.distillation_store,
+            installation_ledger=self.installation_ledger,
             skill_dir=self.skill_dir,
             data_dir=self.skill_dir,
             config=self.config,
@@ -1220,10 +1350,13 @@ class DirectoryWatcher:
             self._futures[fut] = {"stage": "skill_scripting", "skill_dir": skill_path}
             busy.add(skill_path)
 
+    @_with_distillation_policy
     def _on_skill_scripting_done(self, result) -> None:
         from xskill.skill.scripting import clear_scripting_request
 
         skill_path, ok = result
+        if not self._distillation_allows(skill_path):
+            raise PermissionError("scripting callback is outside the fixed target")
         clear_scripting_request(skill_path)
         if not ok:
             logger.warning("scripting did not update main: %s", skill_path.name)
@@ -1277,6 +1410,7 @@ class DirectoryWatcher:
         from xskill.api import app as _srv
         return _srv._home_root() if hasattr(_srv, "_home_root") else None
 
+    @_with_distillation_policy
     def _install_skill_to_all_detected(
         self,
         skill_path,
@@ -1302,6 +1436,8 @@ class DirectoryWatcher:
             失败为异常对象）。便于调用方 / 测试断言。
         """
         # server 模式：纯 server 不装 skill 到本机生态，直接 no-op。
+        if not self._distillation_allows(skill_path):
+            raise PermissionError("installation is outside the fixed target")
         if self.server_mode:
             return {}
         from xskill.ecosystems import (
@@ -1421,6 +1557,7 @@ class DirectoryWatcher:
         """
         return self._install_skill_to_all_detected(skill_path)
 
+    @_with_distillation_policy
     def _check_user_edits(self):
         """检测每个 skill 是否有用户手改且静默 ≥3 分钟 → 触发 absorb agent。
 
@@ -1441,6 +1578,9 @@ class DirectoryWatcher:
         target_root = self._resolve_target_root()
         factory = self._factory()
         tool_context = agent_tools.create_agent_tool_context(
+            distillation_policy=self.distillation_policy,
+            distillation_store=self.distillation_store,
+            installation_ledger=self.installation_ledger,
             skill_dir=self.skill_dir,
             data_dir=self.skill_dir,
             config=self.config,
@@ -1451,7 +1591,7 @@ class DirectoryWatcher:
             registry_db_path=self.db_path,
         )
         skill_paths = [
-            d for d in sorted(self.skill_dir.iterdir())
+            d for d in self._distillation_skill_paths()
             if d.is_dir() and not d.name.startswith(".")
         ]
         active_skill_names = {d.name for d in skill_paths}
@@ -1568,10 +1708,12 @@ class DirectoryWatcher:
         """
         if self.skill_dir is None or not self.skill_dir.is_dir():
             return []
+        if self.restricted_distillation:
+            return self._distillation_skill_paths()
         if self.db_path is None:
             return [
                 path
-                for path in sorted(self.skill_dir.iterdir())
+                for path in self._distillation_skill_paths()
                 if path.is_dir() and not path.name.startswith(".")
             ]
         from xskill.skill.catalog_store import (
@@ -1637,6 +1779,7 @@ class DirectoryWatcher:
         else:
             notify_native_delete(skill_path.name, db_path=Path(self.db_path))
 
+    @_with_distillation_policy
     def _check_canary_decisions(self):
         """灰度判定独立轮询：对每个有 staging 分支的 skill 调 check_and_decide。
 
@@ -2324,6 +2467,7 @@ class DirectoryWatcher:
         from xskill.ecosystems._history import InstallHistory
         return InstallHistory(self.install_history_path)
 
+    @_with_distillation_policy
     def _reconcile_skill_sides(self):
         """单机 canary 流量入口：周期性按概率把有 staging 的 skill 子仓
         checkout 到 main / staging。
@@ -2389,7 +2533,7 @@ class DirectoryWatcher:
         )
         transaction_requests: list[InstallTransactionRequest] = []
 
-        for d in sorted(self.skill_dir.iterdir()):
+        for d in self._distillation_skill_paths():
             if not d.is_dir() or d.name.startswith("."):
                 continue
             if not (d / ".git").is_dir():
@@ -2972,6 +3116,7 @@ class DirectoryWatcher:
 
     # v2 流水线任务：split / atom_index / cluster
 
+    @_with_distillation_policy
     def _do_split(self, dir_path, fname, wd_id=None):
         """跑 TaskAgent 拆 AtomTask。返回 (fname, num_atoms_added, last_offset, last_atom_id, err)。
 
@@ -3004,6 +3149,9 @@ class DirectoryWatcher:
         current_interest_fingerprint = self.interest_fingerprint
         from xskill.agents import agent_tools
         tool_context = agent_tools.create_agent_tool_context(
+            distillation_policy=self.distillation_policy,
+            distillation_store=self.distillation_store,
+            installation_ledger=self.installation_ledger,
             skill_dir=self.skill_dir,
             data_dir=self.skill_dir,
             config=self.config,
@@ -3102,6 +3250,21 @@ class DirectoryWatcher:
         Atom content to one trajectory instead of the entire indexed backlog.
         """
         store = self._store_for(dir_path)
+        if self.restricted_distillation:
+            from xskill.pipeline.registry import pooled_connection
+            cursor = self._distillation_cursors.get(wd_id, 0)
+            with pooled_connection(self.db_path) as connection:
+                rows = connection.execute(
+                    "SELECT id,filename FROM trajectories WHERE watch_dir_id=? "
+                    "AND id>? AND status IN ('indexed','done') ORDER BY id LIMIT 128",
+                    (wd_id, cursor),
+                ).fetchall()
+            self._distillation_cursors[wd_id] = int(rows[-1][0]) if rows else 0
+            for _row_id, fname in rows:
+                self._reconcile_indexed_traj(
+                    store, dir_path, wd_id, fname, consumed_index, **kw,
+                )
+            return
         for fname in get_trajs_by_status(wd_id, "indexed", **kw):
             self._reconcile_indexed_traj(
                 store, dir_path, wd_id, fname, consumed_index, **kw,
@@ -3113,6 +3276,23 @@ class DirectoryWatcher:
         """Reconcile one trajectory against a single durable Atom snapshot."""
         traj_id = (dir_path / fname).stem
         atoms = tuple(store.list_by_traj(traj_id))
+        if self.restricted_distillation:
+            from xskill.pipeline.distillation import source_key_for
+            source = source_key_for(dir_path)
+            for atom in atoms:
+                runs = self.distillation_store
+                if runs.processed(atom, source_key=source):
+                    continue
+                record = runs.atom_record(atom, source_key=source)
+                if record and record["state"] in {"error", "failed"} and record["retry_count"] >= self.max_retries:
+                    continue
+                if atom.atom_id not in self.claimed_atoms:
+                    self.claimed_atoms.add(atom.atom_id)
+                    self._round_new_atoms.append(atom.atom_id)
+            # Real usage feedback is independent of this run's learning ledger.
+            # The scorer itself filters the fixed target before any side effect.
+            self._score_atoms_for_traj(wd_id, fname, atoms=atoms, **kw)
+            return
         all_consumed = True
         for atom in atoms:
             if self._atom_consumed(atom, consumed_index):
@@ -3197,6 +3377,7 @@ class DirectoryWatcher:
             return True
         return consumed_index.contains(atom.atom_id)
 
+    @_with_distillation_policy
     def _do_cluster_batch(self, atom_ids):
         """对一批（可能跨多条轨迹）atom 调**一个** ClusterAgent，只跑 cluster。
 
@@ -3231,6 +3412,8 @@ class DirectoryWatcher:
             logs_dir=self.logs_dir,
             spill_root=self.spill_root,
             cluster_write_queue=self.cluster_write_queue,
+            distillation_store=self.distillation_store,
+            distillation_policy=self.distillation_policy,
         )
 
     # ───────────────────────────────────────────────────────────
@@ -3379,6 +3562,7 @@ class DirectoryWatcher:
                 Path(skill_path).name,
             )
 
+    @_with_distillation_policy
     def _score_atoms_for_traj(self, wd_id, fname, atoms=None, **kw):
         """对一条已跑完 cluster 的 traj 扫所有 atom 打 ux_score。
 
@@ -3415,6 +3599,8 @@ class DirectoryWatcher:
         if not header or not header.get("skill") or not header.get("side"):
             return
         skill_name = header["skill"]
+        if self.restricted_distillation and skill_name != self.distillation_policy.target_skill:
+            return
         traj_id = md_path.stem
         if atoms is None:
             atoms = self._store_for(dir_path).list_by_traj(traj_id)
@@ -3678,8 +3864,18 @@ def process_atom_task(*, atom_id: str, config: dict, skill_dir: Path,
                       usage_ledger=None,
                       logs_dir: Path | None = None,
                       spill_root: Path | None = None,
-                      cluster_write_queue=None) -> dict:
+                      cluster_write_queue=None,
+                      distillation_store=None, distillation_policy=None) -> dict:
     """Run one atom with an isolated AgentToolContext."""
+    if distillation_store is not None:
+        return process_atom_batch(
+            atom_ids=[atom_id], config=config, skill_dir=skill_dir, store=store,
+            embed_client=embed_client, agno_agent_factory=agno_agent_factory,
+            db_path=db_path, usage_ledger=usage_ledger, logs_dir=logs_dir,
+            spill_root=spill_root, cluster_write_queue=cluster_write_queue,
+            distillation_store=distillation_store,
+            distillation_policy=distillation_policy,
+        )[0]
     from xskill.agents import agent_tools
 
     from xskill.pipeline.worker_runtime import ClusterResultRecorder
@@ -3824,8 +4020,17 @@ def process_atom_batch(*, atom_ids: list[str], config: dict, skill_dir: Path,
                        usage_ledger=None,
                        logs_dir: Path | None = None,
                        spill_root: Path | None = None,
-                       cluster_write_queue=None) -> list[dict]:
+                       cluster_write_queue=None,
+                       distillation_store=None, distillation_policy=None) -> list[dict]:
     """Run one atom batch with an isolated AgentToolContext."""
+    if distillation_store is not None:
+        return _process_restricted_atom_batch(
+            atom_ids=atom_ids, config=config, skill_dir=skill_dir, store=store,
+            agno_agent_factory=agno_agent_factory, db_path=db_path,
+            usage_ledger=usage_ledger, logs_dir=logs_dir, spill_root=spill_root,
+            cluster_write_queue=cluster_write_queue,
+            runs=distillation_store, policy=distillation_policy or distillation_store.policy(),
+        )
     from xskill.agents import agent_tools
 
     from xskill.pipeline.worker_runtime import ClusterResultRecorder
@@ -3855,6 +4060,95 @@ def process_atom_batch(*, atom_ids: list[str], config: dict, skill_dir: Path,
             logs_dir=logs_dir,
             cluster_result_recorder=recorder,
         )
+
+
+def _process_restricted_atom_batch(*, atom_ids, config, skill_dir, store,
+                                   agno_agent_factory, db_path, usage_ledger,
+                                   logs_dir, spill_root, cluster_write_queue,
+                                   runs, policy):
+    from xskill.agents import agent_tools
+    from xskill.agents.task_cluster_agent import TaskClusterAgent
+    from xskill.pipeline.distillation import source_key_for
+    from xskill.pipeline.worker_runtime import ClusterResultRecorder
+
+    if policy.mode == "auto":
+        raise ValueError("restricted batch requires a fixed target policy")
+    policy.require_skill(policy.target_skill, operation="add_candidates")
+    atoms = [store.load(aid) for aid in atom_ids]
+    sources = {}
+    for atom in atoms:
+        if hasattr(store, "stores"):
+            hits = []
+            for candidate in store.stores:
+                try:
+                    candidate.load(atom.atom_id)
+                except FileNotFoundError:
+                    continue
+                hits.append(candidate.root)
+            if len(hits) != 1:
+                for duplicate in store.stores:
+                    try:
+                        evidence = duplicate.load(atom.atom_id)
+                    except FileNotFoundError:
+                        continue
+                    runs.record_atom(
+                        evidence, "error", source_key=source_key_for(duplicate.root),
+                        reason=f"ambiguous atom source: {atom.atom_id}",
+                    )
+                raise RuntimeError(f"ambiguous atom source: {atom.atom_id}")
+            source = hits[0]
+        else:
+            source = store.root
+        sources[atom.atom_id] = source_key_for(source)
+
+    outcomes = {}
+    recorder = ClusterResultRecorder()
+    context = agent_tools.create_agent_tool_context(
+        skill_dir=skill_dir, data_dir=skill_dir, config=config,
+        atom_skill_dir=skill_dir, atom_store=store, default_traj_root=store.root,
+        spill_root=spill_root, usage_ledger=usage_ledger,
+        cluster_write_queue=cluster_write_queue, cluster_result_recorder=recorder,
+        registry_db_path=db_path, distillation_policy=policy,
+        distillation_store=runs, distillation_sources=sources,
+        distillation_results=outcomes, skill_edit_skill_name=policy.target_skill,
+    )
+    cluster = TaskClusterAgent(
+        skill_dir=skill_dir, store=store, agno_agent_factory=agno_agent_factory,
+        llm_cfg=_agent_context_llm_config(config, "cluster", inherit_skill=False),
+        logs_dir=logs_dir, db_path=db_path, target_skill=policy.target_skill,
+        target_description=runs.run()["description_snapshot"],
+        tools=[agent_tools.atom_task_read, agent_tools.read_traj,
+               agent_tools.skill_read, agent_tools.read_skill_tasks,
+               agent_tools.add_tasks_to_skill, agent_tools.skip_atom],
+    )
+    failure = None
+    content = ""
+    with agent_tools.use_agent_tool_context(context):
+        try:
+            content = cluster.process_batch(atoms)
+        except Exception as error:
+            failure = error
+        missing = [a for a in atoms if a.atom_id not in outcomes]
+        for atom in missing:
+            runs.record_atom(
+                atom, "error", source_key=sources[atom.atom_id],
+                reason=str(failure or "no explicit result for atom"),
+            )
+    if failure is not None:
+        raise failure
+    if missing:
+        raise RuntimeError(f"no explicit result for atoms: {[a.atom_id for a in missing]}")
+    results = []
+    for atom in atoms:
+        assignments = _recorded_skill_assignments(recorder, atom.atom_id)
+        latest = assignments[-1] if assignments else {}
+        results.append({
+            "action": "clustered" if outcomes[atom.atom_id] == "accepted" else "skipped",
+            "atom_id": atom.atom_id, "skill_name": latest.get("skill_name"),
+            "weightscore": latest.get("weightscore"), "skill_assignments": assignments,
+            "cluster_log": (content or "")[:500],
+        })
+    return results
 
 
 def _process_atom_batch_bound(*, atom_ids: list[str], config: dict,

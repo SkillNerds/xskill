@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_install_write, require_management_write, current_write_policy, SkillWriteDenied
+
 import json
 import logging
 import os
@@ -17,10 +19,10 @@ import sqlite3
 import stat
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Literal, Optional
+from typing import Any, Iterable, Literal
 
-from xskill._sqlite_connect import connect_with_lock
 from xskill.config import XSKILL_HOME
 from xskill.recommend._sqlite_base import _SqliteStore
 
@@ -77,6 +79,20 @@ def push_ledger(ledger: "InstallLedger") -> None:
 def pop_ledger() -> None:
     if hasattr(_TLS, "ledger"):
         delattr(_TLS, "ledger")
+
+
+@contextmanager
+def use_ledger(ledger: "InstallLedger"):
+    """Bind an explicit instance ledger to this thread, restoring nested callers."""
+    previous = getattr(_TLS, "ledger", None)
+    push_ledger(ledger)
+    try:
+        yield ledger
+    finally:
+        if previous is None:
+            pop_ledger()
+        else:
+            push_ledger(previous)
 
 
 def get_default_ledger(*, xskill_home: Path | None = None) -> "InstallLedger":
@@ -204,6 +220,31 @@ class InstallLedger(_SqliteStore):
         finally:
             conn.close()
 
+    def _require_destination_write(self, dest, *, removal=False):
+        row = self.read_install_row(dest)
+        if row is not None:
+            source = Path(row["source"])
+            if removal:
+                root = source.parent.parent if source.parent.name == ".canary" else source.parent
+                require_management_write(root, operation="uninstall")
+            else:
+                require_install_write(source, dest)
+        else:
+            policy = current_write_policy()
+            if policy.mode != "auto":
+                if removal:
+                    raise SkillWriteDenied("uninstall unavailable in restricted run")
+                require_install_write(Path(policy.root_key) / policy.target_skill, dest)
+
+    def _require_job_write(self, job_id):
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT dest_key FROM removal_jobs WHERE job_id=?", (job_id,)).fetchone()
+        finally:
+            conn.close()
+        if row is not None:
+            self._require_destination_write(row["dest_key"], removal=True)
+
     def record_install(
         self,
         dest: Path | str,
@@ -219,6 +260,9 @@ class InstallLedger(_SqliteStore):
         installed_at: float | None = None,
     ) -> dict:
         """原子：作废未完成卸装 + upsert active 安装（generation+1）。"""
+        policy = require_install_write(source, dest)
+        if policy.mode != 'auto':
+            policy.require_skill(skill_name, operation='publish')
         key = dest_key(dest)
         now = float(installed_at if installed_at is not None else time.time())
         fp_json = (
@@ -291,6 +335,7 @@ class InstallLedger(_SqliteStore):
         供安装器在 ``record_install`` 之后再次写入 dest（如 openclaw 老位置
         meta、auxiliary 刷新）时调用，保证账本等于「我们最后一次写入的内容」。
         """
+        self._require_destination_write(dest)
         key = dest_key(dest)
         fp_json = json.dumps(
             file_fingerprints, ensure_ascii=False, sort_keys=True,
@@ -324,6 +369,7 @@ class InstallLedger(_SqliteStore):
         baseline_identity: str,
     ) -> bool:
         """在安装世代与旧基线均未变化时更新 active copy 基线。"""
+        self._require_destination_write(dest)
         key = dest_key(dest)
         fp_json = json.dumps(
             file_fingerprints, ensure_ascii=False, sort_keys=True,
@@ -361,6 +407,7 @@ class InstallLedger(_SqliteStore):
             conn.close()
 
     def supersede_removals(self, dest: Path | str) -> int:
+        self._require_destination_write(dest)
         key = dest_key(dest)
         now = time.time()
         conn = self._conn()
@@ -404,6 +451,7 @@ class InstallLedger(_SqliteStore):
         target_identity: tuple[int, int, int] | list[int] | None = None,
     ) -> dict | None:
         """对 active 安装开卸装 job；无 active 则返回 None。"""
+        self._require_destination_write(dest, removal=True)
         key = dest_key(dest)
         now = time.time()
         conn = self._conn()
@@ -469,6 +517,7 @@ class InstallLedger(_SqliteStore):
             conn.close()
 
     def mark_deleting(self, job_id: str) -> bool:
+        self._require_job_write(job_id)
         now = time.time()
         conn = self._conn()
         try:
@@ -492,6 +541,7 @@ class InstallLedger(_SqliteStore):
         error: str | None = None,
     ) -> str:
         """成功则 tombstone 安装行；generation 已变则视为 superseded。"""
+        self._require_job_write(job_id)
         now = time.time()
         conn = self._conn()
         try:
@@ -595,6 +645,7 @@ class InstallLedger(_SqliteStore):
         return self.staging_root / job_id
 
     def _cleanup_staging(self, job_id: str) -> None:
+        self._require_job_write(job_id)
         path = self.staging_path(job_id)
         if not path.exists():
             return
@@ -814,6 +865,8 @@ def remove_owned_dest(
     copy 还会在删除前复核 ``file_fingerprints`` / ``baseline_identity``：
     同路径被带外替换成别的内容时拒删，避免清掉用户手写目录。
     """
+    if source_dir is not None:
+        require_management_write(Path(source_dir).parent, operation='uninstall')
     if is_link_or_junction is None:
         from xskill.ecosystems.installation import is_link_or_junction as _ilj
         is_link_or_junction = _ilj

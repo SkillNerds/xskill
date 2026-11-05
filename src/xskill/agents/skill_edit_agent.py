@@ -434,6 +434,28 @@ class SkillEditAgent:
             agent_tools.edit_file,
         ]
 
+    def _restricted_artifact_valid(self, ref: str | None = None) -> bool:
+        """Final publication gate; progressive draft checkpoints remain unrestricted."""
+        from xskill.skill.artifact_validation import (
+            ArtifactValidationError, validate_skill_artifact,
+        )
+        from xskill.skill.write_policy import current_write_policy
+
+        policy = current_write_policy(self.skill_dir.parent)
+        if policy.mode == "auto":
+            return True
+        try:
+            validate_skill_artifact(
+                self.skill_dir, expected_name=policy.target_skill, ref=ref,
+            )
+        except ArtifactValidationError as exc:
+            logger.warning(
+                "SkillEdit artifact validation failed for %s at %r: %s; "
+                "preserve pending candidates", self.skill_dir.name, ref, exc,
+            )
+            return False
+        return True
+
     def _skill_tree_context_lines(self, max_entries: int = 80) -> list[str]:
         """返回当前 skill 根目录与文件树，供 agent 决定是否 read_file。"""
         cwd = Path.cwd().resolve()
@@ -636,6 +658,8 @@ class SkillEditAgent:
                     self.skill_dir.name,
                 )
                 return False
+            if not self._restricted_artifact_valid("main"):
+                return False
             if not discard_staging(self.skill_dir):
                 logger.warning(
                     "SkillEditAgent jam-merge could not discard staging: %s — "
@@ -777,11 +801,15 @@ class SkillEditAgent:
                 )
                 return False
 
+        if not self._restricted_artifact_valid():
+            return False
         ok = agent_tools.graduate_baby_to_main(
             self.skill_dir,
             self.skill_dir.name,
             "graduate baby after all candidate checkpoints",
         )
+        if ok:
+            ok = self._restricted_artifact_valid("main")
         if ok:
             self.next_batch_size = self.batch_size
             agent_trace.append_to(
@@ -1089,6 +1117,14 @@ class SkillEditAgent:
     # ───────────────────────────────────────────────────────────────
 
     def _run(self, ready: list[dict], current_branch_name: str, jam: bool = False) -> bool:
+        from xskill.skill.write_policy import current_write_policy
+        if current_write_policy(self.skill_dir.parent).mode == "auto":
+            return self._run_bound(ready, current_branch_name, jam)
+        from xskill.agents.agent_tools import use_skill_edit_batch
+        with use_skill_edit_batch(self.skill_dir.name, [c["atom_id"] for c in ready]):
+            return self._run_bound(ready, current_branch_name, jam)
+
+    def _run_bound(self, ready: list[dict], current_branch_name: str, jam: bool = False) -> bool:
         """跑完整条（可能多轮的）消化链。
 
         返回 True = 终态 commit 完整跑完（baby→main / main 直接更新走
@@ -1143,6 +1179,9 @@ class SkillEditAgent:
                 ["rev-parse", "--verify", "staging"], cwd=str(self.skill_dir),
             )[0] == 0
             ok = staging_ok and final_branch == "main"
+        if ok:
+            target_ref = "main" if current_branch_name == "baby" else "staging"
+            ok = self._restricted_artifact_valid(target_ref)
         if ok:
             self._cleanup_turn_branches(current_branch_name)
         return ok
