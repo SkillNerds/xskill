@@ -31,7 +31,10 @@ _INLINE_LINK = re.compile(
     r"(?:\s+[\"'][^\n]*?[\"'])?\s*\)"
 )
 _LINK_DEFINITION = re.compile(r"(?m)^\s{0,3}\[[^\]\n]+\]:\s*(<[^>\n]*>|\S+)")
-_EXPLICIT_REFERENCE = re.compile(r"(?<![\w/])(?:scripts|references)/[^\s`\"'<>\[\]()]+")
+_EXPLICIT_REFERENCE = re.compile(
+    r"(?<![\w/\\])(?:[/\\]+)?(?:[^\s`\"'<>\[\]()/\\]+[/\\])*"
+    r"(?:scripts|references)[/\\][^\s`\"'<>\[\]()]+"
+)
 _URL = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>`]+")
 
 

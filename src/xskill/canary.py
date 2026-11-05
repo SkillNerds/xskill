@@ -30,7 +30,7 @@ import json
 import logging
 import math
 import os
-import shutil
+import stat
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -506,7 +506,7 @@ def materialize_staging(skill_dir: Path, canary_root: Path) -> Path | None:
 def _materialize_restricted_staging(skill_dir: Path, canary_root: Path) -> Path:
     """Deliver the validated commit, including support files, under pinned paths."""
     from xskill.skill.artifact_validation import validate_skill_artifact
-    from xskill.skill.git import _open_repo, _lookup_path_in_tree, _read_blob
+    from xskill.skill.git import _open_repo, _read_blob
     from xskill.skill.write_policy import (
         auxiliary_write_guard, safe_write_bytes, _pinned_parent,
     )
@@ -520,20 +520,22 @@ def _materialize_restricted_staging(skill_dir: Path, canary_root: Path) -> Path:
     with _open_repo(skill_dir) as repository:
         commit = repository[artifact["sha"].encode()]
         for relative in artifact["files"]:
-            blob = _lookup_path_in_tree(repository, commit.tree, relative)
-            content = _read_blob(repository, blob) if blob is not None else None
+            mode, blob = repository[commit.tree].lookup_path(
+                repository.__getitem__, relative.encode("utf-8"),
+            )
+            content = _read_blob(repository, blob)
             if content is None:
                 raise RuntimeError(f"cannot materialize committed file: {relative}")
-            payloads[relative] = content
+            payloads[relative] = (content, stat.S_IMODE(mode))
     out = canary_root / skill_dir.name
     with auxiliary_write_guard(
         out, skill_dir, expected_root=skill_dir.parent / ".canary",
         create=True, pin_target=True,
     ):
-        for relative, content in payloads.items():
+        for relative, (content, mode) in payloads.items():
             safe_write_bytes(
                 out / relative, content, auxiliary_skill_path=skill_dir,
-                auxiliary_root=out, create_parents=True,
+                auxiliary_root=out, create_parents=True, mode=mode,
             )
         # Keep the readable tree equal to this commit. Empty old directories
         # are harmless; unlink only checked leaf files, never recurse via links.

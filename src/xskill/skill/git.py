@@ -25,9 +25,10 @@ v2 (AtomTask 流水线) 引入 baby 分支：ClusterAgent 调 new_skill_folder �
 
 from __future__ import annotations
 
-from xskill.skill.write_policy import require_repo_lock_write, _pinned_parent
-
-from xskill.skill.write_policy import require_skill_write, SkillWriteDenied, current_write_policy
+from xskill.skill.write_policy import (
+    SkillWriteDenied, _pinned_parent, current_write_policy, require_repo_lock_write,
+    require_skill_write, safe_write_bytes,
+)
 
 import errno
 import hashlib
@@ -37,7 +38,7 @@ import os
 import threading
 from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable
 
 from dulwich import porcelain
@@ -779,11 +780,37 @@ def _checkout_branch(
     return 0, ""
 
 
+def _checkout_relative_path(root: Path, pathspec: str) -> str:
+    """Validate path arguments and tree entries before checkout changes anything."""
+    path = PurePosixPath(pathspec)
+    parts = path.parts
+    if (
+        "\\" in pathspec or ":" in pathspec or path.is_absolute() or ".." in parts
+        or not parts
+        or any(part.casefold() == ".git" or part.rstrip(" .") != part for part in parts)
+    ):
+        raise SkillWriteDenied(f"unsafe checkout path: {pathspec!r}")
+    relative = path.as_posix()
+    target = root / relative
+    try:
+        resolved = target.resolve().relative_to(root.resolve())
+    except ValueError as error:
+        raise SkillWriteDenied(f"checkout path escaped repository: {pathspec!r}") from error
+    reserved = {".git", ".distillation-control.json", ".distillation-run.json"}
+    if any(part.casefold() in reserved for part in resolved.parts):
+        raise SkillWriteDenied(f"checkout path names reserved metadata: {pathspec!r}")
+    require_skill_write(target, operation="git_mutation")
+    return relative
+
+
 def _checkout_paths_from_ref(repo: Repo, ref: str, paths: list[str]) -> tuple[int, str]:
     """``git checkout <ref> -- <paths>``：把 paths 在 ref 上的内容写回工作树
     + index。``paths`` 形如 ``["<dirname>/"]``——展开成该目录下所有文件。
     """
-    require_skill_write(repo.path, operation='git_mutation')
+    policy = require_skill_write(repo.path, operation='git_mutation')
+    root = Path(repo.path)
+    # Validate the entire request before restoring even its first member.
+    specs = [_checkout_relative_path(root, pathspec) for pathspec in paths]
     sha = _resolve_rev(repo, ref)
     if sha is None:
         return 128, f"fatal: bad revision {ref}"
@@ -795,13 +822,17 @@ def _checkout_paths_from_ref(repo: Repo, ref: str, paths: list[str]) -> tuple[in
         return 128, f"fatal: not a commit: {ref}"
     tree_sha = commit.tree
 
-    root = Path(repo.path)
+    changes = []
+    for spec in specs:
+        blobs = _collect_blobs_under_path(repo, tree_sha, spec)
+        for rel, _, _ in blobs:
+            _checkout_relative_path(root, rel)
+        if not blobs and policy.mode != "auto" and (root / spec).is_dir():
+            raise SkillWriteDenied("restricted checkout cannot delete an untracked directory")
+        changes.append((spec, blobs))
     index = repo.open_index()
     any_changed = False
-    for pathspec in paths:
-        spec = pathspec.rstrip("/")
-        # 遍历 ref tree 找该路径下的所有 blob
-        blobs = _collect_blobs_under_path(repo, tree_sha, spec)
+    for spec, blobs in changes:
         if not blobs:
             # 路径在 ref 上不存在 → 工作区里要删
             target_dir = root / spec
@@ -823,8 +854,7 @@ def _checkout_paths_from_ref(repo: Repo, ref: str, paths: list[str]) -> tuple[in
         for rel, blob_sha, mode in blobs:
             data = _read_blob(repo, blob_sha) or b""
             full = root / rel
-            full.parent.mkdir(parents=True, exist_ok=True)
-            full.write_bytes(data)
+            safe_write_bytes(full, data, create_parents=True, mode=mode & 0o777)
             # update index
             st = full.stat()
             from dulwich.index import IndexEntry
@@ -1493,7 +1523,7 @@ def _h_checkout(args: list[str], cwd: str) -> tuple[int, str, str]:
       - checkout -- .
       - checkout <ref> -- <pathspec>
     """
-    require_skill_write(cwd, operation='git_mutation')
+    policy = require_skill_write(cwd, operation='git_mutation')
     # checkout -- . / checkout -- <path>: 用 ref（默认 HEAD）的内容覆盖 working
     if "--" in args:
         ddi = args.index("--")
@@ -1507,6 +1537,8 @@ def _h_checkout(args: list[str], cwd: str) -> tuple[int, str, str]:
         else:
             return 1, "", f"unsupported checkout: {args}"
         if paths == ["."]:
+            if policy.mode != "auto":
+                raise SkillWriteDenied("whole-tree path checkout is unavailable during restricted distillation")
             # 等价 reset --hard
             with _open_repo(cwd) as repo:
                 try:
@@ -1515,7 +1547,8 @@ def _h_checkout(args: list[str], cwd: str) -> tuple[int, str, str]:
                     return 1, "", f"reset failed: {e}"
             return 0, "", ""
         with _open_repo(cwd) as repo:
-            return _checkout_paths_from_ref(repo, ref, paths)
+            code, error = _checkout_paths_from_ref(repo, ref, paths)
+            return code, "", error
 
     create = False
     force = False

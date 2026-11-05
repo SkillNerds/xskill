@@ -664,6 +664,14 @@ class DirectoryWatcher:
                 runs.set_artifact("main_committed", branch="main", sha=artifact["sha"])
                 return
             pending = load_candidates(target).get("candidates", [])
+            if not pending and not main:
+                from xskill.skill.git import run_git
+                if run_git(["rev-parse", "--verify", "baby~1"], cwd=str(target))[0] == 0:
+                    # An empty checkpointed baby is awaiting graduation or
+                    # repair, not more material. Inspect the durable draft.
+                    validate_skill_artifact(target, expected_name=target.name, ref="baby")
+                    runs.set_artifact("draft")
+                    return
             total = sum(int(c.get("weightscore", 0)) for c in pending)
             status = runs.status()
             if not pending and not status["accepted"]:
@@ -4070,11 +4078,17 @@ def _process_restricted_atom_batch(*, atom_ids, config, skill_dir, store,
     from xskill.agents.task_cluster_agent import TaskClusterAgent
     from xskill.pipeline.distillation import source_key_for
     from xskill.pipeline.worker_runtime import ClusterResultRecorder
+    from xskill.skill import candidates
+    from xskill.skill.git import skill_repo_lock
 
     if policy.mode == "auto":
         raise ValueError("restricted batch requires a fixed target policy")
+    if runs.policy() != policy:
+        raise RuntimeError("stale distillation audit authority")
     policy.require_skill(policy.target_skill, operation="add_candidates")
     atoms = [store.load(aid) for aid in atom_ids]
+    if any(atom.atom_id != aid for atom, aid in zip(atoms, atom_ids)):
+        raise RuntimeError("atom store returned a different cluster source/content identity")
     sources = {}
     for atom in atoms:
         if hasattr(store, "stores"):
@@ -4103,6 +4117,28 @@ def _process_restricted_atom_batch(*, atom_ids, config, skill_dir, store,
 
     outcomes = {}
     recorder = ClusterResultRecorder()
+    target = Path(skill_dir) / policy.target_skill
+    if (target / candidates.CANDIDATES_FILENAME).is_file():
+        with skill_repo_lock(target, use_git_write_limit=False):
+            existing = {str(item["atom_id"]): item for item in
+                        candidates.load_candidates(target).get("candidates", []) if item.get("atom_id")}
+            adopted = runs.adopt_existing_candidates(
+                ((atom, sources[atom.atom_id]) for atom in atoms), existing,
+            )
+        for atom_id, weightscore in adopted.items():
+            outcomes[atom_id] = "accepted"
+            recorder.record(atom_id, policy.target_skill, weightscore)
+    # The scanner can queue an Atom before the editor adopts/commits an
+    # existing candidate. Recheck the exact version before asking the model.
+    for atom in atoms:
+        if atom.atom_id in outcomes:
+            continue
+        record = runs.atom_record(atom, source_key=sources[atom.atom_id])
+        if record and record["state"] in {"accepted", "committed", "skipped"}:
+            outcomes[atom.atom_id] = "skipped" if record["state"] == "skipped" else "accepted"
+            if outcomes[atom.atom_id] == "accepted":
+                recorder.record(atom.atom_id, policy.target_skill, record["weightscore"])
+    unclassified = [atom for atom in atoms if atom.atom_id not in outcomes]
     context = agent_tools.create_agent_tool_context(
         skill_dir=skill_dir, data_dir=skill_dir, config=config,
         atom_skill_dir=skill_dir, atom_store=store, default_traj_root=store.root,
@@ -4125,7 +4161,7 @@ def _process_restricted_atom_batch(*, atom_ids, config, skill_dir, store,
     content = ""
     with agent_tools.use_agent_tool_context(context):
         try:
-            content = cluster.process_batch(atoms)
+            content = cluster.process_batch(unclassified)
         except Exception as error:
             failure = error
         missing = [a for a in atoms if a.atom_id not in outcomes]

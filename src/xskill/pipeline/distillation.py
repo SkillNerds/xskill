@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from contextlib import closing, contextmanager
 from pathlib import Path
 
@@ -414,9 +415,8 @@ class DistillationStore:
     def reconcile_checkpoints(self, *, limit=200):
         """Recover durable batch receipts from reachable target commit objects.
 
-        Commit trailers are framework generated. A trailer lacking exact audit
-        identity is ignored, and ambiguous atom identities stop recovery rather
-        than acknowledging a different source's material.
+        Only full framework evidence receipts acknowledge material. Historical
+        ID-only receipts with unresolved evidence stop recovery conservatively.
         """
         from dulwich.repo import Repo
         run = self.run()
@@ -430,43 +430,99 @@ class DistillationStore:
             raise ValueError("checkpoint recovery limit must be positive")
         receipts = []
         examined = set()
-        parents = set()
+        parents_by_commit = {}
         with Repo(str(target)) as repo:
-            refs = [sha for name, sha in repo.get_refs().items() if name == b"HEAD" or name.startswith(b"refs/heads/")]
+            refs_by_name = repo.get_refs()
+            main_sha = refs_by_name.get(b"refs/heads/main")
+            staging_sha = refs_by_name.get(b"refs/heads/staging")
+            refs = [sha for name, sha in refs_by_name.items() if name == b"HEAD" or name.startswith(b"refs/heads/")]
             for entry in repo.get_walker(include=list(set(refs)), max_entries=bound):
                 commit = entry.commit
                 examined.add(commit.id)
-                parents.update(commit.parents)
+                parents_by_commit[commit.id] = commit.parents
                 lines = commit.message.decode("utf-8", "replace").splitlines()
-                if f"XSkill-Run: {run['run_id']}" not in lines:
+                run_lines = [line for line in lines if line.startswith("XSkill-Run: ")]
+                if f"XSkill-Run: {run['run_id']}" not in run_lines:
                     continue
-                for line in lines:
-                    if not line.startswith("XSkill-Atoms: "):
-                        continue
-                    try:
-                        atom_ids = json.loads(line[len("XSkill-Atoms: "):])
-                    except ValueError as exc:
-                        raise RuntimeError("invalid checkpoint receipt in target repository") from exc
-                    if not isinstance(atom_ids, list) or not all(isinstance(value, str) and value for value in atom_ids):
-                        raise RuntimeError("invalid checkpoint atom identities")
-                    receipts.append((commit.id.decode(), atom_ids))
+                evidence_lines = [line for line in lines if line.startswith("XSkill-Evidence: ")]
+                legacy_lines = [line for line in lines if line.startswith("XSkill-Atoms: ")]
+                if len(run_lines) != 1 or len(evidence_lines) > 1 or (evidence_lines and legacy_lines):
+                    raise RuntimeError("ambiguous checkpoint receipt trailers")
+                try:
+                    if evidence_lines:
+                        evidence = json.loads(evidence_lines[0][len("XSkill-Evidence: "):])
+                        if not isinstance(evidence, list):
+                            raise ValueError("checkpoint evidence must be a JSON list")
+                        receipts.append((commit.id.decode(), self._checkpoint_evidence(evidence, run["run_id"]), None))
+                    elif legacy_lines:
+                        atom_ids = []
+                        for line in legacy_lines:
+                            values = json.loads(line[len("XSkill-Atoms: "):])
+                            if not isinstance(values, list) or not all(isinstance(value, str) and value for value in values):
+                                raise ValueError("invalid legacy atom IDs")
+                            atom_ids.extend(values)
+                        receipts.append((commit.id.decode(), [], atom_ids))
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError("invalid checkpoint receipt in target repository") from exc
+        if (main_sha and staging_sha and main_sha != staging_sha
+                and any(evidence and sha == main_sha.decode() for sha, evidence, _ in receipts)):
+            # A staging descendant of main is a subsequent canary. Otherwise
+            # main may have been written by a jam that did not discard old staging.
+            seen = set()
+            frontier = [staging_sha]
+            while frontier:
+                sha = frontier.pop()
+                if sha not in seen:
+                    seen.add(sha)
+                    frontier.extend(parents_by_commit.get(sha, ()))
+            if main_sha not in seen:
+                raise RuntimeError("jam checkpoint has unresolved staging; preserve target for explicit recovery")
+        parents = {parent for values in parents_by_commit.values() for parent in values}
         truncated = bool((parents | set(refs)) - examined)
+        legacy_atom_ids = {atom_id for _, _, ids in receipts for atom_id in (ids or ())}
+        if legacy_atom_ids:
+            from xskill.skill.candidates import load_candidates
+            candidate_ids = {str(item["atom_id"]) for item in
+                             load_candidates(target).get("candidates", []) if item.get("atom_id")}
+            if legacy_atom_ids & candidate_ids:
+                raise RuntimeError("legacy checkpoint overlaps unproven candidates; preserve target for explicit recovery")
         changed = 0
         # Files and commit traversal are complete before the short SQL txn.
         with self._connect() as conn:
-            for sha, atom_ids in receipts:
-                for atom_id in atom_ids:
-                    rows = conn.execute("SELECT source_key,content_sha256,state FROM distillation_atoms WHERE run_id=? AND atom_id=? AND state IN ('pending','accepted','failed')",
-                                        (run["run_id"], atom_id)).fetchall()
-                    if len(rows) > 1:
-                        raise RuntimeError("ambiguous source/content identity in checkpoint recovery")
-                    if rows:
-                        changed += conn.execute("UPDATE distillation_atoms SET state='committed',candidate_applied=1,checkpoint_sha=?,updated_at=datetime('now') WHERE run_id=? AND atom_id=? AND source_key=? AND content_sha256=?",
-                                                (sha, run["run_id"], atom_id, rows[0]["source_key"], rows[0]["content_sha256"])).rowcount
+            for sha, evidence, legacy_ids in receipts:
+                if legacy_ids is not None:
+                    # ID-only historical trailers cannot prove which version/source
+                    # was consumed. Stop rather than ack or reapply that material.
+                    for atom_id in legacy_ids:
+                        unresolved = conn.execute(
+                            "SELECT 1 FROM distillation_atoms WHERE run_id=? AND atom_id=? "
+                            "AND state IN ('pending','accepted','failed','superseded') LIMIT 1",
+                            (run["run_id"], atom_id),
+                        ).fetchone()
+                        if unresolved:
+                            raise RuntimeError("legacy checkpoint has unproven source/content identity; preserve target for explicit recovery")
+                    continue
+                changed += self._ack_checkpoint(conn, evidence, sha)
             if truncated:
-                unresolved = conn.execute("SELECT 1 FROM distillation_atoms WHERE run_id=? AND state IN ('pending','failed') LIMIT 1", (run["run_id"],)).fetchone()
+                unresolved = conn.execute("SELECT 1 FROM distillation_atoms WHERE run_id=? AND state IN ('pending','accepted','failed') LIMIT 1", (run["run_id"],)).fetchone()
                 if unresolved:
                     raise RuntimeError("bounded checkpoint recovery was truncated with unproven pending material; refusing automatic reapplication")
+        # SQL acknowledgement is durable before candidate cleanup. If cleanup
+        # crashes, a later reconciliation repeats it even for committed rows.
+        evidence = [item for _, items, _ in receipts for item in items]
+        if evidence and (target / ".candidates.yml").exists():
+            from xskill.skill import candidates
+            from xskill.skill.git import skill_repo_lock
+            from xskill.skill.write_policy import library_write_guard
+            self._validate_run_target(run, resume=True)
+            with library_write_guard(self.skill_dir, self.policy(), db_path=self.db_path):
+                with skill_repo_lock(target):
+                    # A batch can recur in reachable history; cleanup needs the
+                    # unique evidence identities, not duplicate trailer entries.
+                    unique = list({tuple(item[key] for key in sorted(item)): item for item in evidence}.values())
+                    removable = self.checkpoint_candidate_ids(unique)
+                    if removable:
+                        candidates.remove_candidates(target, removable)
         return changed
 
     def set_state(self, state, error=""):
@@ -506,38 +562,139 @@ class DistillationStore:
         state = "failed" if state == "error" else state
         source_key = _source_key(source_key)
         fingerprint = atom_fingerprint(atom)
+        identity = (run["run_id"], source_key, _atom_id(atom), fingerprint)
         with self._connect() as conn:
             if state in {"pending", "accepted"}:
-                conn.execute("UPDATE distillation_atoms SET state='superseded',updated_at=datetime('now') WHERE run_id=? AND source_key=? AND atom_id=? AND content_sha256<>? AND state IN ('pending','accepted','failed')",
-                             (run["run_id"], source_key, _atom_id(atom), fingerprint))
+                # A late cluster callback for a committed version must not
+                # supersede newer material or reopen that durable receipt.
+                conn.execute(
+                    "UPDATE distillation_atoms SET state='superseded',updated_at=datetime('now') "
+                    "WHERE run_id=? AND source_key=? AND atom_id=? AND content_sha256<>? "
+                    "AND state IN ('pending','accepted','failed') AND NOT EXISTS ("
+                    "SELECT 1 FROM distillation_atoms committed "
+                    "WHERE committed.run_id=distillation_atoms.run_id "
+                    "AND committed.source_key=distillation_atoms.source_key "
+                    "AND committed.atom_id=distillation_atoms.atom_id "
+                    "AND committed.content_sha256=? AND committed.state='committed')",
+                    (*identity, fingerprint),
+                )
             conn.execute("INSERT INTO distillation_atoms(run_id,source_key,atom_id,content_sha256,state,reason,weightscore,candidate_applied,checkpoint_sha,retry_count) "
                          "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id,source_key,atom_id,content_sha256) DO UPDATE SET "
                          "state=excluded.state,reason=excluded.reason,weightscore=excluded.weightscore,candidate_applied=excluded.candidate_applied,"
-                         "checkpoint_sha=COALESCE(excluded.checkpoint_sha,distillation_atoms.checkpoint_sha),retry_count=distillation_atoms.retry_count+CASE WHEN excluded.state='failed' THEN 1 ELSE 0 END,updated_at=datetime('now')",
-                         (run["run_id"], source_key, _atom_id(atom), fingerprint, state, reason, weightscore,
+                         "checkpoint_sha=COALESCE(excluded.checkpoint_sha,distillation_atoms.checkpoint_sha),retry_count=distillation_atoms.retry_count+CASE WHEN excluded.state='failed' THEN 1 ELSE 0 END,updated_at=datetime('now') "
+                         "WHERE distillation_atoms.state<>'committed'",
+                         (*identity, state, reason, weightscore,
                           int(state in {"accepted", "committed"}), checkpoint_sha, int(state == "failed")))
 
-    def checkpoint_atoms(self, atom_ids, sha, source_key=None):
+    @staticmethod
+    def _checkpoint_evidence(evidence, run_id):
+        """Require full immutable audit keys; ID-only acknowledgements are unsafe."""
+        result = []
+        keys = {"run_id", "source_key", "atom_id", "content_sha256"}
+        for item in evidence:
+            if not isinstance(item, Mapping) or set(item) != keys:
+                raise RuntimeError("checkpoint requires exact source/content evidence identity")
+            if (item["run_id"] != run_id or not all(isinstance(item[key], str) and item[key] for key in keys)
+                    or not re.fullmatch(r"[0-9a-f]{64}", item["content_sha256"])):
+                raise RuntimeError("invalid checkpoint source/content identity")
+            result.append(dict(item))
+        if len({tuple(item[key] for key in sorted(keys)) for item in result}) != len(result):
+            raise RuntimeError("duplicate checkpoint evidence identity")
+        return result
+
+    def bind_checkpoint_evidence(self, atoms_with_sources, *, adopt_candidates=None):
+        """Freeze exactly the evidence loaded for a framework editor batch."""
+        run = self.run()
+        if not run:
+            raise RuntimeError("checkpoint binding requires an active restricted run")
+        evidence = []
+        with self._connect() as conn:
+            for atom, source in atoms_with_sources:
+                identity = dict(run_id=run["run_id"], source_key=_source_key(source),
+                                atom_id=_atom_id(atom), content_sha256=atom_fingerprint(atom))
+                row = conn.execute(
+                    "SELECT state FROM distillation_atoms WHERE run_id=? AND source_key=? AND atom_id=? AND content_sha256=?",
+                    tuple(identity.values()),
+                ).fetchone()
+                if row is None and identity["atom_id"] in (adopt_candidates or {}):
+                    weightscore = int(adopt_candidates[identity["atom_id"]].get("weightscore", 0))
+                    if self._adopt_candidate(conn, tuple(identity.values()), weightscore):
+                        row = {"state": "accepted"}
+                if row is None or row["state"] not in {"pending", "accepted"}:
+                    raise RuntimeError("editor evidence does not match pending source/content audit identity")
+                evidence.append(identity)
+            return self._checkpoint_evidence(evidence, run["run_id"])
+
+    @staticmethod
+    def _adopt_candidate(conn, identity, weightscore):
+        run_id, _, atom_id, _ = identity
+        return conn.execute(
+            "INSERT INTO distillation_atoms(run_id,source_key,atom_id,content_sha256,state,reason,weightscore,candidate_applied) "
+            "SELECT ?,?,?,?,'accepted','adopt existing target candidate',?,1 "
+            "WHERE NOT EXISTS (SELECT 1 FROM distillation_atoms WHERE run_id=? AND atom_id=?)",
+            (*identity, weightscore, run_id, atom_id),
+        ).rowcount
+
+    def adopt_existing_candidates(self, atoms_with_sources, candidates):
+        """Preserve target candidates with uniquely loaded evidence before clustering."""
+        run = self.run()
+        if not run:
+            raise RuntimeError("candidate adoption requires an active restricted run")
+        adopted = {}
+        with self._connect() as conn:
+            for atom, source in atoms_with_sources:
+                atom_id = _atom_id(atom)
+                if atom_id not in candidates:
+                    continue
+                weightscore = int(candidates[atom_id].get("weightscore", 0))
+                identity = (run["run_id"], _source_key(source), atom_id, atom_fingerprint(atom))
+                if self._adopt_candidate(conn, identity, weightscore):
+                    adopted[atom_id] = weightscore
+        return adopted
+
+    @staticmethod
+    def _ack_checkpoint(conn, evidence, sha):
+        changed = 0
+        for item in evidence:
+            changed += conn.execute(
+                "UPDATE distillation_atoms SET checkpoint_sha=?,state='committed',candidate_applied=1,updated_at=datetime('now') "
+                "WHERE run_id=? AND source_key=? AND atom_id=? AND content_sha256=? "
+                "AND state IN ('pending','accepted','failed','superseded')",
+                (sha, item["run_id"], item["source_key"], item["atom_id"], item["content_sha256"]),
+            ).rowcount
+        return changed
+
+    def checkpoint_atoms(self, evidence, sha, source_key=None):
+        """Acknowledge the bound receipt, never resolve IDs against current rows."""
         run = self.run()
         if run:
-            if source_key is not None:
-                source_key = _source_key(source_key)
-            atom_ids = list(atom_ids)
+            evidence = self._checkpoint_evidence(list(evidence), run["run_id"])
             with self._connect() as conn:
-                if source_key is None:
-                    for atom_id in atom_ids:
-                        count = conn.execute("SELECT count(*) FROM distillation_atoms WHERE run_id=? AND atom_id=? AND state IN ('pending','accepted')", (run["run_id"], atom_id)).fetchone()[0]
-                        if count > 1:
-                            raise RuntimeError("ambiguous source/content identity in checkpoint acknowledgement")
-                    conn.executemany("UPDATE distillation_atoms SET checkpoint_sha=?,state='committed',candidate_applied=1,updated_at=datetime('now') WHERE run_id=? AND atom_id=? AND state IN ('pending','accepted')",
-                                     [(sha, run["run_id"], atom_id) for atom_id in atom_ids])
-                else:
-                    for atom_id in atom_ids:
-                        count = conn.execute("SELECT count(*) FROM distillation_atoms WHERE run_id=? AND source_key=? AND atom_id=? AND state IN ('pending','accepted')", (run["run_id"], source_key, atom_id)).fetchone()[0]
-                        if count > 1:
-                            raise RuntimeError("ambiguous content identity in checkpoint acknowledgement")
-                    conn.executemany("UPDATE distillation_atoms SET checkpoint_sha=?,state='committed',candidate_applied=1,updated_at=datetime('now') WHERE run_id=? AND source_key=? AND atom_id=? AND state IN ('pending','accepted')",
-                                     [(sha, run["run_id"], source_key, atom_id) for atom_id in atom_ids])
+                return self._ack_checkpoint(conn, evidence, sha)
+        return 0
+
+    def checkpoint_candidate_ids(self, evidence):
+        """IDs can leave the buffer only when no different evidence is pending."""
+        run = self.run()
+        if not run:
+            return set()
+        evidence = self._checkpoint_evidence(evidence, run["run_id"])
+        removable = set()
+        with self._connect() as conn:
+            for item in evidence:
+                committed = conn.execute(
+                    "SELECT 1 FROM distillation_atoms WHERE run_id=? AND source_key=? AND atom_id=? "
+                    "AND content_sha256=? AND state='committed'",
+                    (item["run_id"], item["source_key"], item["atom_id"], item["content_sha256"]),
+                ).fetchone()
+                unresolved = conn.execute(
+                    "SELECT 1 FROM distillation_atoms WHERE run_id=? AND atom_id=? "
+                    "AND state IN ('pending','accepted','failed') LIMIT 1",
+                    (item["run_id"], item["atom_id"]),
+                ).fetchone()
+                if committed and not unresolved:
+                    removable.add(item["atom_id"])
+        return removable
 
     def status(self):
         result = {"mode": "auto", "generation": 0, "root_key": self.root_key,

@@ -1,4 +1,5 @@
 """Persistent targeted runs use isolated state and never invoke a model."""
+import json
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -116,7 +117,8 @@ def test_checkpoint_trailer_reconciles_pending_audit_after_crash(tmp_path, monke
     with library_write_guard(store.skill_dir, store.policy(), db_path=store.db_path):
         (target / "SKILL.md").write_text((target / "SKILL.md").read_text(encoding="utf-8") + "\nCheckpoint\n", encoding="utf-8")
         run_git(["add", "SKILL.md"], cwd=str(target))
-        rc, _, _ = run_git(["commit", "-m", f'checkpoint\n\nXSkill-Run: {run["run_id"]}\nXSkill-Atoms: ["a1"]'], cwd=str(target))
+        evidence = store.bind_checkpoint_evidence([(atom, "source-a")])
+        rc, _, _ = run_git(["commit", "-m", f'checkpoint\n\nXSkill-Run: {run["run_id"]}\nXSkill-Evidence: {json.dumps(evidence)}'], cwd=str(target))
         assert rc == 0
     assert store.reconcile_checkpoints() == 1
     row = store.atom_record(atom, "source-a")
@@ -165,7 +167,7 @@ except RuntimeError:
     assert result.returncode == 23, result.stderr
 
 
-def test_checkpoint_without_source_rejects_ambiguous_ids_atomically(tmp_path):
+def test_checkpoint_without_evidence_rejects_id_only_ack_atomically(tmp_path):
     store = store_at(tmp_path)
     store.configure("create_one", "chosen", "Useful methods")
     unique = SimpleNamespace(atom_id="unique", content="first")
@@ -173,7 +175,7 @@ def test_checkpoint_without_source_rejects_ambiguous_ids_atomically(tmp_path):
     store.record_atom(unique, "accepted", source_key="source-a")
     store.record_atom(duplicate, "accepted", source_key="source-a")
     store.record_atom(duplicate, "accepted", source_key="source-b")
-    with pytest.raises(RuntimeError, match="ambiguous"):
+    with pytest.raises(RuntimeError, match="source/content"):
         store.checkpoint_atoms(["unique", "duplicate"], "fake-sha")
     assert store.atom_record(unique, "source-a")["state"] == "accepted"
 
@@ -239,11 +241,12 @@ def test_continued_atom_content_supersedes_only_same_source_pending_record(tmp_p
     store.record_atom(new, "accepted", source_key="source-a")
     assert store.atom_record(old, "source-a")["state"] == "superseded"
     assert store.atom_record(new, "source-a")["retry_count"] == 0
-    store.checkpoint_atoms(["continued"], "checkpoint-sha")
+    store.checkpoint_atoms(store.bind_checkpoint_evidence([(new, "source-a")]), "checkpoint-sha")
     assert store.atom_record(new, "source-a")["state"] == "committed"
 
 
-def test_truncated_checkpoint_recovery_cannot_retry_unproven_pending_material(tmp_path, monkeypatch):
+@pytest.mark.parametrize("state", ["pending", "accepted"])
+def test_truncated_checkpoint_recovery_cannot_retry_unproven_pending_material(tmp_path, monkeypatch, state):
     from xskill.skill.git import run_git
     from xskill.skill.write_policy import library_write_guard
     monkeypatch.setattr("xskill.skill.catalog_store.notify_native_upsert", lambda *a, **k: None)
@@ -251,9 +254,10 @@ def test_truncated_checkpoint_recovery_cannot_retry_unproven_pending_material(tm
     run = store.configure("create_one", "chosen", "Useful methods")
     target = store.ensure_target()
     atom = SimpleNamespace(atom_id="consumed-before-crash", content="useful")
-    store.record_atom(atom, "pending", source_key="source-a")
+    store.record_atom(atom, state, source_key="source-a")
     with library_write_guard(store.skill_dir, store.policy(), db_path=store.db_path):
-        for message in (f'checkpoint\n\nXSkill-Run: {run["run_id"]}\nXSkill-Atoms: ["consumed-before-crash"]',
+        evidence = store.bind_checkpoint_evidence([(atom, "source-a")])
+        for message in (f'checkpoint\n\nXSkill-Run: {run["run_id"]}\nXSkill-Evidence: {json.dumps(evidence)}',
                         "later unrelated target work"):
             text = (target / "SKILL.md").read_text(encoding="utf-8") + "\nLater work\n"
             (target / "SKILL.md").write_text(text, encoding="utf-8")
@@ -261,7 +265,7 @@ def test_truncated_checkpoint_recovery_cannot_retry_unproven_pending_material(tm
             assert run_git(["commit", "-m", message], cwd=str(target))[0] == 0
     with pytest.raises(RuntimeError, match="truncat|bounded|unprov"):
         store.reconcile_checkpoints(limit=1)
-    assert store.atom_record(atom, "source-a")["state"] == "pending"
+    assert store.atom_record(atom, "source-a")["state"] == state
     assert store.reconcile_checkpoints(limit=200) == 1
     assert store.atom_record(atom, "source-a")["state"] == "committed"
 
@@ -271,7 +275,7 @@ def test_verified_checkpoint_can_acknowledge_unique_pending_receipt(tmp_path):
     store.configure("create_one", "chosen", "Useful methods")
     atom = SimpleNamespace(atom_id="pending-receipt", content="already written before DB acknowledgement")
     store.record_atom(atom, "pending", source_key="source-a")
-    store.checkpoint_atoms([atom.atom_id], "verified-checkpoint-sha", source_key="source-a")
+    store.checkpoint_atoms(store.bind_checkpoint_evidence([(atom, "source-a")]), "verified-checkpoint-sha")
     record = store.atom_record(atom, "source-a")
     assert record["state"] == "committed"
     assert record["candidate_applied"] == 1

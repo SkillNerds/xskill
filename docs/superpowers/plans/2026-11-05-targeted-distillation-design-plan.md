@@ -490,7 +490,7 @@ python -m pytest tests/test_distillation_write_boundaries.py tests/test_skill_to
 - 写 accepted、skipped、漏结果、内容变化和跨目录 ID 碰撞用例。
 - 实现受限运行的有界素材枚举，复用已有 Atom，不重置全局进度。
 - 实现 skip_atom 和受限 prompt；auto 使用原 prompt。
-- 为候选应用记录 run、来源、Atom、内容指纹组成的固定身份，为提交增加框架生成的 run/Atom receipt；注入候选写入后、DB 确认前、checkpoint 后的崩溃，验证恢复不漏、不重复消费。
+- 为候选应用和提交记录 run、来源、Atom、内容指纹组成的固定身份；编辑使用固定证据快照，模型提交说明不能提供框架 receipt。旧 ID-only 记录无法证明消费版本时停止恢复并保留现场；注入候选写入后、DB 确认前、checkpoint 后的崩溃，验证恢复不漏、不重复消费。
 - 检查受限路径不会调用 score_task 改全局评分，不会把本轮跳过写成全局 NOT_FIT。
 
 ```powershell

@@ -91,6 +91,8 @@ class AgentToolContext:
     cluster_batch_ids: frozenset[str] = frozenset()
     skill_edit_skill_name: str | None = None
     skill_edit_batch_ids: tuple[str, ...] = ()
+    skill_edit_batch_evidence: tuple = ()
+    skill_edit_atom_snapshots: Any = None
     grep_fallback_warned: bool = False
     # 实例 registry.db；skills_catalog 写出口从此取库，禁止隐式摸全局库。
     registry_db_path: Path | None = None
@@ -151,6 +153,8 @@ def create_agent_tool_context(
     cluster_batch_ids=(),
     skill_edit_skill_name=None,
     skill_edit_batch_ids=(),
+    skill_edit_batch_evidence=(),
+    skill_edit_atom_snapshots=None,
     registry_db_path=None,
     extra_read_roots=(),
     generate_user_id=None,
@@ -193,6 +197,8 @@ def create_agent_tool_context(
         skill_edit_batch_ids=tuple(
             str(atom_id) for atom_id in (skill_edit_batch_ids or ())
         ),
+        skill_edit_batch_evidence=tuple(MappingProxyType(dict(item)) for item in skill_edit_batch_evidence),
+        skill_edit_atom_snapshots=MappingProxyType(dict(skill_edit_atom_snapshots or {})),
         registry_db_path=(
             Path(registry_db_path) if registry_db_path is not None else None
         ),
@@ -284,7 +290,7 @@ def _skill_mutation(operation, *names):
                     )
                     if context.distillation_store is not None:
                         context.distillation_store.checkpoint_atoms(
-                            context.skill_edit_batch_ids, artifact["sha"], source_key=None,
+                            context.skill_edit_batch_evidence, artifact["sha"],
                         )
                         context.distillation_store.set_artifact(
                             "candidate_committed" if ref == "staging" else "main_committed",
@@ -303,9 +309,14 @@ def _run_commit_message(message: str) -> str:
     policy = _active_write_policy()
     if policy.mode == "auto":
         return message
-    atoms = list(context.skill_edit_batch_ids)
+    if context.skill_edit_batch_ids and not context.skill_edit_batch_evidence:
+        raise RuntimeError("restricted checkpoint has no bound evidence identity")
+    # Model text is not audit authority, including duplicate or embedded trailers.
+    message = "\n".join(line for line in message.splitlines()
+                        if not re.match(r"^\s*XSkill-", line, re.IGNORECASE)).rstrip()
+    evidence = [dict(item) for item in context.skill_edit_batch_evidence]
     return (f"{message}\n\nXSkill-Run: {policy.run_id}\n"
-            f"XSkill-Atoms: {json.dumps(atoms, separators=(',', ':'))}")
+            f"XSkill-Evidence: {json.dumps(evidence, separators=(',', ':'))}")
 
 
 @contextlib.contextmanager
@@ -346,15 +357,54 @@ def use_skill_edit_batch(
 ) -> Iterator[AgentToolContext]:
     """Bind immutable checkpoint authority for one baby SkillEdit turn.
 
-    The model never supplies candidate IDs to ``commit_baby``.  It can only
-    consume the exact ordered IDs that the framework put into this context.
+    The model never supplies candidate IDs or receipts. Restricted turns use
+    the same atom snapshots for tool reads and checkpoint identities.
     """
     current = current_agent_tool_context()
     _require_named_skill(skill_name, "write_content")
+    batch_ids = tuple(str(atom_id) for atom_id in batch_ids)
+    evidence = ()
+    snapshots = {}
+    if _active_write_policy().mode != "auto":
+        from xskill.pipeline.distillation import source_key_for
+        if current.distillation_store is None:
+            raise RuntimeError("restricted editor requires a bound distillation evidence store")
+        _require_distillation_audit()
+        if current.atom_store is None:
+            raise RuntimeError("restricted editor requires bound atom evidence store")
+        atoms_with_sources = []
+        stores = getattr(current.atom_store, "stores", [current.atom_store])
+        for atom_id in batch_ids:
+            sources = []
+            for store in stores:
+                try:
+                    atom = copy.deepcopy(store.load(atom_id))
+                except FileNotFoundError:
+                    continue
+                if atom.atom_id != atom_id:
+                    raise RuntimeError("atom store returned a different editor source/content identity")
+                source = (current.distillation_sources or {}).get(atom_id)
+                if source is None:
+                    source = source_key_for(store.root)
+                sources.append((atom, source))
+            if len(sources) != 1:
+                raise RuntimeError("ambiguous or missing editor source/content identity")
+            atoms_with_sources.extend(sources)
+            snapshots[atom_id] = sources[0][0]
+        from xskill.skill import candidates
+        target = Path(current.atom_skill_dir or current.skill_dir) / skill_name
+        existing = {str(item["atom_id"]): item for item in
+                    candidates.load_candidates(target).get("candidates", []) if item.get("atom_id")}
+        evidence = tuple(MappingProxyType(item) for item in
+                         current.distillation_store.bind_checkpoint_evidence(
+                             atoms_with_sources, adopt_candidates=existing,
+                         ))
     bound = replace(
         current,
         skill_edit_skill_name=_slugify(skill_name),
-        skill_edit_batch_ids=tuple(str(atom_id) for atom_id in batch_ids),
+        skill_edit_batch_ids=batch_ids,
+        skill_edit_batch_evidence=evidence,
+        skill_edit_atom_snapshots=MappingProxyType(snapshots),
     )
     with use_agent_tool_context(bound):
         yield bound
@@ -391,6 +441,8 @@ class AgentToolConfig:
             cluster_batch_ids=frozenset(),
             skill_edit_skill_name=None,
             skill_edit_batch_ids=(),
+            skill_edit_batch_evidence=(),
+            skill_edit_atom_snapshots=None,
         ))
 
     def configure_atom_task(
@@ -411,6 +463,8 @@ class AgentToolConfig:
             cluster_batch_ids=frozenset(),
             skill_edit_skill_name=None,
             skill_edit_batch_ids=(),
+            skill_edit_batch_evidence=(),
+            skill_edit_atom_snapshots=None,
         ))
 
     def snapshot(self) -> dict:
@@ -430,6 +484,8 @@ class AgentToolConfig:
             "cluster_batch_ids": current.cluster_batch_ids,
             "skill_edit_skill_name": current.skill_edit_skill_name,
             "skill_edit_batch_ids": current.skill_edit_batch_ids,
+            "skill_edit_batch_evidence": current.skill_edit_batch_evidence,
+            "skill_edit_atom_snapshots": current.skill_edit_atom_snapshots,
             "grep_fallback_warned": current.grep_fallback_warned,
             "registry_db_path": current.registry_db_path,
             "extra_read_roots": current.extra_read_roots,
@@ -459,6 +515,8 @@ class AgentToolConfig:
             cluster_batch_ids=snapshot.get("cluster_batch_ids") or (),
             skill_edit_skill_name=snapshot.get("skill_edit_skill_name"),
             skill_edit_batch_ids=snapshot.get("skill_edit_batch_ids") or (),
+            skill_edit_batch_evidence=snapshot.get("skill_edit_batch_evidence") or (),
+            skill_edit_atom_snapshots=snapshot.get("skill_edit_atom_snapshots"),
             registry_db_path=snapshot.get("registry_db_path"),
             extra_read_roots=snapshot.get("extra_read_roots") or (),
             generate_user_id=snapshot.get("generate_user_id"),
@@ -1676,7 +1734,8 @@ def atom_task_read(atom_id: str) -> str:
     if store is None:
         return "error: atom task tool context not initialized"
     try:
-        atom = store.load(atom_id)
+        snapshots = current_agent_tool_context().skill_edit_atom_snapshots or {}
+        atom = snapshots[atom_id] if atom_id in snapshots else store.load(atom_id)
     except FileNotFoundError as e:
         return f"error: {e}"
     return json.dumps(_atom_read_payload(atom), ensure_ascii=False, indent=2)
@@ -1715,6 +1774,42 @@ def read_traj(traj_id: str, offset_start: int, offset_end: int) -> str:
     traj_root = agent_tool_config.default_traj_root
     if traj_root is None:
         return "error: atom task tool context not initialized"
+    try:
+        start = int(offset_start)
+        end = int(offset_end)
+    except (TypeError, ValueError):
+        return f"error: offset_start/offset_end must be int (got {offset_start!r}, {offset_end!r})"
+    if end <= start:
+        return f"error: offset_end ({end}) must be > offset_start ({start})"
+    if start < 1:
+        return (
+            f"error: line range [{start}..{end}) outside file "
+            f"(offset_start must be >= 1)"
+        )
+    # The bound batch must read the same evidence that its receipt attests.
+    # A same-named live trajectory in another store may have a newer mtime.
+    snapshots = current_agent_tool_context().skill_edit_atom_snapshots or {}
+    page_end = min(end, start + READ_TRAJ_MAX_LINES)
+    bound = [atom for atom in snapshots.values()
+             if atom.traj_id == traj_id and start < atom.offset_end and page_end > atom.offset_start]
+    if bound:
+        pages = set()
+        for atom in bound:
+            first, last = atom.offset_start, atom.offset_end
+            if not first <= start < page_end <= last:
+                return f"error: read the bound Atom separately within [{first}, {last})"
+            lines = atom.raw_segment.splitlines(keepends=True)
+            if len(lines) != last - first:
+                return "error: bound Atom raw evidence is incomplete"
+            pages.add("".join(lines[start - first:page_end - first]))
+        if len(pages) != 1:
+            return "error: ambiguous bound trajectory evidence; use a smaller Atom range"
+        body = pages.pop()
+        if page_end == end:
+            return body
+        return (f'[read_traj] bound evidence returned [{start}, {page_end}); '
+                f'continue: read_traj(traj_id="{traj_id}", offset_start={page_end}, offset_end={end})\n'
+                + body)
     # team-CS 多 store：traj.md 落在 atom 所属 client 的 watch_dir 下，不一定是
     # 绑定的 traj_root。store 若支持 traj_root_for（MultiAtomTaskStore），按
     # traj_id 跨所有 root 解析；解析不到再退回绑定 traj_root（单 store 行为不变）。
@@ -1730,18 +1825,6 @@ def read_traj(traj_id: str, offset_start: int, offset_end: int) -> str:
     p = traj_root / f"{traj_id}.md"
     if not p.is_file():
         return f"error: traj file not found: {p}"
-    try:
-        start = int(offset_start)
-        end = int(offset_end)
-    except (TypeError, ValueError):
-        return f"error: offset_start/offset_end must be int (got {offset_start!r}, {offset_end!r})"
-    if end <= start:
-        return f"error: offset_end ({end}) must be > offset_start ({start})"
-    if start < 1:
-        return (
-            f"error: line range [{start}..{end}) outside file "
-            f"(offset_start must be >= 1)"
-        )
     lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
     total = len(lines)
     if start > total:
@@ -2636,12 +2719,12 @@ def commit_baby(skill_name: str, message: str) -> str:
         commit_sha = commit_baby_checkpoint(str(target), _run_commit_message(msg))
         if commit_sha is None:
             return "error: commit_baby requires a real non-empty change"
-        consumed, remaining = candidate_buffer.remove_candidates(
-            target,
-            set(batch_ids),
-        )
-        if context.distillation_store is not None:
-            context.distillation_store.checkpoint_atoms(batch_ids, commit_sha, source_key=None)
+        removable_ids = set(batch_ids)
+        if context.distillation_store is not None and _active_write_policy().mode != "auto":
+            evidence = context.skill_edit_batch_evidence
+            context.distillation_store.checkpoint_atoms(evidence, commit_sha)
+            removable_ids = context.distillation_store.checkpoint_candidate_ids(evidence)
+        consumed, remaining = candidate_buffer.remove_candidates(target, removable_ids)
 
     lines = [
         f"Created baby checkpoint {commit_sha[:7]}.",

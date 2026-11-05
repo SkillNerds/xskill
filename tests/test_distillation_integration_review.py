@@ -154,9 +154,13 @@ def test_old_non_target_scripting_callback_never_clears_request(review_env, monk
 
 def test_existing_target_identity_is_preserved_in_bound_tools(review_env):
     watcher, runs, store, _wd_id, target, _other = review_env
+    atom = AtomTask(atom_id="atom-test", traj_id="traj-test", offset_start=1,
+                    offset_end=3, intent="diagnose", summary="diagnostic evidence", raw_segment="Evidence")
+    store.save(atom)
+    runs.record_atom(atom, "accepted", source_key=source_key_for(store.root))
     context = agent_tools.create_agent_tool_context(
         skill_dir=target.parent, atom_skill_dir=target.parent, atom_store=store,
-        config={}, distillation_policy=runs.policy(),
+        config={}, distillation_policy=runs.policy(), distillation_store=runs,
     )
     with library_write_guard(target.parent, runs.policy(), db_path=runs.db_path):
         with agent_tools.use_agent_tool_context(context):
