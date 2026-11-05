@@ -2933,7 +2933,7 @@ document.getElementById('cfg-reload').addEventListener('click', () => cfgAction(
 // ── 单人控制台蒸馏模式 ───────────────────────────────────────────
 const distillationUrl = '/api/v1/dashboard/distillation';
 const distillationModes = { auto: '自动蒸馏', create_one: '新建指定技能', update_only: '更新指定技能' };
-const distillationPhases = { stopping: '正在停止旧任务…', applying: '正在应用配置…', starting: '正在启动蒸馏…' };
+const distillationPhases = { draining: '正在等待在途任务完成…', stopping: '正在停止旧任务…', applying: '正在应用配置…', starting: '正在启动蒸馏…' };
 const distillationEl = name => document.getElementById('distillation-' + name);
 const distillationForm = distillationEl('form');
 let distillationState = null;
@@ -3021,15 +3021,22 @@ async function refreshDistillation(resetForm) {
   }
   const phaseText = distillationPhases[status.phase];
   setDistillationBusy(Boolean(phaseText));
+  const cancel = distillationEl('cancel');
+  cancel.classList.toggle('hidden', status.phase !== 'draining');
+  cancel.disabled = status.phase !== 'draining';
   if (phaseText) {
-    distillationProgress(phaseText);
+    const waiting = status.phase === 'draining' && status.waiting?.length
+      ? ' 正在等待：' + status.waiting.join('、') : '';
+    distillationProgress(phaseText + waiting);
     if (location.hash === '#distillation') {
       distillationPoll = setTimeout(() => refreshDistillation(false).catch(showDistillationError), 750);
     }
   } else if (status.phase === 'failed') {
     distillationProgress('切换失败 · ' + status.error, true);
   } else {
-    distillationProgress(status.phase === 'ready' ? '蒸馏已按当前模式启动。' : '');
+    const message = status.phase === 'ready' ? '蒸馏已按当前模式启动。'
+      : status.phase === 'cancelled' ? '已取消切换，后台继续按当前模式处理。' : '';
+    distillationProgress(message);
   }
 }
 
@@ -3037,7 +3044,11 @@ function showDistillationError(error) {
   if (IDENT?.role !== 'admin') return;
   if (!distillationState) distillationEl('access').textContent = error.message;
   else distillationProgress(error.message, true);
-  setDistillationBusy(false);
+  const switching = Boolean(distillationPhases[distillationState?.phase]);
+  setDistillationBusy(switching);
+  if (switching && location.hash === '#distillation') {
+    distillationPoll = setTimeout(() => refreshDistillation(false).catch(showDistillationError), 1500);
+  }
 }
 
 function onDistillationIdentity(admin) {
@@ -3071,6 +3082,26 @@ distillationEl('target').addEventListener('input', () => {
   clearTimeout(distillationSearchTimer);
   distillationSearch?.abort();
   distillationSearchTimer = setTimeout(searchDistillationSkills, 200);
+});
+
+distillationEl('cancel').addEventListener('click', async () => {
+  const switchId = distillationState?.switch_id;
+  if (!switchId || distillationSubmitting) return;
+  const session = distillationSession;
+  distillationSubmitting = true;
+  distillationStatusRequest += 1;
+  clearTimeout(distillationPoll);
+  distillationEl('cancel').disabled = true;
+  try {
+    await jpost(distillationUrl + '/cancel', { switch_id: switchId });
+  } catch (error) {
+    if (session === distillationSession) showDistillationError(error);
+  } finally {
+    if (session === distillationSession) {
+      distillationSubmitting = false;
+      await refreshDistillation(false).catch(showDistillationError);
+    }
+  }
 });
 
 distillationForm.addEventListener('submit', async event => {

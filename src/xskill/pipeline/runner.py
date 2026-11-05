@@ -30,7 +30,7 @@ import os
 import threading
 import time
 from collections import deque
-from concurrent.futures import Future
+from concurrent.futures import CancelledError, Future
 from functools import partial
 from pathlib import Path
 
@@ -273,6 +273,11 @@ class DirectoryWatcher:
 
         self._stop = threading.Event()
         self._pause = threading.Event()
+        self._wake = threading.Event()
+        self._drain_lock = threading.Lock()
+        self._drain_token: str | None = None
+        self._drain_ready = False
+        self._inline_task: str | None = None
         self._thread: threading.Thread | None = None
         from xskill.pipeline.worker_runtime import BoundedExecutor, ClusterWriteQueue
         self._pools = {
@@ -347,6 +352,7 @@ class DirectoryWatcher:
 
     def stop(self, *, wait=False):
         self._stop.set()
+        self._wake.set()
         if self._thread:
             # watcher 线程是 daemon，不必等完整个 poll 周期（默认 30s+5s 会
             # 把优雅退出拖过 supervisor 的 stopwaitsecs）；短等后直接放弃
@@ -357,7 +363,45 @@ class DirectoryWatcher:
             pool.shutdown(wait=wait, cancel_futures=True)
         self._task_graph_pool.shutdown(wait=wait, cancel_futures=True)
         self.cluster_write_queue.shutdown(wait=wait)
+        if wait and self._drain_ready:
+            self._harvest_drained()
         logger.info("watcher stopped")
+
+    def set_drain(self, token: str | None) -> None:
+        with self._drain_lock:
+            if token == self._drain_token:
+                return
+            for pool in (*self._pools.values(), self._task_graph_pool):
+                pool.set_paused(token is not None)
+            self._drain_ready = False
+            self._drain_token = token
+        self._wake.set()
+
+    @property
+    def drain_status(self):
+        with self._drain_lock:
+            token, ready = self._drain_token, self._drain_ready
+        if token is None:
+            return None
+        labels = {"split": "轨迹拆分", "cluster": "聚类", "edit": "技能编辑",
+                  "embed": "向量化", "graph": "任务图更新"}
+        tasks = []
+        inline_task = self._inline_task
+        if inline_task is not None:
+            tasks.append(inline_task)
+        for name, pool in {**self._pools, "graph": self._task_graph_pool}.items():
+            for seat in pool.status["seats"]:
+                if seat is not None:
+                    task = seat["task"]
+                    target = task.get("skill_name") or task.get("traj_id") or task.get("job_id")
+                    tasks.append(f"{labels[name]} · {target}" if target else labels[name])
+        if not tasks and not ready:
+            tasks.append("扫描或结果写入")
+        return {"token": token, "ready": ready, "tasks": tasks}
+
+    @_with_distillation_policy
+    def _harvest_drained(self):
+        self._harvest()
 
     def pause(self):
         self._pause.set()
@@ -532,17 +576,41 @@ class DirectoryWatcher:
         # Python 3.9 非主线程无事件循环时构造会崩 —— 先给本线程装一个。
         _install_thread_event_loop()
         while not self._stop.is_set():
-            if not self._pause.is_set():
+            self._wake.clear()
+            token = self._drain_token
+            if token is not None:
+                try:
+                    self._harvest_drained()
+                    pools = (*self._pools.values(), self._task_graph_pool)
+                    states = [pool.status for pool in pools]
+                    # A pool seat can be released just before its Future
+                    # becomes done. Wait for the watcher to harvest that result.
+                    if (not any(state["running"] for state in states)
+                            and len(self._futures) == sum(state["queued"] for state in states)):
+                        with self._drain_lock:
+                            if token == self._drain_token:
+                                self._drain_ready = True
+                except Exception:
+                    logger.exception("watcher drain error")
+            elif not self._pause.is_set():
                 if self.on_poll_hook is not None:
                     try:
+                        self._inline_task = "会话采集"
                         self.on_poll_hook()
                     except Exception:
                         logger.exception("watcher on_poll_hook failed")
+                    finally:
+                        self._inline_task = None
                 try:
-                    self._scan_once()
+                    if self._drain_token is None:
+                        self._inline_task = "轨迹扫描"
+                        self._scan_once()
                 except Exception:
                     logger.exception("watcher scan error")
-            self._stop.wait(self.poll_interval)
+                finally:
+                    self._inline_task = None
+            if not self._stop.is_set():
+                self._wake.wait(0.25 if token is not None else self.poll_interval)
 
     @_with_distillation_policy
     def _scan_once(self):
@@ -567,7 +635,7 @@ class DirectoryWatcher:
         # ── Step 1-4: 对每个目录扫描 + 提交 split/embed + 收集 cluster atom ──
         watch_dirs = list_watcher_dirs(**kw)
         for wd in watch_dirs:
-            if self._stop.is_set():
+            if self._stop.is_set() or self._drain_token is not None:
                 break
             if not wd.get("auto_index"):
                 continue
@@ -577,6 +645,8 @@ class DirectoryWatcher:
             if self.native_distill:
                 self.pending_atoms.extendleft(reversed(self._round_new_atoms))
             self._round_new_atoms.clear()
+        if self._drain_token is not None:
+            return
         # 全部 watch_dir 共用一个 pending/claimed 队列；持续提交到 cluster 池满。
         # 最后不足 batch_size 的尾批也立即提交。
         # External kernels own Skill production; keep split/embed running but
@@ -588,6 +658,8 @@ class DirectoryWatcher:
 
         # ── Step 5a: 用户点名的 generate 入队到 SkillEdit 同一线程池 ──
         # 先于自动 SkillEdit 提交，避免后台整理把用户任务挤到池外。
+        if self._drain_token is not None:
+            return
         self._submit_generate_jobs()
 
         # ── Step 5: 从持久脏队列调度 candidates buffer ──
@@ -597,12 +669,16 @@ class DirectoryWatcher:
         # 无关——每个 watcher 只有一个全局 skill_dir。
         if self.native_distill:
             self._run_skill_edit_step()
+        if self._drain_token is not None:
+            return
         self._check_scripting_requests()
 
         # ── Step 6: 灰度判定独立轮询 ──
         # 对每个 staging 分支存在的 skill 跑 AtomCanary.check_and_decide：
         # 收齐 5 条评分就裁决 promote/reject，超时 max_days_hold 就 discard。
         # 这条与 cluster / score 链路彻底解耦——灰度系统自治。
+        if self._drain_token is not None:
+            return
         self._check_canary_decisions()
 
         # ── Step 7: 用户手改回流检测 ──
@@ -611,6 +687,8 @@ class DirectoryWatcher:
         # 在飞 staging（用户改是 ground truth，优先级压过灰度）。
         # server 模式跳过：server 本机没有 symlink 出去的 skill 给用户改；
         # client 手改走 push-edit 进 user-staging/<client_id> 分支。
+        if self._drain_token is not None:
+            return
         if not self.server_mode:
             self._check_user_edits()
 
@@ -621,6 +699,8 @@ class DirectoryWatcher:
         # 永远 waiting → 最终 timeout_discarded，灰度形同虚设。
         # server 模式跳过：server 不装 skill 到本机，无"流量入口"概念。
         # CS 模式的分桶在 client 的 reconcile_skill_sides 里按 client_id 做。
+        if self._drain_token is not None:
+            return
         if not self.server_mode:
             self._reconcile_skill_sides()
         if self.restricted_distillation:
@@ -1610,6 +1690,9 @@ class DirectoryWatcher:
                 skill=stale_skill, error_type=None,
             )
         for d in skill_paths:
+            if self._drain_token is not None:
+                return
+            self._inline_task = f"技能编辑回流 · {d.name}"
             try:
                 # openclaw 回流（dest → source）— 没装 openclaw / dest 不存在
                 # / dest 没改 → no-op。返回 SYNCED 意味着 source 刚完成回流，
@@ -1836,6 +1919,9 @@ class DirectoryWatcher:
         weights = eligible_models(model_share(**self._db_kw()),
                                   canary_cfg.scope_top_n) or None
         for d in active_paths:
+            if self._drain_token is not None:
+                return
+            self._inline_task = f"灰度裁决 · {d.name}"
             if not d.is_dir():
                 self._refresh_canary_catalog_skill(d)
                 continue
@@ -2542,6 +2628,9 @@ class DirectoryWatcher:
         transaction_requests: list[InstallTransactionRequest] = []
 
         for d in self._distillation_skill_paths():
+            if self._drain_token is not None:
+                self._last_rotate_ts = None
+                return
             if not d.is_dir() or d.name.startswith("."):
                 continue
             if not (d / ".git").is_dir():
@@ -2814,6 +2903,10 @@ class DirectoryWatcher:
                 installed_state_reader=read_working_tree_state,
                 recovery_operation=recover_working_tree_target,
             ))
+        if self._drain_token is not None:
+            self._last_rotate_ts = None
+            return
+        self._inline_task = "灰度版本轮转"
         history.transact_many(transaction_requests)
 
     # ───────────────────────────────────────────────────────────
@@ -2835,6 +2928,17 @@ class DirectoryWatcher:
             info = self._futures.pop(fut)
             stage = info["stage"]
             kw = self._db_kw()
+            if fut.cancelled() or isinstance(fut.exception(timeout=0), CancelledError):
+                if stage == "split":
+                    update_traj_status(info["wd_id"], info["fname"],
+                                       info.get("previous_status", "discovered"), **kw)
+                elif stage == "cluster":
+                    self.cluster_futures.discard(fut)
+                    self.claimed_atoms.difference_update(info.get("atom_ids") or ())
+                elif stage == "generate":
+                    from xskill.team.server import generate_jobs as gen_jobs
+                    gen_jobs.release_claim(self.logs_dir, info["job_id"])
+                continue
             if stage == "cluster":
                 atom_ids = list(info.get("atom_ids") or [])
                 self.cluster_futures.discard(fut)
@@ -3005,6 +3109,7 @@ class DirectoryWatcher:
                     update_traj_status(wd_id, fname, "splitting", **kw)
                     self._futures[fut] = {
                         "wd_id": wd_id, "fname": fname, "stage": "split",
+                        "previous_status": status,
                     }
 
         # ── 提交 embed 任务（split_done → indexed，整批一个任务） ──

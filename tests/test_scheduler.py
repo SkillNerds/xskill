@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import threading
+import time
 
 import pytest
 
@@ -273,3 +275,44 @@ def test_loop_survives_run_once_exception(monkeypatch, caplog):
 
     assert len(calls) >= 2, "首轮异常不该终结循环"
     assert any("异常" in r.message for r in caplog.records), "异常必须落日志,不能静默"
+
+
+def test_replacement_child_inherits_pending_drain_before_starting_work(tmp_path):
+    command = [
+        sys.executable, "-c",
+        """import os, sys, time
+from pathlib import Path
+root = Path(sys.argv[1])
+first = root / "first"
+if not first.exists():
+    first.touch()
+    while not (root / "exit-first").exists():
+        time.sleep(0.02)
+else:
+    output = root / "replacement.tmp"
+    output.write_text(os.environ.get("XSKILL_DISTILLATION_DRAIN_TOKEN", ""))
+    output.replace(root / "replacement")
+    os.read(0, 1)
+""", str(tmp_path),
+    ]
+    scheduler = IntervalSubprocessScheduler(
+        "restarting-writer", command, interval=0.05, timeout=1,
+        persistent=True, stop_on_stdin_close=True,
+    )
+
+    def wait_for_file(name):
+        path = tmp_path / name
+        deadline = time.monotonic() + 5
+        while not path.is_file() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert path.is_file()
+        return path
+
+    scheduler.start()
+    try:
+        wait_for_file("first")
+        scheduler.set_drain("pending-switch")
+        (tmp_path / "exit-first").touch()
+        assert wait_for_file("replacement").read_text() == "pending-switch"
+    finally:
+        scheduler.stop()

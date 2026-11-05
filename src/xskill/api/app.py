@@ -954,7 +954,7 @@ def create_app(home_root: Path | str | None = None,
         path = request.url.path
         if request.method == "POST" and (
             path in {"/api/v1/dashboard/login", "/api/v1/dashboard/logout"}
-            or (distillation_control is not None and path == ROUTE)
+            or (distillation_control is not None and path in {ROUTE, ROUTE + "/cancel"})
         ):
             return await call_next(request)
         if distillation_control is not None:
@@ -1349,6 +1349,8 @@ def create_app(home_root: Path | str | None = None,
         )
         ux_sync_scheduler.start()
         _schedulers.append(ux_sync_scheduler)
+        if distillation_control is not None:
+            distillation_control.projection_worker = ux_sync_scheduler
         logger.info(
             "ux_scores disk→db sync every %.0fs via subprocess",
             ux_sync_cfg["interval"],
@@ -1388,6 +1390,9 @@ def create_app(home_root: Path | str | None = None,
     async def _shutdown():
         try:
             if distillation_control is not None and distillation_control.task is not None:
+                distillation_control.closing = True
+                if distillation_control.phase == "draining":
+                    distillation_control.cancel_drain.set()
                 await asyncio.shield(distillation_control.task)
             await _shutdown_runtime()
         finally:

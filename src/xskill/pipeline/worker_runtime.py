@@ -13,7 +13,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -62,6 +62,8 @@ class BoundedExecutor:
         self._cond = threading.Condition()
         self._running = 0
         self._queued = 0
+        self._paused = False
+        self._discard_pending = False
         self._completed = 0
         self._failed = 0
         self._seats: list[dict | None] = [None] * workers
@@ -134,7 +136,7 @@ class BoundedExecutor:
         overrides ``task`` on the occupied seat.
         """
         with self._cond:
-            if self._running + self._queued >= self.total_capacity:
+            if self._paused or self._discard_pending or self._running + self._queued >= self.total_capacity:
                 return None
             self._queued += 1
             self._task_token += 1
@@ -149,22 +151,22 @@ class BoundedExecutor:
         state_lock = threading.Lock()
 
         def run():
-            meta = task
-            if task_factory is not None:
-                try:
-                    meta = task_factory()
-                except Exception:
-                    # 监看元数据失败绝不拖垮真任务；退到 submit 时的静态 task。
-                    meta = task
             with state_lock:
                 state.started = True
             with self._cond:
-                while (
-                    not self._seat_order
+                while not self._discard_pending and (
+                    self._paused
+                    or not self._seat_order
                     or self._seat_order[0] != token
                     or self._find_logical_seat() is None
                 ):
                     self._cond.wait()
+                if self._discard_pending:
+                    self._queued -= 1
+                    self._drop_queued(token)
+                    self._drop_seat_order(token)
+                    self._cond.notify_all()
+                    raise CancelledError()
                 self._seat_order.popleft()
                 seat = self._find_logical_seat()
                 if seat is None:
@@ -173,12 +175,19 @@ class BoundedExecutor:
                 self._running += 1
                 self._seats[seat] = {
                     "seat": seat,
-                    "task": meta or {},
+                    "task": task or {},
                     "started_at": time.time(),
                 }
                 self._drop_queued(token)
                 self._cond.notify_all()
             try:
+                if task_factory is not None:
+                    try:
+                        meta = task_factory()
+                    except Exception:
+                        meta = task
+                    with self._cond:
+                        self._seats[seat]["task"] = meta or {}
                 from xskill.utils.rate_limit import request_source
 
                 with request_source(self.name):
@@ -240,7 +249,14 @@ class BoundedExecutor:
     @property
     def available_capacity(self) -> int:
         with self._cond:
+            if self._paused:
+                return 0
             return max(0, self.total_capacity - self._running - self._queued)
+
+    def set_paused(self, paused: bool) -> None:
+        with self._cond:
+            self._paused = paused
+            self._cond.notify_all()
 
     @property
     def status(self) -> dict[str, Any]:
@@ -268,6 +284,9 @@ class BoundedExecutor:
 
     def shutdown(self, *, wait: bool = False, cancel_futures: bool = True) -> None:
         with self._cond:
+            if cancel_futures:
+                self._discard_pending = True
+            self._paused = False
             self._cond.notify_all()
         for executor in self._executors:
             executor.shutdown(wait=wait, cancel_futures=cancel_futures)

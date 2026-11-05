@@ -574,7 +574,10 @@
         </fieldset>
         <div class="flex flex-wrap items-center justify-between gap-3">
           <p class="text-xs text-slate-500 dark:text-slate-400">应用时会重启后台蒸馏，控制台保持在线。</p>
-          <button id="distillation-apply" type="submit" class="rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white">应用并重启蒸馏</button>
+          <div class="flex items-center gap-2">
+            <button id="distillation-cancel" type="button" class="hidden rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-sm">取消切换</button>
+            <button id="distillation-apply" type="submit" class="rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white">应用并重启蒸馏</button>
+          </div>
         </div>
         <p id="distillation-progress" role="status" class="text-sm"></p>
       </form>

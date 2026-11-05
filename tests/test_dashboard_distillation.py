@@ -39,6 +39,8 @@ def runtime(tmp_path, monkeypatch):
             self.name = name
             self.is_stopped = True
             self.child_pid = None
+            self.drain_tasks = []
+            self.drain_token = None
             schedulers[name] = self
 
         def start(self, *, env=None):
@@ -47,6 +49,8 @@ def runtime(tmp_path, monkeypatch):
                 assert env == {WORKER_ROOT_ENV: store.root_key, WORKER_GENERATION_ENV: str(policy.generation)}
             events.append(("start", self.name, policy.mode))
             self.is_stopped = False
+            if self.name != "ux-scores-sync":
+                self.child_pid = os.getpid()
             if self.name == "agent-worker":
                 write_status_file(tmp_path / AGENT_WORKER_STATUS_FILE,
                                   {"distillation_generation": policy.generation,
@@ -57,12 +61,29 @@ def runtime(tmp_path, monkeypatch):
             events.append(("stop", self.name, store.policy().mode))
             self.is_stopped = True
             self.child_pid = None
-            if self.name == "agent-worker":
-                write_status_file(tmp_path / AGENT_WORKER_STATUS_FILE, {}, ok=True, active=False)
+            name = self.name.replace("-", "_") + "_status.json"
+            write_status_file(tmp_path / name, {}, ok=True, active=False)
 
         def stop_gracefully(self):
             self.stop()
             return self.is_stopped
+
+        def set_drain(self, token):
+            self.drain_token = token
+            if self.is_stopped:
+                return
+            self.publish_drain()
+
+        def publish_drain(self):
+            if self.name == "ux-scores-sync":
+                return
+            name = self.name.replace("-", "_") + "_status.json"
+            policy = store.policy()
+            write_status_file(tmp_path / name, {
+                "distillation_generation": policy.generation, "distillation_root": policy.root_key,
+                "drain": {"token": self.drain_token, "ready": not self.drain_tasks,
+                          "tasks": self.drain_tasks},
+            }, ok=True, active=True)
 
     monkeypatch.setattr("xskill.pipeline.scheduler.IntervalSubprocessScheduler", Scheduler)
     return store, events, schedulers
@@ -182,6 +203,65 @@ def test_writer_drain_timeout_prevents_switch(runtime, monkeypatch):
         assert status["phase"] == "failed"
         assert store.policy().generation == 0
         assert not any(event[0] == "start" for event in events)
+
+
+def test_switch_waits_for_active_edit_and_auxiliary_work(runtime):
+    store, events, schedulers = runtime
+    with TestClient(srv.create_app()) as client:
+        assert login(client).status_code == 200
+        events.clear()
+        agent = schedulers["agent-worker"]
+        ingest = schedulers["ecosystem-ingest"]
+        projection = schedulers["ux-scores-sync"]
+        projection.child_pid = os.getpid()
+        agent.drain_tasks = ["技能编辑 · distillation-mode"]
+        ingest.drain_tasks = ["会话采集"]
+        payload = {"mode": "create_one", "skill": "chosen", "description": "Useful skill", "generation": 0}
+        assert client.post(API, json=payload).status_code == 202
+        try:
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                status = client.get(API).json()
+                if "技能编辑 · distillation-mode" in status.get("waiting", []):
+                    break
+                time.sleep(0.02)
+            assert status["phase"] == "draining"
+            assert status["waiting"] == ["技能编辑 · distillation-mode", "会话采集", "技能库索引同步"]
+            assert store.policy().generation == 0 and not events
+            agent.drain_tasks = []
+            agent.publish_drain()
+            time.sleep(0.4)
+            assert client.get(API).json()["phase"] == "draining"
+            assert not events
+        finally:
+            agent.drain_tasks = []
+            ingest.drain_tasks = []
+            agent.publish_drain()
+            ingest.publish_drain()
+            projection.child_pid = None
+        assert wait_for_switch(client)["mode"] == "create_one"
+
+
+def test_cancel_restores_dispatch_without_stopping_workers(runtime):
+    store, events, schedulers = runtime
+    with TestClient(srv.create_app()) as client:
+        assert login(client).status_code == 200
+        events.clear()
+        agent = schedulers["agent-worker"]
+        agent.drain_tasks = ["技能编辑 · distillation-mode"]
+        payload = {"mode": "create_one", "skill": "chosen", "description": "Useful skill", "generation": 0}
+        response = client.post(API, json=payload)
+        assert response.status_code == 202
+        try:
+            switch_id = response.json()["switch_id"]
+            assert client.post(API + "/cancel", json={"switch_id": "stale"}).status_code == 409
+            assert client.post(API + "/cancel", json={"switch_id": switch_id}).status_code == 200
+            assert client.get(API).json()["phase"] == "cancelled"
+            assert store.policy().generation == 0
+            assert not events and all(writer.drain_token is None for writer in schedulers.values())
+        finally:
+            agent.drain_tasks = []
+            agent.publish_drain()
 
 
 def test_switch_routes_are_absent_in_team_and_external_modes(runtime, monkeypatch):
