@@ -117,6 +117,7 @@
       <a href="#overview" data-pg="overview" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="1.5" width="5.4" height="5.4" rx="1.5"/><rect x="9.1" y="1.5" width="5.4" height="5.4" rx="1.5"/><rect x="1.5" y="9.1" width="5.4" height="5.4" rx="1.5"/><rect x="9.1" y="9.1" width="5.4" height="5.4" rx="1.5"/></svg>总览</a>
       <a href="#skills" data-pg="skills" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5l5.5 3v7l-5.5 3-5.5-3v-7l5.5-3z"/><path d="M2.5 4.5L8 7.5l5.5-3M8 7.5v7"/></svg>技能库</a>
       <a href="#pipeline" data-pg="pipeline" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="6" width="3.2" height="4" rx="1"/><rect x="6.4" y="6" width="3.2" height="4" rx="1"/><rect x="11.3" y="6" width="3.2" height="4" rx="1"/><path d="M4.7 8h1.7M9.6 8h1.7"/></svg>流水线</a>
+      <a href="#distillation" data-pg="distillation" id="nav-distillation" class="nav-link hidden flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12M5 2v4m6 0v4m-5 0v4"/></svg>蒸馏模式</a>
       <a href="#traj" data-pg="traj" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h9M2 8h12M2 12h7"/><circle cx="13.5" cy="4" r="1.4" fill="currentColor" stroke="none"/></svg>轨迹 &amp; 原子</a>
       <a href="#users" data-pg="users" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5" r="2.4"/><circle cx="11.5" cy="6" r="1.9"/><path d="M1.5 13.5c0-2.4 1.8-4 4-4s4 1.6 4 4M10 13.5c0-1.9 1.3-3.2 3-3.2s3 1.3 3 3.2" transform="scale(0.92)"/></svg>用户 &amp; 画像</a>
       <a href="#canary" data-pg="canary" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-50"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 1.5h4M7 1.5v4.2L3 12a2 2 0 001.8 3h6.4A2 2 0 0013 12L9 5.7V1.5"/><path d="M4.5 10.5h7"/></svg>灰度 Canary</a>
@@ -536,6 +537,49 @@
     </div>
 
     <!-- ══ 设置（admin） ══ -->
+    <div class="sec-page" id="pg-distillation">
+      <p class="mb-4 text-sm text-slate-500 dark:text-slate-400">选择后台蒸馏的范围。</p>
+      <p id="distillation-access" class="text-sm text-slate-500 dark:text-slate-400">请以管理员身份登录。</p>
+      <div id="distillation-current" class="hidden mb-4 rounded-xl ring-1 ring-slate-200 dark:ring-slate-700 bg-white dark:bg-slate-900 px-4 py-3 text-sm">
+        <span class="text-slate-500 dark:text-slate-400">当前模式</span>
+        <strong id="distillation-active-mode" class="ml-2"></strong>
+      </div>
+      <form id="distillation-form" style="max-width:56rem;accent-color:#0d9488" class="hidden rounded-xl ring-1 ring-slate-200 dark:ring-slate-700 bg-white dark:bg-slate-900 p-5 space-y-4">
+        <fieldset id="distillation-fields" class="space-y-2">
+          <legend class="mb-2 text-base font-semibold">选择模式</legend>
+          <label class="flex items-center gap-3 rounded-lg border border-slate-200 dark:border-slate-700 p-3 cursor-pointer">
+            <input type="radio" name="mode" value="auto" checked>
+            <span><strong class="block text-sm">自动蒸馏</strong><span class="text-xs text-slate-500 dark:text-slate-400">由系统决定新建或更新哪些技能。</span></span>
+          </label>
+          <label class="flex items-center gap-3 rounded-lg border border-slate-200 dark:border-slate-700 p-3 cursor-pointer">
+            <input type="radio" name="mode" value="create_one">
+            <span><strong class="block text-sm">新建指定技能</strong><span class="text-xs text-slate-500 dark:text-slate-400">填写名称和说明，只创建这个技能。</span></span>
+          </label>
+          <label class="flex items-center gap-3 rounded-lg border border-slate-200 dark:border-slate-700 p-3 cursor-pointer">
+            <input type="radio" name="mode" value="update_only">
+            <span><strong class="block text-sm">更新指定技能</strong><span class="text-xs text-slate-500 dark:text-slate-400">从技能库选择一个已有技能。</span></span>
+          </label>
+          <div id="distillation-create-fields" class="hidden space-y-2 pt-2">
+            <label for="distillation-name" class="block text-sm font-medium">新技能名称</label>
+            <input id="distillation-name" maxlength="255" placeholder="例如 feishu-debug" class="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm">
+            <label for="distillation-description" class="block text-sm font-medium">技能说明</label>
+            <textarea id="distillation-description" maxlength="4096" rows="3" class="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm"></textarea>
+          </div>
+          <div id="distillation-update-fields" class="hidden space-y-2 pt-2">
+            <label for="distillation-target" class="block text-sm font-medium">目标技能</label>
+            <input id="distillation-target" list="distillation-options" maxlength="255" placeholder="搜索并选择技能" aria-describedby="distillation-search-status" class="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm">
+            <datalist id="distillation-options"></datalist>
+            <p id="distillation-search-status" aria-live="polite" class="text-xs text-slate-500 dark:text-slate-400"></p>
+          </div>
+        </fieldset>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="text-xs text-slate-500 dark:text-slate-400">应用时会重启后台蒸馏，控制台保持在线。</p>
+          <button id="distillation-apply" type="submit" class="rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white">应用并重启蒸馏</button>
+        </div>
+        <p id="distillation-progress" role="status" class="text-sm"></p>
+      </form>
+    </div>
+
     <div class="sec-page" id="pg-settings">
       <div id="settings-guard" class="bg-white rounded-2xl ring-1 ring-slate-200 p-5 text-slate-400">仅 admin。请先以 admin 登录（左下角）。</div>
       <div id="settings-body" class="hidden bg-white rounded-2xl ring-1 ring-slate-200 p-5">

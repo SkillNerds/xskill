@@ -35,6 +35,7 @@ class IntervalSubprocessScheduler:
         timeout: float,
         persistent: bool = False,
         log_path: str | Path | None = None,
+        stop_on_stdin_close: bool = False,
     ):
         if interval <= 0:
             raise ValueError("interval 必须 > 0")
@@ -46,20 +47,42 @@ class IntervalSubprocessScheduler:
         self._timeout = float(timeout)
         self._persistent = bool(persistent)
         self._log_path = Path(log_path) if log_path is not None else None
+        self._stop_on_stdin_close = stop_on_stdin_close
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen | None = None
         self._process_lock = threading.Lock()
+        self._child_env: dict[str, str] = {}
 
-    def start(self) -> None:
+    def start(self, *, env: dict[str, str] | None = None) -> None:
         """幂等启动调度 daemon 线程。"""
         if self._thread is not None and self._thread.is_alive():
             return
+        self._child_env = dict(env or {})
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._loop, name=f"xskill-sched-{self._name}", daemon=True,
         )
         self._thread.start()
+
+    @property
+    def child_pid(self) -> int | None:
+        with self._process_lock:
+            process = self._process
+            return process.pid if process is not None and process.poll() is None else None
+
+    @property
+    def is_stopped(self) -> bool:
+        return (self._thread is None or not self._thread.is_alive()) and self.child_pid is None
+
+    def stop_gracefully(self, timeout: float = 15.0) -> bool:
+        """Ask a cooperative child to exit. Leave it draining on timeout."""
+        if not self._stop_on_stdin_close:
+            raise RuntimeError("child has no cooperative stop channel")
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout)
+        return self.is_stopped
 
     def stop(self, timeout: float = 5.0) -> None:
         """竖停机旗、中断 wait，并终止、回收正在运行的子进程。"""
@@ -138,10 +161,14 @@ class IntervalSubprocessScheduler:
                     "stderr": subprocess.DEVNULL,
                     **windowless_subprocess_kwargs(),
                 }
+                if self._stop_on_stdin_close:
+                    popen_kwargs["stdin"] = subprocess.PIPE
+                if self._child_env:
+                    popen_kwargs["env"] = {**os.environ, **self._child_env}
                 if self._log_path is not None:
                     self._log_path.parent.mkdir(parents=True, exist_ok=True)
                     log_file = open(self._log_path, "ab")
-                    env = os.environ.copy()
+                    env = popen_kwargs.get("env", os.environ.copy())
                     env["PYTHONUNBUFFERED"] = "1"
                     popen_kwargs["stdout"] = log_file
                     popen_kwargs["stderr"] = subprocess.STDOUT
@@ -164,6 +191,10 @@ class IntervalSubprocessScheduler:
                 self._process = process
             while process.poll() is None:
                 if self._stop.wait(min(self._interval, 0.5)):
+                    if self._stop_on_stdin_close:
+                        process.stdin.close()
+                        process.wait()
+                        break
                     try:
                         process.terminate()
                     except OSError:
@@ -185,6 +216,8 @@ class IntervalSubprocessScheduler:
                                 exc_info=True,
                             )
                     break
+            if self._stop_on_stdin_close:
+                process.stdin.close()
             return_code = process.poll()
             with self._process_lock:
                 if self._process is process:

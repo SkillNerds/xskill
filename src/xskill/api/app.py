@@ -929,13 +929,39 @@ def create_app(home_root: Path | str | None = None,
         description="Trajectory-to-Skill distillation API",
         version=__version__,
     )
-    from xskill.config import XSKILL_HOME, get_registry_db_path, kernel_config
+    from xskill.config import XSKILL_HOME, dashboard_config, get_registry_db_path, kernel_config
+    from xskill.dashboard.distillation import DistillationControl, ROUTE, build_distillation_router
     from xskill.pipeline.distillation import DistillationStore
+    from xskill.runtime import role
     distillation_store = DistillationStore(get_registry_db_path(xskill_home=XSKILL_HOME), _skill_dir)
+    distillation_control = None
+    if not team_server and dashboard_config(_config)["enabled"] and role() == "standalone":
+        if kernel_config(_config, xskill_home=XSKILL_HOME)["active"] == "native":
+            def check_runtime_config():
+                cfg = load_config()
+                if (role() != "standalone"
+                        or kernel_config(cfg, xskill_home=XSKILL_HOME)["active"] != "native"
+                        or get_skill_dir(cfg, xskill_home=XSKILL_HOME).resolve() != distillation_store.skill_dir):
+                    raise RuntimeError("内核或技能库路径已修改，请重启 XSkill 控制台")
+
+            distillation_control = DistillationControl(distillation_store, check_runtime_config)
+            app.include_router(build_distillation_router(distillation_control))
 
     @app.middleware("http")
     async def _guard_administrative_writes(request: Request, call_next):
-        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        if request.method in {"GET", "HEAD", "OPTIONS"}:
+            return await call_next(request)
+        path = request.url.path
+        if request.method == "POST" and (
+            path in {"/api/v1/dashboard/login", "/api/v1/dashboard/logout"}
+            or (distillation_control is not None and path == ROUTE)
+        ):
+            return await call_next(request)
+        if distillation_control is not None:
+            if distillation_control.switching:
+                return JSONResponse(status_code=409, content={"detail": "蒸馏模式正在切换，请稍后重试"})
+            distillation_control.in_flight_writes += 1
+        try:
             try:
                 from xskill.skill.write_policy import current_write_policy
                 restricted = (distillation_store.status()["mode"] != "auto"
@@ -943,9 +969,12 @@ def create_app(home_root: Path | str | None = None,
             except Exception as exc:
                 return JSONResponse(status_code=503, content={"detail": f"Cannot verify distillation authority: {exc}"})
             read_posts = {"/api/v1/trajectories/search", "/api/v1/skills/search", "/api/v1/trajectories/submit"}
-            if restricted and request.url.path not in read_posts:
+            if restricted and path not in read_posts:
                 return JSONResponse(status_code=409, content={"detail": "Administrative writes are disabled during a targeted distillation run; stop serve and configure auto first."})
-        return await call_next(request)
+            return await call_next(request)
+        finally:
+            if distillation_control is not None:
+                distillation_control.in_flight_writes -= 1
 
     app.include_router(router)
 
@@ -1059,7 +1088,11 @@ def create_app(home_root: Path | str | None = None,
             policy = distillation_store.policy()
             if policy.mode != "auto" and (team_server or selected["active"] != "native"):
                 raise RuntimeError("targeted distillation supports standalone native workers only")
-            stack.enter_context(library_write_guard(_skill_dir, policy, db_path=distillation_store.db_path))
+            if distillation_control is not None:
+                distillation_control.replace_fence(policy)
+                stack.callback(distillation_control.fence.close)
+            else:
+                stack.enter_context(library_write_guard(_skill_dir, policy, db_path=distillation_store.db_path))
             app.state.distillation_policy = policy
             await _startup_runtime()
         except BaseException:
@@ -1261,6 +1294,10 @@ def create_app(home_root: Path | str | None = None,
         agent_worker_command = [
             _sys.executable, "-m", "xskill._workers", "agent-worker",
         ]
+        worker_options = {}
+        if distillation_control is not None:
+            worker_options["stop_on_stdin_close"] = True
+            agent_worker_command.insert(3, "--stop-on-stdin-close")
         if team_server:
             agent_worker_command.append("--server")
         else:
@@ -1270,6 +1307,7 @@ def create_app(home_root: Path | str | None = None,
             interval=poll_interval,
             timeout=5.0,
             persistent=True,
+            **worker_options,
         )
         agent_worker_scheduler.start()
         _schedulers.append(agent_worker_scheduler)
@@ -1284,6 +1322,8 @@ def create_app(home_root: Path | str | None = None,
             "xskill._workers",
             "kernel-host",
         ]
+        if distillation_control is not None:
+            kernel_host_command.insert(3, "--stop-on-stdin-close")
         if team_server:
             kernel_host_command.append("--server")
         from xskill.config import get_kernel_console_log_path
@@ -1294,6 +1334,7 @@ def create_app(home_root: Path | str | None = None,
             timeout=5.0,
             persistent=True,
             log_path=get_kernel_console_log_path(),
+            **worker_options,
         )
         kernel_host_scheduler.start()
         _schedulers.append(kernel_host_scheduler)
@@ -1314,22 +1355,19 @@ def create_app(home_root: Path | str | None = None,
         )
         if not team_server:
             ingest_interval = min(poll_interval, 1.0)
+            ingest_command = [
+                _sys.executable, "-m", "xskill._workers", "ecosystem-ingest",
+                "--home", str(ecosystem_home_root), "--loop", "--interval", "0.5",
+            ]
+            if distillation_control is not None:
+                ingest_command.insert(3, "--stop-on-stdin-close")
             ingest_scheduler = _WorkerSched(
                 "ecosystem-ingest",
-                [
-                    _sys.executable,
-                    "-m",
-                    "xskill._workers",
-                    "ecosystem-ingest",
-                    "--home",
-                    str(ecosystem_home_root),
-                    "--loop",
-                    "--interval",
-                    "0.5",
-                ],
+                ingest_command,
                 interval=max(ingest_interval, 1.0),
                 timeout=5.0,
                 persistent=True,
+                **worker_options,
             )
             ingest_scheduler.start()
             _schedulers.append(ingest_scheduler)
@@ -1337,6 +1375,10 @@ def create_app(home_root: Path | str | None = None,
                 "ecosystem ingest scheduler started "
                 "(persistent subprocess, poll every 0.5s)",
             )
+            if distillation_control is not None:
+                distillation_control.writers.extend(
+                    (agent_worker_scheduler, kernel_host_scheduler, ingest_scheduler)
+                )
 
         # 依赖初始化全部成功后才创建线程池；如果 startup 在此之前
         # 失败，不会留下需要额外回收的非 daemon 线程。
@@ -1345,6 +1387,8 @@ def create_app(home_root: Path | str | None = None,
     @app.on_event("shutdown")
     async def _shutdown():
         try:
+            if distillation_control is not None and distillation_control.task is not None:
+                await asyncio.shield(distillation_control.task)
             await _shutdown_runtime()
         finally:
             stack = getattr(app.state, "distillation_lifecycle", None)

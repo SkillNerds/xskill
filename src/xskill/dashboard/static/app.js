@@ -1760,7 +1760,7 @@ document.addEventListener('keydown', e => {
 window.addEventListener('resize', pmPlaceChipPop);
 
 // ── SPA-lite 路由（hash）─────────────────────────────────────────
-const NAMES = { overview: '总览', skills: '技能库', pipeline: '流水线', traj: '轨迹 & 原子', users: '用户 & 画像', canary: '灰度 Canary', my: '我的', admin: '管理', settings: '设置' };
+const NAMES = { overview: '总览', skills: '技能库', pipeline: '流水线', distillation: '蒸馏模式', traj: '轨迹 & 原子', users: '用户 & 画像', canary: '灰度 Canary', my: '我的', admin: '管理', settings: '设置' };
 function showPage(pg) {
   if (!document.getElementById('pg-' + pg)) pg = 'overview';
   document.querySelectorAll('.sec-page').forEach(s => s.classList.remove('on'));
@@ -1935,6 +1935,7 @@ async function jpost(u, body, method) {
 
 function applyIdent() {
   const logged = !!IDENT, admin = logged && IDENT.role === 'admin';
+  onDistillationIdentity(admin);
   document.querySelectorAll('.auth-user').forEach(e => e.classList.toggle('hidden', !logged));
   document.querySelectorAll('.auth-admin').forEach(e => e.classList.toggle('hidden', !admin));
   document.getElementById('who-anon').classList.toggle('hidden', logged);
@@ -2928,6 +2929,186 @@ async function cfgAction(endpoint) {
 }
 document.getElementById('cfg-validate').addEventListener('click', () => cfgAction('validate'));
 document.getElementById('cfg-reload').addEventListener('click', () => cfgAction('reload'));
+
+// ── 单人控制台蒸馏模式 ───────────────────────────────────────────
+const distillationUrl = '/api/v1/dashboard/distillation';
+const distillationModes = { auto: '自动蒸馏', create_one: '新建指定技能', update_only: '更新指定技能' };
+const distillationPhases = { stopping: '正在停止旧任务…', applying: '正在应用配置…', starting: '正在启动蒸馏…' };
+const distillationEl = name => document.getElementById('distillation-' + name);
+const distillationForm = distillationEl('form');
+let distillationState = null;
+let distillationSession = 0;
+let distillationPoll = null;
+let distillationSearch = null;
+let distillationStatusRequest = 0;
+let distillationFormRevision = 0;
+let distillationSubmitting = false;
+
+function distillationProgress(message, error = false) {
+  const el = distillationEl('progress');
+  el.textContent = message;
+  el.classList.toggle('text-rose-600', error);
+  el.classList.toggle('dark:text-rose-300', error);
+}
+
+function syncDistillationFields() {
+  const mode = distillationForm.elements.mode.value;
+  distillationEl('create-fields').classList.toggle('hidden', mode !== 'create_one');
+  distillationEl('update-fields').classList.toggle('hidden', mode !== 'update_only');
+  distillationEl('name').required = mode === 'create_one';
+  distillationEl('description').required = mode === 'create_one';
+  distillationEl('target').required = mode === 'update_only';
+}
+
+function setDistillationBusy(busy) {
+  distillationEl('fields').disabled = busy;
+  distillationEl('apply').disabled = busy;
+  distillationEl('apply').classList.toggle('opacity-40', busy);
+}
+
+function searchDistillationSkills() {
+  distillationSearch?.abort();
+  const request = new AbortController();
+  distillationSearch = request;
+  const input = distillationEl('target');
+  const hint = distillationEl('search-status');
+  const options = distillationEl('options');
+  options.replaceChildren();
+  hint.textContent = '正在搜索技能…';
+  const query = new URLSearchParams({ q: input.value.trim() });
+  fetch(distillationUrl + '/skills?' + query, { signal: request.signal, cache: 'no-store' })
+    .then(async response => {
+      if (!response.ok) throw new Error('技能列表暂不可用');
+      const data = await response.json();
+      if (request.signal.aborted) return;
+      options.replaceChildren(...data.skills.map(name => new Option(name, name)));
+      hint.textContent = data.has_more ? '继续输入以缩小搜索范围。' : data.skills.length ? '' : '未找到匹配的本地技能。';
+    })
+    .catch(error => {
+      if (!request.signal.aborted) hint.textContent = error.message;
+    });
+}
+
+async function refreshDistillation(resetForm) {
+  clearTimeout(distillationPoll);
+  if (IDENT?.role !== 'admin' || distillationSubmitting) return;
+  const session = distillationSession;
+  const request = ++distillationStatusRequest;
+  const formRevision = distillationFormRevision;
+  const response = await fetch(distillationUrl, { cache: 'no-store' });
+  if (session !== distillationSession || request !== distillationStatusRequest) return;
+  if (response.status === 404) {
+    distillationEl('access').textContent = '蒸馏模式仅在单人原生模式下可用。';
+    return;
+  }
+  if (!response.ok) throw new Error('无法读取蒸馏状态，请刷新页面重试');
+  const status = await response.json();
+  if (session !== distillationSession || request !== distillationStatusRequest) return;
+  distillationState = status;
+  document.getElementById('nav-distillation').classList.remove('hidden');
+  distillationEl('access').classList.add('hidden');
+  distillationEl('current').classList.remove('hidden');
+  distillationForm.classList.remove('hidden');
+  distillationEl('active-mode').textContent =
+    distillationModes[status.mode] + (status.target ? ' · ' + status.target : '');
+  if (resetForm && formRevision === distillationFormRevision) {
+    distillationForm.elements.mode.value = status.mode;
+    distillationEl('name').value = status.mode === 'create_one' ? status.target : '';
+    distillationEl('description').value = status.description || '';
+    distillationEl('target').value = status.mode === 'update_only' ? status.target : '';
+    syncDistillationFields();
+    if (status.mode === 'update_only' && location.hash === '#distillation') searchDistillationSkills();
+  }
+  const phaseText = distillationPhases[status.phase];
+  setDistillationBusy(Boolean(phaseText));
+  if (phaseText) {
+    distillationProgress(phaseText);
+    if (location.hash === '#distillation') {
+      distillationPoll = setTimeout(() => refreshDistillation(false).catch(showDistillationError), 750);
+    }
+  } else if (status.phase === 'failed') {
+    distillationProgress('切换失败 · ' + status.error, true);
+  } else {
+    distillationProgress(status.phase === 'ready' ? '蒸馏已按当前模式启动。' : '');
+  }
+}
+
+function showDistillationError(error) {
+  if (IDENT?.role !== 'admin') return;
+  if (!distillationState) distillationEl('access').textContent = error.message;
+  else distillationProgress(error.message, true);
+  setDistillationBusy(false);
+}
+
+function onDistillationIdentity(admin) {
+  distillationSession += 1;
+  distillationState = null;
+  distillationSubmitting = false;
+  clearTimeout(distillationPoll);
+  clearTimeout(distillationSearchTimer);
+  distillationSearch?.abort();
+  document.getElementById('nav-distillation').classList.add('hidden');
+  distillationEl('current').classList.add('hidden');
+  distillationForm.classList.add('hidden');
+  distillationEl('access').classList.remove('hidden');
+  distillationEl('access').textContent = admin ? '正在加载蒸馏模式…' : '请以管理员身份登录。';
+  if (admin) refreshDistillation(true).catch(showDistillationError);
+}
+
+window.addEventListener('hashchange', () => {
+  clearTimeout(distillationPoll);
+  if (location.hash === '#distillation') refreshDistillation(true).catch(showDistillationError);
+});
+
+distillationForm.addEventListener('input', () => { distillationFormRevision += 1; });
+distillationForm.addEventListener('change', event => {
+  if (event.target.name !== 'mode') return;
+  syncDistillationFields();
+  if (event.target.value === 'update_only') searchDistillationSkills();
+});
+let distillationSearchTimer;
+distillationEl('target').addEventListener('input', () => {
+  clearTimeout(distillationSearchTimer);
+  distillationSearch?.abort();
+  distillationSearchTimer = setTimeout(searchDistillationSkills, 200);
+});
+
+distillationForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!distillationState || distillationEl('apply').disabled) return;
+  const mode = distillationForm.elements.mode.value;
+  const payload = { mode, generation: distillationState.generation };
+  if (mode === 'create_one') {
+    payload.skill = distillationEl('name').value.trim();
+    payload.description = distillationEl('description').value.trim();
+  } else if (mode === 'update_only') {
+    payload.skill = distillationEl('target').value.trim();
+  }
+  const session = distillationSession;
+  distillationSubmitting = true;
+  distillationStatusRequest += 1;
+  clearTimeout(distillationPoll);
+  setDistillationBusy(true);
+  distillationProgress('正在提交蒸馏配置…');
+  try {
+    const response = await fetch(distillationUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (session !== distillationSession) return;
+    if (!response.ok) {
+      const detail = Array.isArray(data.detail) ? data.detail[0]?.msg : data.detail;
+      throw new Error(detail || '无法应用蒸馏模式');
+    }
+    distillationSubmitting = false;
+    await refreshDistillation(false);
+  } catch (error) {
+    if (session === distillationSession) {
+      distillationSubmitting = false;
+      showDistillationError(error);
+    }
+  }
+});
 
 initIdent().catch(console.error);
 

@@ -5,7 +5,7 @@ This is an application boundary, not a sandbox for arbitrary Python extensions.
 
 from __future__ import annotations
 
-from contextlib import contextmanager, ExitStack, closing
+from contextlib import contextmanager, ExitStack, closing, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 import json
@@ -205,7 +205,8 @@ def use_write_policy(policy: DistillationPolicy):
 
 @contextmanager
 def library_write_guard(
-    root: str | Path, policy: DistillationPolicy, db_path: Path | None = None
+    root: str | Path, policy: DistillationPolicy, db_path: Path | None = None,
+    *, bind_context: bool = True,
 ):
     key = normalize_root(root)
     persisted = _persisted_library(root)
@@ -268,7 +269,9 @@ def library_write_guard(
                             "library root identity changed during guard registration"
                         )
                 _check_generation(_fences[key])
-            with use_write_policy(policy):
+            # The web host keeps a process-wide fence that its controller can
+            # replace from another thread after draining requests.
+            with use_write_policy(policy) if bind_context else nullcontext():
                 yield policy
     finally:
         with _fence_lock:

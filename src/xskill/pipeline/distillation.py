@@ -20,6 +20,20 @@ from xskill.pipeline.registry import get_connection
 from xskill.tasks.locking import root_host_lock, root_run_lock
 
 
+WORKER_ROOT_ENV = "XSKILL_DISTILLATION_WORKER_ROOT"
+WORKER_GENERATION_ENV = "XSKILL_DISTILLATION_WORKER_GENERATION"
+
+
+def verify_worker_admission(policy, *, native=True) -> None:
+    """Reject a supervised restart that loaded a different runtime config."""
+    root = os.getenv(WORKER_ROOT_ENV)
+    generation = os.getenv(WORKER_GENERATION_ENV)
+    if root is None and generation is None:
+        return
+    if not native or policy.root_key != root or str(policy.generation) != generation:
+        raise RuntimeError("worker config differs from the admitted native distillation run")
+
+
 def _pid_alive_strict(pid: int) -> bool | None:
     """Return unknown rather than treating a failed probe as process exit."""
     if os.name != "nt":
@@ -248,63 +262,66 @@ class DistillationStore:
                                       generation=generation)
 
     def configure(self, mode=None, skill=None, description=None, resume=None):
+        with root_host_lock(self.db_path.parent, self.skill_dir), root_run_lock(self.db_path.parent, self.skill_dir):
+            # The live host can restart a writer even between child lifetimes.
+            self._reject_live_host()
+            return self._configure_locked(mode, skill, description, resume)
+
+    def _configure_locked(self, mode=None, skill=None, description=None, resume=None):
+        """Validate and commit with both library lifecycle locks already held."""
         if resume and any(value is not None for value in (mode, skill, description)):
             raise ValueError("--resume is mutually exclusive with mode, skill and description")
         if not resume and mode not in {"auto", "create_one", "update_only"}:
             raise ValueError("mode is required: auto, create_one or update_only")
-        with root_host_lock(self.db_path.parent, self.skill_dir), root_run_lock(self.db_path.parent, self.skill_dir):
-            # The web host may have no current child writer while its supervisor
-            # restarts one. Reject configuration during that gap as well.
-            self._reject_live_host()
-            current = self.policy()
-            if resume:
-                with self._connect() as conn:
-                    row = conn.execute("SELECT * FROM distillation_runs WHERE run_id=? AND root_key=?",
-                                       (resume, self.root_key)).fetchone()
-                if row is None:
-                    raise ValueError("run does not exist in this skill library")
-                run = dict(row)
-                self._validate_run_target(run, resume=True)
-            elif mode == "auto":
-                if skill is not None or description is not None:
-                    raise ValueError("auto does not accept skill or description")
-                run = None
-            else:
-                _validate_name(skill or "", create=mode == "create_one")
-                target = self.skill_dir / skill
-                identity = sha = ""
-                if mode == "create_one":
-                    if not description or not description.strip():
-                        raise ValueError("create_one requires a nonempty description")
-                    _validate_paths(target)
-                    if target.exists():
-                        raise ValueError("create target already exists")
-                else:
-                    if description is not None:
-                        raise ValueError("update_only does not accept description")
-                    description, sha, identity = _read_target(target, skill, clean=True)
-                run = dict(run_id=uuid.uuid4().hex, root_key=self.root_key, mode=mode,
-                           target_skill=skill, description_snapshot=description,
-                           target_identity=identity, base_sha=sha, owns_target=0)
-            self._ensure_locator()
+        current = self.policy()
+        if resume:
             with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                control = self._control(conn)
-                if (control["generation"] if control else 0) != current.generation:
-                    raise RuntimeError("distillation configuration changed concurrently")
-                if control and control["active_run_id"] and control["active_run_id"] != (run or {}).get("run_id"):
-                    conn.execute("UPDATE distillation_runs SET state='closed',updated_at=datetime('now') WHERE run_id=?",
-                                 (control["active_run_id"],))
-                if run and not resume:
-                    names = tuple(run)
-                    conn.execute(f"INSERT INTO distillation_runs ({','.join(names)}) VALUES ({','.join('?' for _ in names)})",
-                                 tuple(run.values()))
-                if run and resume:
-                    conn.execute("UPDATE distillation_runs SET state='interrupted',error='',updated_at=datetime('now') WHERE run_id=?", (run["run_id"],))
-                conn.execute("INSERT INTO distillation_control(root_key,active_run_id,generation) VALUES(?,?,?) "
-                             "ON CONFLICT(root_key) DO UPDATE SET active_run_id=excluded.active_run_id,generation=excluded.generation",
-                             (self.root_key, run["run_id"] if run else None, current.generation + 1))
-            return self.run()
+                row = conn.execute("SELECT * FROM distillation_runs WHERE run_id=? AND root_key=?",
+                                   (resume, self.root_key)).fetchone()
+            if row is None:
+                raise ValueError("run does not exist in this skill library")
+            run = dict(row)
+            self._validate_run_target(run, resume=True)
+        elif mode == "auto":
+            if skill is not None or description is not None:
+                raise ValueError("auto does not accept skill or description")
+            run = None
+        else:
+            _validate_name(skill or "", create=mode == "create_one")
+            target = self.skill_dir / skill
+            identity = sha = ""
+            if mode == "create_one":
+                if not description or not description.strip():
+                    raise ValueError("create_one requires a nonempty description")
+                _validate_paths(target)
+                if target.exists():
+                    raise ValueError("create target already exists")
+            else:
+                if description is not None:
+                    raise ValueError("update_only does not accept description")
+                description, sha, identity = _read_target(target, skill, clean=True)
+            run = dict(run_id=uuid.uuid4().hex, root_key=self.root_key, mode=mode,
+                       target_skill=skill, description_snapshot=description,
+                       target_identity=identity, base_sha=sha, owns_target=0)
+        self._ensure_locator()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            control = self._control(conn)
+            if (control["generation"] if control else 0) != current.generation:
+                raise RuntimeError("distillation configuration changed concurrently")
+            if control and control["active_run_id"] and control["active_run_id"] != (run or {}).get("run_id"):
+                conn.execute("UPDATE distillation_runs SET state='closed',updated_at=datetime('now') WHERE run_id=?",
+                             (control["active_run_id"],))
+            if run and not resume:
+                names = tuple(run)
+                conn.execute(f"INSERT INTO distillation_runs ({','.join(names)}) VALUES ({','.join('?' for _ in names)})",
+                             tuple(run.values()))
+            if run and resume:
+                conn.execute("UPDATE distillation_runs SET state='interrupted',error='',updated_at=datetime('now') WHERE run_id=?", (run["run_id"],))
+            conn.execute("INSERT INTO distillation_control(root_key,active_run_id,generation) VALUES(?,?,?) "
+                         "ON CONFLICT(root_key) DO UPDATE SET active_run_id=excluded.active_run_id,generation=excluded.generation",
+                         (self.root_key, run["run_id"] if run else None, current.generation + 1))
+        return self.run()
 
     def _ensure_locator(self):
         """Publish only the explicit DB locator before activating its control.
@@ -331,7 +348,7 @@ class DistillationStore:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _reject_live_host(self):
+    def _reject_live_host(self, *, owned_host=False):
         state_root = self.db_path.parent
         unknown_metadata = False
         for name in ("serve_runtime.json", "agent_worker_status.json", "watcher_status.json", "kernel_host_status.json", "ecosystem_ingest_status.json"):
@@ -350,6 +367,8 @@ class DistillationStore:
                 pid = int(data.get("pid") or stats.get("pid") or 0)
                 if not pid:
                     unknown_metadata = True
+                    continue
+                if owned_host and name == "serve_runtime.json" and pid == os.getpid():
                     continue
                 if pid < 0:
                     raise ValueError("invalid writer process identity")
