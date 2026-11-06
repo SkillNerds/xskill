@@ -4,6 +4,19 @@
 CDN / 外部资源。仅当改动 `index.html` / `app.js` 里的 Tailwind 类名后需要
 重新编译 CSS。
 
+## 深浅主题
+
+顶部太阳/月亮按钮控制 `<html>` 的 `.dark` 类（Tailwind `selector` 模式）。
+默认浅色，选择存于当前浏览器的 `localStorage["xskill.dashboard.theme"]`；
+存储不可用时仍可切换。`<head>` 的内联脚本在 CSS 加载前恢复主题，避免闪白。
+主题不依赖登录，不向服务端保存，也不会重新加载页面或图表。
+
+新增组件时同时提供浅色和 `dark:` 类；自定义样式与 SVG 使用 `index.html`
+中定义的 `--ui-*` 变量。带白色文字的图表节点使用 `--ui-chart-node`，
+线条使用 `--ui-chart-teal`，以保持深色下的文字对比度。
+修改后运行 `python -m pytest tests/test_dashboard_theme.py tests/test_dashboard_frontend_smoke.py -q`，
+并检查两种主题下的页面、弹窗、图表与动态内容。
+
 ## 为什么 CSS 是内联的而不是 `<link href="tw.css">`
 
 后端路由（`router.py`）只服务 `/`（index.html）与 `/app.js` 两个静态路径，
