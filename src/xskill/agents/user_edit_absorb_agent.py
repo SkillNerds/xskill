@@ -18,6 +18,8 @@
 """
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_skill_write
+
 import codecs
 import hashlib
 import json
@@ -84,6 +86,7 @@ class UserEditAbsorbAgent:
         返回 True 表示成功 commit（agent 调过 absorb 工具）；False 表示
         diff 为空 / agent 没 commit。
         """
+        require_skill_write(self.skill_dir)
         from xskill.skill.git import run_git
 
         # 读 diff 让 agent 看
@@ -225,6 +228,7 @@ def detect_user_edits(skill_dir: Path, *, quiet_seconds: int = USER_EDIT_QUIET_S
 
     两个都过才返回 True（表示该跑 absorb）。
     """
+    require_skill_write(skill_dir)
     import time
 
     if not has_pending_user_edit(skill_dir):
@@ -1372,6 +1376,7 @@ def reverse_sync_copy_dest_result(
     并发：copy 期间 dest 也可能继续变化。锁只保护 source；任何扫描/复制异常
     返回 ``FAILED``，调用安装器必须保留 dest，供下一轮安全重试。
     """
+    require_skill_write(source_dir)
     from xskill.ecosystems.installation import (
         adopt_orphan_copy_install,
         read_copy_install_baseline,

@@ -10,6 +10,8 @@ skill/repo.py — SkillRepo 集合 + 集合级 git 操作
 
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_management_write
+
 import logging
 import operator
 import pickle
@@ -109,6 +111,7 @@ class SkillRepo:
         后续自行重建。删完清掉过期索引，并只删被去掉的那些 catalog 行。
         返回 ``(删除个数, 留下的名字)``。
         """
+        require_management_write(self.root, operation='wipe')
         n = 0
         kept: list[str] = []
         removed: list[str] = []
@@ -204,6 +207,7 @@ def rebuild_skill_index(
 
     非法 ``scope`` 抛 ``ValueError``，不做静默兜底。
     """
+    require_management_write(skill_dir, operation='rebuild_index')
     skill_root = Path(skill_dir)
     if embed_client is None:
         raise RuntimeError("rebuild_skill_index: embed_client is required")
@@ -388,6 +392,7 @@ from xskill.skill.importer import import_skill_path
 
 def import_skill(skill_dir: Path, source_path: Path) -> str:
     """把源目录纳入自有仓。返回第一个纳入的技能名（兼容旧 API）。"""
+    require_management_write(skill_dir, operation='import')
     results = import_skill_path(skill_dir, source_path, install=False)
     if not results:
         raise FileNotFoundError(f"no skill imported from {source_path}")

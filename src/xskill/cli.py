@@ -26,6 +26,52 @@ from xskill.ecosystems import SQLITE_SPEC_BY_ECO
 logger = logging.getLogger("xskill.cli")
 
 
+_MANAGEMENT_COMMANDS = {
+    "init", "connect", "start", "download", "upload", "generate", "import",
+    "read", "rebuild", "repair-baselines", "registry",
+}
+
+
+def _check_persisted_cli_management() -> None:
+    """Fresh CLI processes must read fixed authority before any side effect."""
+    import yaml
+    from xskill.config import XSKILL_HOME, get_registry_db_path, get_skill_dir
+    from xskill.pipeline.distillation import DistillationStore
+    from xskill.skill.write_policy import SkillWriteDenied, current_write_policy
+    config_path = XSKILL_HOME / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+    config = config or {}
+    if not isinstance(config, dict):
+        raise ValueError("config.yaml must contain a mapping")
+    root = get_skill_dir(config, xskill_home=XSKILL_HOME)
+    status = DistillationStore(get_registry_db_path(xskill_home=XSKILL_HOME), root).status()
+    if status["mode"] != "auto" or current_write_policy(root).mode != "auto":
+        raise SkillWriteDenied("administrative writes are disabled during targeted distillation; stop serve and configure auto first")
+
+
+def _cli_mutates(command: str, args) -> bool:
+    if command == "registry":
+        return getattr(args, "registry_action", "") != "list"
+    if command == "search":
+        return bool(getattr(args, "download", False))
+    return command in _MANAGEMENT_COMMANDS
+
+
+def _guard_cli_mutation(function):
+    from functools import wraps
+    @wraps(function)
+    def guarded(args, *positional, **keywords):
+        command = function.__name__.removeprefix("cmd_").replace("_", "-")
+        if _cli_mutates(command, args):
+            try:
+                _check_persisted_cli_management()
+            except Exception as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+        return function(args, *positional, **keywords)
+    return guarded
+
+
 # ═══════════════════════════════════════════════════════════════
 # 子命令
 # ═══════════════════════════════════════════════════════════════
@@ -67,6 +113,7 @@ def cmd_serve(args, xskill) -> int:
     return 0
 
 
+@_guard_cli_mutation
 def cmd_registry(args, xskill) -> int:
     action = args.registry_action
     if action == "add":
@@ -313,6 +360,7 @@ def _choose_helper_ecosystems(args, detections: list[dict], interactive: bool) -
     return picked
 
 
+@_guard_cli_mutation
 def cmd_init(args) -> int:
     """本机引导：扫描 harness、转换轨迹、可选装 /xskill-helper。
 
@@ -366,6 +414,7 @@ def cmd_init(args) -> int:
     return 0
 
 
+@_guard_cli_mutation
 def cmd_connect(args) -> int:
     """team 瘦客户端：连上 server。
 
@@ -596,6 +645,7 @@ def _print_connect_status(st: dict, as_json: bool) -> None:
         print(f"  warning  : {st['warning']}")
 
 
+@_guard_cli_mutation
 def cmd_start(args) -> int:
     """安装并启动 connect 常驻任务（未 connect 过则提示先 connect）。"""
     from xskill.config import get_team_client_state_path
@@ -1726,6 +1776,7 @@ def _cmd_search_kind_team(
     return 0
 
 
+@_guard_cli_mutation
 def cmd_search(args) -> int:
     """`xskill search` 部署模式自适应入口（#201）。
 
@@ -1922,6 +1973,7 @@ def _render_local_search_results(
     _write_search_output("\n".join(output_lines))
 
 
+@_guard_cli_mutation
 def cmd_download(args, http=None, headers=None) -> int:
     """`xskill download <skill-id>` —— 显式下载并持久安装一个搜索结果。"""
     import json as _json
@@ -2001,6 +2053,7 @@ def cmd_download(args, http=None, headers=None) -> int:
     return 0
 
 
+@_guard_cli_mutation
 def cmd_upload(args, http=None, headers=None) -> int:
     """`xskill upload <dir>` —— 打包 skill 文件夹上传到 server 的 user skillhub。
 
@@ -2090,6 +2143,7 @@ def _parse_sse_block(block: str) -> dict | None:
     return None
 
 
+@_guard_cli_mutation
 def cmd_generate(args, http=None, headers=None) -> int:
     """`xskill generate "指令"` —— 在 team server 上即时生成或改写 skill。"""
     import httpx
@@ -2241,6 +2295,7 @@ def _print_import_result(imported, *, json_mode: bool) -> None:
         print(f"warning: {warning}", file=sys.stderr)
 
 
+@_guard_cli_mutation
 def cmd_import(args, http=None, headers=None) -> int:
     """`xskill import <路径>` —— 把已有技能目录纳入自有仓，不是 upload。"""
     from pathlib import Path
@@ -2373,6 +2428,7 @@ def _cmd_import_team(args, sources, *, http=None, headers=None) -> int:
     return 0
 
 
+@_guard_cli_mutation
 def cmd_read(args, xskill=None) -> int:
     """`xskill read <PATH>` —— 把 ngagent、opencode 的 db 桥接入库。"""
     del xskill
@@ -2630,6 +2686,7 @@ def _cmd_read_kind_team(
     return 0
 
 
+@_guard_cli_mutation
 def cmd_rebuild(args, _xskill) -> int:
     """`xskill rebuild [--force]` —— 用现有原始轨迹重跑蒸馏。
 
@@ -2716,6 +2773,7 @@ def cmd_rebuild(args, _xskill) -> int:
     return 0
 
 
+@_guard_cli_mutation
 def cmd_repair_baselines(args) -> int:
     """审计并安全重算已有 copy 安装基线。"""
     import hashlib
@@ -3072,6 +3130,52 @@ def cmd_privacy(args) -> int:
     return 0
 
 
+def cmd_distill(args) -> int:
+    """Prepare a standalone run or read its persistent audit, without agents."""
+    import json
+    import sqlite3
+    import yaml
+
+    from xskill.config import XSKILL_HOME, get_registry_db_path, get_skill_dir
+    from xskill.pipeline.distillation import DistillationStore
+    from xskill.runtime import role
+
+    if role() != "standalone":
+        print("error: distill is a local standalone feature; team clients/servers are unsupported", file=sys.stderr)
+        return 2
+    try:
+        config_path = XSKILL_HOME / "config.yaml"
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+        config = config or {}
+        if not isinstance(config, dict):
+            raise ValueError("config.yaml must contain a mapping")
+        store = DistillationStore(get_registry_db_path(xskill_home=XSKILL_HOME),
+                                  get_skill_dir(config, xskill_home=XSKILL_HOME))
+        if args.distill_action == "configure":
+            run = store.configure(mode=args.mode, skill=args.skill,
+                                  description=args.description, resume=args.resume)
+            if run:
+                print(f"Prepared {run['mode']} run {run['run_id']} for {run['target_skill']}; start xskill serve to run it.")
+            else:
+                print("Configured automatic distillation for the next standalone serve.")
+        else:
+            status = store.status()
+            if args.json:
+                print(json.dumps(status, ensure_ascii=False, indent=2))
+            else:
+                run = status["run"]
+                print(f"mode: {status['mode']}")
+                if run:
+                    print(f"run: {run['run_id']}\ntarget: {run['target_skill']}\nstate: {run['state']}\nartifact: {run['artifact_state']}")
+                    print(f"accepted: {status['accepted']}  skipped: {status['skipped']}  failed: {status['failed']}")
+                    if run["error"]:
+                        print(f"error: {run['error']}")
+        return 0
+    except (ValueError, RuntimeError, OSError, KeyError, sqlite3.Error, yaml.YAMLError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="xskill",
@@ -3088,6 +3192,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--debug", action="store_true", help="verbose logging")
     p.add_argument("--quiet", action="store_true", help="quiet mode")
     sub = p.add_subparsers(dest="command")
+
+    p_distill = sub.add_parser("distill", help="Configure/query one-target local distillation")
+    distill_sub = p_distill.add_subparsers(dest="distill_action", required=True)
+    p_configure = distill_sub.add_parser("configure", help="Prepare the next run; does not start a model")
+    selection = p_configure.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--mode", choices=["auto", "create_one", "update_only"])
+    selection.add_argument("--resume", metavar="RUN_ID")
+    p_configure.add_argument("--skill")
+    p_configure.add_argument("--description")
+    p_distill_status = distill_sub.add_parser("status", help="Read run state from the local database")
+    p_distill_status.add_argument("--json", action="store_true")
 
     p_serve = sub.add_parser("serve", help="Start daemon (FastAPI + watcher)")
     p_serve.add_argument("--host", default="0.0.0.0")
@@ -3491,7 +3606,18 @@ def main() -> int:
         return 1
 
     set_overrides(debug=args.debug, quiet=args.quiet)
+
+    if _cli_mutates(args.command, args):
+        try:
+            _check_persisted_cli_management()
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
     _setup_logging(args.debug, args.quiet, command=args.command)
+
+    if args.command == "distill":
+        return cmd_distill(args)
 
     if args.command == "registry" and args.registry_action in ("add", "remove"):
         if not args.path:

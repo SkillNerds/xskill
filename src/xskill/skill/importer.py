@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_management_write
+
 import logging
 import shutil
 import tempfile
@@ -184,6 +186,7 @@ def _ignore_new_skill_keep_git(src: str, names: list[str]) -> set[str]:
 
 def _replace_skill_files(source: Path, target: Path) -> None:
     """把目标工作区技能文件换成源目录那份。不动 .git 和辅助文件。"""
+    require_management_write(Path(target).parent, operation='import')
     for child in list(target.iterdir()):
         if child.name in RUNTIME_SIDECARS or child.name in RUNTIME_SIDECAR_DIRS:
             continue
@@ -207,6 +210,7 @@ def _target_has_git(target: Path) -> bool:
 
 def mark_skill_imported(target: Path) -> None:
     """写入纳入标记。须在 ``_replace_skill_files`` 之后，随 import 那次提交进仓。"""
+    require_management_write(Path(target).parent, operation='import')
     (Path(target) / ORIGIN_FILENAME).write_text(
         f"{ORIGIN_IMPORT}\n", encoding="utf-8",
     )
@@ -262,6 +266,7 @@ def import_one_skill(
     catalog_db_path: Path | str | None = None,
 ) -> ImportResult:
     """把一个源技能目录落入 ``skill_dir / source.name``。"""
+    require_management_write(skill_dir, operation='import')
     source = Path(source).resolve()
     if not is_skill_source_dir(source):
         raise FileNotFoundError(f"not a skill directory (missing SKILL.md): {source}")
@@ -400,6 +405,7 @@ def import_skill_path(
     stash_home: Path | None = None,
 ) -> list[ImportResult]:
     """发现路径下的技能并逐个纳入。独立部署走这条；团队部署只在 server 上落仓。"""
+    require_management_write(skill_dir, operation="import")
     results = []
     home = Path(home_root) if home_root is not None else Path.home()
     for source in discover_import_sources(source_path):

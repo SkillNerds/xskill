@@ -399,6 +399,8 @@ class SkillEditAgent:
     retry_batch_size: int | None = None
     logs_dir: Path | None = None
     next_batch_size: int = field(init=False)
+    _artifact_validation_error: str = field(default="", init=False)
+    _last_checkpoint_evidence: tuple = field(default=(), init=False)
 
     def __post_init__(self) -> None:
         self.skill_dir = Path(self.skill_dir)
@@ -433,6 +435,30 @@ class SkillEditAgent:
             agent_tools.write_file,
             agent_tools.edit_file,
         ]
+
+    def _restricted_artifact_valid(self, ref: str | None = None) -> bool:
+        """Final publication gate; progressive draft checkpoints remain unrestricted."""
+        from xskill.skill.artifact_validation import (
+            ArtifactValidationError, validate_skill_artifact,
+        )
+        from xskill.skill.write_policy import current_write_policy
+
+        policy = current_write_policy(self.skill_dir.parent)
+        self._artifact_validation_error = ""
+        if policy.mode == "auto":
+            return True
+        try:
+            validate_skill_artifact(
+                self.skill_dir, expected_name=policy.target_skill, ref=ref,
+            )
+        except ArtifactValidationError as exc:
+            self._artifact_validation_error = str(exc)
+            logger.warning(
+                "SkillEdit artifact validation failed for %s at %r: %s; "
+                "preserve pending candidates", self.skill_dir.name, ref, exc,
+            )
+            return False
+        return True
 
     def _skill_tree_context_lines(self, max_entries: int = 80) -> list[str]:
         """返回当前 skill 根目录与文件树，供 agent 决定是否 read_file。"""
@@ -484,8 +510,10 @@ class SkillEditAgent:
         main/jam 全过 → 保留旧渐进分支链，终态成功后摘除入口快照 atom_id。
         """
         from xskill.skill.git import current_branch, run_git
+        from xskill.skill.write_policy import current_write_policy
         from xskill.canary import CanaryConfig, evaluate_jam_gates
 
+        restricted = current_write_policy(self.skill_dir.parent).mode != "auto"
         self._recover_crashed_turns()
 
         # 守门 1：staging 存在时——三条件合取才 jam；否则 hold。
@@ -561,8 +589,9 @@ class SkillEditAgent:
             cur = "main"
 
         skill_md = self.skill_dir / "SKILL.md"
-        mtime_before = skill_md.stat().st_mtime if skill_md.is_file() else 0.0
-        size_before = skill_md.stat().st_size if skill_md.is_file() else 0
+        if not restricted:
+            mtime_before = skill_md.stat().st_mtime if skill_md.is_file() else 0.0
+            size_before = skill_md.stat().st_size if skill_md.is_file() else 0
         main_sha_before = ""
         if jam:
             code, out, _ = run_git(["rev-parse", "main"], cwd=str(self.skill_dir))
@@ -582,38 +611,41 @@ class SkillEditAgent:
             logger.exception("SkillEditAgent _run failed: %s", self.skill_dir.name)
             run_ok = False
 
-        # 实测落盘：mtime 推进 + 非空 = agent 真写了
-        wrote = (
-            skill_md.is_file()
-            and skill_md.stat().st_size > 0
-            and (
-                skill_md.stat().st_mtime > mtime_before
-                or skill_md.stat().st_size != size_before
+        # Restricted publication is verified from the committed tree. A valid
+        # edit may change only a referenced file while leaving SKILL.md untouched.
+        if not restricted:
+            # 实测落盘：mtime 推进 + 非空 = agent 真写了
+            wrote = (
+                skill_md.is_file()
+                and skill_md.stat().st_size > 0
+                and (
+                    skill_md.stat().st_mtime > mtime_before
+                    or skill_md.stat().st_size != size_before
+                )
             )
-        )
-        if not wrote:
-            logger.warning(
-                "SkillEditAgent ran but SKILL.md not written/empty: %s — "
-                "保留 candidates 等下轮重试",
-                self.skill_dir.name,
-            )
-            return False
+            if not wrote:
+                logger.warning(
+                    "SkillEditAgent ran but SKILL.md not written/empty: %s — "
+                    "保留 candidates 等下轮重试",
+                    self.skill_dir.name,
+                )
+                return False
 
-        # 发布门兜底：write_file 已挡住非法 frontmatter，但 agent 可能绕开
-        # write_file（或别的路径）落了坏 SKILL.md。commit 前再跑一次 parse_strict，
-        # 非法 → 不清 buffer、标重试，绝不把坏 skill 静默发布出去。
-        from xskill.skill.frontmatter import (
-            parse_strict as fm_parse_strict,
-            FrontmatterError,
-        )
-        try:
-            fm_parse_strict(skill_md.read_text(encoding="utf-8"))
-        except FrontmatterError as e:
-            logger.warning(
-                "SkillEditAgent 落了非法 SKILL.md: %s — %s；保留 candidates 重试",
-                self.skill_dir.name, e,
+            # 发布门兜底：write_file 已挡住非法 frontmatter，但 agent 可能绕开
+            # write_file（或别的路径）落了坏 SKILL.md。commit 前再跑一次 parse_strict，
+            # 非法 → 不清 buffer、标重试，绝不把坏 skill 静默发布出去。
+            from xskill.skill.frontmatter import (
+                parse_strict as fm_parse_strict,
+                FrontmatterError,
             )
-            return False
+            try:
+                fm_parse_strict(skill_md.read_text(encoding="utf-8"))
+            except FrontmatterError as e:
+                logger.warning(
+                    "SkillEditAgent 落了非法 SKILL.md: %s — %s；保留 candidates 重试",
+                    self.skill_dir.name, e,
+                )
+                return False
 
         if not run_ok:
             logger.warning(
@@ -636,6 +668,8 @@ class SkillEditAgent:
                     self.skill_dir.name,
                 )
                 return False
+            if not self._restricted_artifact_valid("main"):
+                return False
             if not discard_staging(self.skill_dir):
                 logger.warning(
                     "SkillEditAgent jam-merge could not discard staging: %s — "
@@ -648,7 +682,18 @@ class SkillEditAgent:
         # commit 工具的成功效应（baby→main 或 main→staging）通过当前分支变化
         # 自然反映，不需要在这里做额外检查（非 jam 路径的 turn 分支已在
         # ``_run`` 尾部的终态校验通过后就地清理）
-        C.remove_candidates(self.skill_dir, snapshot_atom_ids)
+        from xskill.agents.agent_tools import current_agent_tool_context
+        context = current_agent_tool_context()
+        if restricted and context.distillation_store is not None:
+            from xskill.skill.git import skill_repo_lock
+            with skill_repo_lock(self.skill_dir, use_git_write_limit=False):
+                snapshot_atom_ids &= context.distillation_store.checkpoint_candidate_ids(
+                    self._last_checkpoint_evidence,
+                )
+                if snapshot_atom_ids:
+                    C.remove_candidates(self.skill_dir, snapshot_atom_ids)
+        else:
+            C.remove_candidates(self.skill_dir, snapshot_atom_ids)
         logger.info("SkillEditAgent done + %d candidate(s) removed: %s",
                     len(snapshot_atom_ids), self.skill_dir.name)
         return True
@@ -777,11 +822,24 @@ class SkillEditAgent:
                 )
                 return False
 
+        if not self._restricted_artifact_valid():
+            # Candidates already have durable receipts. Repair the existing
+            # artifact once per invocation, without re-learning consumed atoms.
+            if not self._run_stub_rewrite_turn(
+                validation_error=self._artifact_validation_error,
+            ):
+                self._reset_baby_worktree()
+                return False
+            if not self._restricted_artifact_valid():
+                self._reset_baby_worktree()
+                return False
         ok = agent_tools.graduate_baby_to_main(
             self.skill_dir,
             self.skill_dir.name,
             "graduate baby after all candidate checkpoints",
         )
+        if ok:
+            ok = self._restricted_artifact_valid("main")
         if ok:
             self.next_batch_size = self.batch_size
             agent_trace.append_to(
@@ -798,21 +856,33 @@ class SkillEditAgent:
             )
         return ok
 
-    def _run_stub_rewrite_turn(self) -> bool:
-        """Buffer empty but body still stub → one forced write_file turn, no commit tool."""
-        from xskill.agents import agent_tools, agent_trace
+    def _run_stub_rewrite_turn(self, validation_error: str | None = None) -> bool:
+        """One empty-buffer repair turn; framework validates and graduates."""
+        from xskill.agents import agent_trace
 
         skill_md = self.skill_dir / "SKILL.md"
-        scenario_block = "\n".join(
-            [
+        if validation_error is None:
+            scenario_lines = [
                 f"skill_name: {self.skill_dir.name}（**baby 分支 · stub 未清除，强制重写**）",
                 "SKILL.md 仍是 init placeholder，框架拒绝 graduate。",
                 "必须用 write_file 覆盖 SKILL.md 为正式正文（去掉 placeholder 行）。",
                 "本轮没有 commit 工具；写完后由框架校验并 graduate。",
-                *self._skill_tree_context_lines(),
-                f"目标 SKILL.md 路径: {skill_md}",
             ]
-        )
+            turn_name = "Stub rewrite"
+        else:
+            scenario_lines = [
+                f"skill_name: {self.skill_dir.name}（baby 分支 · 最终成品修复）",
+                "所有候选已 checkpoint；保留现有已学内容，本轮只修复成品校验失败。",
+                f"成品校验错误: {validation_error}",
+                "先读取现有 SKILL.md 和相关文件，再修复缺失引用、正文或配套文件；可以创建所需文件。",
+                "本轮没有 commit 工具；写完后由框架重新校验并 graduate。",
+            ]
+            turn_name = "Final artifact repair"
+        scenario_block = "\n".join([
+            *scenario_lines,
+            *self._skill_tree_context_lines(),
+            f"目标 SKILL.md 路径: {skill_md}",
+        ])
         sysprompt = build_system_prompt(
             scenario_block=scenario_block,
             branch_now="baby",
@@ -823,15 +893,15 @@ class SkillEditAgent:
             self._trace_path(),
             (
                 f"{time.strftime('%H:%M:%S')} INFO  "
-                "Stub rewrite turn start (no commit tool).\n"
+                f"{turn_name} turn start (no commit tool).\n"
             ),
         )
         try:
             self._trace_run(agent, scenario_block)
         except Exception:
             logger.exception(
-                "SkillEdit stub rewrite turn raised: %s",
-                self.skill_dir.name,
+                "SkillEdit %s turn raised: %s",
+                turn_name, self.skill_dir.name,
             )
             return False
         from xskill.skill.git import skill_md_still_baby_stub
@@ -1089,6 +1159,15 @@ class SkillEditAgent:
     # ───────────────────────────────────────────────────────────────
 
     def _run(self, ready: list[dict], current_branch_name: str, jam: bool = False) -> bool:
+        from xskill.skill.write_policy import current_write_policy
+        if current_write_policy(self.skill_dir.parent).mode == "auto":
+            return self._run_bound(ready, current_branch_name, jam)
+        from xskill.agents.agent_tools import use_skill_edit_batch
+        with use_skill_edit_batch(self.skill_dir.name, [c["atom_id"] for c in ready]) as bound:
+            self._last_checkpoint_evidence = bound.skill_edit_batch_evidence
+            return self._run_bound(ready, current_branch_name, jam)
+
+    def _run_bound(self, ready: list[dict], current_branch_name: str, jam: bool = False) -> bool:
         """跑完整条（可能多轮的）消化链。
 
         返回 True = 终态 commit 完整跑完（baby→main / main 直接更新走
@@ -1143,6 +1222,9 @@ class SkillEditAgent:
                 ["rev-parse", "--verify", "staging"], cwd=str(self.skill_dir),
             )[0] == 0
             ok = staging_ok and final_branch == "main"
+        if ok:
+            target_ref = "main" if current_branch_name == "baby" else "staging"
+            ok = self._restricted_artifact_valid(target_ref)
         if ok:
             self._cleanup_turn_branches(current_branch_name)
         return ok

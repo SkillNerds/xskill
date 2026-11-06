@@ -13,8 +13,10 @@ agent-worker 是常驻子进程；``recommend-heavy``（含画像刷新 + Milvus
 from __future__ import annotations
 
 import logging
+import inspect
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 logger = logging.getLogger("xskill._workers")
@@ -51,6 +53,7 @@ def run_agent_worker_forever(
     server: bool = False,
     home: str | None = None,
     stop_event=None,
+    drain_request=None,
     status_interval: float = 5.0,
 ) -> int:
     """构造四池 agent worker 并常驻运行，直到收到 TERM/INT。
@@ -88,6 +91,9 @@ def run_agent_worker_forever(
     event = stop_event if stop_event is not None else threading.Event()
     previous_handlers = _install_stop_signal_handlers(event)
     watcher = None
+    lifecycle = ExitStack()
+    distillation_store = None
+    owns_run = False
     ok = False
     error = None
     try:
@@ -102,6 +108,31 @@ def run_agent_worker_forever(
             XSKILL_HOME / "install_history.jsonl"
         ).expanduser().resolve()
 
+        from xskill.pipeline.distillation import DistillationStore, verify_worker_admission
+        from xskill.skill.write_policy import library_write_guard
+        from xskill.tasks.locking import root_run_lock
+        selected = kernel_config(config, xskill_home=XSKILL_HOME)
+        distillation_store = DistillationStore(registry_db_path, skill_dir)
+        policy = distillation_store.policy()
+        verify_worker_admission(policy, native=selected["active"] == "native")
+        restricted = policy.mode != "auto"
+        if restricted and (server or selected["active"] != "native"):
+            raise RuntimeError("targeted distillation supports standalone native workers only")
+        if selected["active"] == "native":
+            lifecycle.enter_context(root_run_lock(XSKILL_HOME, skill_dir))
+            owns_run = True
+            # Reload inside the lock: configure may have completed just before
+            # this writer acquired it. Do not use a pre-lock policy snapshot.
+            policy = distillation_store.policy()
+            verify_worker_admission(policy)
+            restricted = policy.mode != "auto"
+            if restricted and server:
+                raise RuntimeError("targeted distillation supports standalone native workers only")
+            lifecycle.enter_context(library_write_guard(skill_dir, policy, db_path=registry_db_path))
+            if restricted:
+                distillation_store.ensure_target()
+                distillation_store.set_state("running")
+
         on_poll_hook = None
         if not server:
             def ingest_on_poll() -> None:
@@ -112,11 +143,11 @@ def run_agent_worker_forever(
                     registry_db_path=registry_db_path,
                     install_history_path=install_history_path,
                     excluded_ecosystems={"claude_code"},
+                    **({"install_skills": False, "target_skill": policy.target_skill} if restricted else {}),
                 )
 
             on_poll_hook = ingest_on_poll
 
-        selected = kernel_config(config, xskill_home=XSKILL_HOME)
         watcher = build_watcher(
             config,
             xskill_home=XSKILL_HOME,
@@ -127,24 +158,38 @@ def run_agent_worker_forever(
             server_mode=server,
             on_poll_hook=on_poll_hook,
             native_distill=(selected["active"] == "native"),
+            **({"distillation_store": distillation_store,
+                "distillation_policy": policy} if restricted else {}),
         )
-        watcher.start()
-        write_status_file(status_path, watcher.stats, ok=True)
-        write_status_file(
-            worker_status_path,
-            getattr(watcher, "agent_worker_status", watcher.stats),
-            ok=True,
-        )
+        def publish_status():
+            write_status_file(status_path, watcher.stats, ok=True)
+            stats = {**getattr(watcher, "agent_worker_status", watcher.stats),
+                     "distillation_generation": policy.generation, "distillation_root": policy.root_key}
+            if drain_request is not None:
+                stats["drain"] = watcher.drain_status
+            write_status_file(
+                worker_status_path, stats, ok=True, active=True,
+            )
 
-        while not event.wait(status_interval):
+        token = drain_request() if drain_request is not None else None
+        if token is not None:
+            watcher.set_drain(token)
+        watcher.start()
+        publish_status()
+        last_status = time.monotonic()
+        interval = min(status_interval, 0.25) if drain_request is not None else status_interval
+        while not event.wait(interval):
             if not watcher.is_running:
                 raise RuntimeError("watcher thread exited unexpectedly")
-            write_status_file(status_path, watcher.stats, ok=True)
-            write_status_file(
-                worker_status_path,
-                getattr(watcher, "agent_worker_status", watcher.stats),
-                ok=True,
-            )
+            requested = drain_request() if drain_request is not None else None
+            changed = requested != token
+            if changed:
+                token = requested
+                watcher.set_drain(token)
+            now = time.monotonic()
+            if changed or now - last_status >= (min(status_interval, 0.5) if token else status_interval):
+                publish_status()
+                last_status = now
 
         ok = True
         return 0
@@ -157,12 +202,22 @@ def run_agent_worker_forever(
             from xskill.utils.shutdown import request_shutdown
 
             request_shutdown()
-            watcher.stop()
+            if "wait" in inspect.signature(watcher.stop).parameters:
+                watcher.stop(wait=True)
+            else:
+                watcher.stop()
+        if distillation_store is not None and owns_run:
+            try:
+                distillation_store.set_state("stopped" if ok else "failed", error=error or "")
+            except Exception:
+                logger.exception("failed to save distillation exit state")
+        lifecycle.close()
         write_status_file(
             status_path,
             watcher.stats if watcher is not None else {},
             ok=ok,
             error=error,
+            active=False,
         )
         write_status_file(
             worker_status_path,
@@ -173,6 +228,7 @@ def run_agent_worker_forever(
             ),
             ok=ok,
             error=error,
+            active=False,
         )
         _restore_signal_handlers(previous_handlers)
 
@@ -199,6 +255,7 @@ def run_kernel_host(
     *,
     server: bool = False,
     stop_event=None,
+    drain_request=None,
     max_cycles: int | None = None,
 ) -> int:
     """Keep the selected external kernel alive and invoke it periodically."""
@@ -231,11 +288,24 @@ def run_kernel_host(
     next_run_at = time.monotonic()
     completed_cycles = 0
     interval = 1.0
+    initial_admission = True
 
     while not stop.is_set():
+        if _wait_during_drain(drain_request, stop, "kernel_host"):
+            continue
         config = load_config()
         selected = kernel_config(config, xskill_home=XSKILL_HOME)
         active = selected["active"]
+        from xskill.pipeline.distillation import DistillationStore, verify_worker_admission
+        policy = DistillationStore(
+            get_registry_db_path(xskill_home=XSKILL_HOME),
+            get_skill_dir(config, xskill_home=XSKILL_HOME),
+        ).policy()
+        verify_worker_admission(policy, native=active == "native" or not initial_admission)
+        initial_admission = False
+        if policy.mode != "auto" and (server or active != "native"):
+            kernel_log.error("targeted distillation supports standalone native workers only")
+            return 1
         if active == "native":
             runtime = None
             runtime_key = None
@@ -356,6 +426,10 @@ def _build_claude_code_ingester(*, home: str | None = None):
     registry_db_path = get_registry_db_path(
         xskill_home=XSKILL_HOME,
     ).expanduser().resolve()
+    from xskill.pipeline.distillation import DistillationStore, verify_worker_admission
+    policy = DistillationStore(registry_db_path, skill_dir).policy()
+    verify_worker_admission(policy)
+    restricted = policy.mode != "auto"
     detections = detect_known_ecosystems(home_root=home_root)
     claude_code_detection = next(
         (
@@ -375,6 +449,15 @@ def _build_claude_code_ingester(*, home: str | None = None):
         ecosystem="claude_code",
         db_path=registry_db_path,
     )
+    if restricted:
+        return CCSessionIngester(
+            target_traj_dir=bridge_path, home_root=home_root,
+            poll_interval=1.0, registry_db_path=registry_db_path,
+            skill_dir=skill_dir, target_root=home_root,
+            history_path=XSKILL_HOME / "install_history.jsonl",
+            assignments_path=skill_dir / "session_assignments.jsonl",
+            target_skill=policy.target_skill,
+        )
     skill_paths = [
         skill_path
         for skill_path in sorted(skill_dir.iterdir())
@@ -438,15 +521,19 @@ def run_ecosystem_ingest_loop(
     *,
     home: str | None = None,
     interval: float = 0.5,
+    stop_event=None,
+    drain_request=None,
 ) -> int:
     """常驻轻量进程：保留 seen 索引，watcher 忙时仍逐 session 轮转。"""
     import threading
 
     if interval <= 0:
         raise ValueError("ecosystem ingest interval must be positive")
-    wait_event = threading.Event()
+    wait_event = stop_event if stop_event is not None else threading.Event()
     ingester = None
-    while True:
+    while not wait_event.is_set():
+        if _wait_during_drain(drain_request, wait_event, "ecosystem_ingest"):
+            continue
         try:
             if ingester is None:
                 ingester = _build_claude_code_ingester(home=home)
@@ -456,6 +543,25 @@ def run_ecosystem_ingest_loop(
             logger.exception("ecosystem ingest loop iteration failed")
             ingester = None
         wait_event.wait(interval)
+    return 0
+
+
+def _wait_during_drain(drain_request, stop, worker_name: str) -> bool:
+    """Acknowledge at the boundary between complete worker iterations."""
+    token = drain_request() if drain_request is not None else None
+    if token is None:
+        return False
+    from xskill.config import XSKILL_HOME
+    from xskill.utils.status_file import write_status_file
+
+    while not stop.is_set() and drain_request() == token:
+        write_status_file(
+            XSKILL_HOME / f"{worker_name}_status.json",
+            {"kind": worker_name, "drain": {"token": token, "ready": True}},
+            ok=True, active=True,
+        )
+        stop.wait(0.25)
+    return True
 
 
 def run_profile_refresh_once(*, engine=None) -> int:
@@ -634,6 +740,7 @@ def main(argv: list[str] | None = None) -> int:
     from xskill.utils.logging import configure_logging
 
     parser = argparse.ArgumentParser(prog="xskill._workers")
+    parser.add_argument("--stop-on-stdin-close", action="store_true")
     sub = parser.add_subparsers(dest="kind", required=True)
     p_worker = sub.add_parser("agent-worker")
     p_worker.add_argument("--server", action="store_true")
@@ -648,6 +755,43 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("recommend-heavy")
     sub.add_parser("ux-scores-sync")
     args = parser.parse_args(argv)
+
+    stop_event = None
+    drain_token = None
+    if args.stop_on_stdin_close:
+        import os
+        import threading
+        from xskill.pipeline.scheduler import WORKER_DRAIN_ENV
+        drain_token = os.environ.pop(WORKER_DRAIN_ENV, None)
+        stop_event = threading.Event()
+
+        def watch_parent():
+            nonlocal drain_token
+            pending = b""
+            try:
+                while chunk := os.read(sys.stdin.fileno(), 128):
+                    pending += chunk
+                    while b"\n" in pending:
+                        command, pending = pending.split(b"\n", 1)
+                        if command.startswith(b"drain "):
+                            drain_token = command[6:].decode("ascii")
+                        elif command == b"resume":
+                            drain_token = None
+            finally:
+                stop_event.set()
+
+        threading.Thread(target=watch_parent, daemon=True).start()
+    stop_options = ({"stop_event": stop_event, "drain_request": lambda: drain_token}
+                    if stop_event is not None else {})
+
+    if args.kind in {"kernel-host", "ecosystem-ingest"}:
+        import atexit
+        from xskill.config import XSKILL_HOME
+        from xskill.utils.status_file import write_status_file
+        process_status = XSKILL_HOME / f"{args.kind.replace('-', '_')}_status.json"
+        XSKILL_HOME.mkdir(parents=True, exist_ok=True)
+        write_status_file(process_status, {"kind": args.kind}, ok=True, active=True)
+        atexit.register(write_status_file, process_status, {"kind": args.kind}, ok=True, active=False)
 
     configure_logging(
         get_logs_dir(),
@@ -665,14 +809,15 @@ def main(argv: list[str] | None = None) -> int:
                     reconfigure(line_buffering=True)
                 except (OSError, ValueError):
                     pass
-        return run_kernel_host(server=args.server)
+        return run_kernel_host(server=args.server, **stop_options)
     if args.kind == "agent-worker":
-        return run_agent_worker_forever(server=args.server, home=args.home)
+        return run_agent_worker_forever(server=args.server, home=args.home, **stop_options)
     if args.kind == "ecosystem-ingest":
         if args.loop:
             return run_ecosystem_ingest_loop(
                 home=args.home,
                 interval=args.interval,
+                **stop_options,
             )
         return run_ecosystem_ingest_once(home=args.home)
     if args.kind == "ux-scores-sync":

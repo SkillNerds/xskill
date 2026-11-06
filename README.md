@@ -204,6 +204,10 @@ llm_agents:
 > 1.希望能够自动将之前高频工作流串联成skill
 > 2.每天有高强度的Agent运行需求
 
+#### 指定技能蒸馏
+
+本地 native 管线可以选择只新建或只更新一个指定技能；默认仍为自动蒸馏。新建填写名称和现有 `description`，更新选择已有技能。配置前停止本地 `serve`，再运行 `xskill distill configure`；使用方法、权限边界和恢复说明见[指定技能蒸馏](docs/targeted-distillation.md)。
+
 ### 团队模式(推荐)
 
 

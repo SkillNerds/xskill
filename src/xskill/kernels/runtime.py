@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_management_write
+
 import inspect
 import json
 import os
@@ -468,6 +470,8 @@ class KernelRuntime:
         execution_layout: KernelExecutionLayout | None = None,
         run_id: str | None = None,
     ) -> tuple[KernelDescriptor, KernelRunResult]:
+        if self.active_kernel != 'native':
+            require_management_write(execution_layout.skill_dir if execution_layout else self.skill_dir, operation='external kernel')
         descriptor = self.catalog.get(self.active_kernel)
         if not descriptor.available:
             self.catalog.create(self.active_kernel)  # raises the detailed error

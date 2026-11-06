@@ -22,6 +22,10 @@ directory junction 兼容性（issue #35）：``Path.is_symlink()`` 对 junction
 
 from __future__ import annotations
 
+from xskill.skill.write_policy import pin_install_write, safe_write_text
+
+from xskill.skill.write_policy import require_skill_write, require_install_write
+
 import json
 import logging
 import time
@@ -70,6 +74,7 @@ def _openclaw_agents_path(home: Path) -> Path:
 # ─────────────────────────────────────────────────────────────────
 
 
+@pin_install_write(lambda skill_path, target_root=None, side="main": _agents_skills_path(Path(target_root) if target_root else Path.home()) / Path(skill_path).name)
 def install_to_openclaw(
     skill_path: Path | str,
     target_root: Path | str | None = None,
@@ -90,6 +95,7 @@ def install_to_openclaw(
     与共享 ``~/.agents/skills/`` 的 codex / opencode symlink dest **并存不冲突**——
     openclaw dest 是真目录，三家 install 路径在同一父目录下不同 name 即可。
     """
+    require_skill_write(skill_path, operation='publish')
     skill_path = Path(skill_path).resolve()
     if not skill_path.is_dir():
         raise NotADirectoryError(f"skill_path is not a directory: {skill_path}")
@@ -103,6 +109,7 @@ def install_to_openclaw(
 
     root = Path(target_root) if target_root else Path.home()
     skills_root = _agents_skills_path(root)
+    require_install_write(skill_path, skills_root / skill_path.name)
     skills_root.mkdir(parents=True, exist_ok=True)
     name = skill_path.name
     dest = skills_root / name
@@ -161,8 +168,9 @@ def install_to_openclaw(
         "installed_at": time.time(),
         "ecosystem": "openclaw",
     }
-    (dest / _OPENCLAW_INSTALL_META).write_text(
-        json.dumps(legacy_meta, indent=2), encoding="utf-8",
+    safe_write_text(
+        dest / _OPENCLAW_INSTALL_META, json.dumps(legacy_meta, indent=2),
+        auxiliary_skill_path=skill_path, auxiliary_root=dest,
     )
     # install_dir 已按当时内容记过指纹；老位置 meta 是我们随后写入的，
     # 必须同步账本，否则卸装会把这份合法写入误判成带外替换。

@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_skill_write
+
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +69,7 @@ class SkillScriptingAgent:
 
     def run(self) -> bool:
         """把当前主干技能脚本化并提交。成功返回 True。"""
+        require_skill_write(self.skill_dir)
         from xskill.agents import agent_tools
         from xskill.canary import has_staging
         from xskill.skill.frontmatter import FrontmatterError, parse_strict

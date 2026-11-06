@@ -22,7 +22,7 @@ PROFILE_STATUS_FILE = "profile_refresh_status.json"
 
 
 def write_status_file(path: Path, stats: dict, *, ok: bool,
-                      error: Optional[str] = None) -> None:
+                      error: Optional[str] = None, active: bool | None = None) -> None:
     """原子写心跳或一轮任务结果。状态是观测数据,写失败只落 warning、不抛——
     绝不因为写不了状态文件而让子进程的核心任务失败(与后台刷新 best-effort 一致)。"""
     payload = {
@@ -30,7 +30,10 @@ def write_status_file(path: Path, stats: dict, *, ok: bool,
         "error": error,
         "ended_at": time.time(),
         "stats": stats or {},
+        "pid": os.getpid(),
     }
+    if active is not None:
+        payload["active"] = active
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

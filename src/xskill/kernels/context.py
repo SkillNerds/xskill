@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_management_write
+
 import json
 import re
 import shutil
@@ -649,6 +651,7 @@ class SkillPublisher:
         return tuple(self._published)
 
     def submit(self, draft: SkillSubmission) -> PublishedSkill:
+        require_management_write(self._skill_dir, operation='external kernel publish')
         name, skill_md, files = self._validate_and_attribute(draft)
         skill_path = self._skill_dir / name
         self._skill_dir.mkdir(parents=True, exist_ok=True)
@@ -763,6 +766,7 @@ class SkillPublisher:
         skill_md: str,
         files: Mapping[str, str],
     ) -> None:
+        require_management_write(Path(skill_path).parent, operation="external kernel publish")
         (skill_path / "SKILL.md").write_text(skill_md, encoding="utf-8")
         for relative, contents in files.items():
             target = skill_path.joinpath(*PurePosixPath(relative).parts)
@@ -777,6 +781,7 @@ class SkillPublisher:
         files: Mapping[str, str],
         message: str,
     ) -> PublishedSkill:
+        require_management_write(self._skill_dir, operation='external kernel publish')
         from xskill.canary import main_sha
         from xskill.skill.frontmatter import parse
         from xskill.skill.git import (
@@ -840,6 +845,7 @@ class SkillPublisher:
         message: str,
         base_commit_sha: str,
     ) -> PublishedSkill:
+        require_management_write(self._skill_dir, operation='external kernel publish')
         from xskill.canary import has_staging, main_sha, staging_sha
         from xskill.skill.git import (
             commit_to_staging_branch,
@@ -895,6 +901,7 @@ class SkillPublisher:
 
     @staticmethod
     def _remove_candidate_only(skill_path: Path, relative_paths: set[str]) -> None:
+        require_management_write(Path(skill_path).parent, operation="external kernel publish")
         for relative in sorted(relative_paths, reverse=True):
             target = skill_path / relative
             if target.is_file() and not target.is_symlink():

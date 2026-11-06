@@ -70,6 +70,51 @@ def test_pool_capacity_is_workers_times_three_and_other_pools_keep_running():
         split.shutdown(wait=True)
 
 
+def test_pausing_pool_lets_running_work_finish_and_holds_queued_work():
+    from concurrent.futures import CancelledError
+    from xskill.pipeline.worker_runtime import BoundedExecutor
+
+    pool = BoundedExecutor("edit", 1)
+    entered = threading.Event()
+    release = threading.Event()
+    next_started = threading.Event()
+
+    def evaluate():
+        entered.set()
+        assert release.wait(3)
+        return "complete evaluation"
+
+    try:
+        running = pool.submit(evaluate)
+        assert entered.wait(3)
+        queued = pool.submit(next_started.set)
+        pool.set_paused(True)
+        assert pool.submit(next_started.set) is None
+        release.set()
+        assert running.result(timeout=3) == "complete evaluation"
+        assert not next_started.wait(0.1)
+        assert pool.status["queued"] == 1
+        pool.set_paused(False)
+        assert queued.result(timeout=3) is None
+        assert next_started.is_set()
+        next_started.clear()
+        release.clear()
+        entered.clear()
+        running = pool.submit(evaluate)
+        assert entered.wait(3)
+        queued = pool.submit(next_started.set)
+        pool.set_paused(True)
+        release.set()
+        assert running.result(timeout=3) == "complete evaluation"
+        pool.shutdown(wait=True)
+        with pytest.raises(CancelledError):
+            queued.result(timeout=3)
+        assert not next_started.is_set()
+    finally:
+        release.set()
+        pool.shutdown(wait=True)
+
+
 def test_all_pool_thread_names_are_visible():
     pools = {
         name: BoundedExecutor(name, 1)

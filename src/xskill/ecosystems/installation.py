@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_install_write
+
 import hashlib
 import json
 import logging
@@ -456,6 +458,7 @@ def adopt_orphan_copy_install(
     前进，基线不靠猜。登记后清掉 dest 内旧 marker，账本此后是唯一身份
     来源。任何一步拿不到数据都返回 False，维持原冻结状态（安全方向）。
     """
+    require_install_write(source, dest)
     from xskill.ecosystems.install_ledger import get_default_ledger
 
     try:
@@ -1026,6 +1029,7 @@ def write_install_metadata(
 
     不再向用户生态目录写 sidecar / copy identity marker。
     """
+    require_install_write(source, dest)
     from xskill.ecosystems.install_ledger import get_default_ledger
 
     try:
@@ -1326,6 +1330,7 @@ def is_link_or_junction(path: Path) -> bool:
 
 def ensure_link_install_metadata(dest: Path, source: Path) -> None:
     """为已正确指向 source 的 link/junction 补齐并验证安装元数据。"""
+    require_install_write(source, dest)
     if dest.is_symlink():
         expected_mode = "symlink"
     elif is_link_or_junction(dest):
