@@ -8,6 +8,19 @@
 
 开启后，Task Graph 使用独立 worker 消费持久脏队列，不阻塞 Atom 到 Skill 的拆分、路由和编辑流水线。
 
+### Task 学习队列状态
+
+管理员接口 `GET /api/v1/dashboard/task-graph/overview` 的 `evidence_feed`
+包含 `pending`、`processed`、`fallback`、`rejected` 四类数量，空状态返回 0。
+这些数量只读取当前实例数据库中已解析 tenant 的持久队列；尚无 tenant 时返回
+全零，不会退回全局统计，也不会扫描 Task Graph 文件重建状态。
+
+`pending` 表示等待消费或重新核对的 Task，包含尚不具备学习资格的 Task；
+`processed` 只表示对应队列版本已被确认处理，不能单凭它认定 Skill 已编辑或发布。
+`fallback` 和 `rejected` 分别统计已记录的回退和拒绝状态。
+当前阶段已提供持久队列、候选存储和状态接口，TaskCluster/SkillEdit 的生产消费
+尚未接通，因此这些统计不代表 Task-grounded 学习闭环已上线。
+
 ## 数据流
 
 1. Harness 适配器从 Codex、DeepSeek Harness 和 OpenClaw 轨迹中保留模型、Harness、run id、结构化终态和 execution usage event。
@@ -126,3 +139,23 @@ worker 启动时会比较已投影 generation 与当前 linker 版本及有界�
 关闭开关只停止新增 Task Graph 处理，已投影来源的变化仍以轻量脏记录保留供后续重新启用时追平，从未投影的来源由首次启用回填扫描发现，同时不会删除 Session、Atom、usage ledger、generation、override 或 SQLite 投影。
 
 `xskill rebuild --force` 会清理可重建 Task 投影和 generation source state，但保留已经发生且付费的原始 usage ledger。
+
+### Candidate evidence freshness
+
+Task candidates use schema version 2 and persist `task_evidence_fingerprint`,
+which has the same meaning as the learning queue's evidence version. It is not
+interchangeable with the Task-only fingerprint or the generation-dependent
+bundle fingerprint. Schema-1 records remain readable, but their missing evidence
+version is left unknown; an old Task candidate needs fresh evidence processing,
+not a fingerprint copied onto its old conclusion.
+
+`ready_for_promotion_v2(..., db_path=registry_path)` checks Task support against
+the current tenant/scope/task record before applying the score threshold. Missing,
+changed, rejected or ineligible evidence contributes no score. Without an explicit
+registry, Task support is held; Atom-only selection keeps its existing behavior
+and does not open a registry. Reads use bounded batches in one database snapshot.
+
+This is an early selection check, not permission to commit a Skill. The Task
+consumer still needs to use the same selection in ordinary, baby and jam paths,
+recheck evidence at commit, and acknowledge only the processed candidate/queue
+version. Current production consumers have not completed that integration.

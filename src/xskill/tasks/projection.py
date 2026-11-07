@@ -1,12 +1,17 @@
 """Registry queue, Task Graph projection and bounded query functions."""
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 from pathlib import Path
 
 from xskill.pipeline.registry import pooled_connection
 from xskill.tasks.evidence import ExecutionUsageEvent, ScopedTrajectoryEvidence
+from xskill.tasks.evidence_bundle import (
+    TaskEvidenceBundleError,
+    TaskEvidenceBundleIndex,
+)
 from xskill.tasks.models import TaskGraphGeneration
 
 DEFAULT_BACKFILL_BATCH_SIZE = 512
@@ -366,6 +371,54 @@ _PROJECTED_TABLES = (
 )
 
 
+def _task_evidence_feed_rows(generation: TaskGraphGeneration) -> list[tuple]:
+    """Build one coalesced feed row per Task with a single generation scan."""
+    index = TaskEvidenceBundleIndex(generation)
+    rows = []
+    for task in sorted(generation.tasks, key=lambda item: item.task_id):
+        try:
+            bundle = index.build(task.task_id)
+        except TaskEvidenceBundleError as exc:
+            rejection = str(exc)
+            payload = {
+                "tenant_id": generation.tenant_id,
+                "task_scope_id": generation.task_scope_id,
+                "task": task.to_dict(),
+                "rejection": rejection,
+            }
+            digest = hashlib.sha256(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            fingerprint = f"sha256:{digest}"
+            eligibility = "ineligible"
+            reasons = (rejection,)
+            status = "rejected"
+        else:
+            fingerprint = bundle.task_evidence_fingerprint
+            eligibility = bundle.learning_eligibility
+            reasons = bundle.eligibility_reasons
+            status = "pending"
+        rows.append(
+            (
+                generation.tenant_id,
+                generation.task_scope_id,
+                task.task_id,
+                generation.generation_id,
+                fingerprint,
+                eligibility,
+                _json(list(reasons)),
+                status,
+            )
+        )
+    return rows
+
+
 def project_generation(
     generation: TaskGraphGeneration,
     *,
@@ -404,6 +457,7 @@ def project_generation(
 
     tenant_id = generation.tenant_id
     task_scope_id = generation.task_scope_id
+    evidence_feed_rows = _task_evidence_feed_rows(generation)
     generation_row = (
         tenant_id, task_scope_id, generation.generation_id,
         generation.source_revision,
@@ -615,10 +669,154 @@ def project_generation(
                 " updated_at=datetime('now')",
                 source_state_rows,
             )
+            connection.executemany(
+                "INSERT INTO task_evidence_feed("
+                "tenant_id,task_scope_id,task_id,task_generation_id,"
+                "task_evidence_fingerprint,learning_eligibility,"
+                "eligibility_reasons_json,status) VALUES(?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(tenant_id,task_scope_id,task_id) DO UPDATE SET"
+                " task_generation_id=excluded.task_generation_id,"
+                " task_evidence_fingerprint=excluded.task_evidence_fingerprint,"
+                " learning_eligibility=excluded.learning_eligibility,"
+                " eligibility_reasons_json=excluded.eligibility_reasons_json,"
+                " status=CASE WHEN task_evidence_feed.task_evidence_fingerprint"
+                "<>excluded.task_evidence_fingerprint THEN excluded.status"
+                " ELSE task_evidence_feed.status END,"
+                " generation=task_evidence_feed.generation+CASE WHEN"
+                " task_evidence_feed.task_evidence_fingerprint"
+                "<>excluded.task_evidence_fingerprint THEN 1 ELSE 0 END,"
+                " marked_at=CASE WHEN task_evidence_feed.task_evidence_fingerprint"
+                "<>excluded.task_evidence_fingerprint THEN datetime('now')"
+                " ELSE task_evidence_feed.marked_at END,"
+                " processed_at=CASE WHEN task_evidence_feed.task_evidence_fingerprint"
+                "<>excluded.task_evidence_fingerprint THEN NULL"
+                " ELSE task_evidence_feed.processed_at END",
+                evidence_feed_rows,
+            )
+            connection.execute(
+                "DELETE FROM task_evidence_feed"
+                " WHERE tenant_id=? AND task_scope_id=?"
+                " AND NOT EXISTS (SELECT 1 FROM logical_tasks"
+                " WHERE logical_tasks.tenant_id=task_evidence_feed.tenant_id"
+                " AND logical_tasks.task_scope_id=task_evidence_feed.task_scope_id"
+                " AND logical_tasks.task_id=task_evidence_feed.task_id)",
+                (tenant_id, task_scope_id),
+            )
             connection.commit()
         except Exception:
             connection.rollback()
             raise
+
+
+def list_pending_task_evidence(
+    *, limit: int = 128, db_path: Path | None = None,
+) -> list[dict]:
+    """Return pending Task bundles in stable order without loading payloads."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise ValueError("limit must be a positive integer")
+    with pooled_connection(db_path) as connection:
+        rows = connection.execute(
+            "SELECT * FROM task_evidence_feed WHERE status='pending'"
+            " ORDER BY marked_at,tenant_id,task_scope_id,task_id LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [
+        _decode_json_fields(dict(row), ("eligibility_reasons_json",))
+        for row in rows
+    ]
+
+
+def current_task_evidence_versions(
+    identities: Iterable[tuple[str, str, str]], *, db_path: Path,
+) -> dict[tuple[str, str, str], tuple[str, str, str]]:
+    """Read exact tenant/scope/task versions in one bounded-query snapshot.
+
+    This is selection evidence, not a lease: consumers must check again at
+    commit time. A missing Task has no entry and must not remain promotable.
+    """
+    keys = sorted(set(identities))
+    if not keys:
+        return {}
+    result = {}
+    with pooled_connection(db_path) as connection:
+        connection.execute("BEGIN")
+        try:
+            for offset in range(0, len(keys), 250):
+                chunk = keys[offset:offset + 250]
+                placeholders = ",".join("(?,?,?)" for _ in chunk)
+                rows = connection.execute(
+                    "SELECT tenant_id,task_scope_id,task_id,"
+                    "task_evidence_fingerprint,learning_eligibility,status"
+                    " FROM task_evidence_feed"
+                    " WHERE (tenant_id,task_scope_id,task_id) IN (VALUES "
+                    + placeholders + ")",
+                    [part for key in chunk for part in key],
+                ).fetchall()
+                for row in rows:
+                    result[(row["tenant_id"], row["task_scope_id"], row["task_id"])] = (
+                        row["task_evidence_fingerprint"],
+                        row["learning_eligibility"],
+                        row["status"],
+                    )
+        finally:
+            connection.rollback()
+    return result
+
+
+def acknowledge_task_evidence(
+    rows: Iterable[dict], *, db_path: Path | None = None,
+) -> int:
+    """Acknowledge exactly the observed feed generations."""
+    acknowledgements = [
+        (
+            row["tenant_id"],
+            row["task_scope_id"],
+            row["task_id"],
+            row["generation"],
+        )
+        for row in rows
+    ]
+    if not acknowledgements:
+        return 0
+    with pooled_connection(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = connection.executemany(
+                "UPDATE task_evidence_feed SET status='processed',"
+                " processed_at=datetime('now')"
+                " WHERE tenant_id=? AND task_scope_id=? AND task_id=?"
+                " AND generation=? AND status='pending'",
+                acknowledgements,
+            )
+            connection.commit()
+            return max(0, cursor.rowcount)
+        except Exception:
+            connection.rollback()
+            raise
+
+
+def _task_evidence_feed_counts(connection, tenant_id: str | None) -> dict[str, int]:
+    counts = {status: 0 for status in ("pending", "processed", "fallback", "rejected")}
+    query = "SELECT status,COUNT(*) AS count FROM task_evidence_feed"
+    parameters = ()
+    if tenant_id is not None:
+        query += " WHERE tenant_id=?"
+        parameters = (tenant_id,)
+    rows = connection.execute(query + " GROUP BY status", parameters).fetchall()
+    counts.update({row["status"]: row["count"] for row in rows})
+    return counts
+
+
+def task_evidence_feed_counts(
+    *, tenant_id: str | None = None, db_path: Path | None = None,
+) -> dict[str, int]:
+    """Return zero-filled feed counts, optionally restricted to one tenant.
+
+    Workers may omit the tenant for an operational total. Business reads must
+    pass their resolved tenant, including an empty identity before first ingest.
+    """
+    with pooled_connection(db_path) as connection:
+        return _task_evidence_feed_counts(connection, tenant_id)
 
 
 def _decode_json_fields(row: dict, fields: Iterable[str]) -> dict:
@@ -867,6 +1065,7 @@ def task_graph_overview(
             "SELECT COUNT(*) FROM task_graph_generations WHERE tenant_id=?",
             (tenant_id,),
         ).fetchone()[0]
+        evidence_feed = _task_evidence_feed_counts(connection, tenant_id)
     return {
         "scopes": scopes,
         "tasks": task_row["tasks"] or 0,
@@ -876,4 +1075,5 @@ def task_graph_overview(
         "uncertain_memberships": uncertain,
         "execution_tokens": task_row["execution_tokens"],
         "execution_cost_usd": task_row["execution_cost_usd"],
+        "evidence_feed": evidence_feed,
     }
