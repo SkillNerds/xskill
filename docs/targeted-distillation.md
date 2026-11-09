@@ -20,6 +20,40 @@
 
 切换时先暂停领取任务，页面会列出正在收尾的工作。已开始的评测照常跑完，后台进程退出后自动切换。等待期间可点「取消切换」，恢复当前模式领取任务。
 
+#### Web 切换时序
+
+```mermaid
+sequenceDiagram
+    actor Admin as 管理员
+    participant Web as Web 控制台
+    participant Server as 本地服务
+    participant Worker as 后台进程
+
+    Admin->>Web: 选择模式和目标，点击应用
+    Web->>Server: 请求切换
+    Server-->>Web: 已接受，开始等待任务收尾
+    Server->>Worker: 暂停领取新任务
+    Note over Worker: 已开始的任务和评测继续运行
+    loop 等待期间
+        Web->>Server: 查询切换状态
+        Server-->>Web: 返回正在等待的任务
+    end
+    alt 管理员在等待期间取消
+        Admin->>Web: 点击取消切换
+        Web->>Server: 请求取消
+        Server->>Worker: 恢复按原模式领取任务
+        Server-->>Web: 已取消
+    else 已开始的任务全部收尾
+        Worker-->>Server: 确认可以停止
+        Server->>Worker: 停止旧进程并等待退出
+        Note over Server: 保存并应用新模式
+        Server->>Worker: 按新模式启动后台进程
+        Worker-->>Server: 报告新配置已就绪
+        Web->>Server: 查询切换状态
+        Server-->>Web: 返回已生效的模式和目标
+    end
+```
+
 ### 命令行
 
 先正常停止本地 `serve`，等待它的宿主和 worker 退出。前台服务使用 Ctrl+C；其他托管方式停止对应宿主。`xskill stop` 用于团队 connect 任务，不能代替本地 `serve` 的停止。

@@ -48,13 +48,9 @@ TOKEN = "secret-token"
 
 @pytest.fixture(autouse=True)
 def _isolate_import_registry(tmp_path, monkeypatch):
-    """import 会按 get_registry_db_path() 写投影表，测试不得碰到本机 registry。"""
-    registry = tmp_path / "registry.db"
-    monkeypatch.setattr(
-        "xskill.config.get_registry_db_path",
-        lambda: registry,
-    )
-    return registry
+    """隔离 CLI 写入保护读取的配置，以及 import 写入的 registry。"""
+    monkeypatch.setattr("xskill.config.XSKILL_HOME", tmp_path)
+    return tmp_path / "registry.db"
 
 
 def _catalog_names(skill_dir: Path, registry: Path) -> list[str]:
