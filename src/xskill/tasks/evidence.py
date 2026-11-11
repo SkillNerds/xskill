@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from xskill.pipeline.atom import AtomTask, AtomTaskStore
+from xskill.pipeline.atom_continuations import project_continuation
 from xskill.tasks.models import (
     MEASUREMENT_QUALITIES,
     AtomRef,
@@ -441,7 +442,12 @@ def collect_trajectory_evidence(
     )
     model, harness = _execution_identity(metadata, trajectory)
     atoms = []
+    # Match Path.read_text's universal-newline handling in TaskAgent, including
+    # sessions written with CRLF on Windows. The Session hash stays byte-exact.
+    text = markdown_payload.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.splitlines(keepends=True)
     for atom in AtomTaskStore(root).list_by_traj(traj_id):
+        atom = project_continuation(root, atom, lines)
         atom_ref = AtomRef(
             tenant_id=scope.tenant_id,
             task_scope_id=scope.task_scope_id,
