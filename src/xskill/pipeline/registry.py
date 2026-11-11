@@ -121,6 +121,29 @@ def dashboard_visible_trajectory_sql(
 # ---------------------------------------------------------------------------
 
 _SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS distillation_control (
+    root_key TEXT PRIMARY KEY, active_run_id TEXT, generation INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS distillation_runs (
+    run_id TEXT PRIMARY KEY, root_key TEXT NOT NULL,
+    mode TEXT NOT NULL CHECK(mode IN ('create_one','update_only')),
+    target_skill TEXT NOT NULL, description_snapshot TEXT NOT NULL,
+    target_identity TEXT NOT NULL DEFAULT '', base_sha TEXT NOT NULL DEFAULT '',
+    owns_target INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'prepared',
+    artifact_state TEXT NOT NULL DEFAULT 'waiting_evidence',
+    artifact_branch TEXT NOT NULL DEFAULT '', artifact_sha TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')), error TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_distillation_runs_root ON distillation_runs(root_key);
+CREATE TABLE IF NOT EXISTS distillation_atoms (
+    run_id TEXT NOT NULL REFERENCES distillation_runs(run_id), source_key TEXT NOT NULL,
+    atom_id TEXT NOT NULL, content_sha256 TEXT NOT NULL, state TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '', weightscore REAL NOT NULL DEFAULT 0,
+    candidate_applied INTEGER NOT NULL DEFAULT 0, checkpoint_sha TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(run_id,source_key,atom_id,content_sha256)
+);
 CREATE TABLE IF NOT EXISTS watch_dirs (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     path       TEXT UNIQUE NOT NULL,

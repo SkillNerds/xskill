@@ -1080,6 +1080,24 @@ def list_native_cluster_catalog(
     return [dict(row) for row in rows]
 
 
+def search_native_skill_names(
+    skill_dir: Path | str, *, db_path: Path, q: str, offset: int,
+) -> dict:
+    """Search the existing native projection without backfilling on request."""
+    page_size = 30
+    with pooled_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT name FROM skills_catalog
+            WHERE root_key=? AND source=? AND instr(lower(name), lower(?)) > 0
+            ORDER BY name LIMIT ? OFFSET ?
+            """,
+            (_root_key(skill_dir), _SOURCE_NATIVE, q.strip(), page_size + 1, offset),
+        ).fetchall()
+    return {"skills": [row["name"] for row in rows[:page_size]],
+            "has_more": len(rows) > page_size}
+
+
 def ensure_skills_catalog(
     skill_dir: Path | str,
     skillhub=None,

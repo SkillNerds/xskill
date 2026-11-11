@@ -33,6 +33,10 @@ traj_id 前缀      ``traj_oc_``                                  ``traj_ng_``
 
 from __future__ import annotations
 
+from xskill.skill.write_policy import pin_install_write
+
+from xskill.skill.write_policy import require_skill_write, require_install_write
+
 import logging
 from pathlib import Path
 from typing import Iterable
@@ -90,6 +94,7 @@ NGAGENT_SPEC = SqliteEcosystemSpec(
 # ─────────────────────────────────────────────────────────────────
 
 
+@pin_install_write(lambda skill_path, target_root=None, side="main": _ngagent_skills_path(Path(target_root) if target_root else Path.home()) / Path(skill_path).name)
 def install_to_ngagent(
     skill_path: Path | str,
     target_root: Path | str | None = None,
@@ -111,6 +116,7 @@ def install_to_ngagent(
 
     返回 dest 下的 SKILL.md 路径（约定，与 OpenCode 版一致）。
     """
+    require_skill_write(skill_path, operation='publish')
     skill_path = Path(skill_path).resolve()
     if not skill_path.is_dir():
         raise NotADirectoryError(f"skill_path is not a directory: {skill_path}")
@@ -128,6 +134,7 @@ def install_to_ngagent(
     name = skill_path.name
     root = Path(target_root) if target_root else Path.home()
     skills_root = _ngagent_skills_path(root)
+    require_install_write(skill_path, skills_root / skill_path.name)
     skills_root.mkdir(parents=True, exist_ok=True)
     dest = skills_root / name
 

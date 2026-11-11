@@ -19,11 +19,14 @@ Design notes
 
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_skill_write, SkillWriteDenied, safe_write_text, safe_mkdir, _pinned_parent
+
 import logging
 import os
 import re
 import tempfile
 from collections.abc import Iterable
+from contextlib import nullcontext
 from datetime import date, datetime
 from pathlib import Path
 
@@ -94,51 +97,55 @@ def load_candidates(skill_dir: Path) -> dict:
 
 
 def _atomic_save_candidates_unlocked(skill_dir: Path, data: dict) -> None:
+    policy = require_skill_write(_candidates_path(skill_dir), operation='add_candidates')
     candidate_path = _candidates_path(skill_dir)
-    candidate_path.parent.mkdir(parents=True, exist_ok=True)
-    serialized = yaml.safe_dump(
-        data,
-        allow_unicode=True,
-        sort_keys=False,
-    )
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=candidate_path.parent,
-            prefix=f".{candidate_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temporary_file:
-            temporary_path = Path(temporary_file.name)
-            temporary_file.write(serialized)
-            temporary_file.flush()
-            os.fsync(temporary_file.fileno())
-        os.replace(temporary_path, candidate_path)
-        temporary_path = None
-        if os.name != "nt":
-            directory_fd = os.open(
-                candidate_path.parent,
-                os.O_RDONLY | os.O_DIRECTORY,
-            )
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-    from xskill.skill.catalog_store import notify_native_candidates_count
-    notify_native_candidates_count(
-        skill_dir,
-        len(data.get("candidates", []) or []),
-    )
-    from xskill.pipeline.registry import notify_atom_pending_sync
-    notify_atom_pending_sync(
-        skill_dir,
-        data.get("candidates", []) or [],
-    )
+    with _pinned_parent(candidate_path) if policy.mode != 'auto' else nullcontext():
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        serialized = yaml.safe_dump(
+            data,
+            allow_unicode=True,
+            sort_keys=False,
+        )
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=candidate_path.parent,
+                prefix=f".{candidate_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+                temporary_file.write(serialized)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            require_skill_write(candidate_path, operation="add_candidates")
+            require_skill_write(temporary_path, operation="add_candidates")
+            os.replace(temporary_path, candidate_path)
+            temporary_path = None
+            if os.name != "nt":
+                directory_fd = os.open(
+                    candidate_path.parent,
+                    os.O_RDONLY | os.O_DIRECTORY,
+                )
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        from xskill.skill.catalog_store import notify_native_candidates_count
+        notify_native_candidates_count(
+            skill_dir,
+            len(data.get("candidates", []) or []),
+        )
+        from xskill.pipeline.registry import notify_atom_pending_sync
+        notify_atom_pending_sync(
+            skill_dir,
+            data.get("candidates", []) or [],
+        )
 
 
 def save_candidates(skill_dir: Path, data: dict) -> None:
@@ -399,6 +406,8 @@ def move_atom_contribution(
     The target is saved first so an I/O failure cannot silently remove the
     only durable copy from the source.
     """
+    require_skill_write(source_skill_dir, operation='move')
+    require_skill_write(target_skill_dir, operation='move')
     if source_skill_dir.resolve() == target_skill_dir.resolve():
         raise ValueError("source and target skill directories must differ")
     with skill_repo_locks(
@@ -716,6 +725,7 @@ def promote_ready_candidates(skill_dir: Path, threshold: int = 3,
 
     Returns the list of candidate dicts that were promoted.
     """
+    require_skill_write(skill_dir, operation='consume_candidates')
     skill_dir = Path(skill_dir)
     data = load_candidates(skill_dir)
     ready = ready_for_promotion(data, threshold=threshold)
@@ -729,6 +739,8 @@ def promote_ready_candidates(skill_dir: Path, threshold: int = 3,
             candidates=ready,
             config=config or {},
         )
+    except SkillWriteDenied:
+        raise
     except Exception as e:
         logger.error("skill edit agent failed for %s: %s", skill_dir.name, e)
         # Fallback to rule-based insertion
@@ -736,7 +748,7 @@ def promote_ready_candidates(skill_dir: Path, threshold: int = 3,
         if fm or body:
             for cand in ready:
                 body = _apply_candidate(body, cand)
-            (skill_dir / "SKILL.md").write_text(fm_serialize(fm, body), encoding="utf-8")
+            safe_write_text(skill_dir / "SKILL.md", fm_serialize(fm, body))
             logger.info("fell back to rule-based promotion for %s", skill_dir.name)
 
     # LLM 运行期间不能持仓库锁。完成后在锁内重新读取，避免覆盖并发新增项。
@@ -800,14 +812,16 @@ def _run_skill_edit_agent(skill_dir: Path, candidates: list[dict],
 
     @_agno_tool(name="write_file", description="Write/overwrite a file in the skill directory.\nArgs:\n    path: file path\n    content: file content")
     def _write_file(path: str, content: str) -> str:
+        require_skill_write(Path(path))
         p = Path(path)
         # Security: only allow writes within the skill dir
         try:
             p.resolve().relative_to(skill_dir.resolve())
         except ValueError:
             return f"Error: can only write within {skill_dir}"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        if '.git' in p.relative_to(skill_dir).parts:
+            return 'Error: cannot write .git metadata'
+        safe_write_text(p, content, create_parents=True)
         return f"Written {len(content)} bytes to {p}"
 
     @_agno_tool(name="list_files", description="List files in a directory.\nArgs:\n    path: directory path")
@@ -887,7 +901,9 @@ def _run_skill_edit_agent(skill_dir: Path, candidates: list[dict],
         except BaseException as exc:  # noqa: BLE001 — record everything
             err_box["err"] = exc
 
-    t = threading.Thread(target=_runner, daemon=True)
+    from contextvars import copy_context
+    _write_context = copy_context()
+    t = threading.Thread(target=lambda: _write_context.run(_runner), daemon=True)
     t.start()
     t.join(timeout=timeout_seconds)
     if t.is_alive():
@@ -919,8 +935,9 @@ def archive_stale(skill_dir: Path, days: int = 60, threshold: int = 3) -> list[d
             return []
 
         refs_dir = skill_dir / "references"
-        refs_dir.mkdir(parents=True, exist_ok=True)
+        safe_mkdir(refs_dir)
         stale_file = refs_dir / "stale_candidates.md"
+        require_skill_write(stale_file)
 
         lines: list[str] = []
         if stale_file.exists():
@@ -945,7 +962,7 @@ def archive_stale(skill_dir: Path, days: int = 60, threshold: int = 3) -> list[d
             )
         lines.append("")
 
-        stale_file.write_text("\n".join(lines), encoding="utf-8")
+        safe_write_text(stale_file, "\n".join(lines))
 
         stale_candidate_ids = {
             id(candidate)

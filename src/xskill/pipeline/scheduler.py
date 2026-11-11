@@ -21,6 +21,7 @@ from pathlib import Path
 from xskill.utils.proc import windowless_subprocess_kwargs
 
 logger = logging.getLogger("xskill.pipeline.scheduler")
+WORKER_DRAIN_ENV = "XSKILL_DISTILLATION_DRAIN_TOKEN"
 
 
 class IntervalSubprocessScheduler:
@@ -35,6 +36,7 @@ class IntervalSubprocessScheduler:
         timeout: float,
         persistent: bool = False,
         log_path: str | Path | None = None,
+        stop_on_stdin_close: bool = False,
     ):
         if interval <= 0:
             raise ValueError("interval 必须 > 0")
@@ -46,20 +48,64 @@ class IntervalSubprocessScheduler:
         self._timeout = float(timeout)
         self._persistent = bool(persistent)
         self._log_path = Path(log_path) if log_path is not None else None
+        self._stop_on_stdin_close = stop_on_stdin_close
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen | None = None
         self._process_lock = threading.Lock()
+        self._child_env: dict[str, str] = {}
+        self._drain_token: str | None = None
 
-    def start(self) -> None:
+    def start(self, *, env: dict[str, str] | None = None) -> None:
         """幂等启动调度 daemon 线程。"""
         if self._thread is not None and self._thread.is_alive():
             return
+        self._child_env = dict(env or {})
+        self._drain_token = None
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._loop, name=f"xskill-sched-{self._name}", daemon=True,
         )
         self._thread.start()
+
+    @property
+    def child_pid(self) -> int | None:
+        with self._process_lock:
+            process = self._process
+            return process.pid if process is not None and process.poll() is None else None
+
+    @property
+    def is_stopped(self) -> bool:
+        return (self._thread is None or not self._thread.is_alive()) and self.child_pid is None
+
+    def set_drain(self, token: str | None) -> None:
+        """Pause/resume a worker, or defer launches for a periodic subprocess."""
+        if self._persistent and not self._stop_on_stdin_close:
+            raise RuntimeError("child has no cooperative control channel")
+        with self._process_lock:
+            self._drain_token = token
+            if self._persistent:
+                self._send_drain()
+
+    def _send_drain(self) -> None:
+        process = self._process
+        if process is not None and process.poll() is None and not process.stdin.closed:
+            command = f"drain {self._drain_token}\n" if self._drain_token else "resume\n"
+            try:
+                process.stdin.write(command.encode("ascii"))
+                process.stdin.flush()
+            except BrokenPipeError:
+                # A replacement child will get the latest request on spawn.
+                pass
+
+    def stop_gracefully(self, timeout: float = 15.0) -> bool:
+        """Ask a cooperative child to exit. Leave it draining on timeout."""
+        if not self._stop_on_stdin_close:
+            raise RuntimeError("child has no cooperative stop channel")
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout)
+        return self.is_stopped
 
     def stop(self, timeout: float = 5.0) -> None:
         """竖停机旗、中断 wait，并终止、回收正在运行的子进程。"""
@@ -138,15 +184,25 @@ class IntervalSubprocessScheduler:
                     "stderr": subprocess.DEVNULL,
                     **windowless_subprocess_kwargs(),
                 }
+                if self._stop_on_stdin_close:
+                    popen_kwargs["stdin"] = subprocess.PIPE
+                    popen_kwargs["bufsize"] = 0
+                if self._child_env:
+                    popen_kwargs["env"] = {**os.environ, **self._child_env}
                 if self._log_path is not None:
                     self._log_path.parent.mkdir(parents=True, exist_ok=True)
                     log_file = open(self._log_path, "ab")
-                    env = os.environ.copy()
+                    env = popen_kwargs.get("env", os.environ.copy())
                     env["PYTHONUNBUFFERED"] = "1"
                     popen_kwargs["stdout"] = log_file
                     popen_kwargs["stderr"] = subprocess.STDOUT
                     popen_kwargs["env"] = env
-                process = subprocess.Popen(self._command, **popen_kwargs)
+                with self._process_lock:
+                    if self._drain_token is not None:
+                        env = popen_kwargs.setdefault("env", os.environ.copy())
+                        env[WORKER_DRAIN_ENV] = self._drain_token
+                    process = subprocess.Popen(self._command, **popen_kwargs)
+                    self._process = process
             except OSError:
                 if log_file is not None:
                     log_file.close()
@@ -160,10 +216,13 @@ class IntervalSubprocessScheduler:
                 continue
             if log_file is not None:
                 log_file.close()
-            with self._process_lock:
-                self._process = process
             while process.poll() is None:
                 if self._stop.wait(min(self._interval, 0.5)):
+                    if self._stop_on_stdin_close:
+                        with self._process_lock:
+                            process.stdin.close()
+                        process.wait()
+                        break
                     try:
                         process.terminate()
                     except OSError:
@@ -187,6 +246,8 @@ class IntervalSubprocessScheduler:
                     break
             return_code = process.poll()
             with self._process_lock:
+                if self._stop_on_stdin_close:
+                    process.stdin.close()
                 if self._process is process:
                     self._process = None
             if self._stop.is_set():
@@ -202,24 +263,26 @@ class IntervalSubprocessScheduler:
 
     def _run_once(self) -> None:
         try:
-            process = subprocess.Popen(
-                self._command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                # Windows:不带无窗 flag 会每个周期弹一次 cmd 黑窗给用户。
-                # 编码:子进程输出在中文 Windows 上默认按 cp936
-                # strict 解码,非法字节会抛 UnicodeDecodeError——那会穿过下面的
-                # except(只接 Timeout/OSError)打死调度线程。显式 utf-8+replace:
-                # 子进程是我们自己的 python -m xskill._workers,统一按 utf-8 出。
-                encoding="utf-8", errors="replace",
-                **windowless_subprocess_kwargs(),
-            )
+            with self._process_lock:
+                if self._drain_token is not None or self._stop.is_set():
+                    return
+                process = subprocess.Popen(
+                    self._command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    # Windows:不带无窗 flag 会每个周期弹一次 cmd 黑窗给用户。
+                    # 编码:子进程输出在中文 Windows 上默认按 cp936
+                    # strict 解码,非法字节会抛 UnicodeDecodeError——那会穿过下面的
+                    # except(只接 Timeout/OSError)打死调度线程。显式 utf-8+replace:
+                    # 子进程是我们自己的 python -m xskill._workers,统一按 utf-8 出。
+                    encoding="utf-8", errors="replace",
+                    **windowless_subprocess_kwargs(),
+                )
+                self._process = process
         except OSError:
             logger.warning("调度任务 %s 启动子进程失败", self._name, exc_info=True)
             return
 
-        with self._process_lock:
-            self._process = process
         stdout = ""
         stderr = ""
         timed_out = False

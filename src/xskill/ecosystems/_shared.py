@@ -24,6 +24,10 @@ Trae / OpenClaw / OpenCode），并把这些生态的原生会话轨迹桥接回
 
 from __future__ import annotations
 
+from xskill.skill.write_policy import pin_install_write, unlink_install_entry
+
+from xskill.skill.write_policy import current_write_policy, require_install_write
+
 import json
 import logging
 import re
@@ -301,6 +305,10 @@ def _source_md_for_side(skill_path: Path, side: str) -> Path:
             raise FileNotFoundError(f"main SKILL.md not found: {src}")
         return src
     if side == "staging":
+        from xskill.skill.write_policy import current_write_policy
+        if current_write_policy(skill_path.parent).mode != "auto":
+            from xskill.canary import materialize_staging
+            materialize_staging(skill_path, skill_path.parent / ".canary")
         canary_md = skill_path.parent / ".canary" / skill_path.name / "SKILL.md"
         if not canary_md.is_file():
             raise FileNotFoundError(
@@ -311,6 +319,7 @@ def _source_md_for_side(skill_path: Path, side: str) -> Path:
     raise ValueError(f"side must be 'main' or 'staging', got {side!r}")
 
 
+@pin_install_write(lambda skill_path, skills_root, side, **kwargs: Path(skills_root) / Path(skill_path).name)
 def _install_skill_into(
     skill_path: Path,
     skills_root: Path,
@@ -337,6 +346,7 @@ def _install_skill_into(
     Returns:
         ``<skills_root>/<name>/SKILL.md`` 路径
     """
+    require_install_write(skill_path, Path(skills_root) / Path(skill_path).name)
     skill_path = Path(skill_path).resolve()
     if not skill_path.is_dir():
         raise NotADirectoryError(f"skill_path is not a directory: {skill_path}")
@@ -368,7 +378,7 @@ def _install_skill_into(
             return dest / "SKILL.md"
         # 指向别处的 link/junction 或断链 → ``unlink`` 删 reparse 本体
         # （不递归动 target）
-        dest.unlink()
+        unlink_install_entry(dest, skill_path)
     elif dest.exists():
         # copy 模式且源未变：no-op——避免每轮 reconcile 重拷 + 重试 junction（Windows 弹 cmd 窗）
         if copy_install_is_current(src_dir, dest):
@@ -402,6 +412,9 @@ def _install_all_with(
     names: Iterable[str] | None,
 ) -> list[Path]:
     """``install_all_to_*`` 的共享实现——只是把 per-skill installer 作为参数注入。"""
+    policy = current_write_policy(skill_dir)
+    if policy.mode != 'auto':
+        names = [policy.target_skill] if names is None else [name for name in names if name == policy.target_skill]
     skill_dir = Path(skill_dir)
     if not skill_dir.is_dir():
         raise NotADirectoryError(f"skill_dir is not a directory: {skill_dir}")

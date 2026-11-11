@@ -204,6 +204,17 @@ llm_agents:
 > 1.希望能够自动将之前高频工作流串联成skill
 > 2.每天有高强度的Agent运行需求
 
+#### 指定技能蒸馏
+
+本地 native 管线默认自动蒸馏，也可以只新建或只更新一个指定技能。命令行配置前，先正常停止本地 `xskill serve`。例如，新建一个飞书排障技能：
+
+```bash
+xskill distill configure --mode create_one --skill feishu-bug-troubleshooting --description "排查飞书接口问题"
+xskill serve
+```
+
+也可以用管理员账号登录本地 Web 控制台，在左侧「蒸馏模式」中选择模式和目标。更新已有技能、查询状态和切回自动模式的命令见[指定技能蒸馏](docs/targeted-distillation.md)。
+
 ### 团队模式(推荐)
 
 

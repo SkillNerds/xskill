@@ -65,6 +65,11 @@ UserEditAbsorbAgent 才能 round-trip 收编。但 symlink 不是所有 OS 都�
 
 from __future__ import annotations
 
+from xskill.skill.write_policy import pin_install_write, auxiliary_write_guard, safe_write_bytes, safe_auxiliary_mkdir, safe_remove_auxiliary_tree, unlink_install_entry
+
+from xskill.skill.write_policy import require_install_write
+
+import os
 import logging
 import platform
 import shutil
@@ -98,11 +103,13 @@ _is_link_or_junction = is_link_or_junction
 _copy_install_is_current = copy_install_is_current
 
 
+@pin_install_write(lambda src_dir, dest, **kwargs: Path(dest))
 def _try_symlink(src_dir: Path, dest: Path) -> bool:
     """尝试建目录 symlink。成功 True，失败（OSError/NotImplementedError）False。
 
     分开抽出来是为了测试可以 monkeypatch 这一层。
     """
+    require_install_write(src_dir, dest)
     try:
         dest.symlink_to(src_dir, target_is_directory=True)
         return True
@@ -114,11 +121,13 @@ def _try_symlink(src_dir: Path, dest: Path) -> bool:
         return False
 
 
+@pin_install_write(lambda src_dir, dest, **kwargs: Path(dest))
 def _try_junction(src_dir: Path, dest: Path) -> bool:
     """Windows-only：尝试用 ``cmd /c mklink /J`` 建 directory junction。
 
     其他平台直接返回 False（不该走这条路）。
     """
+    require_install_write(src_dir, dest)
     if platform.system() != "Windows":
         return False
     try:
@@ -139,6 +148,7 @@ def _try_junction(src_dir: Path, dest: Path) -> bool:
         return False
 
 
+@pin_install_write(lambda src_dir, dest, **kwargs: Path(dest))
 def _do_copy(src_dir: Path, dest: Path) -> None:
     """终极 fallback：完整 copytree。
 
@@ -147,6 +157,24 @@ def _do_copy(src_dir: Path, dest: Path) -> None:
     如果上层把 source 拼成 ``dest.parent`` 这种特殊用法（不常见但理论可能），
     避免 meta 跨级污染。
     """
+    policy = require_install_write(src_dir, dest)
+    if policy.mode != "auto":
+        if dest.exists():
+            raise FileExistsError(str(dest))
+        ignore = shutil.ignore_patterns(".git", ".git/*", ".xskill-install-meta*", COPY_INSTALL_MARKER_NAME)
+        with auxiliary_write_guard(dest, src_dir, create=True, pin_target=True):
+            for directory, dirs, files in os.walk(src_dir, followlinks=False):
+                skipped = ignore(directory, dirs + files)
+                dirs[:] = [name for name in dirs if name not in skipped]
+                relative = Path(directory).relative_to(src_dir)
+                for name in dirs:
+                    safe_auxiliary_mkdir(dest / relative / name, auxiliary_skill_path=src_dir, auxiliary_root=dest)
+                for name in files:
+                    if name in skipped:
+                        continue
+                    source = Path(directory) / name
+                    safe_write_bytes(dest / relative / name, source.read_bytes(), auxiliary_skill_path=src_dir, auxiliary_root=dest, create_parents=True, mode=source.stat().st_mode & 0o777)
+        return
     shutil.copytree(
         src_dir, dest,
         ignore=shutil.ignore_patterns(
@@ -191,7 +219,7 @@ def _maybe_reverse_sync_before_overwrite(
     return reverse_status
 
 
-def _reset_dest(dest: Path) -> None:
+def _reset_dest(dest: Path, source: Path | None = None) -> None:
     """清理 dest 旧条目（symlink / junction / 真目录 / 文件都干掉）。
 
     用 ``_is_link_or_junction`` 而非 ``is_symlink`` —— 后者在 Windows 对
@@ -208,13 +236,19 @@ def _reset_dest(dest: Path) -> None:
         return
     if is_link or dest.is_file():
         try:
-            dest.unlink()
+            if is_link and source is not None:
+                unlink_install_entry(dest, source)
+            else:
+                dest.unlink()
         except OSError as unlink_error:
             logger.warning(
                 "failed to unlink %s: %s", dest, unlink_error,
             )
     elif dest.is_dir():
-        shutil.rmtree(dest)
+        if source is not None and require_install_write(source, dest).mode != "auto":
+            safe_remove_auxiliary_tree(dest, source)
+        else:
+            shutil.rmtree(dest)
     # 删旧 meta（即使 dest 已经清理，遗留 meta 也不该留）
     meta_path = _install_meta_path(dest)
     if meta_path.is_file():
@@ -224,6 +258,7 @@ def _reset_dest(dest: Path) -> None:
             pass
 
 
+@pin_install_write(lambda src_dir, dest, **kwargs: Path(dest))
 def install_dir(
     src_dir: Path, dest: Path, *,
     force_mode: InstallMode | None = None,
@@ -263,6 +298,7 @@ def install_dir(
         preflight_reverse_sync_status: 调用方已执行同一目标回流检查时传入其
             显式结果，避免在破坏性覆盖前重复检查产生竞态。
     """
+    require_install_write(src_dir, dest)
     if auto_reset:
         from xskill.agents.user_edit_absorb_agent import ReverseSyncStatus
         reverse_status = preflight_reverse_sync_status
@@ -279,7 +315,7 @@ def install_dir(
             ReverseSyncStatus.SYNCED,
         }:
             raise InstallSafetyError("REVERSE_SYNC_STATE_FAILED") from None
-        _reset_dest(dest)
+        _reset_dest(dest, src_dir)
 
     if force_mode == "copy":
         _do_copy(src_dir, dest)

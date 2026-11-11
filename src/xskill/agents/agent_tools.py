@@ -22,6 +22,8 @@ import os
 import re
 import shutil
 import subprocess
+from functools import wraps
+from inspect import signature
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime
@@ -89,6 +91,8 @@ class AgentToolContext:
     cluster_batch_ids: frozenset[str] = frozenset()
     skill_edit_skill_name: str | None = None
     skill_edit_batch_ids: tuple[str, ...] = ()
+    skill_edit_batch_evidence: tuple = ()
+    skill_edit_atom_snapshots: Any = None
     grep_fallback_warned: bool = False
     # 实例 registry.db；skills_catalog 写出口从此取库，禁止隐式摸全局库。
     registry_db_path: Path | None = None
@@ -99,6 +103,11 @@ class AgentToolContext:
     wiki_root: Path | None = None
     # atom_search 语义检索用的 EmbedClient。None 时 atom_search 报未配置。
     embed_client: Any = None
+    distillation_policy: Any = None
+    distillation_store: Any = None
+    distillation_sources: Any = None
+    distillation_results: Any = None
+    installation_ledger: Any = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -144,12 +153,19 @@ def create_agent_tool_context(
     cluster_batch_ids=(),
     skill_edit_skill_name=None,
     skill_edit_batch_ids=(),
+    skill_edit_batch_evidence=(),
+    skill_edit_atom_snapshots=None,
     registry_db_path=None,
     extra_read_roots=(),
     generate_user_id=None,
     blocked_read_roots=(),
     wiki_root=None,
     embed_client=None,
+    distillation_policy=None,
+    distillation_store=None,
+    distillation_sources=None,
+    distillation_results=None,
+    installation_ledger=None,
 ) -> AgentToolContext:
     """Create an immutable context without changing the current task."""
     return AgentToolContext(
@@ -181,6 +197,8 @@ def create_agent_tool_context(
         skill_edit_batch_ids=tuple(
             str(atom_id) for atom_id in (skill_edit_batch_ids or ())
         ),
+        skill_edit_batch_evidence=tuple(MappingProxyType(dict(item)) for item in skill_edit_batch_evidence),
+        skill_edit_atom_snapshots=MappingProxyType(dict(skill_edit_atom_snapshots or {})),
         registry_db_path=(
             Path(registry_db_path) if registry_db_path is not None else None
         ),
@@ -193,6 +211,11 @@ def create_agent_tool_context(
         ),
         wiki_root=Path(wiki_root) if wiki_root is not None else None,
         embed_client=embed_client,
+        distillation_policy=distillation_policy,
+        distillation_store=distillation_store,
+        distillation_sources=distillation_sources,
+        distillation_results=distillation_results,
+        installation_ledger=installation_ledger,
     )
 
 
@@ -215,6 +238,87 @@ def reset_agent_tool_context(token: contextvars.Token) -> None:
     _AGENT_TOOL_CONTEXT.reset(token)
 
 
+def _active_write_policy():
+    from xskill.skill.write_policy import current_write_policy
+    context = current_agent_tool_context()
+    return current_write_policy(context.atom_skill_dir or context.skill_dir)
+
+
+def _require_named_skill(name: str, operation: str):
+    from xskill.skill.write_policy import require_skill_write
+    context = current_agent_tool_context()
+    root = context.atom_skill_dir or context.skill_dir
+    policy = _active_write_policy()
+    if policy.mode != "auto":
+        policy.require_skill(name, operation=operation)
+        # Repeated creation of this run's own scaffold is idempotent. Updating
+        # a pre-existing skill still cannot invoke a creation operation.
+        checked_operation = operation
+        if operation == "create" and (Path(root) / name).exists():
+            checked_operation = "write_content"
+        require_skill_write(Path(root) / name, operation=checked_operation)
+    return policy
+
+
+def _skill_mutation(operation, *names):
+    """Keep tool schemas intact while checking before their first side effect."""
+    def decorate(function):
+        call_signature = signature(function)
+
+        @wraps(function)
+        def checked(*args, **kwargs):
+            from xskill.skill.write_policy import SkillWriteDenied
+            from xskill.skill.artifact_validation import (
+                ArtifactValidationError, validate_skill_artifact,
+            )
+            try:
+                bound = call_signature.bind(*args, **kwargs)
+                policy = None
+                for name in names:
+                    policy = _require_named_skill(bound.arguments[name], operation)
+                publishing = policy is not None and policy.mode != "auto" and operation == "publish"
+                if publishing:
+                    context = current_agent_tool_context()
+                    target = Path(policy.root_key) / policy.target_skill
+                    validate_skill_artifact(target, expected_name=policy.target_skill)
+                    bound.arguments["message"] = _run_commit_message(bound.arguments["message"])
+                result = function(*bound.args, **bound.kwargs)
+                if publishing and not str(result).startswith("error:"):
+                    ref = "staging" if function.__name__ == "commit_to_staging" else "main"
+                    artifact = validate_skill_artifact(
+                        target, expected_name=policy.target_skill, ref=ref,
+                    )
+                    if context.distillation_store is not None:
+                        context.distillation_store.checkpoint_atoms(
+                            context.skill_edit_batch_evidence, artifact["sha"],
+                        )
+                        context.distillation_store.set_artifact(
+                            "candidate_committed" if ref == "staging" else "main_committed",
+                            branch=ref, sha=artifact["sha"],
+                        )
+                return result
+            except (SkillWriteDenied, ArtifactValidationError) as error:
+                return f"error: {error}"
+
+        return checked
+    return decorate
+
+
+def _run_commit_message(message: str) -> str:
+    context = current_agent_tool_context()
+    policy = _active_write_policy()
+    if policy.mode == "auto":
+        return message
+    if context.skill_edit_batch_ids and not context.skill_edit_batch_evidence:
+        raise RuntimeError("restricted checkpoint has no bound evidence identity")
+    # Model text is not audit authority, including duplicate or embedded trailers.
+    message = "\n".join(line for line in message.splitlines()
+                        if not re.match(r"^\s*XSkill-", line, re.IGNORECASE)).rstrip()
+    evidence = [dict(item) for item in context.skill_edit_batch_evidence]
+    return (f"{message}\n\nXSkill-Run: {policy.run_id}\n"
+            f"XSkill-Evidence: {json.dumps(evidence, separators=(',', ':'))}")
+
+
 @contextlib.contextmanager
 def use_agent_tool_context(
     context: AgentToolContext,
@@ -222,7 +326,14 @@ def use_agent_tool_context(
     """Bind one task context and restore the previous context on every exit."""
     token = bind_agent_tool_context(context)
     try:
-        yield context
+        from xskill.skill.write_policy import use_write_policy
+        with contextlib.ExitStack() as bindings:
+            if context.distillation_policy is not None:
+                bindings.enter_context(use_write_policy(context.distillation_policy))
+            if context.installation_ledger is not None:
+                from xskill.ecosystems.install_ledger import use_ledger
+                bindings.enter_context(use_ledger(context.installation_ledger))
+            yield context
     finally:
         reset_agent_tool_context(token)
 
@@ -246,14 +357,54 @@ def use_skill_edit_batch(
 ) -> Iterator[AgentToolContext]:
     """Bind immutable checkpoint authority for one baby SkillEdit turn.
 
-    The model never supplies candidate IDs to ``commit_baby``.  It can only
-    consume the exact ordered IDs that the framework put into this context.
+    The model never supplies candidate IDs or receipts. Restricted turns use
+    the same atom snapshots for tool reads and checkpoint identities.
     """
     current = current_agent_tool_context()
+    _require_named_skill(skill_name, "write_content")
+    batch_ids = tuple(str(atom_id) for atom_id in batch_ids)
+    evidence = ()
+    snapshots = {}
+    if _active_write_policy().mode != "auto":
+        from xskill.pipeline.distillation import source_key_for
+        if current.distillation_store is None:
+            raise RuntimeError("restricted editor requires a bound distillation evidence store")
+        _require_distillation_audit()
+        if current.atom_store is None:
+            raise RuntimeError("restricted editor requires bound atom evidence store")
+        atoms_with_sources = []
+        stores = getattr(current.atom_store, "stores", [current.atom_store])
+        for atom_id in batch_ids:
+            sources = []
+            for store in stores:
+                try:
+                    atom = copy.deepcopy(store.load(atom_id))
+                except FileNotFoundError:
+                    continue
+                if atom.atom_id != atom_id:
+                    raise RuntimeError("atom store returned a different editor source/content identity")
+                source = (current.distillation_sources or {}).get(atom_id)
+                if source is None:
+                    source = source_key_for(store.root)
+                sources.append((atom, source))
+            if len(sources) != 1:
+                raise RuntimeError("ambiguous or missing editor source/content identity")
+            atoms_with_sources.extend(sources)
+            snapshots[atom_id] = sources[0][0]
+        from xskill.skill import candidates
+        target = Path(current.atom_skill_dir or current.skill_dir) / skill_name
+        existing = {str(item["atom_id"]): item for item in
+                    candidates.load_candidates(target).get("candidates", []) if item.get("atom_id")}
+        evidence = tuple(MappingProxyType(item) for item in
+                         current.distillation_store.bind_checkpoint_evidence(
+                             atoms_with_sources, adopt_candidates=existing,
+                         ))
     bound = replace(
         current,
         skill_edit_skill_name=_slugify(skill_name),
-        skill_edit_batch_ids=tuple(str(atom_id) for atom_id in batch_ids),
+        skill_edit_batch_ids=batch_ids,
+        skill_edit_batch_evidence=evidence,
+        skill_edit_atom_snapshots=MappingProxyType(snapshots),
     )
     with use_agent_tool_context(bound):
         yield bound
@@ -263,6 +414,7 @@ def use_skill_edit_batch(
 def use_skill_write_target(skill_name: str) -> Iterator[AgentToolContext]:
     """把 write_file / edit 的相对路径根钉到这个 skill 仓，不改 commit 批次。"""
     current = current_agent_tool_context()
+    _require_named_skill(skill_name, "write_content")
     bound = replace(current, skill_edit_skill_name=_slugify(skill_name))
     with use_agent_tool_context(bound):
         yield bound
@@ -289,6 +441,8 @@ class AgentToolConfig:
             cluster_batch_ids=frozenset(),
             skill_edit_skill_name=None,
             skill_edit_batch_ids=(),
+            skill_edit_batch_evidence=(),
+            skill_edit_atom_snapshots=None,
         ))
 
     def configure_atom_task(
@@ -309,6 +463,8 @@ class AgentToolConfig:
             cluster_batch_ids=frozenset(),
             skill_edit_skill_name=None,
             skill_edit_batch_ids=(),
+            skill_edit_batch_evidence=(),
+            skill_edit_atom_snapshots=None,
         ))
 
     def snapshot(self) -> dict:
@@ -328,6 +484,8 @@ class AgentToolConfig:
             "cluster_batch_ids": current.cluster_batch_ids,
             "skill_edit_skill_name": current.skill_edit_skill_name,
             "skill_edit_batch_ids": current.skill_edit_batch_ids,
+            "skill_edit_batch_evidence": current.skill_edit_batch_evidence,
+            "skill_edit_atom_snapshots": current.skill_edit_atom_snapshots,
             "grep_fallback_warned": current.grep_fallback_warned,
             "registry_db_path": current.registry_db_path,
             "extra_read_roots": current.extra_read_roots,
@@ -335,6 +493,11 @@ class AgentToolConfig:
             "blocked_read_roots": current.blocked_read_roots,
             "wiki_root": current.wiki_root,
             "embed_client": current.embed_client,
+            "distillation_policy": current.distillation_policy,
+            "distillation_store": current.distillation_store,
+            "distillation_sources": current.distillation_sources,
+            "distillation_results": current.distillation_results,
+            "installation_ledger": current.installation_ledger,
         }
 
     def restore(self, snapshot: dict) -> None:
@@ -352,12 +515,19 @@ class AgentToolConfig:
             cluster_batch_ids=snapshot.get("cluster_batch_ids") or (),
             skill_edit_skill_name=snapshot.get("skill_edit_skill_name"),
             skill_edit_batch_ids=snapshot.get("skill_edit_batch_ids") or (),
+            skill_edit_batch_evidence=snapshot.get("skill_edit_batch_evidence") or (),
+            skill_edit_atom_snapshots=snapshot.get("skill_edit_atom_snapshots"),
             registry_db_path=snapshot.get("registry_db_path"),
             extra_read_roots=snapshot.get("extra_read_roots") or (),
             generate_user_id=snapshot.get("generate_user_id"),
             blocked_read_roots=snapshot.get("blocked_read_roots") or (),
             wiki_root=snapshot.get("wiki_root"),
             embed_client=snapshot.get("embed_client"),
+            distillation_policy=snapshot.get("distillation_policy"),
+            distillation_store=snapshot.get("distillation_store"),
+            distillation_sources=snapshot.get("distillation_sources"),
+            distillation_results=snapshot.get("distillation_results"),
+            installation_ledger=snapshot.get("installation_ledger"),
         ))
         if not snapshot.get("configured", True):
             current = _AGENT_TOOL_CONTEXT.get()
@@ -443,9 +613,74 @@ def _run_cluster_mutation(operation):
 
 
 def _record_cluster_result(atom_id: str, skill_name: str, weightscore: int) -> None:
+    context = current_agent_tool_context()
+    if context.distillation_store is not None:
+        _require_distillation_audit()
+        atom = context.atom_store.load(atom_id)
+        source = (context.distillation_sources or {}).get(atom_id, "")
+        context.distillation_store.record_atom(
+            atom, "accepted", source_key=source, weightscore=weightscore,
+        )
+        if context.distillation_results is not None:
+            context.distillation_results[atom_id] = "accepted"
     recorder = current_agent_tool_context().cluster_result_recorder
     if recorder is not None:
         recorder.record(atom_id, skill_name, weightscore)
+
+
+def _prepare_cluster_write(atom_ids) -> None:
+    context = current_agent_tool_context()
+    runs = context.distillation_store
+    if runs is None:
+        return
+    _require_distillation_audit()
+    for atom_id in atom_ids:
+        if (context.distillation_results or {}).get(atom_id) == "skipped":
+            from xskill.skill.write_policy import SkillWriteDenied
+            raise SkillWriteDenied("an explicitly skipped atom cannot be added in this turn")
+        source = (context.distillation_sources or {}).get(atom_id, "")
+        runs.record_atom(context.atom_store.load(atom_id), "pending", source_key=source)
+
+
+def _require_distillation_audit():
+    from xskill.skill.write_policy import SkillWriteDenied
+    context = current_agent_tool_context()
+    policy = _active_write_policy()
+    if context.distillation_policy != context.distillation_store.policy():
+        raise SkillWriteDenied("stale distillation audit authority")
+    _require_named_skill(policy.target_skill, "add_candidates")
+
+
+@tool(name="skip_atom")
+def skip_atom(atom_id: str, reason: str) -> str:
+    """Record why one supplied atom is irrelevant to this restricted run."""
+    context = current_agent_tool_context()
+    if context.distillation_store is None or _active_write_policy().mode == "auto":
+        return "error: skip_atom requires a restricted distillation run"
+    if not context.cluster_batch_ids or context.distillation_results is None:
+        return "error: skip_atom requires a framework-bound cluster batch"
+    membership_error = _cluster_batch_membership_error(atom_id)
+    if membership_error:
+        return membership_error
+    if not reason or not reason.strip():
+        return "error: a non-empty skip reason is required"
+    if (context.distillation_results or {}).get(atom_id) == "accepted":
+        return "error: an accepted atom cannot also be skipped"
+
+    def mutate():
+        try:
+            _require_distillation_audit()
+        except PermissionError as error:
+            return f"error: {error}"
+        source = (context.distillation_sources or {}).get(atom_id, "")
+        context.distillation_store.record_atom(
+            context.atom_store.load(atom_id), "skipped", source_key=source,
+            reason=reason.strip(),
+        )
+        context.distillation_results[atom_id] = "skipped"
+        return f"skipped: {atom_id}: {reason.strip()}"
+
+    return _run_cluster_mutation(mutate)
 
 
 def _move_cluster_result(
@@ -501,6 +736,9 @@ def init_skill_authoring_tool_context(
 
 def _slugify(name: str) -> str:
     """Normalize a skill name to the slug form used in frontmatter.name."""
+    policy = _active_write_policy()
+    if policy.mode != "auto" and name == policy.target_skill:
+        return name
     return name.strip().lower().replace("_", "-").replace(" ", "-")
 
 
@@ -947,6 +1185,7 @@ evidence.)
 
 
 @tool(name="create_skill")
+@_skill_mutation('create', 'skill_name')
 def create_skill(skill_name: str) -> str:
     """
     Scaffold a new skill directory in the v2 layout.
@@ -991,6 +1230,7 @@ def create_skill(skill_name: str) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 @tool(name="add_candidate")
+@_skill_mutation('add_candidates', 'skill_name')
 def add_candidate(skill_name: str, pattern: str, pattern_type: str,
                   traj_id: str, attach_to: str = "") -> str:
     """
@@ -1084,6 +1324,7 @@ def list_candidates(skill_name: str) -> str:
 
 def _pin_skill_write_target(skill_name: str) -> None:
     """把后续 write_file / edit 的相对路径根钉到这个 skill 仓。"""
+    _require_named_skill(skill_name, "write_content")
     slug = _slugify(skill_name)
     if not slug:
         return
@@ -1100,6 +1341,11 @@ def _writable_skill_root() -> Path | None:
         return None
     lib = Path(lib).resolve()
     name = current.skill_edit_skill_name
+    policy = _active_write_policy()
+    if policy.mode != "auto":
+        if name and name != policy.target_skill:
+            policy.require_skill(name, operation="write_content")
+        name = policy.target_skill
     if name:
         if lib.name == name:
             return lib
@@ -1143,6 +1389,8 @@ def _resolve_skill_write_path(path: str) -> tuple[Path | None, str | None]:
             f"path is relative to skill_dir; do not prefix {first}/",
         )
     candidate = raw if raw.is_absolute() else (skill_dir / raw)
+    from xskill.skill.write_policy import require_skill_write
+    require_skill_write(candidate)
     try:
         resolved = candidate.resolve()
         if not _is_relative_to(resolved, skill_dir):
@@ -1151,12 +1399,18 @@ def _resolve_skill_write_path(path: str) -> tuple[Path | None, str | None]:
         return None, _skill_write_error(
             path, skill_dir, "writes restricted to skill_dir"
         )
-    if ".git" in resolved.parts:
+    if any(part.casefold() == ".git" for part in resolved.parts):
         return None, f"error: writes into .git/ are forbidden (tried: {path})"
+    if _active_write_policy().mode != "auto" and any(
+        part.casefold() in {".distillation-run.json", ".distillation-control.json"}
+        for part in resolved.parts
+    ):
+        return None, "error: distillation authority metadata is framework controlled"
     return resolved, None
 
 
 @tool(name="write_file")
+@_skill_mutation('write_content')
 def write_file(path: str, content: str) -> str:
     """在当前 skill 目录里新建或整文件覆盖一个文件。
 
@@ -1191,16 +1445,20 @@ def write_file(path: str, content: str) -> str:
                 "description 没用块标量 `|` 或引号、缺 name/description、正文为空。"
             )
         _sanitize_frontmatter_dates(fm)
+        policy = _active_write_policy()
+        if policy.mode != "auto" and fm.get("name") != policy.target_skill:
+            return "error: SKILL.md name must match the fixed target skill"
         content = fm_serialize(fm, body)
 
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(content, encoding="utf-8")
+    from xskill.skill.write_policy import safe_write_text
+    safe_write_text(resolved, content, encoding="utf-8", create_parents=True)
     logger.info(f"✏️  wrote: {resolved} ({len(content)} bytes)")
     _mark_file_read(resolved)
     return f"wrote: {resolved} ({len(content)} chars)"
 
 
 @tool(name="edit")
+@_skill_mutation('write_content')
 def edit_file(path: str, old_string: str, new_string: str) -> str:
     """把 skill 文件里的一段原文替换成新内容，用于小改而不重写整份文件。
 
@@ -1253,13 +1511,18 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
                 "请修正后再调用 edit。"
             )
         _sanitize_frontmatter_dates(fm)
+        policy = _active_write_policy()
+        if policy.mode != "auto" and fm.get("name") != policy.target_skill:
+            return "error: SKILL.md name must match the fixed target skill"
         updated = fm_serialize(fm, body)
-    resolved.write_text(updated, encoding="utf-8")
+    from xskill.skill.write_policy import safe_write_text
+    safe_write_text(resolved, updated, encoding="utf-8")
     logger.info("edited: %s", resolved)
     return f"edited: {resolved}"
 
 
 @tool(name="commit_generate_main")
+@_skill_mutation('publish', 'skill_name')
 def commit_generate_main(skill_name: str, message: str) -> str:
     """把写好的 skill 提交到主干 main，这是 generate 任务的最后一步。
 
@@ -1320,6 +1583,7 @@ point. No preamble. Output the 2 sentences only.
 
 
 @tool(name="update_frontmatter_metadata")
+@_skill_mutation('write_content', 'skill_name')
 def update_frontmatter_metadata(skill_name: str, source_trajs: Optional[list] = None) -> str:
     """
     Update frontmatter.metadata on a skill's SKILL.md:
@@ -1382,7 +1646,8 @@ def update_frontmatter_metadata(skill_name: str, source_trajs: Optional[list] = 
     # Always land in SKILL.md (uppercase). If read came from legacy skill.md,
     # migrate-on-touch.
     upper = target / "SKILL.md"
-    upper.write_text(new_text, encoding="utf-8")
+    from xskill.skill.write_policy import safe_write_text
+    safe_write_text(upper, new_text, encoding="utf-8")
     if path.name == "skill.md" and path.exists():
         try:
             path.unlink()
@@ -1469,7 +1734,8 @@ def atom_task_read(atom_id: str) -> str:
     if store is None:
         return "error: atom task tool context not initialized"
     try:
-        atom = store.load(atom_id)
+        snapshots = current_agent_tool_context().skill_edit_atom_snapshots or {}
+        atom = snapshots[atom_id] if atom_id in snapshots else store.load(atom_id)
     except FileNotFoundError as e:
         return f"error: {e}"
     return json.dumps(_atom_read_payload(atom), ensure_ascii=False, indent=2)
@@ -1508,6 +1774,42 @@ def read_traj(traj_id: str, offset_start: int, offset_end: int) -> str:
     traj_root = agent_tool_config.default_traj_root
     if traj_root is None:
         return "error: atom task tool context not initialized"
+    try:
+        start = int(offset_start)
+        end = int(offset_end)
+    except (TypeError, ValueError):
+        return f"error: offset_start/offset_end must be int (got {offset_start!r}, {offset_end!r})"
+    if end <= start:
+        return f"error: offset_end ({end}) must be > offset_start ({start})"
+    if start < 1:
+        return (
+            f"error: line range [{start}..{end}) outside file "
+            f"(offset_start must be >= 1)"
+        )
+    # The bound batch must read the same evidence that its receipt attests.
+    # A same-named live trajectory in another store may have a newer mtime.
+    snapshots = current_agent_tool_context().skill_edit_atom_snapshots or {}
+    page_end = min(end, start + READ_TRAJ_MAX_LINES)
+    bound = [atom for atom in snapshots.values()
+             if atom.traj_id == traj_id and start < atom.offset_end and page_end > atom.offset_start]
+    if bound:
+        pages = set()
+        for atom in bound:
+            first, last = atom.offset_start, atom.offset_end
+            if not first <= start < page_end <= last:
+                return f"error: read the bound Atom separately within [{first}, {last})"
+            lines = atom.raw_segment.splitlines(keepends=True)
+            if len(lines) != last - first:
+                return "error: bound Atom raw evidence is incomplete"
+            pages.add("".join(lines[start - first:page_end - first]))
+        if len(pages) != 1:
+            return "error: ambiguous bound trajectory evidence; use a smaller Atom range"
+        body = pages.pop()
+        if page_end == end:
+            return body
+        return (f'[read_traj] bound evidence returned [{start}, {page_end}); '
+                f'continue: read_traj(traj_id="{traj_id}", offset_start={page_end}, offset_end={end})\n'
+                + body)
     # team-CS 多 store：traj.md 落在 atom 所属 client 的 watch_dir 下，不一定是
     # 绑定的 traj_root。store 若支持 traj_root_for（MultiAtomTaskStore），按
     # traj_id 跨所有 root 解析；解析不到再退回绑定 traj_root（单 store 行为不变）。
@@ -1523,18 +1825,6 @@ def read_traj(traj_id: str, offset_start: int, offset_end: int) -> str:
     p = traj_root / f"{traj_id}.md"
     if not p.is_file():
         return f"error: traj file not found: {p}"
-    try:
-        start = int(offset_start)
-        end = int(offset_end)
-    except (TypeError, ValueError):
-        return f"error: offset_start/offset_end must be int (got {offset_start!r}, {offset_end!r})"
-    if end <= start:
-        return f"error: offset_end ({end}) must be > offset_start ({start})"
-    if start < 1:
-        return (
-            f"error: line range [{start}..{end}) outside file "
-            f"(offset_start must be >= 1)"
-        )
     lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
     total = len(lines)
     if start > total:
@@ -1562,6 +1852,7 @@ def read_traj(traj_id: str, offset_start: int, offset_end: int) -> str:
 
 
 @tool(name="new_skill_folder")
+@_skill_mutation('create', 'skill_name')
 def new_skill_folder(skill_name: str, description: str) -> str:
     """新建一个 skill 目录并初始化 git，生成占位 SKILL.md 等你用 write_file 填。
 
@@ -1663,6 +1954,7 @@ def skill_read(skill_name: str) -> str:
 
 
 @tool(name="add_task_to_skill")
+@_skill_mutation('add_candidates', 'skill_name')
 def add_task_to_skill(
     skill_name: str,
     atom_id: str,
@@ -1695,6 +1987,7 @@ def add_task_to_skill(
             f"(got {weightscore_value})"
         )
     def mutate():
+        _prepare_cluster_write([atom_id])
         new_flags, buffer_total = C.add_atom_contributions(
             target,
             [(atom_id, weightscore_value, "")],
@@ -1732,6 +2025,7 @@ class CandidateTaskInput(BaseModel):
 
 
 @tool(name="add_tasks_to_skill")
+@_skill_mutation('add_candidates', 'skill_name')
 def add_tasks_to_skill(
     skill_name: str,
     tasks: list[CandidateTaskInput],
@@ -1793,6 +2087,7 @@ def add_tasks_to_skill(
         contributions.append((atom_id, weightscore_value, note))
 
     def mutate():
+        _prepare_cluster_write(item[0] for item in contributions)
         new_flags, buffer_total = C.add_atom_contributions(
             target,
             contributions,
@@ -1828,6 +2123,8 @@ def _mark_atom_profile_dirty(atom_path: Path, reason: str) -> None:
 @tool(name="score_task")
 def score_task(atom_id: str, score: int) -> str:
     """覆盖 AtomTask 的 ux_score（手动修正 / 灰度链路使用）。"""
+    if _active_write_policy().mode != "auto":
+        return "error: restricted distillation cannot change global atom scores"
     store = agent_tool_config.atom_store
     if store is None:
         return "error: atom task tool context not initialized"
@@ -2371,6 +2668,7 @@ def graduate_baby_to_main(target: Path, slug: str, message: str) -> bool:
 
 
 @tool(name="commit_baby")
+@_skill_mutation('git_mutation', 'skill_name')
 def commit_baby(skill_name: str, message: str) -> str:
     """Commit the current framework-bound atom batch on ``baby``.
 
@@ -2418,13 +2716,15 @@ def commit_baby(skill_name: str, message: str) -> str:
     with skill_repo_lock(target):
         if current_branch(str(target)) != "baby":
             return "error: commit_baby only works on the baby branch"
-        commit_sha = commit_baby_checkpoint(str(target), msg)
+        commit_sha = commit_baby_checkpoint(str(target), _run_commit_message(msg))
         if commit_sha is None:
             return "error: commit_baby requires a real non-empty change"
-        consumed, remaining = candidate_buffer.remove_candidates(
-            target,
-            set(batch_ids),
-        )
+        removable_ids = set(batch_ids)
+        if context.distillation_store is not None and _active_write_policy().mode != "auto":
+            evidence = context.skill_edit_batch_evidence
+            context.distillation_store.checkpoint_atoms(evidence, commit_sha)
+            removable_ids = context.distillation_store.checkpoint_candidate_ids(evidence)
+        consumed, remaining = candidate_buffer.remove_candidates(target, removable_ids)
 
     lines = [
         f"Created baby checkpoint {commit_sha[:7]}.",
@@ -2437,6 +2737,7 @@ def commit_baby(skill_name: str, message: str) -> str:
 
 
 @tool(name="commit_baby_to_main")
+@_skill_mutation('publish', 'skill_name')
 def commit_baby_to_main(skill_name: str, message: str) -> str:
     """SkillEditAgent 首次为某 skill 出版本时调用。
 
@@ -2478,6 +2779,7 @@ def commit_baby_to_main(skill_name: str, message: str) -> str:
 
 
 @tool(name="commit_to_staging")
+@_skill_mutation('publish', 'skill_name')
 def commit_to_staging(skill_name: str, message: str) -> str:
     """SkillEditAgent 在 skill 已有 main 时调用——产出灰度候选。
 
@@ -2518,6 +2820,7 @@ def commit_to_staging(skill_name: str, message: str) -> str:
 
 
 @tool(name="commit_update_main")
+@_skill_mutation('publish', 'skill_name')
 def commit_update_main(skill_name: str, message: str) -> str:
     """SkillEditAgent jam-merge 场景专用：把更新直接提交回 main。
 
@@ -2546,6 +2849,7 @@ def commit_update_main(skill_name: str, message: str) -> str:
 
 
 @tool(name="absorb_user_edit_to_main")
+@_skill_mutation('publish', 'skill_name')
 def absorb_user_edit_to_main(skill_name: str, message: str) -> str:
     """UserEditAbsorbAgent 专用：把用户手改吸收为 main 分支一次 commit。
 
@@ -2616,6 +2920,7 @@ def absorb_user_edit_to_main(skill_name: str, message: str) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 @tool(name="rename_skill")
+@_skill_mutation('rename', 'old_name', 'new_name')
 def rename_skill(old_name: str, new_name: str) -> str:
     """ClusterAgent 专用：把 **baby 分支** 的 skill 重命名（合并近义 slug）。
 
@@ -2697,6 +3002,7 @@ def read_skill_tasks(skill_name: str) -> str:
 
 
 @tool(name="move_task_to")
+@_skill_mutation('move', 'skill_from', 'skill_to')
 def move_task_to(skill_from: str, skill_to: str, atom_id: str) -> str:
     """把 atom 从 ``skill_from`` 的 candidates buffer 移到 ``skill_to``。
 

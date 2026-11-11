@@ -21,12 +21,16 @@ canary.py -- 灰度发布模块
 
 from __future__ import annotations
 
+from xskill.skill.write_policy import require_auxiliary_write
+
+from xskill.skill.write_policy import require_skill_write, safe_write_text
+
 import hashlib
 import json
 import logging
 import math
 import os
-import shutil
+import stat
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -133,6 +137,7 @@ def _jam_plateau_seconds(
 
 def _drop_legacy_jam_state(skill_dir: Path) -> None:
     """旧版曾写过 sidecar；现在平台期从 jsonl 现算，碰到就删掉。"""
+    require_skill_write(skill_dir)
     leftover = Path(skill_dir) / ".canary_jam_state.json"
     try:
         leftover.unlink(missing_ok=True)
@@ -317,6 +322,8 @@ def route_main_history_to_staging(
 
     返回 True 当且仅当确实发生了分流（有新 commit 可挪）。
     """
+    require_skill_write(skill_dir)
+    require_auxiliary_write(Path(skill_dir).parent / '.canary' / Path(skill_dir).name, skill_dir)
     cwd = str(skill_dir)
     with skill_repo_lock(skill_dir):
         code, new_sha, _ = run_git(["rev-parse", "HEAD"], cwd=cwd)
@@ -364,6 +371,8 @@ def skill_existed_on(skill_dir: Path, ref: str, skill_name: str) -> bool:
 
 def merge_staging_to_main(skill_dir: Path) -> bool:
     """将 staging 分支合入 main，然后删除 staging。"""
+    require_skill_write(skill_dir)
+    require_auxiliary_write(Path(skill_dir).parent / '.canary' / Path(skill_dir).name, skill_dir)
     cwd = str(skill_dir)
     with skill_repo_lock(skill_dir):
         if not has_staging(skill_dir):
@@ -401,6 +410,7 @@ def merge_staging_to_main(skill_dir: Path) -> bool:
             )
             return False
     canary_copy = skill_dir.parent / ".canary" / skill_dir.name
+    require_auxiliary_write(canary_copy, skill_dir)
     if canary_copy.is_symlink() or (
         canary_copy.exists() and not canary_copy.is_dir()
     ):
@@ -408,7 +418,8 @@ def merge_staging_to_main(skill_dir: Path) -> bool:
             f"{skill_dir.name}: unsafe materialized staging path"
         )
     if canary_copy.is_dir():
-        shutil.rmtree(canary_copy)
+        from xskill.skill.write_policy import safe_remove_auxiliary_tree
+        safe_remove_auxiliary_tree(canary_copy, skill_dir)
     logger.info(f"{skill_dir.name}: staging merged to main and deleted")
     from xskill.skill.catalog_store import notify_native_upsert
     notify_native_upsert(skill_dir)
@@ -416,6 +427,8 @@ def merge_staging_to_main(skill_dir: Path) -> bool:
 
 
 def discard_staging(skill_dir: Path) -> bool:
+    require_skill_write(skill_dir)
+    require_auxiliary_write(Path(skill_dir).parent / '.canary' / Path(skill_dir).name, skill_dir)
     cwd = str(skill_dir)
     with skill_repo_lock(skill_dir):
         if not has_staging(skill_dir):
@@ -450,6 +463,7 @@ def discard_staging(skill_dir: Path) -> bool:
             return False
     # 清理物化目录（materialize_staging 留下的 .canary/<name>/）
     canary_copy = skill_dir.parent / ".canary" / skill_dir.name
+    require_auxiliary_write(canary_copy, skill_dir)
     if canary_copy.is_symlink() or (
         canary_copy.exists() and not canary_copy.is_dir()
     ):
@@ -457,7 +471,8 @@ def discard_staging(skill_dir: Path) -> bool:
             f"{skill_dir.name}: unsafe materialized staging path"
         )
     if canary_copy.is_dir():
-        shutil.rmtree(canary_copy)
+        from xskill.skill.write_policy import safe_remove_auxiliary_tree
+        safe_remove_auxiliary_tree(canary_copy, skill_dir)
     logger.info(f"{skill_dir.name}: staging discarded")
     from xskill.skill.catalog_store import notify_native_upsert
     notify_native_upsert(skill_dir)
@@ -473,14 +488,63 @@ def materialize_staging(skill_dir: Path, canary_root: Path) -> Path | None:
 
     返回物化目录路径，失败返回 None。agent 读此目录即可获得 staging 版本。
     """
+    require_auxiliary_write(Path(canary_root) / Path(skill_dir).name, skill_dir, expected_root=Path(skill_dir).parent / '.canary')
+    policy = require_skill_write(skill_dir)
+    if policy.mode != "auto":
+        return _materialize_restricted_staging(skill_dir, canary_root)
     body = read_skill_on_branch(skill_dir, STAGING_BRANCH)
     if body is None:
         logger.warning("%s: staging branch has no SKILL.md, skip materialize", skill_dir.name)
         return None
     out = canary_root / skill_dir.name
     out.mkdir(parents=True, exist_ok=True)
-    (out / "SKILL.md").write_text(body, encoding="utf-8")
+    safe_write_text(out / "SKILL.md", body, auxiliary_skill_path=skill_dir)
     logger.info("%s: materialized staging to %s", skill_dir.name, out)
+    return out
+
+
+def _materialize_restricted_staging(skill_dir: Path, canary_root: Path) -> Path:
+    """Deliver the validated commit, including support files, under pinned paths."""
+    from xskill.skill.artifact_validation import validate_skill_artifact
+    from xskill.skill.git import _open_repo, _read_blob
+    from xskill.skill.write_policy import (
+        auxiliary_write_guard, safe_write_bytes, _pinned_parent,
+    )
+
+    artifact = validate_skill_artifact(
+        skill_dir, expected_name=skill_dir.name, ref=STAGING_BRANCH,
+    )
+    # Read immutable objects before filesystem changes. A changed staging ref
+    # cannot change the exact commit that was validated above.
+    payloads = {}
+    with _open_repo(skill_dir) as repository:
+        commit = repository[artifact["sha"].encode()]
+        for relative in artifact["files"]:
+            mode, blob = repository[commit.tree].lookup_path(
+                repository.__getitem__, relative.encode("utf-8"),
+            )
+            content = _read_blob(repository, blob)
+            if content is None:
+                raise RuntimeError(f"cannot materialize committed file: {relative}")
+            payloads[relative] = (content, stat.S_IMODE(mode))
+    out = canary_root / skill_dir.name
+    with auxiliary_write_guard(
+        out, skill_dir, expected_root=skill_dir.parent / ".canary",
+        create=True, pin_target=True,
+    ):
+        for relative, (content, mode) in payloads.items():
+            safe_write_bytes(
+                out / relative, content, auxiliary_skill_path=skill_dir,
+                auxiliary_root=out, create_parents=True, mode=mode,
+            )
+        # Keep the readable tree equal to this commit. Empty old directories
+        # are harmless; unlink only checked leaf files, never recurse via links.
+        for path in out.rglob("*"):
+            if path.is_file() and path.relative_to(out).as_posix() not in payloads:
+                with _pinned_parent(path):
+                    require_auxiliary_write(out, skill_dir)
+                    path.unlink()
+    validate_skill_artifact(out, expected_name=skill_dir.name)
     return out
 
 
@@ -750,6 +814,8 @@ def append_ux_score(
     同一 (traj_id, skill_name, side) 只会写入一次，重复调用跳过。
     返回 True 表示本次确实落盘了一条新纪录。
     """
+    require_skill_write(Path(skill_dir) / UX_SCORES_FILENAME)
+    require_skill_write(skill_dir)
     existing = load_ux_scores(skill_dir)
     for e in existing:
         if (
@@ -771,8 +837,7 @@ def append_ux_score(
 
     p = _ux_scores_path(skill_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    safe_write_text(p, json.dumps(record, ensure_ascii=False) + "\n", append=True)
     db_rec = dict(record)
     db_rec["skill_name"] = Path(skill_dir).name
     _mirror_ux_score_to_db(db_rec)
@@ -789,6 +854,8 @@ def clear_current_main_round_scores(
 
     只动这一侧、这一次 sha 的最近几条。更早提交上的分全部留着。灰度侧不动。
     """
+    require_skill_write(Path(skill_dir) / UX_SCORES_FILENAME)
+    require_skill_write(skill_dir)
     if not commit_sha:
         return 0
     skill_dir = Path(skill_dir)
@@ -806,7 +873,7 @@ def clear_current_main_round_scores(
     text = "".join(
         json.dumps(row, ensure_ascii=False) + "\n" for row in kept
     )
-    p.write_text(text, encoding="utf-8")
+    safe_write_text(p, text)
     dropped = [row for i, row in matching if i in drop_idx]
     try:
         from xskill.pipeline.ux_scores_store import delete_ux_scores_for_sha
@@ -1028,6 +1095,7 @@ def plan_decision(skill_dir: Path, config: CanaryConfig | None = None,
 
 def record_decision_telemetry(skill_dir: Path, decision: dict) -> None:
     """在终态完整收敛后记录一次裁决遥测。"""
+    require_skill_write(skill_dir)
     action = decision.get("action", "")
     if action not in ("promoted", "rejected", "timeout_discarded"):
         return
@@ -1051,6 +1119,7 @@ def apply_decision(
     record_telemetry: bool = True,
 ) -> dict:
     """应用 :func:`plan_decision` 的终态，并在成功后记录裁决遥测。"""
+    require_skill_write(skill_dir)
     action = decision.get("action", "")
     if action not in ("promoted", "rejected", "timeout_discarded"):
         return decision
@@ -1084,6 +1153,7 @@ def _record_decision(skill_dir, action: str, main_avg: float, staging_avg: float
                      main_n: int, staging_n: int, age_days, *,
                      main_sha: str = "", staging_sha: str = "") -> None:  # pylint: disable=redefined-outer-name
     """埋点：记一次灰度终态裁决(best-effort，失败不阻断判定/翻牌)。"""
+    require_skill_write(skill_dir)
     try:
         from xskill.pipeline.registry import record_canary_decision
         record_canary_decision(
@@ -1114,6 +1184,8 @@ GITIGNORE_TEMPLATE = """# canary runtime data — NOT versioned
 
 
 def ensure_gitignore(skill_dir: Path) -> None:
+    require_skill_write(Path(skill_dir) / '.gitignore')
+    require_skill_write(skill_dir)
     p = Path(skill_dir) / ".gitignore"
     if p.exists():
         current = p.read_text(encoding="utf-8")
@@ -1126,9 +1198,9 @@ def ensure_gitignore(skill_dir: Path) -> None:
         if ".lock" not in current:
             added.append(".lock")
         if added:
-            p.write_text(current.rstrip() + "\n" + "\n".join(added) + "\n", encoding="utf-8")
+            safe_write_text(p, current.rstrip() + "\n" + "\n".join(added) + "\n")
         return
-    p.write_text(GITIGNORE_TEMPLATE, encoding="utf-8")
+    safe_write_text(p, GITIGNORE_TEMPLATE)
 
 
 # =============================================================================
@@ -1160,6 +1232,7 @@ class AtomCanary:
         同一 (atom_id, skill_name, side) 三元组已存在则返回 False，不重复写入。
         ``user_model``: 产生该 atom 的用户模型，供模型分桶加权裁决用。
         """
+        require_skill_write(self.skill_dir / UX_SCORES_FILENAME)
         existing = load_ux_scores(self.skill_dir)
         for e in existing:
             if (e.get("atom_id") == atom_id
@@ -1178,8 +1251,7 @@ class AtomCanary:
         }
         p = self.skill_dir / UX_SCORES_FILENAME
         p.parent.mkdir(parents=True, exist_ok=True)
-        with p.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        safe_write_text(p, json.dumps(record, ensure_ascii=False) + "\n", append=True)
         db_rec = dict(record)
         db_rec["skill_name"] = Path(self.skill_dir).name
         _mirror_ux_score_to_db(db_rec)
