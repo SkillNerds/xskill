@@ -247,6 +247,7 @@ class DirectoryWatcher:
             db_path=Path(db_path) if db_path is not None else None,
             server_mode=self.server_mode,
             config=self.config,
+            usage_ledger=self.usage_ledger,
         )
         self.cluster_write_queue = ClusterWriteQueue()
         self._futures: dict[Future, dict] = {}

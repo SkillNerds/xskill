@@ -41,6 +41,25 @@ Task、Attempt、generation、override 和 usage event 均使用无业务语义�
 
 普通相似 Atom 默认建立独立 confirmed Task，并把相似旧 Task 记录为 confidence 为空的 proposed membership，避免把未校准启发式分数冒充概率。
 
+可选的 `task_graph.llm_adjudication` 在强规则无法确认时，对倒排 Top-K 与同 Session 最近 Task 组成的有界候选集进行一次结构化判断。模型不能选择候选集外 Task，也不能改变 TenantScope、TaskScope、人工 override 或稳定 Atom 身份。默认 `enabled: false`，不会发送 Atom/Task 文本；启用但 `auto_confirm: false` 时，`same_task` 只形成 proposed membership。只有运维方显式启用 `auto_confirm: true` 时，模型的 `same_task` 才成为 confirmed primary membership，且 confidence 继续为空，不把模型自报分数伪装成已校准概率。
+
+每次 generation 的模型判断数受 `max_judgements_per_build` 硬限制。一次调用失败会在当前 build 内打开熔断，其余 Atom 退回 rules-only；下一次增量 build 可以重试。模型只能返回 `same_task`、`new_task` 或 `abstain`、有界候选 Task id（按决策可为空）及白名单 `reason_code`，解析失败、候选越界、自由文本 reason 和额外字段都按失败处理。`abstain` 指定候选时形成 `needs_review` membership，不指定候选时完全退回 rules-only。
+
+每次成功或失败的裁决在 generation metrics 中保留一个有界审计记录：Atom scope、候选 Task id/词法分数/同 Session 标记、决策、结构化原因、错误类型，以及模型和 prompt 指纹；不重复保存 Atom/Task prompt 文本。记录中的 `usage_step: task_link` 和 Atom scope 可与 usage ledger 中独立的 `task_link` xskill-processing Token 事件关联。generator descriptor 同时固定模型、判别器版本、输出配置与 prompt fingerprint。
+
+示例：
+
+```yaml
+task_graph:
+  llm_adjudication:
+    enabled: true
+    auto_confirm: false
+    max_judgements_per_build: 64
+    # llm:                 # 可选；缺省继承顶层 llm
+    #   model: task-link-model
+    #   max_tokens: 800    # 仅可调低；运行时硬上限为 800
+```
+
 未变化 Atom 通过 Atom 内容哈希复用 Task 和 Attempt id，重建不会给未受影响事实重新编号。
 
 自动 Attempt outcome 只接受 sole-Task Session 上的结构化 Harness 终态，Harness success 可以结束 Attempt 但 verification 仍保持 unverified，只有另有可核验目标证据的 succeeded 或 partially_succeeded Attempt 才能派生 Task 结果，单次 failed 或 cancelled Attempt 也不能证明 Logical Task 已终止。
